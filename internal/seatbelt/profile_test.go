@@ -29,7 +29,8 @@ func TestRenderGrantsOnlyOwnResources(t *testing.T) {
 		`(allow process-exec*` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/containers/c1/root")`,
 		`  (literal "/bin/sh")`,
 		`(allow signal (target same-sandbox))`,
-		`(literal "/Users/u/.fws/stacks/a/containers")`,
+		`(allow file-read-metadata` + "\n" + `  (literal "/")`,
+		`  (literal "/Users/u/.fws/stacks/a/containers")`,
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("profile missing %s\n%s", want, p)
@@ -40,6 +41,14 @@ func TestRenderGrantsOnlyOwnResources(t *testing.T) {
 	}
 	if strings.Contains(p, `"localhost:41001"))`+"\n"+`(allow network-bind`) {
 		t.Errorf("connect-only port granted bind")
+	}
+}
+
+func TestAncestorsAreMetadataOnly(t *testing.T) {
+	p, _ := Render(spec())
+	reads := p[strings.Index(p, "(allow file-read*"):strings.Index(p, "(allow file-read-metadata")]
+	if strings.Contains(reads, `(literal "/Users/u/.fws/stacks/a/containers")`) {
+		t.Fatalf("ancestor granted full reads, so a container could list it:\n%s", reads)
 	}
 }
 

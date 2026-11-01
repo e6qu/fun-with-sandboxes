@@ -149,10 +149,19 @@ func Render(s Spec) (string, error) {
 	for _, d := range SystemReadPaths {
 		w("  (subpath %q)", d)
 	}
-	// Path resolution stats each ancestor of the root.
+	w(")")
+	// stat and realpath walk each ancestor of the root and volumes; they may
+	// learn the ancestors exist, but not list them.
+	w("(allow file-read-metadata")
 	w("  (literal \"/\")")
-	for _, a := range ancestors(s.Root) {
-		w("  (literal %q)", a)
+	seen := map[string]bool{}
+	for _, p := range paths {
+		for _, a := range ancestors(p) {
+			if !seen[a] {
+				seen[a] = true
+				w("  (literal %q)", a)
+			}
+		}
 	}
 	w(")")
 
