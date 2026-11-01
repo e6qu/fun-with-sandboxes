@@ -272,11 +272,7 @@ func (e *Engine) Push(ctx context.Context, repo, tag string, auth authn.Authenti
 	if err != nil {
 		return nil, invalid("invalid reference format: %v", err)
 	}
-	want, err := image.Normalize(repo)
-	if err != nil {
-		return nil, invalid("%v", err)
-	}
-	wantRepo := want[:strings.LastIndex(want, ":")]
+	wantRepo := image.Familiar(repoRef)
 	var tags []string
 	for _, img := range e.images.List() {
 		for _, t := range img.RepoTags {
@@ -292,7 +288,7 @@ func (e *Engine) Push(ctx context.Context, repo, tag string, auth authn.Authenti
 	progress(fmt.Sprintf("The push refers to repository [%s]", repoRef.Name()))
 	var out []PushResult
 	for _, tg := range tags {
-		img, _, err := e.images.V1Image(wantRepo + ":" + tg)
+		img, rec, err := e.images.V1Image(wantRepo + ":" + tg)
 		if err != nil {
 			return out, err
 		}
@@ -306,6 +302,9 @@ func (e *Engine) Push(ctx context.Context, repo, tag string, auth authn.Authenti
 		}
 		m, err := img.RawManifest()
 		if err != nil {
+			return out, err
+		}
+		if err := e.images.AddReference(rec.ID, wantRepo+"@"+dg.String()); err != nil {
 			return out, err
 		}
 		progress(fmt.Sprintf("%s: digest: %s size: %d", tg, dg, len(m)))

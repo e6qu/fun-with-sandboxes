@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/moby/moby/api/types/registry"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
@@ -57,15 +58,26 @@ func (s *Server) imagePull(w http.ResponseWriter, r *http.Request) {
 	if tag == "" {
 		tag = "latest"
 	}
-	enc.Encode(jsonMessage{Status: "Pulling from " + q.Get("fromImage"), ID: tag})
+	repo := q.Get("fromImage")
+	if r, err := name.ParseReference(ref); err == nil {
+		repo = r.Context().RepositoryStr()
+	}
+	enc.Encode(jsonMessage{Status: "Pulling from " + repo, ID: tag})
 	flush(w)
-	img, err := s.e.Images().Pull(ref)
+	pulled, err := s.e.Images().Pull(r.Context(), ref, func(id, status string) {
+		enc.Encode(jsonMessage{Status: status, ID: id})
+		flush(w)
+	})
 	if err != nil {
 		enc.Encode(jsonMessage{Error: err.Error(), ErrorDetail: &errorDetails{Message: err.Error()}})
 		return
 	}
-	enc.Encode(jsonMessage{Status: "Digest: " + img.ID})
-	enc.Encode(jsonMessage{Status: "Status: Downloaded newer image for " + ref})
+	enc.Encode(jsonMessage{Status: "Digest: " + pulled.Digest})
+	if pulled.UpToDate {
+		enc.Encode(jsonMessage{Status: "Status: Image is up to date for " + pulled.Ref})
+	} else {
+		enc.Encode(jsonMessage{Status: "Status: Downloaded newer image for " + pulled.Ref})
+	}
 }
 
 func (s *Server) imageLoad(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +125,14 @@ func (s *Server) imagePost(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(ref, "/tag"):
 		q := r.URL.Query()
 		respondStatus(w, http.StatusCreated, s.e.ImageTag(strings.TrimSuffix(ref, "/tag"), q.Get("repo"), q.Get("tag")))
+	case ref == "prune":
+		f, err := engine.ParseFilters(r.URL.Query().Get("filters"))
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+		res, err := s.e.ImagePrune(f)
+		respond(w, res, err)
 	case strings.HasSuffix(ref, "/push"):
 		s.push(w, r, strings.TrimSuffix(ref, "/push"))
 	default:
@@ -147,6 +167,10 @@ func (s *Server) build(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	quiet := q.Get("q") == "1" || q.Get("q") == "true"
+	// Read the upload to its end before returning: the tar reader stops at
+	// the archive's end marker, and with full duplex on, unread body left to
+	// the server races its read of the next request on the connection.
+	defer io.Copy(io.Discard, r.Body)
 	// Progress streams while the context upload is still being read; an
 	// HTTP/1 server closes the request body once a response starts unless
 	// told otherwise.
@@ -189,9 +213,11 @@ func (s *Server) save(w http.ResponseWriter, refs []string) {
 	}
 	pr, pw := io.Pipe()
 	go func() { pw.CloseWithError(s.e.Save(refs, pw)) }()
+	// Closing the read side ends the writer when the client goes away
+	// mid-archive.
+	defer pr.Close()
 	buf := bufio.NewReader(pr)
 	if _, err := buf.Peek(1); err != nil && err != io.EOF {
-		pr.Close()
 		writeEngineError(w, err)
 		return
 	}

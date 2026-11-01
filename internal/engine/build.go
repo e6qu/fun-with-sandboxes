@@ -314,16 +314,17 @@ func (b *builder) stageNamed(ref string) *stage {
 	return nil
 }
 
-func (b *builder) baseImage(_ context.Context, ref string) (image.Image, error) {
+func (b *builder) baseImage(ctx context.Context, ref string) (image.Image, error) {
 	img, err := b.e.images.Get(ref)
 	if err == nil {
 		return img, nil
 	}
 	b.progress(fmt.Sprintf("Pulling %s\n", ref))
-	if img, err = b.e.images.Pull(ref); err != nil {
+	pulled, err := b.e.images.Pull(ctx, ref, func(id, status string) { b.progress(id + ": " + status + "\n") })
+	if err != nil {
 		return image.Image{}, notFound("pull access denied or image not found for %s: %v", ref, err)
 	}
-	return img, nil
+	return pulled.Image, nil
 }
 
 func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction, globals map[string]string) error {

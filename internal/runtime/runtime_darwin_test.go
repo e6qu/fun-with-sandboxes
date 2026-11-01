@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -59,6 +61,11 @@ func TestExitWithLingeringChild(t *testing.T) {
 		t.Fatalf("exit code %d, want 3", p.ExitCode())
 	}
 	p.KillAll()
+	// KillAll returns only once nothing of the group is left to write into
+	// the container's files.
+	if err := syscall.Kill(-p.cmd.Process.Pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("the process group outlived KillAll: kill(-pgid, 0) = %v", err)
+	}
 	// The child sleeps for an hour holding stdout, so the output drains in
 	// time only if KillAll killed it.
 	drained := make(chan struct{})

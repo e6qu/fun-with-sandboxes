@@ -5,12 +5,15 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/events"
 	imagetypes "github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/system"
 	digest "github.com/opencontainers/go-digest"
@@ -100,32 +103,24 @@ func (e *Engine) ImageList(f Filters) []imagetypes.Summary {
 		if !f.matchLabels(img.Config.Config.Labels) {
 			continue
 		}
-		if f.has("reference") {
-			ok := false
-			for _, want := range f["reference"] {
-				for _, t := range img.RepoTags {
-					if matchReference(want, t) {
-						ok = true
-					}
-				}
-			}
-			if !ok {
-				continue
-			}
-		}
-		if dangling, ok := f.boolValue("dangling"); ok && dangling != (len(img.RepoTags) == 0) {
+		if dangling, ok := f.boolValue("dangling"); ok && dangling != isDangling(img) {
 			continue
 		}
-		tags := img.RepoTags
-		if tags == nil {
-			tags = []string{}
+		tags, digests := nonNil(img.RepoTags), nonNil(img.RepoDigests)
+		// As in dockerd, a reference filter lists only the references it
+		// matched.
+		if f.has("reference") {
+			tags, digests = matching(f["reference"], tags), matching(f["reference"], digests)
+			if len(tags)+len(digests) == 0 {
+				continue
+			}
 		}
 		labels := img.Config.Config.Labels
 		if labels == nil {
 			labels = map[string]string{}
 		}
 		out = append(out, imagetypes.Summary{
-			ID: img.ID, Created: img.Created.Unix(), RepoTags: tags, RepoDigests: []string{},
+			ID: img.ID, Created: img.Created.Unix(), RepoTags: tags, RepoDigests: digests,
 			Size: img.Size, Labels: labels, Containers: -1, SharedSize: -1,
 		})
 	}
@@ -134,17 +129,26 @@ func (e *Engine) ImageList(f Filters) []imagetypes.Summary {
 
 // matchReference matches a reference filter, which may omit the tag, against
 // a stored tag.
-func matchReference(want, tag string) bool {
-	n, err := image.Normalize(want)
-	if err != nil {
-		return false
+// matching keeps the references any of the patterns match.
+func matching(patterns, refs []string) []string {
+	out := []string{}
+	for _, r := range refs {
+		for _, p := range patterns {
+			if matchReference(p, r) {
+				out = append(out, r)
+				break
+			}
+		}
 	}
-	if strings.Contains(want[strings.LastIndex(want, "/")+1:], ":") {
-		return n == tag
+	return out
+}
+
+func matchReference(pattern, ref string) bool {
+	if ok, _ := path.Match(pattern, ref); ok {
+		return true
 	}
-	repo, _, _ := strings.Cut(n, ":")
-	trepo := tag[:strings.LastIndex(tag, ":")]
-	return repo == trepo
+	ok, _ := path.Match(pattern, image.Repository(ref))
+	return ok
 }
 
 func (e *Engine) ImageInspect(ref string) (imagetypes.InspectResponse, error) {
@@ -164,7 +168,7 @@ func (e *Engine) ImageInspect(ref string) (imagetypes.InspectResponse, error) {
 		tags = []string{}
 	}
 	return imagetypes.InspectResponse{
-		ID: img.ID, RepoTags: tags, RepoDigests: []string{}, Created: img.Created.Format(time.RFC3339Nano),
+		ID: img.ID, RepoTags: tags, RepoDigests: nonNil(img.RepoDigests), Created: img.Created.Format(time.RFC3339Nano),
 		Author: img.Config.Author, Config: &cfg, Architecture: img.Config.Architecture, Os: img.Config.OS,
 		Variant: img.Config.Variant, Size: img.Size, RootFS: imagetypes.RootFS{Type: "layers", Layers: layers},
 		Descriptor: &ocispec.Descriptor{
@@ -206,4 +210,55 @@ func (e *Engine) ImageTag(ref, repo, tag string) error {
 		return invalid("%v", err)
 	}
 	return nil
+}
+
+// isDangling reports an image no reference names, as Docker's dangling
+// filter does: neither a tag nor a repository@digest.
+func isDangling(img image.Image) bool { return len(img.RepoTags) == 0 && len(img.RepoDigests) == 0 }
+
+func nonNil(list []string) []string {
+	if list == nil {
+		return []string{}
+	}
+	return list
+}
+
+// ImagePrune removes the images no container uses that the filters select:
+// dangling ones only, unless dangling=false selects every unused image,
+// narrowed by until and label filters.
+func (e *Engine) ImagePrune(f Filters) (imagetypes.PruneReport, error) {
+	danglingOnly := true
+	if d, ok := f.boolValue("dangling"); ok {
+		danglingOnly = d
+	}
+	report := imagetypes.PruneReport{ImagesDeleted: []imagetypes.DeleteResponse{}}
+	for _, img := range e.images.List() {
+		if danglingOnly && !isDangling(img) {
+			continue
+		}
+		if !f.matchLabels(img.Config.Config.Labels) || e.imageInUse(img.ID) {
+			continue
+		}
+		before, err := f.until(img.Created)
+		if err != nil {
+			return report, err
+		}
+		if !before {
+			continue
+		}
+		r, err := e.images.Remove(img.ID, true, e.imageInUse)
+		if errors.Is(err, image.ErrConflict) || errors.Is(err, image.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return report, err
+		}
+		for _, t := range r.Untagged {
+			report.ImagesDeleted = append(report.ImagesDeleted, imagetypes.DeleteResponse{Untagged: t})
+		}
+		report.ImagesDeleted = append(report.ImagesDeleted, imagetypes.DeleteResponse{Deleted: r.Image.ID})
+		report.SpaceReclaimed += uint64(r.Image.Size)
+	}
+	e.events.publish(events.ImageEventType, events.ActionPrune, "", map[string]string{"reclaimed": strconv.FormatUint(report.SpaceReclaimed, 10)})
+	return report, nil
 }

@@ -153,6 +153,9 @@ func (s *Store) collectLocked() error {
 	}
 	dir := filepath.Join(s.dir, "oci", "blobs", "sha256")
 	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

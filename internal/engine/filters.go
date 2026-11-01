@@ -2,7 +2,9 @@ package engine
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Filters holds a Docker API `filters` query parameter: a map from filter name
@@ -95,4 +97,46 @@ func (f Filters) boolValue(key string) (bool, bool) {
 	}
 	v := strings.ToLower(f[key][0])
 	return v == "true" || v == "1", true
+}
+
+// until reports whether created is before every `until` filter, each a
+// timestamp or a duration back from now, as Docker's prune filters take it.
+func (f Filters) until(created time.Time) (bool, error) {
+	for _, v := range f["until"] {
+		t, err := parseTimestamp(v, time.Now())
+		if err != nil {
+			return false, invalid("invalid until filter %q: %v", v, err)
+		}
+		if !created.Before(t) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// parseTimestamp reads a time as Docker's API filters accept it: a Go
+// duration back from now, an RFC 3339 date or date-time, or Unix seconds
+// with an optional fraction.
+func parseTimestamp(v string, now time.Time) (time.Time, error) {
+	if d, err := time.ParseDuration(v); err == nil {
+		return now.Add(-d), nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05", "2006-01-02T15:04", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, v, time.Local); err == nil {
+			return t, nil
+		}
+	}
+	secs, frac, _ := strings.Cut(v, ".")
+	s, err := strconv.ParseInt(secs, 10, 64)
+	if err != nil {
+		return time.Time{}, err
+	}
+	var ns int64
+	if frac != "" {
+		frac = (frac + "000000000")[:9]
+		if ns, err = strconv.ParseInt(frac, 10, 64); err != nil {
+			return time.Time{}, err
+		}
+	}
+	return time.Unix(s, ns), nil
 }
