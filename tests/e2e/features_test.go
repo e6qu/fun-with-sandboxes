@@ -152,3 +152,23 @@ func TestTestcontainers(t *testing.T) {
 		t.Fatalf("file copied in at creation reads back %q", b)
 	}
 }
+
+func TestTopAndStats(t *testing.T) {
+	mustDocker(t, "run", "-d", "--name", "toptest", "fws/toolbox:1")
+	defer docker(t, "rm", "-f", "toptest")
+
+	out := mustDocker(t, "top", "toptest")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 || !strings.Contains(lines[0], "PID") || !strings.Contains(out, "toolbox serve") {
+		t.Fatalf("docker top:\n%s", out)
+	}
+	if strings.Contains(out, "fwsd") {
+		t.Fatalf("docker top lists the engine's own process:\n%s", out)
+	}
+
+	out = mustDocker(t, "stats", "--no-stream", "--format", "{{.Name}}|{{.MemUsage}}|{{.PIDs}}|{{.CPUPerc}}", "toptest")
+	f := strings.Split(strings.TrimSpace(out), "|")
+	if len(f) != 4 || f[0] != "toptest" || f[2] != "1" || strings.HasPrefix(f[1], "0B") || !strings.HasSuffix(f[3], "%") {
+		t.Fatalf("docker stats: %q", out)
+	}
+}

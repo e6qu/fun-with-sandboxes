@@ -66,6 +66,7 @@ internal/seatbelt/    # Seatbelt profile rendering
 internal/image/       # image store, layer extraction, clonefile roots
 internal/runtime/     # launch under sandbox-exec, process groups, pipes
 internal/egress/      # the per-stack HTTP proxy to the internet
+internal/procs/       # the host process table, for top and stats
 internal/engine/      # containers, volumes, networks, exec, health, events
 internal/api/         # the Docker Engine API (the Compose subset)
 internal/sandboxenv/  # the container side of the SANDBOX_* contract

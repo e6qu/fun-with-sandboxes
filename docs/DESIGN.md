@@ -250,7 +250,8 @@ with or without the `/v1.xx` prefix:
   `start`, `stop`, `restart`, `kill`, `wait` (all three conditions),
   `rename`, `resize`, `logs` (follow, tail, since, until, timestamps),
   `attach` (hijacked, multiplexed or raw), `archive` (`HEAD`, `GET`, `PUT`:
-  `docker cp`), `DELETE`, `prune`
+  `docker cp`), `top`, `stats` (streamed every second, or one sample),
+  `DELETE`, `prune`
 - Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached,
   detached, TTY), `/exec/{id}/resize`, `GET /exec/{id}/json`
 - Images: `json`, `create` (registry pull for `darwin/<arch>`), `load`,
@@ -265,8 +266,14 @@ policies follow Docker's back-off.
 Requests the engine cannot honour return an error rather than being
 accepted: `501` for memory, CPU, PID, ulimit and device limits; privileged
 mode; capabilities; non-default users; `host` networking; non-`bridge`
-network drivers; custom IPAM; UDP publishing; and `build`, `stats`, `top`,
-`pause` and `update`.
+network drivers; custom IPAM; UDP publishing; and `build`, `pause` and
+`update`.
+
+`top` and `stats` read the host's process table through `ps`, as dockerd's
+`top` does, keeping the processes of the container's process groups. CPU usage
+is their accumulated CPU time; `system_cpu_usage` is the machine's CPU time
+elapsed since the engine started, so the client's CPU percentage is the share
+of one CPU the container used.
 
 `docker cp` resolves paths as the container's processes do, absolute symlinks
 on the host, and refuses any result outside the container's root and mounts.
@@ -312,6 +319,7 @@ internal/seatbelt/    # profile rendering
 internal/image/       # image store, layer extraction, clonefile
 internal/runtime/     # launch under sandbox-exec, process groups, pipes
 internal/egress/      # the per-stack HTTP proxy to the internet
+internal/procs/       # the host process table, for top and stats
 internal/engine/      # containers, volumes, networks, exec, health, events
 internal/api/         # the Docker Engine API
 internal/sandboxenv/  # the container side of the SANDBOX_* contract

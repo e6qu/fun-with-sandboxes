@@ -75,7 +75,7 @@ func (e *Engine) Info() system.Info {
 		ID: "fun-with-sandboxes", Containers: len(all), ContainersRunning: running, ContainersPaused: paused, ContainersStopped: stopped,
 		Images: len(e.images.List()), Driver: "apfs-clone", LoggingDriver: "json-file",
 		KernelVersion: kernelVersion(), OperatingSystem: "macOS " + productVersion(), OSVersion: productVersion(),
-		OSType: runtime.GOOS, Architecture: runtime.GOARCH, NCPU: runtime.NumCPU(),
+		OSType: runtime.GOOS, Architecture: runtime.GOARCH, NCPU: runtime.NumCPU(), MemTotal: int64(memTotal()),
 		DockerRootDir: e.cfg.Root, Name: host, ServerVersion: Version, IndexServerAddress: "https://index.docker.io/v1/",
 		SystemTime: time.Now().Format(time.RFC3339Nano), DefaultRuntime: "seatbelt",
 		SecurityOptions: []string{"name=seatbelt"}, Labels: []string{}, Warnings: []string{},

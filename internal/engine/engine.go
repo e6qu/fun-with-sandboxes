@@ -39,11 +39,12 @@ type Config struct {
 }
 
 type Engine struct {
-	cfg    Config
-	alloc  *alloc.Allocator
-	images *image.Store
-	events *eventBus
-	user   *user.User
+	cfg     Config
+	alloc   *alloc.Allocator
+	images  *image.Store
+	events  *eventBus
+	user    *user.User
+	started time.Time
 
 	egressMu sync.Mutex
 	egress   map[string]*egress.Proxy
@@ -82,7 +83,7 @@ func Open(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	e := &Engine{
-		cfg: cfg, alloc: a, images: imgs, events: newEventBus(), user: u,
+		cfg: cfg, alloc: a, images: imgs, events: newEventBus(), user: u, started: time.Now(),
 		egress:     map[string]*egress.Proxy{},
 		containers: map[string]*Container{},
 		volumes:    map[string]*Volume{},

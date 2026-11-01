@@ -109,6 +109,11 @@ func (s *Server) routes() {
 		}
 		return s.e.Remove(r.PathValue("id"), engine.RemoveOptions{Force: boolParam(q.Get("force")), RemoveVolumes: boolParam(q.Get("v"))})
 	}, http.StatusNoContent))
+	m.HandleFunc("GET /containers/{id}/top", func(w http.ResponseWriter, r *http.Request) {
+		res, err := s.e.Top(r.PathValue("id"), r.URL.Query().Get("ps_args"))
+		respond(w, res, err)
+	})
+	m.HandleFunc("GET /containers/{id}/stats", s.containerStats)
 	m.HandleFunc("HEAD /containers/{id}/archive", s.archiveHead)
 	m.HandleFunc("GET /containers/{id}/archive", s.archiveGet)
 	m.HandleFunc("PUT /containers/{id}/archive", s.archivePut)
@@ -227,8 +232,6 @@ func (s *Server) routes() {
 	}
 	m.HandleFunc("POST /build", unsupported("docker build"))
 	m.HandleFunc("POST /session", unsupported("BuildKit sessions"))
-	m.HandleFunc("GET /containers/{id}/stats", unsupported("container stats"))
-	m.HandleFunc("GET /containers/{id}/top", unsupported("container top"))
 	m.HandleFunc("POST /containers/{id}/pause", unsupported("pausing containers"))
 	m.HandleFunc("POST /containers/{id}/unpause", unsupported("pausing containers"))
 	m.HandleFunc("POST /containers/{id}/update", unsupported("updating container resources"))
@@ -648,4 +651,26 @@ func respondStatus(w http.ResponseWriter, status int, err error) {
 		return
 	}
 	w.WriteHeader(status)
+}
+
+func (s *Server) containerStats(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	stream := q.Get("stream") == "" || boolParam(q.Get("stream"))
+	started := false
+	enc := json.NewEncoder(w)
+	err := s.e.Stats(r.Context(), r.PathValue("id"), stream, boolParam(q.Get("one-shot")), func(st container.StatsResponse) error {
+		if !started {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			started = true
+		}
+		if err := enc.Encode(st); err != nil {
+			return err
+		}
+		flush(w)
+		return nil
+	})
+	if err != nil && !started {
+		writeEngineError(w, err)
+	}
 }

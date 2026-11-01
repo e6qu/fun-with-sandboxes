@@ -62,7 +62,12 @@ machine — and from what macOS offers an unprivileged process under them.
 
 - **No memory, CPU, PID or block-I/O limits**; requests for them fail.
 - **No user switching**: `user:` must be empty or the engine's own user.
-- **No `docker stats`, `top`, `pause` or `update`.**
+- **No `docker pause` or `update`.**
+- **`docker top` and `docker stats` see the container's process groups**: its
+  main process's and its running execs'. They read the host's `ps`, as dockerd
+  does, so commands show their host paths. Stats report CPU time, resident
+  memory and process count; there is no per-container network or block-I/O
+  accounting, and the memory limit is the machine's memory.
 - **`docker cp` copies the container's view**, mounts included, but refuses
   paths that resolve outside the container's root and mounts.
 - **Testcontainers needs `TESTCONTAINERS_RYUK_DISABLED=true`.** Its reaper,
