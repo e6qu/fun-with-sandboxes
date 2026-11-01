@@ -235,7 +235,11 @@ Stock Docker Hub images are Linux. The catalog is built from Nixpkgs for
   macOS allows only 87 System V semaphores machine-wide by default, so the
   Postgres entrypoint keeps each server's process limits small.
 - **Distribution.** Archives for `docker load`, or any registry as an
-  ordinary image with a `darwin/<arch>` platform. Compose files name these
+  ordinary image with a `darwin/<arch>` platform:
+  `scripts/publish-images.sh` pushes the archives as `<prefix>/fws-<name>`.
+  CI publishes the catalog to a local registry on every pull request to prove
+  the script, and the end-to-end suite pulls through the engine from an
+  in-process registry. Compose files name these
   images explicitly. The engine never substitutes an image name.
 
 ---
@@ -251,7 +255,7 @@ with or without the `/v1.xx` prefix:
   `rename`, `resize`, `logs` (follow, tail, since, until, timestamps),
   `attach` (hijacked, multiplexed or raw), `archive` (`HEAD`, `GET`, `PUT`:
   `docker cp`), `top`, `stats` (streamed every second, or one sample),
-  `DELETE`, `prune`
+  `pause`, `unpause`, `update` (restart policy), `DELETE`, `prune`
 - Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached,
   detached, TTY), `/exec/{id}/resize`, `GET /exec/{id}/json`
 - Images: `json`, `create` (registry pull for `darwin/<arch>`), `load`,
@@ -266,8 +270,12 @@ policies follow Docker's back-off.
 Requests the engine cannot honour return an error rather than being
 accepted: `501` for memory, CPU, PID, ulimit and device limits; privileged
 mode; capabilities; non-default users; `host` networking; non-`bridge`
-network drivers; custom IPAM; UDP publishing; and `build`, `pause` and
-`update`.
+network drivers; custom IPAM; UDP publishing; resource updates; and
+`build`.
+
+`pause` sends SIGSTOP to each of the container's process groups and `unpause`
+SIGCONT; health checks and `exec` wait while a container is paused, and
+stopping a paused container resumes it to deliver the stop signal.
 
 `top` and `stats` read the host's process table through `ps`, as dockerd's
 `top` does, keeping the processes of the container's process groups. CPU usage

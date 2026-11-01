@@ -40,8 +40,9 @@ host ports from 20000–29999 in blocks of 100 (`-port-base`, `-port-limit`,
 
 Images are macOS-native (`darwin/arm64` or `darwin/amd64`). Linux images
 cannot run without a VM. `scripts/build-images.sh` builds the catalog —
-PostgreSQL 16, Redis and a small `toolbox` app — from Nix packages into
-archives for `docker load`:
+PostgreSQL 16, Redis 7 and a small `toolbox` app — from Nix packages into
+archives for `docker load`, and `scripts/publish-images.sh` pushes them to a
+registry the engine can pull from:
 
 ```bash
 scripts/build-images.sh ./images-out

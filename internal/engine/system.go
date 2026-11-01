@@ -60,7 +60,7 @@ func (e *Engine) Info() system.Info {
 	all := e.allContainers()
 	for _, c := range all {
 		c.mu.Lock()
-		switch c.rec.State.Status {
+		switch c.stateName() {
 		case container.StateRunning:
 			running++
 		case container.StatePaused:
