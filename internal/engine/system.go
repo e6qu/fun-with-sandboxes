@@ -103,32 +103,24 @@ func (e *Engine) ImageList(f Filters) []imagetypes.Summary {
 		if !f.matchLabels(img.Config.Config.Labels) {
 			continue
 		}
-		if f.has("reference") {
-			ok := false
-			for _, want := range f["reference"] {
-				for _, t := range append(append([]string(nil), img.RepoTags...), img.RepoDigests...) {
-					if matchReference(want, t) {
-						ok = true
-					}
-				}
-			}
-			if !ok {
-				continue
-			}
-		}
 		if dangling, ok := f.boolValue("dangling"); ok && dangling != isDangling(img) {
 			continue
 		}
-		tags := img.RepoTags
-		if tags == nil {
-			tags = []string{}
+		tags, digests := nonNil(img.RepoTags), nonNil(img.RepoDigests)
+		// As in dockerd, a reference filter lists only the references it
+		// matched.
+		if f.has("reference") {
+			tags, digests = matching(f["reference"], tags), matching(f["reference"], digests)
+			if len(tags)+len(digests) == 0 {
+				continue
+			}
 		}
 		labels := img.Config.Config.Labels
 		if labels == nil {
 			labels = map[string]string{}
 		}
 		out = append(out, imagetypes.Summary{
-			ID: img.ID, Created: img.Created.Unix(), RepoTags: tags, RepoDigests: nonNil(img.RepoDigests),
+			ID: img.ID, Created: img.Created.Unix(), RepoTags: tags, RepoDigests: digests,
 			Size: img.Size, Labels: labels, Containers: -1, SharedSize: -1,
 		})
 	}
@@ -137,6 +129,20 @@ func (e *Engine) ImageList(f Filters) []imagetypes.Summary {
 
 // matchReference matches a reference filter, which may omit the tag, against
 // a stored tag.
+// matching keeps the references any of the patterns match.
+func matching(patterns, refs []string) []string {
+	out := []string{}
+	for _, r := range refs {
+		for _, p := range patterns {
+			if matchReference(p, r) {
+				out = append(out, r)
+				break
+			}
+		}
+	}
+	return out
+}
+
 func matchReference(pattern, ref string) bool {
 	if ok, _ := path.Match(pattern, ref); ok {
 		return true

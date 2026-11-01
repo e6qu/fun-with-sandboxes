@@ -381,3 +381,17 @@ func TestImagePrune(t *testing.T) {
 		t.Fatalf("pruning every unused image left %d, reported %+v", n, all)
 	}
 }
+
+// A reference filter lists only the references it matched, as dockerd does.
+func TestImageListReferenceFilterTrimsReferences(t *testing.T) {
+	ts, e := newEngineServer(t)
+	loadImage(t, e, "trim/a:1")
+	if err := e.Images().Tag("trim/a:1", "other/b:2"); err != nil {
+		t.Fatal(err)
+	}
+	var list []struct{ RepoTags []string }
+	call(t, ts, "GET", `/images/json?filters={"reference":["other/*"]}`, "", &list)
+	if len(list) != 1 || len(list[0].RepoTags) != 1 || list[0].RepoTags[0] != "other/b:2" {
+		t.Fatalf("filtered list %+v", list)
+	}
+}
