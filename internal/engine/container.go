@@ -27,6 +27,9 @@ import (
 const (
 	LabelContainerNumber = "com.docker.compose.container-number"
 	defaultStopTimeout   = 10 * time.Second
+	// outputDrain bounds how long the engine reads output after a process
+	// group is gone, for descendants that escaped the group.
+	outputDrain = 2 * time.Second
 )
 
 type mountRec struct {
@@ -941,6 +944,7 @@ func (e *Engine) onExit(c *Container, proc *runtime.Process, done chan struct{},
 	// A container ends with its main process: whatever it left running in
 	// its process group goes with it.
 	proc.KillAll()
+	proc.DrainIO(outputDrain)
 	stdout.flush()
 	stderr.flush()
 	code := proc.ExitCode()

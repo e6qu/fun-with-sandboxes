@@ -162,6 +162,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	}
 	<-proc.Done()
 	proc.KillAll()
+	proc.DrainIO(outputDrain)
 	if master != nil {
 		master.Close()
 		copied.Wait()
@@ -235,10 +236,12 @@ func (e *Engine) probe(c *Container, argv []string, timeout time.Duration) (int,
 	select {
 	case <-proc.Done():
 		proc.KillAll()
+		proc.DrainIO(outputDrain)
 		return proc.ExitCode(), out.String()
 	case <-time.After(timeout):
 		proc.KillAll()
 		<-proc.Done()
+		proc.DrainIO(outputDrain)
 		return -1, "Health check exceeded timeout (" + timeout.String() + ")"
 	}
 }

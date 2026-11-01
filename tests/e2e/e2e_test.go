@@ -49,7 +49,7 @@ func run(m *testing.M) int {
 	home, _ := os.UserHomeDir()
 	// Unix socket paths are capped at 104 bytes on macOS, and Postgres puts
 	// its socket under the container root, so the state root stays short.
-	root, err := os.MkdirTemp(home, ".fws-e2e-")
+	root, err := os.MkdirTemp(home, ".e2e")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -57,14 +57,14 @@ func run(m *testing.M) int {
 	defer os.RemoveAll(root)
 	stateRoot, _ = filepath.EvalSymlinks(root)
 
-	bin := filepath.Join(root, "fwsd")
+	bin := filepath.Join(os.TempDir(), "fwsd-e2e")
 	if out, err := exec.Command("go", "build", "-o", bin, "../../cmd/fwsd").CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "build fwsd: %v\n%s", err, out)
 		return 1
 	}
-	sock := filepath.Join(root, "docker.sock")
-	daemon := exec.Command(bin, "-root", filepath.Join(root, "state"), "-socket", sock, "-port-base", "30000", "-port-limit", "31000", "-block-size", "50")
-	stateRoot = filepath.Join(stateRoot, "state")
+	sock := filepath.Join(home, ".e2e.sock")
+	defer os.Remove(sock)
+	daemon := exec.Command(bin, "-root", root, "-socket", sock, "-port-base", "30000", "-port-limit", "31000", "-block-size", "50")
 	stderr, _ := daemon.StderrPipe()
 	if err := daemon.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

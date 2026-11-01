@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
@@ -42,8 +43,11 @@ type Spec struct {
 type Process struct {
 	cmd  *exec.Cmd
 	done chan struct{}
-	mu   sync.Mutex
-	code int
+	io   sync.WaitGroup
+	// readEnds are the engine's ends of the output pipes.
+	readEnds []*os.File
+	mu       sync.Mutex
+	code     int
 }
 
 // Resolve maps argv[0] to the executable's host path inside root, searching the
@@ -69,7 +73,11 @@ func Resolve(root, argv0 string, env []string) (string, error) {
 		if !strings.HasPrefix(dir, "/") {
 			continue
 		}
-		p := filepath.Join(root, path.Clean(dir), argv0)
+		base := filepath.Join(root, path.Clean(dir))
+		if strings.HasPrefix(dir, root+"/") {
+			base = path.Clean(dir)
+		}
+		p := filepath.Join(base, argv0)
 		if isExecutable(p) {
 			return p, nil
 		}
@@ -106,21 +114,91 @@ func Start(s Spec) (*Process, error) {
 	cmd := exec.Command(SandboxExec, append([]string{"-f", s.ProfilePath, exe}, s.Argv[1:]...)...)
 	cmd.Env = s.Env
 	cmd.Dir = wd
+	p := &Process{cmd: cmd, done: make(chan struct{})}
+	// The process gets real pipes: with plain writers os/exec would hold Wait
+	// until every descendant closed its copy of stdout, and until the stdin
+	// source hit EOF.
+	var childEnds, parentEnds []*os.File
+	fail := func(err error) (*Process, error) {
+		closeAll(childEnds)
+		closeAll(parentEnds)
+		return nil, err
+	}
 	if s.TTY != nil {
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = s.TTY, s.TTY, s.TTY
 		// A session leader also leads its process group, so KillAll still
 		// reaches every descendant.
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 	} else {
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = s.Stdin, s.Stdout, s.Stderr
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		for _, o := range []struct {
+			dst io.Writer
+			set *io.Writer
+		}{{s.Stdout, &cmd.Stdout}, {s.Stderr, &cmd.Stderr}} {
+			if o.dst == nil {
+				continue
+			}
+			r, w, err := os.Pipe()
+			if err != nil {
+				return fail(err)
+			}
+			*o.set = w
+			childEnds, parentEnds = append(childEnds, w), append(parentEnds, r)
+			p.io.Add(1)
+			go func(dst io.Writer, r *os.File) {
+				defer p.io.Done()
+				defer r.Close()
+				io.Copy(dst, r)
+			}(o.dst, r)
+		}
+		if s.Stdin != nil {
+			r, w, err := os.Pipe()
+			if err != nil {
+				return fail(err)
+			}
+			cmd.Stdin = r
+			childEnds = append(childEnds, r)
+			go func() {
+				defer w.Close()
+				io.Copy(w, s.Stdin)
+			}()
+		}
 	}
 	if err := cmd.Start(); err != nil {
+		closeAll(childEnds)
+		// The copy goroutines own the read ends and finish once the write
+		// ends close.
+		p.io.Wait()
 		return nil, err
 	}
-	p := &Process{cmd: cmd, done: make(chan struct{})}
+	closeAll(childEnds)
+	p.readEnds = parentEnds
 	go p.wait()
 	return p, nil
+}
+
+// DrainIO waits for the output pipes to drain, which happens once every
+// process holding them has exited. A descendant that left the process group
+// can hold them open forever, so after max the engine stops reading, as
+// os/exec's WaitDelay does.
+func (p *Process) DrainIO(max time.Duration) {
+	drained := make(chan struct{})
+	go func() {
+		p.io.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(max):
+		closeAll(p.readEnds)
+		<-drained
+	}
+}
+
+func closeAll(fs []*os.File) {
+	for _, f := range fs {
+		f.Close()
+	}
 }
 
 func (p *Process) wait() {
