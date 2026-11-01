@@ -32,7 +32,7 @@ func (e *Engine) Inspect(ref string) (container.InspectResponse, error) {
 		args = []string{}
 	}
 	st := &container.State{
-		Status: r.State.Status, Running: r.State.Status == container.StateRunning,
+		Status: c.stateName(), Running: r.State.Status == container.StateRunning, Paused: c.paused,
 		Restarting: r.State.Status == container.StateRestarting, Dead: r.State.Status == container.StateDead,
 		Pid: r.State.Pid, ExitCode: r.State.ExitCode, Error: r.State.Error,
 		StartedAt: timeString(r.State.StartedAt), FinishedAt: timeString(r.State.FinishedAt),
@@ -125,6 +125,9 @@ func (c *Container) status() string {
 				h = " (" + string(c.health.Status) + ")"
 			}
 		}
+		if c.paused {
+			h = " (Paused)"
+		}
 		return "Up " + humanDuration(time.Since(s.StartedAt)) + h
 	case container.StateExited:
 		if s.FinishedAt.IsZero() {
@@ -200,7 +203,7 @@ func (c *Container) summary(opts ListOptions) (container.Summary, bool) {
 	for n := range r.Networks {
 		nets = append(nets, n)
 	}
-	if !f.matchName("name", r.Name) || !f.matchLabels(r.Config.Labels) || !f.matchExact("status", string(r.State.Status)) ||
+	if !f.matchName("name", r.Name) || !f.matchLabels(r.Config.Labels) || !f.matchExact("status", string(c.stateName())) ||
 		!f.matchExact("health", health) || !f.matchExact("network", nets...) || !matchID(f, r.ID) ||
 		!f.matchExact("ancestor", r.Image, r.ImageID) {
 		return container.Summary{}, false
@@ -236,7 +239,7 @@ func (c *Container) summary(opts ListOptions) (container.Summary, bool) {
 	s := container.Summary{
 		ID: r.ID, Names: []string{"/" + r.Name}, Image: r.Image, ImageID: r.ImageID,
 		Command: strings.Join(argv, " "), Created: r.Created.Unix(), Ports: ports,
-		Labels: r.Config.Labels, State: r.State.Status, Status: c.status(),
+		Labels: r.Config.Labels, State: c.stateName(), Status: c.status(),
 		NetworkSettings: &container.NetworkSettingsSummary{Networks: copyEndpoints(r.Networks)},
 		Mounts:          c.mountPoints(),
 	}

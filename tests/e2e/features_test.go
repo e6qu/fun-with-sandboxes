@@ -10,12 +10,18 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/registry"
+	"github.com/google/go-containerregistry/pkg/v1/random"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -170,5 +176,83 @@ func TestTopAndStats(t *testing.T) {
 	f := strings.Split(strings.TrimSpace(out), "|")
 	if len(f) != 4 || f[0] != "toptest" || f[2] != "1" || strings.HasPrefix(f[1], "0B") || !strings.HasSuffix(f[3], "%") {
 		t.Fatalf("docker stats: %q", out)
+	}
+}
+
+func TestPauseUnpauseUpdate(t *testing.T) {
+	mustDocker(t, "run", "-d", "--name", "pausetest", "-p", "8080", "fws/toolbox:1")
+	defer docker(t, "rm", "-f", "pausetest")
+	port := strings.TrimSpace(mustDocker(t, "port", "pausetest", "8080"))
+	_, p, _ := net.SplitHostPort(port)
+	get := func() error {
+		c := http.Client{Timeout: 2 * time.Second}
+		res, err := c.Get("http://127.0.0.1:" + p + "/healthz")
+		if err == nil {
+			res.Body.Close()
+		}
+		return err
+	}
+	if err := get(); err != nil {
+		t.Fatalf("running container does not answer: %v", err)
+	}
+	mustDocker(t, "pause", "pausetest")
+	if s := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.Status}} {{.State.Paused}}", "pausetest")); s != "paused true" {
+		t.Fatalf("paused container reads %q", s)
+	}
+	if err := get(); err == nil {
+		t.Fatal("a paused container answered a request")
+	}
+	if _, err := docker(t, "exec", "pausetest", "/toolbox", "echo"); err == nil || !strings.Contains(err.Error(), "paused") {
+		t.Fatalf("exec into a paused container: %v", err)
+	}
+	mustDocker(t, "unpause", "pausetest")
+	if err := get(); err != nil {
+		t.Fatalf("unpaused container does not answer: %v", err)
+	}
+
+	mustDocker(t, "update", "--restart", "on-failure:3", "pausetest")
+	if s := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.RestartPolicy.Name}}:{{.HostConfig.RestartPolicy.MaximumRetryCount}}", "pausetest")); s != "on-failure:3" {
+		t.Fatalf("restart policy after update: %q", s)
+	}
+	if _, err := docker(t, "update", "--memory", "64m", "pausetest"); err == nil || !strings.Contains(err.Error(), "memory limits are not supported") {
+		t.Fatalf("memory update: %v", err)
+	}
+	mustDocker(t, "pause", "pausetest")
+	mustDocker(t, "stop", "pausetest")
+	if s := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.Status}}", "pausetest")); s != "exited" {
+		t.Fatalf("stopping a paused container left it %q", s)
+	}
+}
+
+func TestPullFromRegistry(t *testing.T) {
+	reg := httptest.NewServer(registry.New())
+	defer reg.Close()
+	host := strings.TrimPrefix(reg.URL, "http://")
+
+	tag, _ := name.NewTag("fws/toolbox:1")
+	img, err := tarball.ImageFromPath(filepath.Join(os.Getenv("FWS_E2E_IMAGES"), "toolbox.tar"), &tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pushed, _ := name.ParseReference(host + "/e2e/toolbox:pulled")
+	if err := remote.Write(pushed, img); err != nil {
+		t.Fatal(err)
+	}
+	mustDocker(t, "pull", pushed.String())
+	defer docker(t, "rmi", pushed.String())
+	if out := mustDocker(t, "run", "--rm", pushed.String(), "echo", "pulled"); strings.TrimSpace(out) != "pulled" {
+		t.Fatalf("pulled image ran with output %q", out)
+	}
+
+	linux, err := random.Image(64, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linuxRef, _ := name.ParseReference(host + "/e2e/linux:1")
+	if err := remote.Write(linuxRef, linux); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := docker(t, "pull", linuxRef.String()); err == nil || !strings.Contains(err.Error(), "does not match the engine platform") {
+		t.Fatalf("pulling a non-darwin image: %v", err)
 	}
 }

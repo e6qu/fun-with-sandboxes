@@ -114,6 +114,16 @@ func (s *Server) routes() {
 		respond(w, res, err)
 	})
 	m.HandleFunc("GET /containers/{id}/stats", s.containerStats)
+	m.HandleFunc("POST /containers/{id}/pause", s.simple(func(r *http.Request) error { return s.e.Pause(r.PathValue("id")) }, http.StatusNoContent))
+	m.HandleFunc("POST /containers/{id}/unpause", s.simple(func(r *http.Request) error { return s.e.Unpause(r.PathValue("id")) }, http.StatusNoContent))
+	m.HandleFunc("POST /containers/{id}/update", func(w http.ResponseWriter, r *http.Request) {
+		var req container.UpdateConfig
+		if !decode(w, r, &req) {
+			return
+		}
+		res, err := s.e.Update(r.PathValue("id"), req)
+		respond(w, res, err)
+	})
 	m.HandleFunc("HEAD /containers/{id}/archive", s.archiveHead)
 	m.HandleFunc("GET /containers/{id}/archive", s.archiveGet)
 	m.HandleFunc("PUT /containers/{id}/archive", s.archivePut)
@@ -232,9 +242,6 @@ func (s *Server) routes() {
 	}
 	m.HandleFunc("POST /build", unsupported("docker build"))
 	m.HandleFunc("POST /session", unsupported("BuildKit sessions"))
-	m.HandleFunc("POST /containers/{id}/pause", unsupported("pausing containers"))
-	m.HandleFunc("POST /containers/{id}/unpause", unsupported("pausing containers"))
-	m.HandleFunc("POST /containers/{id}/update", unsupported("updating container resources"))
 	m.HandleFunc("POST /containers/{id}/commit", unsupported("committing containers"))
 	m.HandleFunc("POST /commit", unsupported("committing containers"))
 }

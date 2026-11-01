@@ -66,6 +66,9 @@ func (e *Engine) monitorHealth(c *Container, hc container.HealthConfig, stop, do
 			return
 		case <-time.After(wait):
 		}
+		if c.isPaused() {
+			continue
+		}
 		begin := time.Now()
 		code, output := e.probe(c, argv, timeout)
 		res := &container.HealthcheckResult{Start: begin, End: time.Now(), ExitCode: code, Output: output}

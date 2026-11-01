@@ -1,13 +1,40 @@
 {
   "tag": "fws/postgres:16",
   "files": {},
-  "dirs": ["/var/lib/postgresql/data", "/var/run/postgresql", "/tmp", "/docker-entrypoint-initdb.d"],
+  "dirs": [
+    "/var/lib/postgresql/data",
+    "/var/run/postgresql",
+    "/tmp",
+    "/docker-entrypoint-initdb.d"
+  ],
   "config": {
-    "Env": ["PATH=/bin", "PGDATA=/var/lib/postgresql/data", "TZ=UTC"],
-    "Entrypoint": ["/entry"],
-    "ExposedPorts": {"5432/tcp": {}},
-    "Volumes": {"/var/lib/postgresql/data": {}},
+    "Env": [
+      "PATH=/bin",
+      "PGDATA=/var/lib/postgresql/data",
+      "TZ=UTC"
+    ],
+    "Entrypoint": [
+      "/entry"
+    ],
+    "ExposedPorts": {
+      "5432/tcp": {}
+    },
+    "Volumes": {
+      "/var/lib/postgresql/data": {}
+    },
     "StopSignal": "SIGINT",
-    "Healthcheck": {"Test": ["CMD", "/entry", "health"], "Interval": 1000000000, "Timeout": 5000000000, "Retries": 60}
+    "Healthcheck": {
+      "Test": [
+        "CMD",
+        "/entry",
+        "health"
+      ],
+      "Interval": 1000000000,
+      "Timeout": 5000000000,
+      "Retries": 60
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
   }
 }

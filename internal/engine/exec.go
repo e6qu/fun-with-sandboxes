@@ -36,6 +36,9 @@ func (e *Engine) ExecCreate(ref string, req container.ExecCreateRequest) (string
 	if !c.isRunning() {
 		return "", conflict("container %s is not running", c.rec.ID)
 	}
+	if c.isPaused() {
+		return "", conflict("container %s is paused, unpause the container before exec", c.rec.ID)
+	}
 	if len(req.Cmd) == 0 {
 		return "", invalid("No exec command specified")
 	}

@@ -89,6 +89,8 @@ type Container struct {
 	ptyMaster  *os.File
 	restarting *time.Timer
 	starting   bool
+	// paused is set while the container's processes are stopped by SIGSTOP.
+	paused bool
 }
 
 func (c *Container) ID() string   { return c.rec.ID }
@@ -1002,6 +1004,7 @@ func (e *Engine) onExit(c *Container, proc *runtime.Process, done chan struct{},
 		c.ptyMaster = nil
 	}
 	c.rec.State.Status = container.StateExited
+	c.paused = false
 	c.rec.State.ExitCode = code
 	c.rec.State.FinishedAt = time.Now().UTC()
 	c.rec.State.Pid = 0
@@ -1124,6 +1127,13 @@ func (c *Container) stopWith(e *Engine, timeout *int, signal string) error {
 	}
 	e.publishContainer(c, events.ActionKill, map[string]string{"signal": strconv.Itoa(int(sig))})
 	proc.Signal(sig)
+	// A stopped process acts on its pending signal once it continues.
+	if c.isPaused() {
+		c.mu.Lock()
+		c.paused = false
+		c.mu.Unlock()
+		e.signalGroups(c, syscall.SIGCONT)
+	}
 	if wait >= 0 {
 		select {
 		case <-done:

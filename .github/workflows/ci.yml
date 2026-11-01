@@ -57,6 +57,15 @@ jobs:
         run: brew install docker docker-compose
       - name: build images
         run: scripts/build-images.sh "$RUNNER_TEMP/images"
+      - name: publish images to a local registry
+        run: |
+          crane="go run github.com/google/go-containerregistry/cmd/crane@v0.22.1"
+          $crane registry serve --address 127.0.0.1:5000 &
+          until curl -sf 127.0.0.1:5000/v2/ >/dev/null; do sleep 1; done
+          scripts/publish-images.sh "$RUNNER_TEMP/images" 127.0.0.1:5000/e6qu
+          for ref in fws-postgres:16 fws-redis:7 fws-toolbox:1; do
+            $crane config "127.0.0.1:5000/e6qu/$ref" | grep -q '"os":"darwin"'
+          done
       - name: end-to-end tests
         env:
           FWS_E2E_IMAGES: ${{ runner.temp }}/images

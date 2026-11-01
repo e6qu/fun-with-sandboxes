@@ -62,7 +62,10 @@ machine — and from what macOS offers an unprivileged process under them.
 
 - **No memory, CPU, PID or block-I/O limits**; requests for them fail.
 - **No user switching**: `user:` must be empty or the engine's own user.
-- **No `docker pause` or `update`.**
+- **`docker pause` stops the container's processes with SIGSTOP**, not a
+  cgroup freezer; TCP connections to a paused container are still accepted
+  by the kernel and wait for it to resume.
+- **`docker update` changes restart policies only**; resource limits fail.
 - **`docker top` and `docker stats` see the container's process groups**: its
   main process's and its running execs'. They read the host's `ps`, as dockerd
   does, so commands show their host paths. Stats report CPU time, resident
