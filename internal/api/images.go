@@ -35,8 +35,13 @@ type errorDetails struct {
 
 func (s *Server) imagePull(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	if q.Get("fromSrc") != "" {
-		writeError(w, http.StatusNotImplemented, "importing images from a tarball is not supported; use docker load")
+	if src := q.Get("fromSrc"); src != "" {
+		s.imageImport(w, r, src)
+		return
+	}
+	auth, err := registryAuth(r.Header.Get("X-Registry-Auth"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	ref := q.Get("fromImage")
@@ -64,7 +69,7 @@ func (s *Server) imagePull(w http.ResponseWriter, r *http.Request) {
 	}
 	enc.Encode(jsonMessage{Status: "Pulling from " + repo, ID: tag})
 	flush(w)
-	pulled, err := s.e.Images().Pull(r.Context(), ref, func(id, status string) {
+	pulled, err := s.e.Images().Pull(r.Context(), ref, auth, func(id, status string) {
 		enc.Encode(jsonMessage{Status: status, ID: id})
 		flush(w)
 	})
@@ -78,6 +83,37 @@ func (s *Server) imagePull(w http.ResponseWriter, r *http.Request) {
 	} else {
 		enc.Encode(jsonMessage{Status: "Status: Downloaded newer image for " + pulled.Ref})
 	}
+}
+
+// imageImport serves docker import: POST /images/create with fromSrc "-"
+// and the tarball as the body, or fromSrc an http(s) URL.
+func (s *Server) imageImport(w http.ResponseWriter, r *http.Request, src string) {
+	q := r.URL.Query()
+	if p := q.Get("platform"); p != "" && p != image.Platform.OS+"/"+image.Platform.Architecture {
+		writeError(w, http.StatusNotImplemented, "requested platform "+p+" does not match the engine platform "+image.Platform.OS+"/"+image.Platform.Architecture)
+		return
+	}
+	id, err := s.e.Import(r.Context(), engine.ImportOptions{
+		Source: src, Repo: q.Get("repo"), Tag: q.Get("tag"), Message: q.Get("message"), Changes: q["changes"],
+	}, r.Body)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(jsonMessage{Status: id})
+}
+
+// login serves POST /auth, which docker login calls to check credentials
+// before the CLI stores them.
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	var ac registry.AuthConfig
+	if !decode(w, r, &ac) {
+		return
+	}
+	err := s.e.Login(r.Context(), ac.ServerAddress, authConfig(ac))
+	respond(w, registry.AuthResponse{Status: "Login Succeeded"}, err)
 }
 
 func (s *Server) imageLoad(w http.ResponseWriter, r *http.Request) {
@@ -166,6 +202,12 @@ func (s *Server) build(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	creds, err := registryConfig(r.Header.Get("X-Registry-Config"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	opts.Registries = creds
 	quiet := q.Get("q") == "1" || q.Get("q") == "true"
 	// Read the upload to its end before returning: the tar reader stops at
 	// the archive's end marker, and with full duplex on, unread body left to
@@ -227,26 +269,47 @@ func (s *Server) save(w http.ResponseWriter, refs []string) {
 }
 
 // registryAuth decodes the X-Registry-Auth header the Docker CLI sends with
-// pushes: base64url-encoded JSON credentials.
+// pulls and pushes: base64url-encoded JSON credentials.
 func registryAuth(header string) (authn.Authenticator, error) {
 	if header == "" {
 		return authn.Anonymous, nil
 	}
+	var ac registry.AuthConfig
+	if err := decodeHeader(header, &ac); err != nil {
+		return nil, fmt.Errorf("X-Registry-Auth: %w", err)
+	}
+	return image.Authenticator(authConfig(ac)), nil
+}
+
+// registryConfig decodes the X-Registry-Config header the Docker CLI sends
+// with a build: credentials for every registry it knows, by server address.
+func registryConfig(header string) (image.Credentials, error) {
+	if header == "" {
+		return nil, nil
+	}
+	var m map[string]registry.AuthConfig
+	if err := decodeHeader(header, &m); err != nil {
+		return nil, fmt.Errorf("X-Registry-Config: %w", err)
+	}
+	out := image.Credentials{}
+	for addr, ac := range m {
+		out[addr] = authConfig(ac)
+	}
+	return out, nil
+}
+
+func decodeHeader(header string, v any) error {
 	raw, err := base64.URLEncoding.DecodeString(header)
 	if err != nil {
 		if raw, err = base64.StdEncoding.DecodeString(header); err != nil {
-			return nil, fmt.Errorf("X-Registry-Auth: %w", err)
+			return err
 		}
 	}
-	var ac registry.AuthConfig
-	if err := json.Unmarshal(raw, &ac); err != nil {
-		return nil, fmt.Errorf("X-Registry-Auth: %w", err)
-	}
-	cfg := authn.AuthConfig{Username: ac.Username, Password: ac.Password, Auth: ac.Auth, IdentityToken: ac.IdentityToken, RegistryToken: ac.RegistryToken}
-	if cfg == (authn.AuthConfig{}) {
-		return authn.Anonymous, nil
-	}
-	return authn.FromConfig(cfg), nil
+	return json.Unmarshal(raw, v)
+}
+
+func authConfig(ac registry.AuthConfig) authn.AuthConfig {
+	return authn.AuthConfig{Username: ac.Username, Password: ac.Password, Auth: ac.Auth, IdentityToken: ac.IdentityToken, RegistryToken: ac.RegistryToken}
 }
 
 func (s *Server) push(w http.ResponseWriter, r *http.Request, repo string) {
@@ -258,8 +321,8 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request, repo string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
-	results, err := s.e.Push(r.Context(), repo, r.URL.Query().Get("tag"), auth, func(line string) {
-		enc.Encode(jsonMessage{Status: line})
+	results, err := s.e.Push(r.Context(), repo, r.URL.Query().Get("tag"), auth, func(id, status string) {
+		enc.Encode(jsonMessage{Status: status, ID: id})
 		flush(w)
 	})
 	for _, res := range results {

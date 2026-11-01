@@ -365,10 +365,11 @@ type Pulled struct {
 	UpToDate bool
 }
 
-// Pull fetches the image for the engine's platform from its registry,
+// Pull fetches the image for the engine's platform from its registry with
+// the client's credentials, as dockerd pulls with those the CLI sends,
 // downloading only the layers the store lacks, and records the reference
 // and the repository@digest it resolved to.
-func (s *Store) Pull(ctx context.Context, ref string, progress Progress) (Pulled, error) {
+func (s *Store) Pull(ctx context.Context, ref string, auth authn.Authenticator, progress Progress) (Pulled, error) {
 	r, err := name.ParseReference(ref, name.WithDefaultTag("latest"))
 	if err != nil {
 		return Pulled{}, err
@@ -377,7 +378,7 @@ func (s *Store) Pull(ctx context.Context, ref string, progress Progress) (Pulled
 	if err != nil {
 		return Pulled{}, err
 	}
-	desc, err := remote.Get(r, remote.WithContext(ctx), remote.WithPlatform(Platform), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	desc, err := remote.Get(r, remote.WithContext(ctx), remote.WithPlatform(Platform), remote.WithAuth(auth))
 	if err != nil {
 		return Pulled{}, err
 	}
