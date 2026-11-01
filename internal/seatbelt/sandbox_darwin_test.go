@@ -120,7 +120,7 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 		e.denied("list", other)
 		e.denied("list", home)
 		e.denied("write", "/private/tmp/fws-escape")
-		e.allowed("read", "/usr/lib/libSystem.B.dylib")
+		e.allowed("read", "/System/Library/CoreServices/SystemVersion.plist")
 	})
 	t.Run("network", func(t *testing.T) {
 		e.t = t
