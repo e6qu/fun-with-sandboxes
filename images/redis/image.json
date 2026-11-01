@@ -1,0 +1,12 @@
+{
+  "tag": "fws/redis:7",
+  "files": {},
+  "dirs": ["/data", "/tmp"],
+  "config": {
+    "Env": ["PATH=/bin", "TZ=UTC"],
+    "Entrypoint": ["/entry"],
+    "ExposedPorts": {"6379/tcp": {}},
+    "Volumes": {"/data": {}},
+    "Healthcheck": {"Test": ["CMD", "/entry", "health"], "Interval": 1000000000, "Timeout": 5000000000, "Retries": 30}
+  }
+}

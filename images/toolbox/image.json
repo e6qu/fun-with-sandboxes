@@ -1,0 +1,12 @@
+{
+  "tag": "fws/toolbox:1",
+  "files": {},
+  "dirs": ["/tmp"],
+  "config": {
+    "Env": ["PATH=/bin", "TZ=UTC"],
+    "Entrypoint": ["/toolbox"],
+    "Cmd": ["serve"],
+    "ExposedPorts": {"8080/tcp": {}},
+    "Healthcheck": {"Test": ["CMD", "/toolbox", "health"], "Interval": 1000000000, "Timeout": 5000000000, "Retries": 30}
+  }
+}
