@@ -299,9 +299,10 @@ func TestTwoStacksRunSideBySideInIsolation(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	for _, err := range errs {
+	for i, err := range errs {
 		if err != nil {
-			t.Fatal(err)
+			logs, _ := compose(projects[i], "logs", "--no-color")
+			t.Fatalf("%v\ncontainer logs:\n%s", err, logs)
 		}
 	}
 	a, b := describe(t, "alpha"), describe(t, "beta")

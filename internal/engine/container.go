@@ -253,7 +253,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		return container.CreateResponse{}, err
 	}
 	hc := *req.HostConfig
-	if hc.NetworkMode == "" {
+	if hc.NetworkMode == "" || hc.NetworkMode == "default" {
 		hc.NetworkMode = "bridge"
 	}
 	if hc.LogConfig.Type == "" {
@@ -419,6 +419,9 @@ func exposedPorts(cfg container.Config, hc *container.HostConfig) []network.Port
 func (e *Engine) resolveNetworksLocked(stack, name, service string, req container.CreateRequest) (map[string]*network.EndpointSettings, error) {
 	out := map[string]*network.EndpointSettings{}
 	add := func(netName string, es *network.EndpointSettings) error {
+		if netName == "default" {
+			netName = "bridge"
+		}
 		n, err := e.checkNetworkLocked(netName, stack)
 		if err != nil {
 			return err
