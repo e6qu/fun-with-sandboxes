@@ -16,6 +16,7 @@ import (
 	inlineremotecache "github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/remotecache/inline"
 	localremotecache "github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/remotecache/local"
 	registryremotecache "github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/remotecache/registry"
+	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/client"
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/control"
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter"
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/containerimage"
@@ -252,4 +253,25 @@ func (s *Service) Close() error {
 		err = werr
 	}
 	return err
+}
+
+// Prune removes BuildKit's build cache, records in use excepted, all of it
+// with all set and otherwise what BuildKit's default policy deems
+// reclaimable, and returns the IDs and bytes it freed.
+func (s *Service) Prune(ctx context.Context, all bool) ([]string, uint64, error) {
+	ch := make(chan client.UsageInfo)
+	var ids []string
+	var freed uint64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for u := range ch {
+			ids = append(ids, u.ID)
+			freed += uint64(u.Size)
+		}
+	}()
+	err := s.worker.Prune(ctx, ch, client.PruneInfo{All: all})
+	close(ch)
+	<-done
+	return ids, freed, err
 }

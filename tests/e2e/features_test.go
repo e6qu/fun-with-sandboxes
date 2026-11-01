@@ -11,7 +11,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cgi"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -757,4 +759,156 @@ func TestPublishUDPAndHostPortRanges(t *testing.T) {
 		t.Fatalf("a third container on a two-port range: %v\n%s", err, out)
 	}
 	docker(t, "rm", "-f", "fws-e2e-range-full")
+}
+
+// classicBuild runs the classic builder through the Docker CLI.
+func classicBuild(t *testing.T, args ...string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", append([]string{"build"}, args...)...)
+	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker build %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
+func imageID(t *testing.T, ref string) string {
+	t.Helper()
+	return strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.ID}}", ref))
+}
+
+func TestClassicBuildCacheAndOnbuild(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("Dockerfile", `FROM fws/toolbox:1
+COPY greeting.txt /greeting.txt
+RUN ["/toolbox", "put", "/ran.txt", "ran"]
+CMD ["cat", "/greeting.txt"]
+`)
+	write("greeting.txt", "first\n")
+	first := classicBuild(t, "-t", "e2e/cached:1", dir)
+	defer docker(t, "rmi", "-f", "e2e/cached:1")
+	if strings.Contains(first, "Using cache") {
+		t.Fatalf("the first build used a cache:\n%s", first)
+	}
+	id := imageID(t, "e2e/cached:1")
+
+	again := classicBuild(t, "-t", "e2e/cached:1", dir)
+	if n := strings.Count(again, "Using cache"); n != 2 {
+		t.Fatalf("an identical rebuild used the cache %d times, want 2 (COPY and RUN):\n%s", n, again)
+	}
+	if got := imageID(t, "e2e/cached:1"); got != id {
+		t.Fatalf("an identical rebuild made %s, want the same image %s", got, id)
+	}
+
+	write("greeting.txt", "second\n")
+	changed := classicBuild(t, "-t", "e2e/cached:1", dir)
+	if strings.Contains(changed, "Using cache") {
+		t.Fatalf("a changed COPY source left later steps cached:\n%s", changed)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "run", "--rm", "e2e/cached:1")); got != "second" {
+		t.Fatalf("the rebuilt image prints %q", got)
+	}
+	if out := classicBuild(t, "--no-cache", "-t", "e2e/cached:1", dir); strings.Contains(out, "Using cache") {
+		t.Fatalf("--no-cache used the cache:\n%s", out)
+	}
+
+	mustDocker(t, "image", "prune", "--force")
+	if out := classicBuild(t, "-t", "e2e/cached:1", dir); strings.Contains(out, "Using cache") {
+		t.Fatalf("a build after docker image prune used the cache:\n%s", out)
+	}
+
+	base := t.TempDir()
+	os.WriteFile(filepath.Join(base, "Dockerfile"), []byte("FROM fws/toolbox:1\nONBUILD COPY greeting.txt /onbuild.txt\n"), 0o644)
+	classicBuild(t, "-t", "e2e/onbuild-base:1", base)
+	defer docker(t, "rmi", "-f", "e2e/onbuild-base:1")
+	if ob := mustDocker(t, "image", "inspect", "-f", "{{json .Config.OnBuild}}", "e2e/onbuild-base:1"); !strings.Contains(ob, "COPY greeting.txt /onbuild.txt") {
+		t.Fatalf("the base image's ONBUILD triggers: %s", ob)
+	}
+	write("Dockerfile", "FROM e2e/onbuild-base:1\nCMD [\"cat\", \"/onbuild.txt\"]\n")
+	out := classicBuild(t, "-t", "e2e/onbuild-child:1", dir)
+	defer docker(t, "rmi", "-f", "e2e/onbuild-child:1")
+	if !strings.Contains(out, "# Executing 1 build trigger") {
+		t.Fatalf("the child build ran no trigger:\n%s", out)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "run", "--rm", "e2e/onbuild-child:1")); got != "second" {
+		t.Fatalf("the trigger's COPY left %q", got)
+	}
+	if ob := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{json .Config.OnBuild}}", "e2e/onbuild-child:1")); ob != "null" && ob != "[]" {
+		t.Fatalf("the child kept the triggers: %s", ob)
+	}
+}
+
+// gitServer serves a one-commit repository holding files over smart HTTP,
+// through git http-backend.
+func gitServer(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	git := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=e2e", "GIT_AUTHOR_EMAIL=e2e@e2e", "GIT_COMMITTER_NAME=e2e", "GIT_COMMITTER_EMAIL=e2e@e2e")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	for name, body := range files {
+		os.MkdirAll(filepath.Dir(filepath.Join(work, name)), 0o755)
+		os.WriteFile(filepath.Join(work, name), []byte(body), 0o644)
+	}
+	git(work, "init", "--quiet", "-b", "main")
+	git(work, "add", ".")
+	git(work, "commit", "--quiet", "-m", "context")
+	git(root, "clone", "--quiet", "--bare", work, filepath.Join(root, "srv", "ctx.git"))
+	execPath, err := exec.Command("git", "--exec-path").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(&cgi.Handler{
+		Path: filepath.Join(strings.TrimSpace(string(execPath)), "git-http-backend"),
+		Env:  []string{"GIT_PROJECT_ROOT=" + filepath.Join(root, "srv"), "GIT_HTTP_EXPORT_ALL=1"},
+	})
+	t.Cleanup(srv.Close)
+	return srv.URL + "/ctx.git"
+}
+
+// engineClient talks to the engine's socket directly, for API calls the
+// Docker CLI makes no use of.
+func engineClient() *http.Client {
+	sock := strings.TrimPrefix(dockerHost, "unix://")
+	return &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+	}}}
+}
+
+// The engine fetches a remote build context itself, as dockerd does for API
+// clients that send one.
+func TestRemoteBuildContext(t *testing.T) {
+	repo := gitServer(t, map[string]string{
+		"app/Dockerfile": "FROM fws/toolbox:1\nCOPY hello.txt /hello.txt\nCMD [\"cat\", \"/hello.txt\"]\n",
+		"app/hello.txt":  "from git\n",
+	})
+	q := url.Values{"remote": {repo + "#main:app"}, "t": {"e2e/remote:1"}}
+	res, err := engineClient().Post("http://engine/build?"+q.Encode(), "application/x-tar", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != 200 || !strings.Contains(string(out), "Successfully tagged e2e/remote:1") {
+		t.Fatalf("build from %s: %d\n%s", repo, res.StatusCode, out)
+	}
+	defer docker(t, "rmi", "-f", "e2e/remote:1")
+	if got := strings.TrimSpace(mustDocker(t, "run", "--rm", "e2e/remote:1")); got != "from git" {
+		t.Fatalf("the image built from Git prints %q", got)
+	}
 }

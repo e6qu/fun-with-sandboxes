@@ -259,6 +259,21 @@ func (e *Engine) ImagePrune(f Filters) (imagetypes.PruneReport, error) {
 		report.ImagesDeleted = append(report.ImagesDeleted, imagetypes.DeleteResponse{Deleted: r.Image.ID})
 		report.SpaceReclaimed += uint64(r.Image.Size)
 	}
+	// The classic builder's cache is what dockerd keeps as dangling
+	// intermediate images, which an image prune removes.
+	freed, err := e.BuildCachePrune()
+	if err != nil {
+		return report, err
+	}
+	report.SpaceReclaimed += freed
 	e.events.publish(events.ImageEventType, events.ActionPrune, "", map[string]string{"reclaimed": strconv.FormatUint(report.SpaceReclaimed, 10)})
 	return report, nil
+}
+
+// BuildCachePrune empties the classic builder's cache once no build reads
+// it, and returns the bytes it freed.
+func (e *Engine) BuildCachePrune() (uint64, error) {
+	e.buildMu.Lock()
+	defer e.buildMu.Unlock()
+	return e.buildCache().prune()
 }

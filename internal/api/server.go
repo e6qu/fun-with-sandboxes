@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
 	"github.com/moby/moby/api/types/network"
@@ -26,6 +27,7 @@ import (
 type BuildKit interface {
 	ServeGRPC(http.ResponseWriter, *http.Request)
 	ServeSession(http.ResponseWriter, *http.Request)
+	Prune(ctx context.Context, all bool) ([]string, uint64, error)
 }
 
 type Server struct {
@@ -259,6 +261,7 @@ func (s *Server) routes() {
 		}
 	}
 	m.HandleFunc("POST /build", s.build)
+	m.HandleFunc("POST /build/prune", s.buildPrune)
 	if s.bk != nil {
 		m.HandleFunc("POST /grpc", s.bk.ServeGRPC)
 		m.HandleFunc("POST /session", s.bk.ServeSession)
@@ -729,4 +732,26 @@ func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.e.Commit(r.Context(), opts)
 	respondCode(w, http.StatusCreated, map[string]string{"Id": id}, err)
+}
+
+// buildPrune serves POST /build/prune: the classic builder's cache, which
+// dockerd keeps as intermediate images, and BuildKit's.
+func (s *Server) buildPrune(w http.ResponseWriter, r *http.Request) {
+	report := build.CachePruneReport{CachesDeleted: []string{}}
+	freed, err := s.e.BuildCachePrune()
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	report.SpaceReclaimed = freed
+	if s.bk != nil {
+		ids, n, err := s.bk.Prune(r.Context(), boolParam(r.URL.Query().Get("all")))
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+		report.CachesDeleted = append(report.CachesDeleted, ids...)
+		report.SpaceReclaimed += n
+	}
+	writeJSON(w, http.StatusOK, report)
 }

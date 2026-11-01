@@ -37,6 +37,12 @@ type BuildOptions struct {
 	NetworkMode string
 	// Registries holds the credentials the CLI sent for pulling base images.
 	Registries image.Credentials
+	// NoCache builds every step afresh, as --no-cache does; the steps still
+	// enter the cache.
+	NoCache bool
+	// Remote is a context to fetch instead of the uploaded one: a Git
+	// repository, a tarball or a Dockerfile at a URL.
+	Remote string
 }
 
 type stage struct {
@@ -49,10 +55,13 @@ type stage struct {
 	// configOnly marks a stage that edits a config alone, as docker commit
 	// and import changes do: WORKDIR makes no directory.
 	configOnly bool
-	cfg        v1.ConfigFile
-	args       map[string]string
-	shell      []string
-	workdir    string
+	// key chains the stage's instructions from its base, keying the build
+	// cache.
+	key     string
+	cfg     v1.ConfigFile
+	args    map[string]string
+	shell   []string
+	workdir string
 }
 
 func (s *stage) env() []string { return s.cfg.Config.Env }
@@ -89,6 +98,8 @@ type builder struct {
 	steps    int
 	step     int
 	nlayers  int
+	// cache is nil where steps edit a config alone.
+	cache *buildCache
 }
 
 // Build runs a Dockerfile against the uploaded context, as the classic
@@ -115,11 +126,18 @@ func (e *Engine) Build(ctx context.Context, opts BuildOptions, buildContext io.R
 		return image.Image{}, err
 	}
 	defer os.RemoveAll(dir)
-	b := &builder{e: e, opts: opts, dir: dir, context: filepath.Join(dir, "context"), progress: progress}
+	// A prune waits for builds that may still read cached layers.
+	e.buildMu.RLock()
+	defer e.buildMu.RUnlock()
+	b := &builder{e: e, opts: opts, dir: dir, context: filepath.Join(dir, "context"), progress: progress, cache: e.buildCache()}
 	if err := os.MkdirAll(b.context, 0o700); err != nil {
 		return image.Image{}, err
 	}
-	if err := image.Extract(b.context, buildContext, false); err != nil {
+	if opts.Remote != "" {
+		if err := fetchRemoteContext(ctx, opts.Remote, b.context, &b.opts); err != nil {
+			return image.Image{}, err
+		}
+	} else if err := image.Extract(b.context, buildContext, false); err != nil {
 		return image.Image{}, invalid("read build context: %v", err)
 	}
 	dfPath, err := rootfs.Join(b.context, opts.Dockerfile)
@@ -146,7 +164,11 @@ func (e *Engine) Build(ctx context.Context, opts BuildOptions, buildContext io.R
 		}
 		last.cfg.Config.Labels[k] = v
 	}
+	// A build whose every step came from the cache makes the same image.
 	last.cfg.Created = v1.Time{Time: time.Now().UTC()}
+	if h := last.cfg.History; len(h) > 0 {
+		last.cfg.Created = h[len(h)-1].Created
+	}
 	img, err := e.images.Extend(last.base, last.layers, last.root, last.cfg, tags)
 	if err != nil {
 		return image.Image{}, err
@@ -213,6 +235,9 @@ func (b *builder) run(ctx context.Context, ins []dockerfile.Instruction) (*stage
 			}
 			cur = s
 			b.stages = append(b.stages, s)
+			if err := b.triggers(ctx, s, globals); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if err := b.apply(ctx, cur, in, globals); err != nil {
@@ -282,6 +307,7 @@ func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals m
 		if err := os.MkdirAll(s.root, 0o755); err != nil {
 			return nil, err
 		}
+		s.key = cacheKey("scratch")
 	case b.stageNamed(ref) != nil:
 		prev := b.stageNamed(ref)
 		if err := image.CloneDir(prev.root, s.root); err != nil {
@@ -289,6 +315,7 @@ func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals m
 		}
 		s.cfg = *prev.cfg.DeepCopy()
 		s.base, s.layers = prev.base, append([]string(nil), prev.layers...)
+		s.key = prev.key
 		s.shell = append([]string(nil), prev.shell...)
 		s.workdir = prev.workdir
 	default:
@@ -301,6 +328,7 @@ func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals m
 		}
 		s.cfg = *img.Config.DeepCopy()
 		s.base = img.ID
+		s.key = cacheKey("image", img.ID)
 		s.workdir = s.cfg.Config.WorkingDir
 		if len(s.cfg.Config.Shell) > 0 {
 			s.shell = append([]string(nil), s.cfg.Config.Shell...)
@@ -308,6 +336,33 @@ func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals m
 		b.progress(fmt.Sprintf(" ---> %s\n", strings.TrimPrefix(img.ID, "sha256:")[:12]))
 	}
 	return s, nil
+}
+
+// triggers runs the ONBUILD instructions the stage's base image holds, as
+// the first steps of the stage, and keeps them out of the stage's image.
+func (b *builder) triggers(ctx context.Context, s *stage, globals map[string]string) error {
+	triggers := s.cfg.Config.OnBuild
+	if len(triggers) == 0 {
+		return nil
+	}
+	s.cfg.Config.OnBuild = nil
+	plural := "s"
+	if len(triggers) == 1 {
+		plural = ""
+	}
+	b.progress(fmt.Sprintf("# Executing %d build trigger%s\n", len(triggers), plural))
+	for _, t := range triggers {
+		ins, err := dockerfile.Parse(strings.NewReader(t))
+		if err != nil {
+			return invalid("ONBUILD trigger %q: %v", t, err)
+		}
+		for _, in := range ins {
+			if err := b.apply(ctx, s, in, globals); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (b *builder) stageNamed(ref string) *stage {
@@ -341,8 +396,24 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		return out, nil
 	}
 	emptyLayer := true
-	record := func() {
-		s.cfg.History = append(s.cfg.History, v1.History{Created: v1.Time{Time: time.Now().UTC()}, CreatedBy: in.Cmd + " " + in.Raw, EmptyLayer: emptyLayer})
+	// key names the stage after this instruction; a step that changes files
+	// folds what it changed into it.
+	key := cacheKey(s.key, in.Cmd, flagsKey(in.Flags), in.Raw)
+	record := func() error {
+		created := time.Now().UTC()
+		if b.cache != nil {
+			e, ok := b.cached(key)
+			if !ok && emptyLayer {
+				var err error
+				if e, err = b.cache.put(key, created, ""); err != nil {
+					return err
+				}
+			}
+			created = e.Created
+		}
+		s.key = key
+		s.cfg.History = append(s.cfg.History, v1.History{Created: v1.Time{Time: created}, CreatedBy: in.Cmd + " " + in.Raw, EmptyLayer: emptyLayer})
+		return nil
 	}
 	cfg := &s.cfg.Config
 	switch in.Cmd {
@@ -358,6 +429,7 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 			return err
 		}
 		s.args[k] = v
+		s.key = cacheKey(key, k, v)
 		return nil
 	case "ENV":
 		raw, err := expand(in.Raw)
@@ -407,7 +479,7 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		}
 		if _, err := os.Lstat(host); errors.Is(err, os.ErrNotExist) {
 			emptyLayer = false
-			if err := b.layer(ctx, s, func() error { return os.MkdirAll(host, 0o755) }); err != nil {
+			if key, err = b.contentStep(ctx, s, key, func() error { return os.MkdirAll(host, 0o755) }); err != nil {
 				return err
 			}
 		}
@@ -484,21 +556,30 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		cfg.Healthcheck = hc
 	case "COPY", "ADD":
 		emptyLayer = false
-		if err := b.layer(ctx, s, func() error { return b.copy(ctx, s, in, expand) }); err != nil {
+		var err error
+		if key, err = b.contentStep(ctx, s, key, func() error { return b.copy(ctx, s, in, expand) }); err != nil {
 			return err
 		}
 	case "RUN":
 		emptyLayer = false
-		if err := b.layer(ctx, s, func() error { return b.runStep(ctx, s, in) }); err != nil {
+		key = cacheKey(key, argsKey(s.args))
+		if err := b.cachedRun(ctx, s, key, in); err != nil {
 			return err
 		}
 	case "ONBUILD":
-		return unsupported("line %d: ONBUILD is not supported", in.Line)
+		trigger, err := dockerfile.Parse(strings.NewReader(in.Raw))
+		if err != nil || len(trigger) != 1 {
+			return invalid("line %d: ONBUILD needs one instruction", in.Line)
+		}
+		switch trigger[0].Cmd {
+		case "ONBUILD", "FROM", "MAINTAINER":
+			return invalid("line %d: %s isn't allowed as an ONBUILD trigger", in.Line, trigger[0].Cmd)
+		}
+		cfg.OnBuild = append(cfg.OnBuild, in.Raw)
 	default:
 		return invalid("line %d: unknown instruction: %s", in.Line, in.Cmd)
 	}
-	record()
-	return nil
+	return record()
 }
 
 func (b *builder) command(s *stage, in dockerfile.Instruction) []string {
@@ -670,33 +751,113 @@ func (b *builder) copy(ctx context.Context, s *stage, in dockerfile.Instruction,
 	return nil
 }
 
-// layer runs a step that changes the stage's files and records the change
-// as a layer: the difference between an APFS clone of the root taken before
-// the step and the root after it.
-func (b *builder) layer(ctx context.Context, s *stage, step func() error) error {
+// cached returns the cache's entry for key unless the build skips the cache.
+func (b *builder) cached(key string) (cacheEntry, bool) {
+	if b.opts.NoCache {
+		return cacheEntry{}, false
+	}
+	return b.cache.get(key)
+}
+
+// change runs a step that changes the stage's files and returns an APFS
+// clone of the root from before the step and the layer it made: the
+// difference between that clone and the root after it.
+func (b *builder) change(ctx context.Context, s *stage, step func() error) (before, layer string, err error) {
 	n := b.nlayers
 	b.nlayers++
-	before := filepath.Join(b.dir, "before"+strconv.Itoa(n))
+	before = filepath.Join(b.dir, "before"+strconv.Itoa(n))
 	if err := image.CloneDir(s.root, before); err != nil {
-		return err
+		return "", "", err
 	}
-	defer os.RemoveAll(before)
 	if err := step(); err != nil {
-		return err
+		os.RemoveAll(before)
+		return "", "", err
 	}
-	p := filepath.Join(b.dir, "layer"+strconv.Itoa(n)+".tar")
-	f, err := os.Create(p)
+	layer = filepath.Join(b.dir, "layer"+strconv.Itoa(n)+".tar")
+	f, err := os.Create(layer)
 	if err != nil {
-		return err
+		os.RemoveAll(before)
+		return "", "", err
 	}
 	err = image.Diff(ctx, before, s.root, f)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
+		os.RemoveAll(before)
+		return "", "", err
+	}
+	return before, layer, nil
+}
+
+// contentStep runs a cheap step, such as COPY, and keys it by what it
+// changed. When the cache holds that change, the stage takes the cached
+// layer, byte for byte, so the image comes out the same; it returns the
+// step's key.
+func (b *builder) contentStep(ctx context.Context, s *stage, key string, step func() error) (string, error) {
+	before, layer, err := b.change(ctx, s, step)
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(before)
+	ck, err := contentKey(layer)
+	if err != nil {
+		return "", err
+	}
+	key = cacheKey(key, ck)
+	if e, ok := b.cached(key); ok && e.Layer != "" {
+		if err := os.RemoveAll(s.root); err != nil {
+			return "", err
+		}
+		if err := os.Rename(before, s.root); err != nil {
+			return "", err
+		}
+		if err := b.applyCached(s, e); err != nil {
+			return "", err
+		}
+		os.Remove(layer)
+		return key, nil
+	}
+	e, err := b.cache.put(key, time.Now().UTC(), layer)
+	if err != nil {
+		return "", err
+	}
+	s.layers = append(s.layers, b.cache.layerPath(e))
+	return key, nil
+}
+
+// cachedRun runs a RUN step unless the cache holds its key, whose layer then
+// takes its place.
+func (b *builder) cachedRun(ctx context.Context, s *stage, key string, in dockerfile.Instruction) error {
+	if e, ok := b.cached(key); ok && e.Layer != "" {
+		return b.applyCached(s, e)
+	}
+	before, layer, err := b.change(ctx, s, func() error { return b.runStep(ctx, s, in) })
+	if err != nil {
 		return err
 	}
-	s.layers = append(s.layers, p)
+	os.RemoveAll(before)
+	e, err := b.cache.put(key, time.Now().UTC(), layer)
+	if err != nil {
+		return err
+	}
+	s.layers = append(s.layers, b.cache.layerPath(e))
+	return nil
+}
+
+// applyCached puts a cached layer on the stage's root and in its layers.
+func (b *builder) applyCached(s *stage, e cacheEntry) error {
+	f, err := os.Open(b.cache.layerPath(e))
+	if err != nil {
+		return err
+	}
+	err = image.ApplyLayer(s.root, f)
+	f.Close()
+	if err != nil {
+		return err
+	}
+	s.layers = append(s.layers, b.cache.layerPath(e))
+	b.progress(" ---> Using cache\n")
 	return nil
 }
 

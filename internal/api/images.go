@@ -182,15 +182,14 @@ func (s *Server) build(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "POST /build is the classic builder; BuildKit builds run through POST /grpc, as docker buildx does")
 		return
 	}
-	if q.Get("remote") != "" {
-		writeError(w, http.StatusNotImplemented, "building from a remote context is not supported")
-		return
-	}
 	if p := q.Get("platform"); p != "" && p != image.Platform.OS+"/"+image.Platform.Architecture {
 		writeError(w, http.StatusNotImplemented, "requested platform "+p+" does not match the engine platform "+image.Platform.OS+"/"+image.Platform.Architecture)
 		return
 	}
-	opts := engine.BuildOptions{Dockerfile: q.Get("dockerfile"), Tags: q["t"], Target: q.Get("target"), NetworkMode: q.Get("networkmode")}
+	opts := engine.BuildOptions{
+		Dockerfile: q.Get("dockerfile"), Tags: q["t"], Target: q.Get("target"), NetworkMode: q.Get("networkmode"),
+		NoCache: boolParam(q.Get("nocache")), Remote: q.Get("remote"),
+	}
 	for _, p := range []struct {
 		key string
 		dst any
