@@ -89,6 +89,9 @@ func build(specPath, closure string, pkgs, files []string, out, arch string) err
 		if err := relocate(stage); err != nil {
 			return err
 		}
+		if err := verifyRelocated(stage); err != nil {
+			return err
+		}
 	}
 	for _, p := range pkgs {
 		if err := linkBin(stage, p); err != nil {
@@ -243,6 +246,16 @@ func loaderRel(stage, file, ref string) string {
 	return "@loader_path/" + rel
 }
 
+// Load commands that name a dylib; debug/macho parses only LC_LOAD_DYLIB.
+const (
+	lcLoadDylib       = 0xc
+	lcLoadWeakDylib   = 0x80000018
+	lcReexportDylib   = 0x8000001f
+	lcLazyLoadDylib   = 0x20
+	lcLoadUpwardDylib = 0x80000023
+	lcRpath           = 0x8000001c
+)
+
 // machoRefs lists the dylibs and rpaths a Mach-O file names; ok is false
 // for anything that is not Mach-O.
 func machoRefs(p string) (refs, rpaths []string, ok bool, err error) {
@@ -260,24 +273,59 @@ func machoRefs(p string) (refs, rpaths []string, ok bool, err error) {
 	}
 	seen := map[string]bool{}
 	for _, f := range files {
-		libs, err := f.ImportedLibraries()
-		if err != nil {
-			return nil, nil, false, err
-		}
-		for _, l := range libs {
-			if !seen[l] {
-				seen[l] = true
-				refs = append(refs, l)
-			}
-		}
 		for _, l := range f.Loads {
-			if rp, isRpath := l.(*macho.Rpath); isRpath && !seen["rpath:"+rp.Path] {
-				seen["rpath:"+rp.Path] = true
-				rpaths = append(rpaths, rp.Path)
+			raw := l.Raw()
+			if len(raw) < 12 {
+				continue
+			}
+			cmd := f.ByteOrder.Uint32(raw[0:4])
+			var dst *[]string
+			switch cmd {
+			case lcLoadDylib, lcLoadWeakDylib, lcReexportDylib, lcLazyLoadDylib, lcLoadUpwardDylib:
+				dst = &refs
+			case lcRpath:
+				dst = &rpaths
+			default:
+				continue
+			}
+			// Both dylib_command and rpath_command hold the offset of their
+			// name string right after cmd and cmdsize.
+			off := f.ByteOrder.Uint32(raw[8:12])
+			if int(off) >= len(raw) {
+				return nil, nil, false, fmt.Errorf("%s: malformed load command 0x%x", p, cmd)
+			}
+			name := string(raw[off:])
+			if i := strings.IndexByte(name, 0); i >= 0 {
+				name = name[:i]
+			}
+			key := fmt.Sprintf("%t:%s", cmd == lcRpath, name)
+			if !seen[key] {
+				seen[key] = true
+				*dst = append(*dst, name)
 			}
 		}
 	}
 	return refs, rpaths, true, nil
+}
+
+// verifyRelocated fails if any Mach-O file in the stage still loads through
+// the host's store.
+func verifyRelocated(stage string) error {
+	return filepath.WalkDir(stage, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		refs, rpaths, ok, err := machoRefs(p)
+		if err != nil || !ok {
+			return err
+		}
+		for _, r := range append(refs, rpaths...) {
+			if strings.HasPrefix(r, storeDir+"/") {
+				return fmt.Errorf("%s still references %s after relocation", strings.TrimPrefix(p, stage), r)
+			}
+		}
+		return nil
+	})
 }
 
 // linkBin links each of a package's bin/ entries into /bin with a relative
