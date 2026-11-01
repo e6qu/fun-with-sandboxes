@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the darwin image archives (postgres, redis, toolbox) into $1.
+# Build the darwin image archives (postgres, redis, toolbox, ryuk) into $1.
 # Needs macOS (install_name_tool, codesign) and Nix.
 set -euo pipefail
 
@@ -40,5 +40,19 @@ nix-store -qR "$redis" > "$build/redis.closure"
   -file "/entry=$build/redis-entry" -out "$out/redis.tar"
 
 "$build/fws-mkimage" -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"
+
+# Ryuk, Testcontainers' reaper, built from its 0.14.0 release with
+# images/ryuk/listen-loopback.patch, so it listens on loopback as the
+# container contract asks.
+ryuk_commit=b3726afd6cc2c36628abcc08e9cabac43f587384
+ryuk_src=$(GOFLAGS=-mod=mod go mod download -json "github.com/testcontainers/moby-ryuk@$ryuk_commit" | sed -n 's/.*"Dir": "\(.*\)",/\1/p')
+cp -R "$ryuk_src" "$build/ryuk-src"
+chmod -R u+w "$build/ryuk-src"
+patch -s -d "$build/ryuk-src" -p1 < images/ryuk/listen-loopback.patch
+(cd "$build/ryuk-src" && GOFLAGS=-mod=mod go build -o "$build/ryuk" .)
+go build -o "$build/ryuk-entry" ./images/ryuk/entry
+go build -o "$build/ryuk-nc" ./images/ryuk/nc
+"$build/fws-mkimage" -spec images/ryuk/image.json -file "/entry=$build/ryuk-entry" -file "/ryuk=$build/ryuk" \
+  -file "/bin/nc=$build/ryuk-nc" -out "$out/ryuk.tar"
 
 ls -l "$out"

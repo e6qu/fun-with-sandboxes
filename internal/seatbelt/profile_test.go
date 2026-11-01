@@ -93,3 +93,20 @@ func TestRejectsUnsafePaths(t *testing.T) {
 		t.Errorf("Render accepted port 70000")
 	}
 }
+
+// Unix sockets in a mount are reachable, and creatable in a writable one.
+func TestMountedUnixSockets(t *testing.T) {
+	p, _ := Render(spec())
+	for _, want := range []string{
+		`(allow network-outbound (remote unix-socket (subpath "/Users/u/.fws/stacks/a/volumes/data")))`,
+		`(allow network-outbound (remote unix-socket (subpath "/Users/u/.fws/stacks/a/volumes/conf")))`,
+		`(allow network-bind (local unix-socket (subpath "/Users/u/.fws/stacks/a/volumes/data")))`,
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("profile missing %s", want)
+		}
+	}
+	if strings.Contains(p, `(allow network-bind (local unix-socket (subpath "/Users/u/.fws/stacks/a/volumes/conf")))`) {
+		t.Error("a read-only mount allows making sockets")
+	}
+}

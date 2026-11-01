@@ -115,9 +115,6 @@ func TestDockerCp(t *testing.T) {
 func TestTestcontainers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	// Ryuk, Testcontainers' reaper, ships only as a Linux image; the test
-	// terminates its own container instead.
-	t.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
 	redis, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
 			Image:        "fws/redis:7",
@@ -910,5 +907,49 @@ func TestRemoteBuildContext(t *testing.T) {
 	defer docker(t, "rmi", "-f", "e2e/remote:1")
 	if got := strings.TrimSpace(mustDocker(t, "run", "--rm", "e2e/remote:1")); got != "from git" {
 		t.Fatalf("the image built from Git prints %q", got)
+	}
+}
+
+// Testcontainers' reaper removes what a test process left behind once the
+// process goes: a helper starts a container and exits without removing it.
+func TestTestcontainersReaper(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	events := exec.CommandContext(ctx, "docker", "events", "--filter", "type=container", "--filter", "event=destroy", "--format", "{{.Actor.ID}}")
+	stream, err := events.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := events.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); events.Wait() }()
+
+	helper := exec.CommandContext(ctx, "go", "run", "./testdata/reaped")
+	out, err := helper.Output()
+	if err != nil {
+		t.Fatalf("the Testcontainers helper: %v\n%s", err, out)
+	}
+	id := strings.TrimSpace(string(out))
+	if len(id) != 64 {
+		t.Fatalf("the helper printed %q, not a container ID", out)
+	}
+	// The helper's reaper carries its session's label; this test process's
+	// own reaper, of another session, stays until this process ends.
+	session := strings.TrimSpace(mustDocker(t, "inspect", "-f", `{{index .Config.Labels "org.testcontainers.sessionId"}}`, id))
+	reapers := strings.Fields(mustDocker(t, "ps", "-aq", "--no-trunc", "--filter", "label=org.testcontainers.ryuk=true", "--filter", "label=org.testcontainers.sessionId="+session))
+	if len(reapers) != 1 {
+		t.Fatalf("session %s has reapers %v, want one", session, reapers)
+	}
+	want := map[string]bool{id: true}
+	for _, r := range reapers {
+		want[r] = true
+	}
+	sc := bufio.NewScanner(stream)
+	for len(want) > 0 && sc.Scan() {
+		delete(want, strings.TrimSpace(sc.Text()))
+	}
+	if len(want) > 0 {
+		t.Fatalf("the reaper left %v in place", want)
 	}
 }

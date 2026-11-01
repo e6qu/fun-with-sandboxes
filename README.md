@@ -115,11 +115,17 @@ with an error rather than being ignored.
 ## Testcontainers
 
 Testcontainers drives the engine through `DOCKER_HOST` like any Docker
-daemon. Its reaper, Ryuk, ships only as a Linux image, so turn it off:
+daemon. Its reaper, Ryuk, ships as a Linux image; the catalog's
+`fws/ryuk:0.14.0` is a darwin build of the same release. Load it and give it
+the name Testcontainers runs, and the reaper removes what a test process
+leaves behind when it exits:
 
 ```bash
-export TESTCONTAINERS_RYUK_DISABLED=true
+docker tag fws/ryuk:0.14.0 testcontainers/ryuk:0.14.0
 ```
+
+Testcontainers for Go 0.44 runs Ryuk 0.14.0; other Testcontainers releases
+name other Ryuk versions.
 
 ## Develop
 

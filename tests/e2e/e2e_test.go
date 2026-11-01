@@ -124,6 +124,12 @@ func run(m *testing.M) int {
 			return 1
 		}
 	}
+	// Testcontainers runs its reaper from the image it names; the catalog's
+	// darwin build of it goes by that name here.
+	if out, err := exec.Command("docker", "tag", "fws/ryuk:0.14.0", "testcontainers/ryuk:0.14.0").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "tag the reaper image: %v\n%s", err, out)
+		return 1
+	}
 	code := m.Run()
 	// The engine recovers a panicking handler and keeps serving, and the race
 	// detector reports without stopping it, so the suite reads the engine's

@@ -178,11 +178,22 @@ func Render(s Spec) (string, error) {
 
 	w("(deny network-bind)")
 	w("(allow network-bind (local unix-socket (subpath %q)))", s.Root)
+	// A container makes and reaches Unix sockets in its mounts as in its
+	// root, as Docker allows: a bind-mounted socket, such as an engine's, is
+	// one the user handed it.
+	for _, v := range s.Volumes {
+		if !v.ReadOnly {
+			w("(allow network-bind (local unix-socket (subpath %q)))", v.Path)
+		}
+	}
 	for _, p := range uniq(s.BindPorts) {
 		w("(allow network-bind (local ip \"localhost:%d\"))", p)
 	}
 	w("(deny network-outbound)")
 	w("(allow network-outbound (remote unix-socket (subpath %q)))", s.Root)
+	for _, v := range s.Volumes {
+		w("(allow network-outbound (remote unix-socket (subpath %q)))", v.Path)
+	}
 	w("(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/syslog\")))")
 	for _, p := range uniq(s.ConnectPorts) {
 		w("(allow network-outbound (remote ip \"localhost:%d\"))", p)
