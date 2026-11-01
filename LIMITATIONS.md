@@ -13,8 +13,14 @@ machine — and from what macOS offers an unprivileged process under them.
   change, needs an entrypoint that configures it.
 - **No `#!` interpreters inside the image.** The kernel resolves a script's
   interpreter on the host; only the host's system shells are executable.
-- **No `docker build`, `docker commit`, `docker push` or image export.**
-  Images arrive through `docker load` or a registry pull.
+- **`docker build` is the classic builder.** BuildKit and `docker buildx`
+  are not supported, so `docker compose build` (which needs buildx) is not
+  either; set `DOCKER_BUILDKIT=0` if the CLI has buildx installed. There is
+  no build cache, no `ONBUILD`, no heredocs and no remote contexts. RUN steps
+  run under the stage's Seatbelt profile with internet through a build-only
+  egress proxy (none with `--network none`); shell-form RUN needs `/bin/sh`
+  in the image, as in Docker.
+- **No `docker commit`, `docker push` or image export.**
 - **Image health checks lose `StartInterval`**: the image config library the
   engine uses does not carry it. A container's own health check keeps it.
 

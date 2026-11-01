@@ -1,0 +1,871 @@
+package engine
+
+import (
+	"archive/tar"
+	"bufio"
+	"compress/gzip"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/dockerfile"
+	"github.com/e6qu/fun-with-sandboxes/internal/image"
+	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
+	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
+)
+
+type BuildOptions struct {
+	Dockerfile string
+	Tags       []string
+	BuildArgs  map[string]*string
+	Labels     map[string]string
+	Target     string
+	// NetworkMode "none" gives RUN steps no internet.
+	NetworkMode string
+}
+
+type stage struct {
+	name    string
+	root    string
+	cfg     v1.ConfigFile
+	args    map[string]string
+	shell   []string
+	workdir string
+}
+
+func (s *stage) env() []string { return s.cfg.Config.Env }
+
+func (s *stage) lookup(k string) (string, bool) {
+	for i := len(s.cfg.Config.Env) - 1; i >= 0; i-- {
+		if n, v, _ := strings.Cut(s.cfg.Config.Env[i], "="); n == k {
+			return v, true
+		}
+	}
+	v, ok := s.args[k]
+	return v, ok
+}
+
+func (s *stage) setEnv(k, v string) {
+	for i, kv := range s.cfg.Config.Env {
+		if n, _, _ := strings.Cut(kv, "="); n == k {
+			s.cfg.Config.Env[i] = k + "=" + v
+			return
+		}
+	}
+	s.cfg.Config.Env = append(s.cfg.Config.Env, k+"="+v)
+}
+
+type builder struct {
+	e        *Engine
+	opts     BuildOptions
+	dir      string
+	context  string
+	stages   []*stage
+	progress func(string)
+	stack    string
+	proxy    int
+	steps    int
+	step     int
+}
+
+// Build runs a Dockerfile against the uploaded context, as the classic
+// builder does: each stage starts from a clone of its base image, RUN steps
+// execute under the stage's Seatbelt profile, and the last stage becomes the
+// image.
+func (e *Engine) Build(ctx context.Context, opts BuildOptions, buildContext io.Reader, progress func(string)) (image.Image, error) {
+	if opts.Dockerfile == "" {
+		opts.Dockerfile = "Dockerfile"
+	}
+	var tags []string
+	for _, t := range opts.Tags {
+		n, err := image.Normalize(t)
+		if err != nil {
+			return image.Image{}, invalid("invalid tag %q: %v", t, err)
+		}
+		tags = append(tags, n)
+	}
+	if err := os.MkdirAll(e.images.BuildDir(), 0o700); err != nil {
+		return image.Image{}, err
+	}
+	dir, err := os.MkdirTemp(e.images.BuildDir(), "b")
+	if err != nil {
+		return image.Image{}, err
+	}
+	defer os.RemoveAll(dir)
+	b := &builder{e: e, opts: opts, dir: dir, context: filepath.Join(dir, "context"), progress: progress}
+	if err := os.MkdirAll(b.context, 0o700); err != nil {
+		return image.Image{}, err
+	}
+	if err := image.Extract(b.context, buildContext, false); err != nil {
+		return image.Image{}, invalid("read build context: %v", err)
+	}
+	dfPath, err := inRoot(b.context, opts.Dockerfile)
+	if err != nil {
+		return image.Image{}, err
+	}
+	df, err := os.Open(dfPath)
+	if err != nil {
+		return image.Image{}, invalid("Cannot locate specified Dockerfile: %s", opts.Dockerfile)
+	}
+	ins, err := dockerfile.Parse(df)
+	df.Close()
+	if err != nil {
+		return image.Image{}, invalid("dockerfile parse error: %v", err)
+	}
+	defer b.releaseStack()
+	last, err := b.run(ctx, ins)
+	if err != nil {
+		return image.Image{}, err
+	}
+	for k, v := range opts.Labels {
+		if last.cfg.Config.Labels == nil {
+			last.cfg.Config.Labels = map[string]string{}
+		}
+		last.cfg.Config.Labels[k] = v
+	}
+	last.cfg.Created = v1.Time{Time: time.Now().UTC()}
+	img, err := e.images.AddRoot(last.root, last.cfg, tags)
+	if err != nil {
+		return image.Image{}, err
+	}
+	short := strings.TrimPrefix(img.ID, "sha256:")[:12]
+	progress(fmt.Sprintf("Successfully built %s\n", short))
+	for _, t := range tags {
+		progress(fmt.Sprintf("Successfully tagged %s\n", t))
+	}
+	return img, nil
+}
+
+func (b *builder) run(ctx context.Context, ins []dockerfile.Instruction) (*stage, error) {
+	globals := map[string]string{}
+	i := 0
+	for ; i < len(ins) && ins[i].Cmd != "FROM"; i++ {
+		if ins[i].Cmd != "ARG" {
+			return nil, invalid("line %d: %s before the first FROM; only ARG may come first", ins[i].Line, ins[i].Cmd)
+		}
+		k, v, err := b.arg(ins[i], func(string) (string, bool) { return "", false })
+		if err != nil {
+			return nil, err
+		}
+		globals[k] = v
+	}
+	if i == len(ins) {
+		return nil, invalid("the Dockerfile has no FROM instruction")
+	}
+	// Count the steps of the stages the target needs, for "Step i/N".
+	end := len(ins)
+	if b.opts.Target != "" {
+		found := false
+		for j := i; j < len(ins); j++ {
+			if ins[j].Cmd != "FROM" {
+				continue
+			}
+			if found {
+				end = j
+				break
+			}
+			if _, name := fromParts(ins[j]); strings.EqualFold(name, b.opts.Target) {
+				found = true
+			}
+		}
+		if !found {
+			return nil, invalid("failed to reach build target %s in Dockerfile", b.opts.Target)
+		}
+	}
+	b.steps = end
+	b.step = i
+	var cur *stage
+	for ; i < end; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		in := ins[i]
+		b.step++
+		b.progress(fmt.Sprintf("Step %d/%d : %s %s\n", b.step, b.steps, in.Cmd, in.Raw))
+		if in.Cmd == "FROM" {
+			s, err := b.from(ctx, in, globals)
+			if err != nil {
+				return nil, err
+			}
+			cur = s
+			b.stages = append(b.stages, s)
+			continue
+		}
+		if err := b.apply(ctx, cur, in, globals); err != nil {
+			return nil, err
+		}
+	}
+	return cur, nil
+}
+
+func fromParts(in dockerfile.Instruction) (ref, name string) {
+	w, _ := dockerfile.Words(in.Raw)
+	if len(w) == 3 && strings.EqualFold(w[1], "as") {
+		return w[0], w[2]
+	}
+	if len(w) > 0 {
+		return w[0], ""
+	}
+	return "", ""
+}
+
+func (b *builder) arg(in dockerfile.Instruction, lookup func(string) (string, bool)) (string, string, error) {
+	if len(in.Args) == 0 {
+		return "", "", invalid("line %d: ARG requires a name", in.Line)
+	}
+	raw, err := dockerfile.Expand(in.Raw, lookup)
+	if err != nil {
+		return "", "", invalid("line %d: %v", in.Line, err)
+	}
+	name, def, hasDef := strings.Cut(strings.TrimSpace(raw), "=")
+	if v, ok := b.opts.BuildArgs[name]; ok && v != nil {
+		return name, *v, nil
+	}
+	if !hasDef {
+		if v, ok := lookup(name); ok {
+			return name, v, nil
+		}
+	}
+	return name, strings.Trim(def, `"`), nil
+}
+
+func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals map[string]string) (*stage, error) {
+	if p := in.Flags["platform"]; p != "" && p != image.Platform.OS+"/"+image.Platform.Architecture {
+		return nil, unsupported("FROM --platform=%s: the engine builds %s/%s images only", p, image.Platform.OS, image.Platform.Architecture)
+	}
+	ref, name := fromParts(in)
+	ref, err := dockerfile.Expand(ref, func(k string) (string, bool) { v, ok := globals[k]; return v, ok })
+	if err != nil || ref == "" {
+		return nil, invalid("line %d: FROM requires an image", in.Line)
+	}
+	s := &stage{name: name, root: filepath.Join(b.dir, "s"+strconv.Itoa(len(b.stages))), args: map[string]string{}, shell: []string{"/bin/sh", "-c"}}
+	switch {
+	case ref == "scratch":
+		if err := os.MkdirAll(s.root, 0o755); err != nil {
+			return nil, err
+		}
+	case b.stageNamed(ref) != nil:
+		prev := b.stageNamed(ref)
+		if err := image.CloneDir(prev.root, s.root); err != nil {
+			return nil, err
+		}
+		s.cfg = *prev.cfg.DeepCopy()
+		s.shell = append([]string(nil), prev.shell...)
+		s.workdir = prev.workdir
+	default:
+		img, err := b.baseImage(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		if err := b.e.images.Clone(img.ID, s.root); err != nil {
+			return nil, err
+		}
+		s.cfg = *img.Config.DeepCopy()
+		s.workdir = s.cfg.Config.WorkingDir
+		if len(s.cfg.Config.Shell) > 0 {
+			s.shell = append([]string(nil), s.cfg.Config.Shell...)
+		}
+		b.progress(fmt.Sprintf(" ---> %s\n", strings.TrimPrefix(img.ID, "sha256:")[:12]))
+	}
+	s.cfg.History = append(s.cfg.History, v1.History{Created: v1.Time{Time: time.Now().UTC()}, CreatedBy: "FROM " + ref})
+	return s, nil
+}
+
+func (b *builder) stageNamed(ref string) *stage {
+	for i, s := range b.stages {
+		if (s.name != "" && strings.EqualFold(s.name, ref)) || ref == strconv.Itoa(i) {
+			return s
+		}
+	}
+	return nil
+}
+
+func (b *builder) baseImage(_ context.Context, ref string) (image.Image, error) {
+	img, err := b.e.images.Get(ref)
+	if err == nil {
+		return img, nil
+	}
+	b.progress(fmt.Sprintf("Pulling %s\n", ref))
+	if img, err = b.e.images.Pull(ref); err != nil {
+		return image.Image{}, notFound("pull access denied or image not found for %s: %v", ref, err)
+	}
+	return img, nil
+}
+
+func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction, globals map[string]string) error {
+	expand := func(v string) (string, error) {
+		out, err := dockerfile.Expand(v, s.lookup)
+		if err != nil {
+			return "", invalid("line %d: %v", in.Line, err)
+		}
+		return out, nil
+	}
+	record := func() {
+		s.cfg.History = append(s.cfg.History, v1.History{Created: v1.Time{Time: time.Now().UTC()}, CreatedBy: in.Cmd + " " + in.Raw})
+	}
+	cfg := &s.cfg.Config
+	switch in.Cmd {
+	case "ARG":
+		k, v, err := b.arg(in, func(k string) (string, bool) {
+			if v, ok := s.args[k]; ok {
+				return v, ok
+			}
+			v, ok := globals[k]
+			return v, ok
+		})
+		if err != nil {
+			return err
+		}
+		s.args[k] = v
+		return nil
+	case "ENV":
+		raw, err := expand(in.Raw)
+		if err != nil {
+			return err
+		}
+		kvs, err := dockerfile.KeyValues(raw, true)
+		if err != nil {
+			return invalid("line %d: ENV %v", in.Line, err)
+		}
+		for _, kv := range kvs {
+			s.setEnv(kv[0], kv[1])
+		}
+	case "LABEL":
+		raw, err := expand(in.Raw)
+		if err != nil {
+			return err
+		}
+		kvs, err := dockerfile.KeyValues(raw, false)
+		if err != nil {
+			return invalid("line %d: LABEL %v", in.Line, err)
+		}
+		if cfg.Labels == nil {
+			cfg.Labels = map[string]string{}
+		}
+		for _, kv := range kvs {
+			cfg.Labels[kv[0]] = kv[1]
+		}
+	case "MAINTAINER":
+		s.cfg.Author = in.Raw
+	case "WORKDIR":
+		wd, err := expand(in.Raw)
+		if err != nil {
+			return err
+		}
+		if !strings.HasPrefix(wd, "/") {
+			wd = path.Join("/", s.workdir, wd)
+		}
+		s.workdir = path.Clean(wd)
+		cfg.WorkingDir = s.workdir
+		host, err := inRoot(s.root, s.workdir)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(host, 0o755); err != nil {
+			return err
+		}
+	case "USER":
+		u, err := expand(in.Raw)
+		if err != nil {
+			return err
+		}
+		if err := b.e.checkUser(u); err != nil {
+			return err
+		}
+		cfg.User = u
+	case "EXPOSE":
+		raw, err := expand(in.Raw)
+		if err != nil {
+			return err
+		}
+		words, err := dockerfile.Words(raw)
+		if err != nil {
+			return invalid("line %d: %v", in.Line, err)
+		}
+		if cfg.ExposedPorts == nil {
+			cfg.ExposedPorts = map[string]struct{}{}
+		}
+		for _, w := range words {
+			if !strings.Contains(w, "/") {
+				w += "/tcp"
+			}
+			cfg.ExposedPorts[w] = struct{}{}
+		}
+	case "VOLUME":
+		vols := in.Args
+		if !in.JSON {
+			raw, err := expand(in.Raw)
+			if err != nil {
+				return err
+			}
+			if vols, err = dockerfile.Words(raw); err != nil {
+				return invalid("line %d: %v", in.Line, err)
+			}
+		}
+		if cfg.Volumes == nil {
+			cfg.Volumes = map[string]struct{}{}
+		}
+		for _, v := range vols {
+			cfg.Volumes[v] = struct{}{}
+		}
+	case "STOPSIGNAL":
+		sig, err := expand(in.Raw)
+		if err != nil {
+			return err
+		}
+		if _, err := parseSignal(sig); err != nil {
+			return err
+		}
+		cfg.StopSignal = sig
+	case "SHELL":
+		if !in.JSON || len(in.Args) == 0 {
+			return invalid("line %d: SHELL requires the arguments to be in JSON form", in.Line)
+		}
+		s.shell = append([]string(nil), in.Args...)
+		cfg.Shell = s.shell
+	case "CMD":
+		cfg.Cmd = b.command(s, in)
+	case "ENTRYPOINT":
+		cfg.Entrypoint = b.command(s, in)
+		// Docker drops an inherited CMD when a stage sets ENTRYPOINT.
+		cfg.Cmd = nil
+	case "HEALTHCHECK":
+		hc, err := healthcheck(s, in)
+		if err != nil {
+			return err
+		}
+		cfg.Healthcheck = hc
+	case "COPY", "ADD":
+		if err := b.copy(ctx, s, in, expand); err != nil {
+			return err
+		}
+	case "RUN":
+		if err := b.runStep(ctx, s, in); err != nil {
+			return err
+		}
+	case "ONBUILD":
+		return unsupported("line %d: ONBUILD is not supported", in.Line)
+	default:
+		return invalid("line %d: unknown instruction: %s", in.Line, in.Cmd)
+	}
+	record()
+	return nil
+}
+
+func (b *builder) command(s *stage, in dockerfile.Instruction) []string {
+	if in.JSON {
+		return append([]string(nil), in.Args...)
+	}
+	if len(in.Args) == 0 {
+		return nil
+	}
+	return append(append([]string(nil), s.shell...), in.Raw)
+}
+
+func healthcheck(s *stage, in dockerfile.Instruction) (*v1.HealthConfig, error) {
+	hc := &v1.HealthConfig{}
+	for k, v := range in.Flags {
+		switch k {
+		case "retries":
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, invalid("line %d: --retries: %v", in.Line, err)
+			}
+			hc.Retries = n
+		case "interval", "timeout", "start-period":
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return nil, invalid("line %d: --%s: %v", in.Line, k, err)
+			}
+			switch k {
+			case "interval":
+				hc.Interval = d
+			case "timeout":
+				hc.Timeout = d
+			default:
+				hc.StartPeriod = d
+			}
+		default:
+			return nil, invalid("line %d: unknown HEALTHCHECK flag --%s", in.Line, k)
+		}
+	}
+	kind, rest, _ := strings.Cut(in.Raw, " ")
+	switch strings.ToUpper(kind) {
+	case "NONE":
+		hc.Test = []string{"NONE"}
+	case "CMD":
+		rest = strings.TrimSpace(rest)
+		var arr []string
+		if strings.HasPrefix(rest, "[") {
+			if ins, err := dockerfile.Parse(strings.NewReader("CMD " + rest)); err == nil && ins[0].JSON {
+				arr = ins[0].Args
+			}
+		}
+		if arr != nil {
+			hc.Test = append([]string{"CMD"}, arr...)
+		} else {
+			hc.Test = []string{"CMD-SHELL", rest}
+		}
+	default:
+		return nil, invalid("line %d: HEALTHCHECK must be NONE or CMD", in.Line)
+	}
+	return hc, nil
+}
+
+func (b *builder) copy(ctx context.Context, s *stage, in dockerfile.Instruction, expand func(string) (string, error)) error {
+	if ch := in.Flags["chown"]; ch != "" {
+		user, _, _ := strings.Cut(ch, ":")
+		if err := b.e.checkUser(user); err != nil {
+			return err
+		}
+	}
+	var mode os.FileMode
+	if m := in.Flags["chmod"]; m != "" {
+		n, err := strconv.ParseUint(m, 8, 32)
+		if err != nil {
+			return invalid("line %d: --chmod=%s: %v", in.Line, m, err)
+		}
+		mode = os.FileMode(n)
+	}
+	args := in.Args
+	if !in.JSON {
+		raw, err := expand(in.Raw)
+		if err != nil {
+			return err
+		}
+		if args, err = dockerfile.Words(raw); err != nil {
+			return invalid("line %d: %v", in.Line, err)
+		}
+	}
+	if len(args) < 2 {
+		return invalid("line %d: %s requires at least two arguments", in.Line, in.Cmd)
+	}
+	srcs, dest := args[:len(args)-1], args[len(args)-1]
+	if !strings.HasPrefix(dest, "/") {
+		dest = path.Join("/", s.workdir, dest)
+		if strings.HasSuffix(args[len(args)-1], "/") {
+			dest += "/"
+		}
+	}
+	destIsDir := strings.HasSuffix(dest, "/") || len(srcs) > 1
+	destHost, err := inRoot(s.root, dest)
+	if err != nil {
+		return err
+	}
+	if fi, err := os.Stat(destHost); err == nil && fi.IsDir() {
+		destIsDir = true
+	}
+
+	srcRoot := b.context
+	if from := in.Flags["from"]; from != "" {
+		if in.Cmd == "ADD" {
+			return invalid("line %d: ADD does not take --from", in.Line)
+		}
+		if st := b.stageNamed(from); st != nil {
+			srcRoot = st.root
+		} else {
+			img, err := b.baseImage(ctx, from)
+			if err != nil {
+				return err
+			}
+			srcRoot = b.e.images.Root(img.ID)
+		}
+	}
+	for _, src := range srcs {
+		if in.Cmd == "ADD" && (strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://")) {
+			if err := b.download(ctx, src, destHost, destIsDir); err != nil {
+				return invalid("line %d: ADD %s: %v", in.Line, src, err)
+			}
+			continue
+		}
+		pattern, err := inRoot(srcRoot, src)
+		if err != nil {
+			return err
+		}
+		matches, err := filepath.Glob(pattern)
+		if err != nil || len(matches) == 0 {
+			return notFound("%s failed: file not found in build context or excluded by .dockerignore: stat %s: file does not exist", in.Cmd, src)
+		}
+		for _, m := range matches {
+			if !within(m, srcRoot) {
+				return invalid("%s failed: %s is outside the build context", in.Cmd, src)
+			}
+			if in.Cmd == "ADD" && isArchive(m) {
+				if err := os.MkdirAll(destHost, 0o755); err != nil {
+					return err
+				}
+				f, err := os.Open(m)
+				if err != nil {
+					return err
+				}
+				err = image.Extract(destHost, f, false)
+				f.Close()
+				if err != nil {
+					return invalid("line %d: ADD %s: %v", in.Line, src, err)
+				}
+				continue
+			}
+			target := destHost
+			fi, err := os.Lstat(m)
+			if err != nil {
+				return err
+			}
+			if destIsDir && !fi.IsDir() {
+				target = filepath.Join(destHost, filepath.Base(m))
+			}
+			if err := copyInto(m, target, mode); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// copyInto copies a file, symlink or directory's contents to dst, applying
+// mode when it is non-zero.
+func copyInto(src, dst string, mode os.FileMode) error {
+	return filepath.Walk(src, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		target := filepath.Join(dst, rel)
+		perm := fi.Mode().Perm()
+		if mode != 0 {
+			perm = mode
+		}
+		switch {
+		case fi.IsDir():
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+			return os.Chmod(target, perm|0o700)
+		case fi.Mode()&os.ModeSymlink != 0:
+			l, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			os.Remove(target)
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			return os.Symlink(l, target)
+		case fi.Mode().IsRegular():
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			in, err := os.Open(p)
+			if err != nil {
+				return err
+			}
+			defer in.Close()
+			os.Remove(target)
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm|0o200)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, in); err != nil {
+				out.Close()
+				return err
+			}
+			if err := out.Close(); err != nil {
+				return err
+			}
+			return os.Chmod(target, perm)
+		}
+		return nil
+	})
+}
+
+// isArchive reports whether ADD unpacks the file: a tar, plain or gzipped.
+func isArchive(p string) bool {
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	br := bufio.NewReader(f)
+	var r io.Reader = br
+	if magic, err := br.Peek(2); err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
+		gz, err := gzip.NewReader(br)
+		if err != nil {
+			return false
+		}
+		defer gz.Close()
+		r = gz
+	}
+	_, err = tar.NewReader(r).Next()
+	return err == nil
+}
+
+// download fetches an ADD URL from the engine, as dockerd fetches it, into
+// a file with mode 0600.
+func (b *builder) download(ctx context.Context, src, dest string, destIsDir bool) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
+	if err != nil {
+		return err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 400 {
+		return fmt.Errorf("%s", res.Status)
+	}
+	if destIsDir {
+		u, _ := url.Parse(src)
+		name := path.Base(u.Path)
+		if name == "/" || name == "." || name == "" {
+			return errors.New("cannot determine a file name for the download")
+		}
+		dest = filepath.Join(dest, name)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, res.Body); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// ensureStack gives the build a stack of its own, so RUN steps reach the
+// internet through an egress proxy no other stack shares.
+func (b *builder) ensureStack() (int, error) {
+	if b.opts.NetworkMode == "none" || !b.e.cfg.Egress {
+		return 0, nil
+	}
+	if b.stack == "" {
+		b.stack = "build-" + strings.ToLower(filepath.Base(b.dir))
+		if _, err := b.e.alloc.Stack(b.stack); err != nil {
+			return 0, err
+		}
+		port, err := b.e.ensureEgress(b.stack)
+		if err != nil {
+			return 0, err
+		}
+		b.proxy = port
+	}
+	return b.proxy, nil
+}
+
+func (b *builder) releaseStack() {
+	if b.stack != "" {
+		b.e.closeEgress(b.stack)
+		b.e.alloc.Release(b.stack)
+	}
+}
+
+func (b *builder) runStep(ctx context.Context, s *stage, in dockerfile.Instruction) error {
+	argv := in.Args
+	if !in.JSON {
+		argv = append(append([]string(nil), s.shell...), in.Raw)
+	}
+	if len(argv) == 0 {
+		return invalid("line %d: RUN requires a command", in.Line)
+	}
+	proxy, err := b.ensureStack()
+	if err != nil {
+		return err
+	}
+	env := b.runEnv(s, proxy)
+	spec := seatbelt.Spec{Root: s.root, StateRoot: b.e.cfg.Root}
+	if proxy != 0 {
+		spec.ConnectPorts = []int{proxy}
+	}
+	w := progressWriter{progress: b.progress}
+	proc, err := runtime.Start(runtime.Spec{
+		Root: s.root, Argv: argv, Env: env, WorkDir: s.workdir,
+		Profile: spec, ProfilePath: filepath.Join(b.dir, "run-"+strconv.Itoa(b.step)+".sb"),
+		Stdout: w, Stderr: w,
+	})
+	if err != nil {
+		return invalid("line %d: RUN %s: %v", in.Line, in.Raw, err)
+	}
+	select {
+	case <-proc.Done():
+	case <-ctx.Done():
+		proc.KillAll()
+		<-proc.Done()
+	}
+	proc.KillAll()
+	proc.DrainIO(outputDrain)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if code := proc.ExitCode(); code != 0 {
+		return invalid("The command '%s' returned a non-zero code: %d", strings.Join(argv, " "), code)
+	}
+	return nil
+}
+
+// runEnv is a RUN step's environment: the stage's variables and build
+// arguments, PATH mapped into the root, and the SANDBOX_* variables.
+func (b *builder) runEnv(s *stage, proxy int) []string {
+	vars := map[string]string{}
+	var order []string
+	set := func(k, v string) {
+		if _, ok := vars[k]; !ok {
+			order = append(order, k)
+		}
+		vars[k] = v
+	}
+	set("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	for k, v := range s.args {
+		set(k, v)
+	}
+	for _, kv := range s.env() {
+		k, v, _ := strings.Cut(kv, "=")
+		set(k, v)
+	}
+	var mapped []string
+	for _, d := range filepath.SplitList(vars["PATH"]) {
+		if strings.HasPrefix(d, "/") {
+			mapped = append(mapped, filepath.Join(s.root, d))
+		}
+	}
+	vars["PATH"] = strings.Join(mapped, ":")
+	home := filepath.Join(s.root, "root")
+	os.MkdirAll(home, 0o755)
+	set("HOME", home)
+	set("SANDBOX_ROOT", s.root)
+	set("SANDBOX_HOST", "127.0.0.1")
+	if proxy != 0 {
+		p := fmt.Sprintf("http://127.0.0.1:%d", proxy)
+		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+			if _, ok := vars[k]; !ok {
+				set(k, p)
+			}
+		}
+		set("NO_PROXY", "localhost,127.0.0.1,::1")
+	}
+	out := make([]string, 0, len(order))
+	for _, k := range order {
+		out = append(out, k+"="+vars[k])
+	}
+	return out
+}
+
+type progressWriter struct{ progress func(string) }
+
+func (w progressWriter) Write(p []byte) (int, error) {
+	w.progress(string(p))
+	return len(p), nil
+}

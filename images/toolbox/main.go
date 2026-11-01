@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,7 +22,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: toolbox serve|health|echo|env|cat|fetch|dial|write|read|list|bind|connect|signal|exec [arg]")
+		fmt.Fprintln(os.Stderr, "usage: toolbox serve|health|echo|env|cat|put|fetch|dial|write|read|list|bind|connect|signal|exec [arg]")
 		os.Exit(2)
 	}
 	arg := ""
@@ -72,6 +73,15 @@ func run(op, arg string) error {
 		}
 		_, err = os.Stdout.Write(b)
 		return err
+	case "put":
+		if len(os.Args) < 4 {
+			return fmt.Errorf("put needs a path and content")
+		}
+		p := sandboxenv.Path(arg)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(p, []byte(os.Args[3]+"\n"), 0o644)
 	case "fetch":
 		c := http.Client{Timeout: 30 * time.Second}
 		res, err := c.Get(arg)

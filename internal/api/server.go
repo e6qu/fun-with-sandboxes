@@ -240,7 +240,7 @@ func (s *Server) routes() {
 			writeError(w, http.StatusNotImplemented, what+" is not supported by this engine")
 		}
 	}
-	m.HandleFunc("POST /build", unsupported("docker build"))
+	m.HandleFunc("POST /build", s.build)
 	m.HandleFunc("POST /session", unsupported("BuildKit sessions"))
 	m.HandleFunc("POST /containers/{id}/commit", unsupported("committing containers"))
 	m.HandleFunc("POST /commit", unsupported("committing containers"))
@@ -249,7 +249,9 @@ func (s *Server) routes() {
 func (s *Server) ping(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Builder-Version", "")
+	// "1" is the classic builder, which the Docker CLI then drives over
+	// POST /build; BuildKit is "2".
+	w.Header().Set("Builder-Version", "1")
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodGet {

@@ -271,7 +271,18 @@ Requests the engine cannot honour return an error rather than being
 accepted: `501` for memory, CPU, PID, ulimit and device limits; privileged
 mode; capabilities; non-default users; `host` networking; non-`bridge`
 network drivers; custom IPAM; UDP publishing; resource updates; and
-`build`.
+BuildKit.
+
+`POST /build` is the classic builder (`internal/dockerfile` parses; the
+engine builds). Each stage starts from an APFS clone of its base image, or an
+empty root for `scratch`. `COPY` and `ADD` resolve paths inside the stage
+root as a chroot would, absolute symlinks from the root, so nothing lands
+outside it; they read the uploaded context, which the CLI has already filtered
+through `.dockerignore`, or an earlier stage or image with `--from`. `RUN`
+executes under a Seatbelt profile confined to the stage root, with internet
+only through an egress proxy on a stack the build owns. The last stage's root
+moves into the image store as the image, its single layer's digest computed
+from a deterministic tar of the tree.
 
 `pause` sends SIGSTOP to each of the container's process groups and `unpause`
 SIGCONT; health checks and `exec` wait while a container is paused, and
@@ -328,6 +339,7 @@ internal/image/       # image store, layer extraction, clonefile
 internal/runtime/     # launch under sandbox-exec, process groups, pipes
 internal/egress/      # the per-stack HTTP proxy to the internet
 internal/procs/       # the host process table, for top and stats
+internal/dockerfile/  # Dockerfile parsing and variable expansion
 internal/engine/      # containers, volumes, networks, exec, health, events
 internal/api/         # the Docker Engine API
 internal/sandboxenv/  # the container side of the SANDBOX_* contract

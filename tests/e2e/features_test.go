@@ -288,3 +288,84 @@ func TestPullFromRegistry(t *testing.T) {
 		t.Fatalf("pulling a non-darwin image: %v", err)
 	}
 }
+
+func TestDockerBuild(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("Dockerfile", `# a two-stage build of the toolbox
+ARG BASE=fws/toolbox:1
+FROM ${BASE} AS first
+RUN ["/toolbox", "put", "/made/in-first", "from the first stage"]
+
+FROM $BASE
+ARG GREETING=hello
+ENV GREETING=$GREETING \
+    WHERE=/srv
+LABEL purpose="e2e build"
+WORKDIR $WHERE
+COPY greeting.txt sub/ ./
+COPY --from=first /made/in-first /etc/first.txt
+RUN ["/toolbox", "put", "/srv/built.txt", "written by RUN"]
+RUN ["/toolbox", "fetch", "https://github.com/"]
+EXPOSE 9090
+CMD ["cat", "/srv/built.txt"]
+`)
+	write("greeting.txt", "greetings from the context\n")
+	write("sub/nested.txt", "nested\n")
+	write("secret.txt", "must not be sent\n")
+	write(".dockerignore", "secret.txt\n")
+
+	build := func(args ...string) (string, error) {
+		cmd := exec.Command("docker", append([]string{"build"}, append(args, dir)...)...)
+		cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=0")
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	out, err := build("-t", "e2e/built:1", "--build-arg", "GREETING=hi")
+	if err != nil {
+		t.Fatalf("docker build: %v\n%s", err, out)
+	}
+	defer docker(t, "rmi", "e2e/built:1")
+	if !strings.Contains(out, "Step 1/") || !strings.Contains(out, "Successfully tagged e2e/built:1") {
+		t.Errorf("build output:\n%s", out)
+	}
+
+	for args, want := range map[string]string{
+		"":                      "written by RUN",
+		"cat /srv/greeting.txt": "greetings from the context",
+		"cat /srv/nested.txt":   "nested",
+		"cat /etc/first.txt":    "from the first stage",
+	} {
+		run := []string{"run", "--rm", "e2e/built:1"}
+		if args != "" {
+			run = append(run, strings.Fields(args)...)
+		}
+		out := mustDocker(t, run...)
+		if want != "" && strings.TrimSpace(out) != want {
+			t.Errorf("docker run e2e/built:1 %s = %q, want %q", args, out, want)
+		}
+	}
+	if _, err := docker(t, "run", "--rm", "e2e/built:1", "cat", "/srv/secret.txt"); err == nil {
+		t.Error(".dockerignore did not keep secret.txt out of the image")
+	}
+	inspect := mustDocker(t, "image", "inspect", "-f", "{{.Os}} {{index .Config.Labels \"purpose\"}} {{.Config.WorkingDir}} {{range .Config.Env}}{{.}},{{end}}", "e2e/built:1")
+	for _, want := range []string{"darwin ", "e2e build", "/srv", "GREETING=hi,", "WHERE=/srv,"} {
+		if !strings.Contains(inspect, want) {
+			t.Errorf("image inspect %q lacks %q", inspect, want)
+		}
+	}
+
+	write("Dockerfile", "FROM fws/toolbox:1\nRUN echo needs a shell\n")
+	if out, err := build("-t", "e2e/noshell:1"); err == nil || !strings.Contains(out, "/bin/sh") {
+		t.Errorf("shell-form RUN in an image without /bin/sh: %v\n%s", err, out)
+	}
+	write("Dockerfile", "FROM fws/toolbox:1\nRUN [\"/toolbox\", \"fetch\", \"https://github.com/\"]\n")
+	if out, err := build("--network", "none", "-t", "e2e/offline:1"); err == nil {
+		t.Errorf("a RUN step reached the internet with --network none:\n%s", out)
+	}
+}

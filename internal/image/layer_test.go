@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 type entry struct {
@@ -127,5 +130,43 @@ func TestNormalize(t *testing.T) {
 		if err != nil || got != want {
 			t.Errorf("Normalize(%q) = %q, %v; want %q", in, got, err, want)
 		}
+	}
+}
+
+func TestAddRootIsContentAddressed(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func() string {
+		d, _ := os.MkdirTemp(s.dir, "root-")
+		os.MkdirAll(filepath.Join(d, "etc"), 0o755)
+		os.WriteFile(filepath.Join(d, "etc", "f"), []byte("same"), 0o644)
+		// Modification times are layer content, so identical trees share them.
+		when := time.Unix(1700000000, 0)
+		for _, p := range []string{filepath.Join(d, "etc", "f"), filepath.Join(d, "etc")} {
+			os.Chtimes(p, when, when)
+		}
+		return d
+	}
+	var cfg v1.ConfigFile
+	cfg.Config.Cmd = []string{"/x"}
+	a, err := s.AddRoot(mk(), cfg, []string{"built:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.AddRoot(mk(), cfg, []string{"built:2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID != b.ID {
+		t.Fatalf("identical roots got different IDs %s and %s", a.ID, b.ID)
+	}
+	got, err := s.Get("built:1")
+	if err != nil || got.ID != a.ID || got.Config.OS != "darwin" || len(got.Config.RootFS.DiffIDs) != 1 {
+		t.Fatalf("Get built:1 = %+v, %v", got, err)
+	}
+	if body, _ := os.ReadFile(filepath.Join(s.Root(a.ID), "etc", "f")); string(body) != "same" {
+		t.Fatalf("stored root lacks its file: %q", body)
 	}
 }
