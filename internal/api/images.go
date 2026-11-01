@@ -167,6 +167,10 @@ func (s *Server) build(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	quiet := q.Get("q") == "1" || q.Get("q") == "true"
+	// Read the upload to its end before returning: the tar reader stops at
+	// the archive's end marker, and with full duplex on, unread body left to
+	// the server races its read of the next request on the connection.
+	defer io.Copy(io.Discard, r.Body)
 	// Progress streams while the context upload is still being read; an
 	// HTTP/1 server closes the request body once a response starts unless
 	// told otherwise.

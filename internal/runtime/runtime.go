@@ -243,10 +243,29 @@ func (p *Process) Signal(sig syscall.Signal) error {
 	return p.cmd.Process.Signal(sig)
 }
 
-// KillAll sends SIGKILL to the whole process group.
+// KillAll sends SIGKILL to the whole process group and returns once the
+// group is gone, so no process of it still writes to the container's files.
 func (p *Process) KillAll() {
-	err := syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
+	pgid := p.cmd.Process.Pid
+	err := syscall.Kill(-pgid, syscall.SIGKILL)
 	if err != nil && !errors.Is(err, syscall.ESRCH) {
 		p.cmd.Process.Kill()
+		return
+	}
+	// macOS has no notification for a process group emptying out, and the
+	// group's other members are not the engine's children to wait for, so
+	// probe it the way kill(1) does. Killed processes leave within
+	// milliseconds; the main process stays until Wait reaps it.
+	deadline := time.Now().Add(groupExitTimeout)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(-pgid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(groupExitProbe)
 	}
 }
+
+const (
+	groupExitTimeout = 10 * time.Second
+	groupExitProbe   = 2 * time.Millisecond
+)
