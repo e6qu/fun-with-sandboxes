@@ -515,10 +515,10 @@ func TestImageLifecycle(t *testing.T) {
 			t.Fatalf("the saved archive lacks %s", f)
 		}
 	}
-	id := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Id}}", "fws-e2e/committed:1"))
+	id := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.ID}}", "fws-e2e/committed:1"))
 	mustDocker(t, "rmi", "fws-e2e/committed:1")
 	mustDocker(t, "load", "-i", saved)
-	if again := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Id}} {{.Descriptor.Digest}}", "fws-e2e/committed:1")); again != id+" "+digest {
+	if again := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.ID}} {{.Descriptor.Digest}}", "fws-e2e/committed:1")); again != id+" "+digest {
 		t.Fatalf("save and load changed the image from %s %s to %s", id, digest, again)
 	}
 
@@ -535,7 +535,7 @@ func TestImageLifecycle(t *testing.T) {
 	if out := mustDocker(t, "run", "--rm", pushed); strings.TrimSpace(out) != "committed" {
 		t.Fatalf("the pushed and pulled image ran with output %q", out)
 	}
-	if again := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Id}} {{.Descriptor.Digest}}", pushed)); again != id+" "+digest {
+	if again := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.ID}} {{.Descriptor.Digest}}", pushed)); again != id+" "+digest {
 		t.Fatalf("push and pull changed the image from %s %s to %s", id, digest, again)
 	}
 }
