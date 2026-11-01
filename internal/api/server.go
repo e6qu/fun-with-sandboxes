@@ -163,6 +163,7 @@ func (s *Server) routes() {
 		}
 		writeJSON(w, http.StatusOK, s.e.ImageList(f))
 	})
+	m.HandleFunc("POST /auth", s.login)
 	m.HandleFunc("POST /images/create", s.imagePull)
 	m.HandleFunc("POST /images/load", s.imageLoad)
 	m.HandleFunc("GET /images/{ref...}", s.imageGet)
@@ -665,6 +666,8 @@ func writeEngineError(w http.ResponseWriter, err error) {
 		w.WriteHeader(http.StatusNotModified)
 	case engine.KindUnsupported:
 		writeError(w, http.StatusNotImplemented, err.Error())
+	case engine.KindUnauthorized:
+		writeError(w, http.StatusUnauthorized, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}

@@ -72,10 +72,14 @@ type record struct {
 }
 
 type Container struct {
-	mu   sync.Mutex
-	rec  record
-	dir  string
-	logs *logStore
+	mu sync.Mutex
+	// nameMu guards rec.Name for readers holding neither e.mu nor mu, such
+	// as event publishing; rename takes it inside both. It guards nothing
+	// else, so holding it never waits on another lock.
+	nameMu sync.RWMutex
+	rec    record
+	dir    string
+	logs   *logStore
 
 	proc    *runtime.Process
 	runDone chan struct{}
@@ -93,8 +97,12 @@ type Container struct {
 	paused bool
 }
 
-func (c *Container) ID() string   { return c.rec.ID }
-func (c *Container) Name() string { return c.rec.Name }
+func (c *Container) ID() string { return c.rec.ID }
+func (c *Container) Name() string {
+	c.nameMu.RLock()
+	defer c.nameMu.RUnlock()
+	return c.rec.Name
+}
 func (c *Container) root() string { return filepath.Join(c.dir, "r") }
 
 func (c *Container) isRunning() bool {
@@ -753,11 +761,11 @@ func (e *Engine) environment(c *Container, extra []string) []string {
 		set(fmt.Sprintf("SANDBOX_PORT_%s=%d", num, c.rec.Ports[p]))
 	}
 	for _, peer := range e.peers(c) {
-		for _, p := range sortedKeys(peer.rec.Ports) {
+		for _, p := range sortedKeys(peer.ports) {
 			num, _, _ := strings.Cut(p, "/")
-			for _, n := range uniqStrings([]string{peer.rec.Service, peer.rec.Name}) {
+			for _, n := range uniqStrings([]string{peer.service, peer.name}) {
 				set(fmt.Sprintf("SANDBOX_%s_HOST=127.0.0.1", envName(n)))
-				set(fmt.Sprintf("SANDBOX_%s_PORT_%s=%d", envName(n), num, peer.rec.Ports[p]))
+				set(fmt.Sprintf("SANDBOX_%s_PORT_%s=%d", envName(n), num, peer.ports[p]))
 			}
 		}
 	}
@@ -768,28 +776,33 @@ func (e *Engine) environment(c *Container, extra []string) []string {
 	return out
 }
 
+// peer is what a container's environment needs of another in its stack.
+type peer struct {
+	service, name, number string
+	ports                 map[string]int
+}
+
 // peers lists the stack's other containers. environment lets later entries
 // win, so each service's replica 1 comes last and SANDBOX_<SERVICE>_* name it.
-func (e *Engine) peers(c *Container) []*Container {
+// It copies what it needs while holding e.mu, under which rename changes a
+// name; services, ports and labels never change after create.
+func (e *Engine) peers(c *Container) []peer {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	var out []*Container
+	var out []peer
 	for _, o := range e.containers {
 		if o != c && o.rec.Stack == c.rec.Stack {
-			out = append(out, o)
+			out = append(out, peer{service: o.rec.Service, name: o.rec.Name, number: o.rec.Config.Labels[LabelContainerNumber], ports: o.rec.Ports})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i].rec, out[j].rec
-		if a.Service != b.Service {
-			return a.Service < b.Service
+		if out[i].service != out[j].service {
+			return out[i].service < out[j].service
 		}
-		return a.Labels()[LabelContainerNumber] > b.Labels()[LabelContainerNumber]
+		return out[i].number > out[j].number
 	})
 	return out
 }
-
-func (r record) Labels() map[string]string { return r.Config.Labels }
 
 func sortedKeys(m map[string]int) []string {
 	out := make([]string, 0, len(m))
@@ -1215,7 +1228,9 @@ func (e *Engine) Rename(ref, name string) error {
 	}
 	c.mu.Lock()
 	old := c.rec.Name
+	c.nameMu.Lock()
 	c.rec.Name = name
+	c.nameMu.Unlock()
 	for _, es := range c.rec.Networks {
 		for i, n := range es.DNSNames {
 			if n == old {
@@ -1250,7 +1265,7 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 	c.mu.Unlock()
 	if running {
 		if !opts.Force {
-			return conflict("cannot remove container \"/%s\": container is running: stop the container before removing or force remove", c.rec.Name)
+			return conflict("cannot remove container \"/%s\": container is running: stop the container before removing or force remove", c.Name())
 		}
 		e.publishContainer(c, events.ActionKill, map[string]string{"signal": "9"})
 		proc.KillAll()
@@ -1342,7 +1357,7 @@ func (c *Container) exitCode() int {
 }
 
 func (e *Engine) publishContainer(c *Container, action events.Action, extra map[string]string) {
-	attrs := map[string]string{"name": c.rec.Name, "image": c.rec.Image}
+	attrs := map[string]string{"name": c.Name(), "image": c.rec.Image}
 	for k, v := range c.rec.Config.Labels {
 		attrs[k] = v
 	}

@@ -612,3 +612,82 @@ func TestDigestReferencesAndPrune(t *testing.T) {
 		t.Fatalf("prune removed the tagged image: %v", err)
 	}
 }
+
+// basicAuthRegistry serves a registry that admits only user:pass, through
+// HTTP basic auth.
+func basicAuthRegistry(t *testing.T, user, pass string) string {
+	t.Helper()
+	reg := registry.New()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, p, ok := r.BasicAuth(); !ok || u != user || p != pass {
+			w.Header().Set("WWW-Authenticate", `Basic realm="e2e"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		reg.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return strings.TrimPrefix(srv.URL, "http://")
+}
+
+func TestRegistryLoginAndImport(t *testing.T) {
+	// The CLI keeps logins in its config directory; this test's stay in its
+	// own.
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	host := basicAuthRegistry(t, "fws", "s3cret")
+	repo := host + "/e2e/private"
+	mustDocker(t, "tag", "fws/toolbox:1", repo+":1")
+	defer docker(t, "rmi", repo+":1")
+
+	if _, err := docker(t, "push", repo+":1"); err == nil {
+		t.Fatal("pushing to a registry that needs credentials succeeded without a login")
+	}
+	if _, err := dockerIn(t, "wrong\n", "login", host, "--username", "fws", "--password-stdin"); err == nil {
+		t.Fatal("docker login accepted a wrong password")
+	}
+	if out, err := dockerIn(t, "s3cret\n", "login", host, "--username", "fws", "--password-stdin"); err != nil || !strings.Contains(out, "Login Succeeded") {
+		t.Fatalf("docker login: %v\n%s", err, out)
+	}
+	if out := mustDocker(t, "push", repo+":1"); !strings.Contains(out, "Pushed") {
+		t.Fatalf("push after login:\n%s", out)
+	}
+	if out := mustDocker(t, "push", repo+":1"); !strings.Contains(out, "Layer already exists") {
+		t.Fatalf("pushing again:\n%s", out)
+	}
+	mustDocker(t, "rmi", repo+":1")
+	mustDocker(t, "pull", repo+":1")
+	mustDocker(t, "logout", host)
+	mustDocker(t, "rmi", repo+":1")
+	if _, err := docker(t, "pull", repo+":1"); err == nil {
+		t.Fatal("pulling from a registry that needs credentials succeeded after logout")
+	}
+	mustDocker(t, "tag", "fws/toolbox:1", repo+":1")
+
+	const box = "fws-e2e-export"
+	mustDocker(t, "create", "--name", box, "fws/toolbox:1")
+	defer docker(t, "rm", "-f", box)
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	pipe := exec.CommandContext(ctx, "sh", "-c", `docker export `+box+` | docker import --change 'ENTRYPOINT ["/toolbox"]' --message "from an export" - fws-e2e/imported:1`)
+	if out, err := pipe.CombinedOutput(); err != nil || !strings.Contains(string(out), "sha256:") {
+		t.Fatalf("docker export | docker import: %v\n%s", err, out)
+	}
+	defer docker(t, "rmi", "fws-e2e/imported:1")
+	if got := strings.TrimSpace(mustDocker(t, "run", "--rm", "fws-e2e/imported:1", "echo", "imported")); got != "imported" {
+		t.Fatalf("the imported image ran with output %q", got)
+	}
+	if h := mustDocker(t, "history", "fws-e2e/imported:1"); !strings.Contains(h, "from an export") {
+		t.Fatalf("history of the imported image:\n%s", h)
+	}
+}
+
+// dockerIn runs the Docker CLI with stdin.
+func dockerIn(t *testing.T, stdin string, args ...string) (string, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}

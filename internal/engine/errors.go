@@ -15,6 +15,7 @@ const (
 	KindConflict
 	KindNotModified
 	KindUnsupported
+	KindUnauthorized
 )
 
 type Error struct {
@@ -33,6 +34,9 @@ func notFound(format string, a ...any) error    { return errorf(KindNotFound, fo
 func conflict(format string, a ...any) error    { return errorf(KindConflict, format, a...) }
 func notModified(format string, a ...any) error { return errorf(KindNotModified, format, a...) }
 func unsupported(format string, a ...any) error { return errorf(KindUnsupported, format, a...) }
+func unauthorized(format string, a ...any) error {
+	return errorf(KindUnauthorized, format, a...)
+}
 
 // KindOf returns the error's kind, KindInternal for errors the engine did not
 // classify.

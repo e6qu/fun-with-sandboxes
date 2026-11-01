@@ -2,17 +2,13 @@ package engine
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
 	imagetypes "github.com/moby/moby/api/types/image"
@@ -134,28 +130,8 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 	if opts.Config != nil {
 		applyContainerConfig(&cfg.Config, *opts.Config)
 	}
-	if len(opts.Changes) > 0 {
-		// The changes edit the config; the commit itself is the one history
-		// entry they add up to.
-		history := len(cfg.History)
-		st := &stage{root: dst, cfg: cfg, args: map[string]string{}, shell: []string{"/bin/sh", "-c"}, workdir: cfg.Config.WorkingDir}
-		b := &builder{e: e, progress: func(string) {}}
-		for _, ch := range opts.Changes {
-			ins, err := dockerfile.Parse(strings.NewReader(ch))
-			if err != nil {
-				return "", invalid("invalid change %q: %v", ch, err)
-			}
-			for _, in := range ins {
-				if !commitChanges[in.Cmd] {
-					return "", invalid("%s is not a valid change command", in.Cmd)
-				}
-				if err := b.apply(ctx, st, in, nil); err != nil {
-					return "", err
-				}
-			}
-		}
-		cfg = st.cfg
-		cfg.History = cfg.History[:history]
+	if cfg, err = e.applyChanges(ctx, cfg, opts.Changes); err != nil {
+		return "", err
 	}
 	now := time.Now().UTC()
 	cfg.Created = v1.Time{Time: now}
@@ -168,6 +144,34 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 	}
 	e.publishContainer(c, events.ActionCommit, map[string]string{"comment": opts.Comment, "imageID": img.ID})
 	return img.ID, nil
+}
+
+// applyChanges applies `--change` Dockerfile instructions, as docker commit
+// and docker import take them, to an image config. They edit the config
+// alone: the image's files and history stay as they are.
+func (e *Engine) applyChanges(ctx context.Context, cfg v1.ConfigFile, changes []string) (v1.ConfigFile, error) {
+	if len(changes) == 0 {
+		return cfg, nil
+	}
+	history := len(cfg.History)
+	st := &stage{cfg: cfg, args: map[string]string{}, shell: []string{"/bin/sh", "-c"}, workdir: cfg.Config.WorkingDir, configOnly: true}
+	b := &builder{e: e, progress: func(string) {}}
+	for _, ch := range changes {
+		ins, err := dockerfile.Parse(strings.NewReader(ch))
+		if err != nil {
+			return cfg, invalid("invalid change %q: %v", ch, err)
+		}
+		for _, in := range ins {
+			if !commitChanges[in.Cmd] {
+				return cfg, invalid("%s is not a valid change command", in.Cmd)
+			}
+			if err := b.apply(ctx, st, in, nil); err != nil {
+				return cfg, err
+			}
+		}
+	}
+	st.cfg.History = st.cfg.History[:history]
+	return st.cfg, nil
 }
 
 // applyContainerConfig carries a container config's set fields into an image
@@ -257,60 +261,6 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
-}
-
-// PushResult is what a push reports at its end.
-type PushResult struct {
-	Tag, Digest string
-	Size        int64
-}
-
-// Push sends a local tag to its registry; with no tag it pushes every tag of
-// the repository, as docker push does.
-func (e *Engine) Push(ctx context.Context, repo, tag string, auth authn.Authenticator, progress func(string)) ([]PushResult, error) {
-	repoRef, err := name.NewRepository(repo)
-	if err != nil {
-		return nil, invalid("invalid reference format: %v", err)
-	}
-	wantRepo := image.Familiar(repoRef)
-	var tags []string
-	for _, img := range e.images.List() {
-		for _, t := range img.RepoTags {
-			r, tg := t[:strings.LastIndex(t, ":")], t[strings.LastIndex(t, ":")+1:]
-			if r == wantRepo && (tag == "" || tg == tag) {
-				tags = append(tags, tg)
-			}
-		}
-	}
-	if len(tags) == 0 {
-		return nil, notFound("tag does not exist: %s", repo)
-	}
-	progress(fmt.Sprintf("The push refers to repository [%s]", repoRef.Name()))
-	var out []PushResult
-	for _, tg := range tags {
-		img, rec, err := e.images.V1Image(wantRepo + ":" + tg)
-		if err != nil {
-			return out, err
-		}
-		dst := repoRef.Tag(tg)
-		if err := remote.Write(dst, img, remote.WithAuth(auth), remote.WithContext(ctx)); err != nil {
-			return out, err
-		}
-		dg, err := img.Digest()
-		if err != nil {
-			return out, err
-		}
-		m, err := img.RawManifest()
-		if err != nil {
-			return out, err
-		}
-		if err := e.images.AddReference(rec.ID, wantRepo+"@"+dg.String()); err != nil {
-			return out, err
-		}
-		progress(fmt.Sprintf("%s: digest: %s size: %d", tg, dg, len(m)))
-		out = append(out, PushResult{Tag: tg, Digest: dg.String(), Size: int64(len(m))})
-	}
-	return out, nil
 }
 
 // History lists an image's history, newest first, as docker history does,

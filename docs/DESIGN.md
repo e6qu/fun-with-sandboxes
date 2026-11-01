@@ -132,6 +132,14 @@ and loaded images keep their manifests, configs and layers byte for byte, so
 their digests and IDs (the config digest, as in Docker) survive a save, load,
 push or pull. Removing an image removes the blobs no other image refers to.
 
+Registry credentials come from the client, as dockerd takes them: `docker
+login` sends them to `POST /auth`, which checks them against the registry,
+through its token exchange when it has one, before the CLI stores them; the
+CLI then sends them with every pull and push in `X-Registry-Auth`, and with a
+classic build, for every registry, in `X-Registry-Config`. The engine keeps
+none of its own. A push reports each layer as dockerd does, `Layer already
+exists` for one the repository holds and `Pushed` for one it uploads.
+
 Besides tags, an image carries repository@digest references (`RepoDigests`):
 the digest a pull resolved, which is the index's when a multi-platform index
 was pulled, and the manifest digest a push wrote. Any reference, tag or
@@ -281,11 +289,13 @@ with or without the `/v1.xx` prefix:
   (`label`, `until`)
 - Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached,
   detached, TTY), `/exec/{id}/resize`, `GET /exec/{id}/json`
-- Images: `json`, `create` (registry pull for `darwin/<arch>`), `load`,
-  `{ref}/json`, `{ref}/tag`, `{ref}/history`, `get` and `{ref}/get`
-  (`docker save`), `{ref}/push` (with `X-Registry-Auth`), `prune`
-  (`dangling`, `until`, `label`), `DELETE`; references may be
-  repository@digest
+- Images: `json`, `create` (registry pull for `darwin/<arch>` with
+  `X-Registry-Auth`, or `docker import` with `fromSrc` `-` or an http(s)
+  URL, `changes` and `message`), `load`, `{ref}/json`, `{ref}/tag`,
+  `{ref}/history`, `get` and `{ref}/get` (`docker save`), `{ref}/push`
+  (with `X-Registry-Auth`), `prune` (`dangling`, `until`, `label`),
+  `DELETE`; references may be repository@digest
+- Registries: `POST /auth` (`docker login`)
 - Containers to images: `POST /commit` (with `changes`, pausing by default)
   and `GET /containers/{id}/export`
 - Networks: `json`, `create`, `{id}`, `connect`, `disconnect`, `prune`, `DELETE`

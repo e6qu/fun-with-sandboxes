@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -70,7 +71,7 @@ func TestPullRecordsDigestsAndReusesLayers(t *testing.T) {
 	childDigest := push(t, host+"/r/child:1", child)
 
 	var p progressLog
-	got, err := s.Pull(context.Background(), host+"/r/base:1", p.record)
+	got, err := s.Pull(context.Background(), host+"/r/base:1", authn.Anonymous, p.record)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,20 +88,20 @@ func TestPullRecordsDigestsAndReusesLayers(t *testing.T) {
 	}
 
 	p = nil
-	again, err := s.Pull(context.Background(), host+"/r/base:1", p.record)
+	again, err := s.Pull(context.Background(), host+"/r/base:1", authn.Anonymous, p.record)
 	if err != nil || !again.UpToDate || len(p) != 0 {
 		t.Fatalf("pulling again: %+v %v, progress %v", again, err, p)
 	}
 
 	p = nil
-	if _, err := s.Pull(context.Background(), host+"/r/child:1", p.record); err != nil {
+	if _, err := s.Pull(context.Background(), host+"/r/child:1", authn.Anonymous, p.record); err != nil {
 		t.Fatal(err)
 	}
 	if p.count("Already exists") != 2 || p.count("Pulling fs layer") != 1 {
 		t.Fatalf("pulling the child: progress %v, want 2 layers reused and 1 pulled", p)
 	}
 
-	byDigest, err := s.Pull(context.Background(), host+"/r/child@"+childDigest.String(), func(string, string) {})
+	byDigest, err := s.Pull(context.Background(), host+"/r/child@"+childDigest.String(), authn.Anonymous, func(string, string) {})
 	if err != nil || !byDigest.UpToDate || len(byDigest.Image.RepoTags) != 1 {
 		t.Fatalf("pulling by digest: %+v, %v", byDigest, err)
 	}
@@ -125,7 +126,7 @@ func TestPullChoosesThePlatformFromAnIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	idxDigest, _ := idx.Digest()
-	got, err := s.Pull(context.Background(), r.String(), func(string, string) {})
+	got, err := s.Pull(context.Background(), r.String(), authn.Anonymous, func(string, string) {})
 	if err != nil {
 		t.Fatal(err)
 	}

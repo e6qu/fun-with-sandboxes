@@ -35,6 +35,8 @@ type BuildOptions struct {
 	Target     string
 	// NetworkMode "none" gives RUN steps no internet.
 	NetworkMode string
+	// Registries holds the credentials the CLI sent for pulling base images.
+	Registries image.Credentials
 }
 
 type stage struct {
@@ -42,12 +44,15 @@ type stage struct {
 	root string
 	// base is the image the stage builds on, empty for scratch; layers are
 	// the uncompressed layer tars the stage's steps added on top of it.
-	base    string
-	layers  []string
-	cfg     v1.ConfigFile
-	args    map[string]string
-	shell   []string
-	workdir string
+	base   string
+	layers []string
+	// configOnly marks a stage that edits a config alone, as docker commit
+	// and import changes do: WORKDIR makes no directory.
+	configOnly bool
+	cfg        v1.ConfigFile
+	args       map[string]string
+	shell      []string
+	workdir    string
 }
 
 func (s *stage) env() []string { return s.cfg.Config.Env }
@@ -320,7 +325,7 @@ func (b *builder) baseImage(ctx context.Context, ref string) (image.Image, error
 		return img, nil
 	}
 	b.progress(fmt.Sprintf("Pulling %s\n", ref))
-	pulled, err := b.e.images.Pull(ctx, ref, func(id, status string) { b.progress(id + ": " + status + "\n") })
+	pulled, err := b.e.images.Pull(ctx, ref, b.opts.Registries.For(ref), func(id, status string) { b.progress(id + ": " + status + "\n") })
 	if err != nil {
 		return image.Image{}, notFound("pull access denied or image not found for %s: %v", ref, err)
 	}
@@ -393,6 +398,9 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		}
 		s.workdir = path.Clean(wd)
 		cfg.WorkingDir = s.workdir
+		if s.configOnly {
+			break
+		}
 		host, err := rootfs.Join(s.root, s.workdir)
 		if err != nil {
 			return err
