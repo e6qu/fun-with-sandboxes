@@ -6,6 +6,9 @@ package image
 
 import (
 	"archive/tar"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,9 +36,12 @@ var Platform = v1.Platform{OS: "darwin", Architecture: runtime.GOARCH}
 
 // Image is a stored image. Its ID is its config's digest, as in Docker.
 type Image struct {
-	ID       string    `json:"id"`
-	RepoTags []string  `json:"repoTags"`
-	Created  time.Time `json:"created"`
+	ID       string   `json:"id"`
+	RepoTags []string `json:"repoTags"`
+	// RepoDigests are repository@digest references: the digest a pull
+	// resolved, or a push wrote, in that repository.
+	RepoDigests []string  `json:"repoDigests"`
+	Created     time.Time `json:"created"`
 	// Size is the sum of LayerSizes.
 	Size   int64         `json:"size"`
 	Config v1.ConfigFile `json:"config"`
@@ -88,22 +94,47 @@ func (s *Store) Root(id string) string {
 }
 
 // Normalize turns a user reference into the familiar form Docker shows in
-// RepoTags, e.g. "postgres" -> "postgres:latest".
+// RepoTags and RepoDigests, e.g. "postgres" -> "postgres:latest" and
+// "docker.io/library/postgres@sha256:…" -> "postgres@sha256:…".
 func Normalize(ref string) (string, error) {
 	r, err := name.ParseReference(ref, name.WithDefaultTag("latest"))
 	if err != nil {
 		return "", err
 	}
-	tag, ok := r.(name.Tag)
-	if !ok {
-		return r.Name(), nil
+	switch r := r.(type) {
+	case name.Tag:
+		return Familiar(r.Context()) + ":" + r.TagStr(), nil
+	case name.Digest:
+		return Familiar(r.Context()) + "@" + r.DigestStr(), nil
 	}
-	repo := tag.Context()
-	n := repo.RegistryStr() + "/" + repo.RepositoryStr()
+	return r.Name(), nil
+}
+
+// Familiar names a repository as Docker shows it: Docker Hub's registry and
+// its library/ namespace left out.
+func Familiar(repo name.Repository) string {
 	if repo.RegistryStr() == name.DefaultRegistry {
-		n = strings.TrimPrefix(repo.RepositoryStr(), "library/")
+		return strings.TrimPrefix(repo.RepositoryStr(), "library/")
 	}
-	return n + ":" + tag.TagStr(), nil
+	return repo.RegistryStr() + "/" + repo.RepositoryStr()
+}
+
+// isDigestRef reports whether a normalized reference is repository@digest.
+func isDigestRef(ref string) bool { return strings.Contains(ref, "@") }
+
+// Repository is a normalized reference's repository.
+func Repository(ref string) string {
+	if i := strings.LastIndex(ref, "@"); i >= 0 {
+		return ref[:i]
+	}
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		return ref[:i]
+	}
+	return ref
+}
+
+func (img *Image) refs() []string {
+	return append(append([]string(nil), img.RepoTags...), img.RepoDigests...)
 }
 
 // Get resolves a reference, a full ID, or an unambiguous ID prefix.
@@ -123,7 +154,7 @@ func (s *Store) getLocked(ref string) (*Image, error) {
 	}
 	if n, err := Normalize(ref); err == nil {
 		for _, img := range s.idx {
-			for _, t := range img.RepoTags {
+			for _, t := range img.refs() {
 				if t == n {
 					return img, nil
 				}
@@ -165,27 +196,60 @@ func (s *Store) Tag(ref, tag string) error {
 	if err != nil {
 		return err
 	}
+	if isDigestRef(n) {
+		return fmt.Errorf("refusing to create a tag with a digest reference")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	img, err := s.getLocked(ref)
 	if err != nil {
 		return err
 	}
-	s.untagLocked(n)
-	img.RepoTags = append(img.RepoTags, n)
+	s.addRefsLocked(img, []string{n})
+	return s.saveLocked()
+}
+
+// addRefsLocked points normalized references, tags or digests, at img,
+// moving each off any image that held it.
+func (s *Store) addRefsLocked(img *Image, refs []string) {
+	for _, n := range refs {
+		s.untagLocked(n)
+		if isDigestRef(n) {
+			img.RepoDigests = append(img.RepoDigests, n)
+		} else {
+			img.RepoTags = append(img.RepoTags, n)
+		}
+	}
+}
+
+// AddReference points a normalized repository@digest reference at the image
+// id, as a push records the digest it wrote.
+func (s *Store) AddReference(id, ref string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	img, ok := s.idx[id]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	s.addRefsLocked(img, []string{ref})
 	return s.saveLocked()
 }
 
 func (s *Store) untagLocked(n string) {
 	for _, other := range s.idx {
-		kept := other.RepoTags[:0]
-		for _, t := range other.RepoTags {
-			if t != n {
-				kept = append(kept, t)
-			}
-		}
-		other.RepoTags = kept
+		other.RepoTags = without(other.RepoTags, n)
+		other.RepoDigests = without(other.RepoDigests, n)
 	}
+}
+
+func without(list []string, v string) []string {
+	kept := list[:0]
+	for _, t := range list {
+		if t != v {
+			kept = append(kept, t)
+		}
+	}
+	return kept
 }
 
 // Remove deletes the image. inUse reports whether a container still needs it.
@@ -200,9 +264,11 @@ type Removal struct {
 	Deleted  bool
 }
 
-// Remove follows `docker rmi`: naming one of several tags drops only that
-// tag; naming the last tag or the ID deletes the image, which no container
-// may still use, and an ID with several tags needs force.
+// Remove follows `docker rmi`: naming a reference (a tag or a
+// repository@digest) of an image that has others drops only that reference,
+// and the repository's digest references with its last tag; naming the last
+// reference or the ID deletes the image, which no container may still use,
+// and an ID referenced from several repositories needs force.
 func (s *Store) Remove(ref string, force bool, inUse func(id string) bool) (Removal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -210,23 +276,40 @@ func (s *Store) Remove(ref string, force bool, inUse func(id string) bool) (Remo
 	if err != nil {
 		return Removal{}, err
 	}
-	tag := ""
+	var untagged []string
+	named := ""
 	if n, err := Normalize(ref); err == nil {
-		for _, t := range img.RepoTags {
+		for _, t := range img.refs() {
 			if t == n {
-				tag = n
+				named = n
 			}
 		}
 	}
-	if tag != "" && len(img.RepoTags) > 1 {
-		s.untagLocked(tag)
-		return Removal{Image: *img, Untagged: []string{tag}}, s.saveLocked()
+	if named != "" && len(img.refs()) > 1 {
+		untagged = append(untagged, named)
+		s.untagLocked(named)
+		if !isDigestRef(named) && !hasTagIn(img.RepoTags, Repository(named)) {
+			for _, d := range append([]string(nil), img.RepoDigests...) {
+				if Repository(d) == Repository(named) {
+					s.untagLocked(d)
+					untagged = append(untagged, d)
+				}
+			}
+		}
+		if len(img.refs()) > 0 {
+			return Removal{Image: *img, Untagged: untagged}, s.saveLocked()
+		}
 	}
-	if tag == "" && len(img.RepoTags) > 1 && !force {
+	if named == "" && len(repos(img.refs())) > 1 && !force {
 		return Removal{}, fmt.Errorf("%w: unable to delete %s (must be forced) - image is referenced in multiple repositories", ErrConflict, strings.TrimPrefix(img.ID, "sha256:")[:12])
 	}
 	if inUse(img.ID) {
 		return Removal{}, fmt.Errorf("%w: unable to remove image %s: image is being used by a container", ErrConflict, ref)
+	}
+	for _, r := range img.refs() {
+		if !contains(untagged, r) {
+			untagged = append(untagged, r)
+		}
 	}
 	if err := os.RemoveAll(s.Root(img.ID)); err != nil {
 		return Removal{}, err
@@ -237,24 +320,165 @@ func (s *Store) Remove(ref string, force bool, inUse func(id string) bool) (Remo
 	}
 	s.blobs.Lock()
 	defer s.blobs.Unlock()
-	return Removal{Image: *img, Untagged: img.RepoTags, Deleted: true}, s.collectLocked()
+	return Removal{Image: *img, Untagged: untagged, Deleted: true}, s.collectLocked()
 }
 
-// Pull fetches the image for the engine's platform from its registry.
-func (s *Store) Pull(ref string) (Image, error) {
+func hasTagIn(tags []string, repo string) bool {
+	for _, t := range tags {
+		if Repository(t) == repo {
+			return true
+		}
+	}
+	return false
+}
+
+func repos(refs []string) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range refs {
+		out[Repository(r)] = true
+	}
+	return out
+}
+
+func contains(list []string, v string) bool {
+	for _, t := range list {
+		if t == v {
+			return true
+		}
+	}
+	return false
+}
+
+// Progress receives a pull's progress as Docker reports it: id is a layer's
+// short digest, status what happened to it.
+type Progress func(id, status string)
+
+// Pulled is the outcome of a pull.
+type Pulled struct {
+	Image Image
+	// Ref is the normalized reference pulled.
+	Ref string
+	// Digest is what the reference resolved to in the registry: the image's
+	// manifest, or the index the engine's platform was chosen from.
+	Digest string
+	// UpToDate reports that the reference already named this image.
+	UpToDate bool
+}
+
+// Pull fetches the image for the engine's platform from its registry,
+// downloading only the layers the store lacks, and records the reference
+// and the repository@digest it resolved to.
+func (s *Store) Pull(ctx context.Context, ref string, progress Progress) (Pulled, error) {
 	r, err := name.ParseReference(ref, name.WithDefaultTag("latest"))
 	if err != nil {
-		return Image{}, err
+		return Pulled{}, err
 	}
-	img, err := remote.Image(r, remote.WithPlatform(Platform), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	n, err := Normalize(r.String())
 	if err != nil {
-		return Image{}, err
+		return Pulled{}, err
 	}
-	n, err := Normalize(ref)
+	desc, err := remote.Get(r, remote.WithContext(ctx), remote.WithPlatform(Platform), remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	if err != nil {
-		return Image{}, err
+		return Pulled{}, err
 	}
-	return s.Add(img, []string{n}, "")
+	img, err := desc.Image()
+	if err != nil {
+		return Pulled{}, err
+	}
+	refs := []string{Familiar(r.Context()) + "@" + desc.Digest.String()}
+	if !isDigestRef(n) {
+		refs = append([]string{n}, refs...)
+	}
+	before, beforeErr := s.Get(n)
+
+	s.blobs.RLock()
+	defer s.blobs.RUnlock()
+	md, err := img.Digest()
+	if err != nil {
+		return Pulled{}, err
+	}
+	var fetched []string
+	if beforeErr != nil || before.Manifest.Digest != md {
+		if fetched, err = s.fetchLayers(img, progress); err != nil {
+			return Pulled{}, err
+		}
+	}
+	added, err := s.add(img, refs, "")
+	if err != nil {
+		return Pulled{}, err
+	}
+	for _, id := range fetched {
+		progress(id, "Pull complete")
+	}
+	return Pulled{Image: added, Ref: n, Digest: desc.Digest.String(), UpToDate: beforeErr == nil && before.ID == added.ID}, nil
+}
+
+// fetchLayers downloads the image's layers the store lacks into the layout,
+// reporting each, and returns the short IDs of those it downloaded.
+func (s *Store) fetchLayers(img v1.Image, progress Progress) ([]string, error) {
+	layers, err := img.Layers()
+	if err != nil {
+		return nil, err
+	}
+	var missing []v1.Layer
+	var ids []string
+	for _, l := range layers {
+		dg, err := l.Digest()
+		if err != nil {
+			return nil, err
+		}
+		id := dg.Hex[:12]
+		if _, err := os.Stat(s.blobPath(dg)); err == nil {
+			progress(id, "Already exists")
+			continue
+		}
+		progress(id, "Pulling fs layer")
+		missing = append(missing, l)
+		ids = append(ids, id)
+	}
+	for i, l := range missing {
+		progress(ids[i], "Downloading")
+		if err := s.writeLayer(l); err != nil {
+			return nil, err
+		}
+		progress(ids[i], "Download complete")
+	}
+	return ids, nil
+}
+
+// writeLayer writes a layer's compressed blob into the layout through a
+// temporary file, checking its digest before it takes the blob's name.
+func (s *Store) writeLayer(l v1.Layer) error {
+	dg, err := l.Digest()
+	if err != nil {
+		return err
+	}
+	rc, err := l.Compressed()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	dir := filepath.Dir(s.blobPath(dg))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".download-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	h := sha256.New()
+	_, err = io.Copy(io.MultiWriter(tmp, h), rc)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != dg.Hex {
+		return fmt.Errorf("layer %s downloaded with digest sha256:%s", dg, got)
+	}
+	return os.Rename(tmp.Name(), s.blobPath(dg))
 }
 
 // Load imports every image in a `docker save` archive: an OCI image
@@ -475,11 +699,18 @@ func readManifest(path string) ([]manifestEntry, error) {
 	}
 }
 
-// Add stores img under tags. Its blobs go into the layout as they are, so
-// its manifest digest stays the same. root, when set, is the image already
-// unpacked, which the store takes over; otherwise the store unpacks the
-// layers.
-func (s *Store) Add(img v1.Image, tags []string, root string) (Image, error) {
+// Add stores img under refs, normalized tags or repository@digest
+// references. Its blobs go into the layout as they are, so its manifest
+// digest stays the same. root, when set, is the image already unpacked,
+// which the store takes over; otherwise the store unpacks the layers.
+func (s *Store) Add(img v1.Image, refs []string, root string) (Image, error) {
+	s.blobs.RLock()
+	defer s.blobs.RUnlock()
+	return s.add(img, refs, root)
+}
+
+// add is Add with the blobs lock held shared.
+func (s *Store) add(img v1.Image, refs []string, root string) (Image, error) {
 	discard := func() {
 		if root != "" {
 			os.RemoveAll(root)
@@ -500,20 +731,17 @@ func (s *Store) Add(img v1.Image, tags []string, root string) (Image, error) {
 		return Image{}, err
 	}
 	id := digest.String()
-	if out, ok, err := s.retag(id, tags); ok {
+	if out, ok, err := s.retag(id, refs); ok {
 		discard()
 		return out, err
 	}
-
-	s.blobs.RLock()
-	defer s.blobs.RUnlock()
 	rec, err := s.unpack(img, root)
 	if err != nil {
 		return Image{}, err
 	}
 	rec.ID, rec.Created, rec.Config = id, cfg.Created.Time, *cfg
 
-	if out, ok, err := s.retag(id, tags); ok {
+	if out, ok, err := s.retag(id, refs); ok {
 		// Another add stored the same image meanwhile.
 		os.RemoveAll(rec.stage)
 		return out, err
@@ -524,26 +752,21 @@ func (s *Store) Add(img v1.Image, tags []string, root string) (Image, error) {
 		os.RemoveAll(rec.stage)
 		return Image{}, err
 	}
-	for _, t := range tags {
-		s.untagLocked(t)
-	}
-	rec.Image.RepoTags = tags
+	rec.Image.RepoTags, rec.Image.RepoDigests = []string{}, []string{}
 	s.idx[id] = &rec.Image
+	s.addRefsLocked(&rec.Image, refs)
 	return rec.Image, s.saveLocked()
 }
 
-// retag adds tags to the image id when the store holds it already.
-func (s *Store) retag(id string, tags []string) (Image, bool, error) {
+// retag adds refs to the image id when the store holds it already.
+func (s *Store) retag(id string, refs []string) (Image, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existing, ok := s.idx[id]
 	if !ok {
 		return Image{}, false, nil
 	}
-	for _, t := range tags {
-		s.untagLocked(t)
-		existing.RepoTags = append(existing.RepoTags, t)
-	}
+	s.addRefsLocked(existing, refs)
 	return *existing, true, s.saveLocked()
 }
 

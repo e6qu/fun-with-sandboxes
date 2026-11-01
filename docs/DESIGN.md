@@ -132,6 +132,16 @@ and loaded images keep their manifests, configs and layers byte for byte, so
 their digests and IDs (the config digest, as in Docker) survive a save, load,
 push or pull. Removing an image removes the blobs no other image refers to.
 
+Besides tags, an image carries repository@digest references (`RepoDigests`):
+the digest a pull resolved, which is the index's when a multi-platform index
+was pulled, and the manifest digest a push wrote. Any reference, tag or
+digest, names the image for `run`, `inspect`, `tag` and `rmi`. `rmi` follows
+dockerd: it drops a reference while others remain, and a repository's digest
+references go with its last tag. A pull resolves the reference first and
+reports `Image is up to date` when it names the image already; otherwise it
+downloads only the layers the store lacks, reporting the rest as `Already
+exists`, as dockerd's pull stream does.
+
 An image is also unpacked once, all layers applied in order with OCI
 whiteouts, into `images/roots/<digest>`. On create, the engine gives the container an
 **APFS clone** of it (`clonefile(2)`): copy-on-write, constant time, and near
@@ -268,11 +278,14 @@ with or without the `/v1.xx` prefix:
   `attach` (hijacked, multiplexed or raw), `archive` (`HEAD`, `GET`, `PUT`:
   `docker cp`), `top`, `stats` (streamed every second, or one sample),
   `pause`, `unpause`, `update` (restart policy), `DELETE`, `prune`
+  (`label`, `until`)
 - Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached,
   detached, TTY), `/exec/{id}/resize`, `GET /exec/{id}/json`
 - Images: `json`, `create` (registry pull for `darwin/<arch>`), `load`,
   `{ref}/json`, `{ref}/tag`, `{ref}/history`, `get` and `{ref}/get`
-  (`docker save`), `{ref}/push` (with `X-Registry-Auth`), `DELETE`
+  (`docker save`), `{ref}/push` (with `X-Registry-Auth`), `prune`
+  (`dangling`, `until`, `label`), `DELETE`; references may be
+  repository@digest
 - Containers to images: `POST /commit` (with `changes`, pausing by default)
   and `GET /containers/{id}/export`
 - Networks: `json`, `create`, `{id}`, `connect`, `disconnect`, `prune`, `DELETE`

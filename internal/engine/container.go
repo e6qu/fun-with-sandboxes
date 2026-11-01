@@ -1360,8 +1360,16 @@ func (e *Engine) Prune(f Filters) ([]string, uint64, error) {
 		c.mu.Lock()
 		stopped := c.rec.State.Status == container.StateExited || c.rec.State.Status == container.StateCreated || c.rec.State.Status == container.StateDead
 		labels := c.rec.Config.Labels
+		created := c.rec.Created
 		c.mu.Unlock()
 		if !stopped || !f.matchLabels(labels) {
+			continue
+		}
+		before, err := f.until(created)
+		if err != nil {
+			return removed, reclaimed, err
+		}
+		if !before {
 			continue
 		}
 		size := dirSize(c.dir)

@@ -5,13 +5,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
@@ -55,6 +58,7 @@ func loadImage(t *testing.T, e *engine.Engine, tag string) {
 	cfg, _ := img.ConfigFile()
 	cfg.OS, cfg.Architecture = image.Platform.OS, image.Platform.Architecture
 	cfg.Config.Cmd = []string{"/bin/true"}
+	cfg.Created = v1.Time{Time: time.Now().UTC()}
 	if img, err = mutate.ConfigFile(img, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -289,4 +293,91 @@ func mustRef(t *testing.T, s string) name.Reference {
 		t.Fatal(err)
 	}
 	return r
+}
+
+// The pull stream reports each layer, the resolved digest and whether the
+// image changed, as dockerd's does; a repeat pull is up to date.
+func TestPullStreamAndDigestReferences(t *testing.T) {
+	ts, e := newEngineServer(t)
+	reg := httptest.NewServer(registry.New(registry.Logger(log.New(io.Discard, "", 0))))
+	defer reg.Close()
+	host := strings.TrimPrefix(reg.URL, "http://")
+	layer, _ := random.Layer(64, types.OCILayer)
+	img, _ := mutate.AppendLayers(empty.Image, layer)
+	cfg, _ := img.ConfigFile()
+	cfg.OS, cfg.Architecture = image.Platform.OS, image.Platform.Architecture
+	img, _ = mutate.ConfigFile(img, cfg)
+	if err := remote.Write(mustRef(t, host+"/e2e/p:1"), img); err != nil {
+		t.Fatal(err)
+	}
+	digest, _ := img.Digest()
+
+	pull := func() string {
+		res, err := http.Post(ts.URL+"/images/create?fromImage="+host+"/e2e/p&tag=1", "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return string(b)
+	}
+	out := pull()
+	for _, want := range []string{`"status":"Pulling from e2e/p","id":"1"`, `"status":"Pulling fs layer"`, `"status":"Pull complete"`, `"status":"Digest: ` + digest.String() + `"`, `Status: Downloaded newer image for ` + host + `/e2e/p:1`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("pull stream lacks %s:\n%s", want, out)
+		}
+	}
+	if out := pull(); !strings.Contains(out, "Status: Image is up to date for "+host+"/e2e/p:1") || strings.Contains(out, "Pulling fs layer") {
+		t.Fatalf("repeat pull stream:\n%s", out)
+	}
+
+	ref := host + "/e2e/p@" + digest.String()
+	var inspect struct{ RepoDigests []string }
+	if res := call(t, ts, "GET", "/images/"+ref+"/json", "", &inspect); res.StatusCode != 200 || len(inspect.RepoDigests) != 1 || inspect.RepoDigests[0] != ref {
+		t.Fatalf("inspect by digest: %d %+v", res.StatusCode, inspect)
+	}
+	var list []struct{ RepoDigests []string }
+	call(t, ts, "GET", `/images/json?filters={"reference":["`+host+`/e2e/p"]}`, "", &list)
+	if len(list) != 1 || len(list[0].RepoDigests) != 1 {
+		t.Fatalf("image list %+v", list)
+	}
+	var removed []map[string]string
+	if res := call(t, ts, "DELETE", "/images/"+host+"/e2e/p:1", "", &removed); res.StatusCode != 200 || len(removed) != 3 || removed[1]["Untagged"] != ref {
+		t.Fatalf("removing the last tag: %d %v", res.StatusCode, removed)
+	}
+	if _, err := e.Images().Get(ref); err == nil {
+		t.Fatal("the digest reference survived its image")
+	}
+}
+
+// Prune removes dangling images by default and every unused image with
+// dangling=false, leaving images containers use.
+func TestImagePrune(t *testing.T) {
+	ts, e := newEngineServer(t)
+	loadImage(t, e, "prune/a:1")
+	loadImage(t, e, "prune/a:1") // the first image is now dangling
+	loadImage(t, e, "prune/b:1")
+	var report struct {
+		ImagesDeleted  []map[string]string
+		SpaceReclaimed uint64
+	}
+	if res := call(t, ts, "POST", "/images/prune", "", &report); res.StatusCode != 200 || len(report.ImagesDeleted) != 1 || report.SpaceReclaimed == 0 {
+		t.Fatalf("pruning dangling images: %d %+v", res.StatusCode, report)
+	}
+	if n := len(e.Images().List()); n != 2 {
+		t.Fatalf("%d images left after pruning dangling ones, want 2", n)
+	}
+	var kept, all struct{ ImagesDeleted []map[string]string }
+	call(t, ts, "POST", `/images/prune?filters={"dangling":["false"],"until":["2000-01-01"]}`, "", &kept)
+	if len(kept.ImagesDeleted) != 0 {
+		t.Fatalf("until removed newer images: %+v", kept)
+	}
+	call(t, ts, "POST", `/images/prune?filters={"dangling":["false"],"until":["1h"]}`, "", &kept)
+	if len(kept.ImagesDeleted) != 0 {
+		t.Fatalf("until an hour ago removed images made now: %+v", kept)
+	}
+	call(t, ts, "POST", `/images/prune?filters={"dangling":["false"]}`, "", &all)
+	if n := len(e.Images().List()); n != 0 || len(all.ImagesDeleted) != 4 {
+		t.Fatalf("pruning every unused image left %d, reported %+v", n, all)
+	}
 }

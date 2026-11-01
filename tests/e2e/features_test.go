@@ -561,3 +561,54 @@ func tarHas(t *testing.T, path, entry string) bool {
 		}
 	}
 }
+
+func TestDigestReferencesAndPrune(t *testing.T) {
+	reg := httptest.NewServer(registry.New())
+	defer reg.Close()
+	repo := strings.TrimPrefix(reg.URL, "http://") + "/e2e/ref"
+	mustDocker(t, "tag", "fws/toolbox:1", repo+":1")
+	if out := mustDocker(t, "push", repo+":1"); !strings.Contains(out, "digest: sha256:") {
+		t.Fatalf("push:\n%s", out)
+	}
+	mustDocker(t, "rmi", repo+":1")
+
+	out := mustDocker(t, "pull", repo+":1")
+	if !strings.Contains(out, "Already exists") || !strings.Contains(out, "Digest: sha256:") || !strings.Contains(out, "Downloaded newer image for "+repo+":1") {
+		t.Fatalf("pulling an image whose layers the engine holds:\n%s", out)
+	}
+	if out := mustDocker(t, "pull", repo+":1"); !strings.Contains(out, "Image is up to date for "+repo+":1") {
+		t.Fatalf("pulling again:\n%s", out)
+	}
+	digest := strings.TrimSpace(mustDocker(t, "images", "--digests", "--format", "{{.Digest}}", repo))
+	if !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("docker images --digests shows %q", digest)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "run", "--rm", repo+"@"+digest, "echo", "by digest")); got != "by digest" {
+		t.Fatalf("running by digest printed %q", got)
+	}
+	if out := mustDocker(t, "rmi", repo+":1"); !strings.Contains(out, "Untagged: "+repo+"@"+digest) {
+		t.Fatalf("removing the last tag left the digest reference:\n%s", out)
+	}
+
+	const box = "fws-e2e-prune"
+	mustDocker(t, "run", "--name", box, "fws/toolbox:1", "put", "/x", "1")
+	defer docker(t, "rm", "-f", box)
+	first := strings.TrimSpace(mustDocker(t, "commit", box, "fws-e2e/prune:1"))
+	second := strings.TrimSpace(mustDocker(t, "commit", "--change", "LABEL again=1", box, "fws-e2e/prune:1"))
+	defer docker(t, "rmi", "fws-e2e/prune:1")
+	if first == second {
+		t.Fatal("the two commits made the same image")
+	}
+	if out := mustDocker(t, "images", "--filter", "dangling=true", "--quiet", "--no-trunc"); !strings.Contains(out, first) {
+		t.Fatalf("the retagged commit is not dangling:\n%s", out)
+	}
+	if out := mustDocker(t, "image", "prune", "--force"); !strings.Contains(out, "deleted: "+first) && !strings.Contains(out, "Deleted: "+first) {
+		t.Fatalf("image prune:\n%s", out)
+	}
+	if _, err := docker(t, "image", "inspect", first); err == nil {
+		t.Fatal("the dangling image survived the prune")
+	}
+	if _, err := docker(t, "image", "inspect", second); err != nil {
+		t.Fatalf("prune removed the tagged image: %v", err)
+	}
+}
