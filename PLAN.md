@@ -14,9 +14,8 @@ top-level plan and milestone; the design doc is the full mechanism.
 - **No root.** The engine, its install, and every container run as the
   invoking user. No `sudo`, no `launchd` daemon running as root, no kernel or
   system extensions, no changes to System Integrity Protection.
-- **Go.** Every component is Go and cross-compiles (`GOOS=darwin`,
-  `GOARCH=arm64|amd64`) from any host; the macOS-only syscalls use
-  `golang.org/x/sys/unix` or `purego`, keeping most of the tree CGO-free.
+- **Go.** Every component is Go and cross-compiles with `CGO_ENABLED=0`
+  (`GOOS=darwin`, `GOARCH=arm64|amd64`) from any host.
 - **Real behaviour.** Every isolation property claimed below is enforced by
   the kernel through Seatbelt and is proven by a test that tries to break it.
 
@@ -60,14 +59,17 @@ bug.
 ## Components (Go)
 
 ```
-cmd/fwsd/            # the daemon: Docker Engine API over a unix socket
-cmd/fws/             # a thin CLI for smoke tests
-internal/api/        # Docker Engine API handlers (the Compose subset)
-internal/runtime/    # launch, Seatbelt profile generation, kqueue tracking
-internal/image/      # OCI pull/unpack, clonefile root
-internal/alloc/      # per-stack port/path/name allocator
-internal/compose/    # fixtures + the per-stack discovery-view writer
-images/              # Nix definitions for the darwin image catalog
+cmd/fwsd/             # the daemon: Docker Engine API over a unix socket
+cmd/fws-mkimage/      # Nix closure -> darwin image archive
+internal/alloc/       # per-stack port blocks and directories
+internal/seatbelt/    # Seatbelt profile rendering
+internal/image/       # image store, layer extraction, clonefile roots
+internal/runtime/     # launch under sandbox-exec, process groups, pipes
+internal/engine/      # containers, volumes, networks, exec, health, events
+internal/api/         # the Docker Engine API (the Compose subset)
+internal/sandboxenv/  # the container side of the SANDBOX_* contract
+images/               # entrypoints and specs for the darwin catalog
+tests/e2e/            # Docker CLI + Compose end-to-end suite
 ```
 
 ## Image catalog
@@ -80,13 +82,13 @@ explicitly; the engine never silently substitutes an image name.
 
 ## Milestone — definition of done
 
-One branch, one PR, fully tested on a macOS CI runner (`macos-14`, Apple
+One branch, one PR, fully tested on a macOS CI runner (`macos-15`, Apple
 Silicon), no `t.Skip` for missing tools:
 
 1. Repo skeleton, Go module, macOS CI workflow.
 2. `internal/alloc` + unit tests (per-stack disjointness).
 3. `internal/image` (pull/unpack + `clonefile` root) + tests.
-4. `internal/runtime` (Seatbelt profile gen, launch, kqueue) + tests.
+4. `internal/runtime` (launch under `sandbox-exec`, process groups) + tests.
 5. `internal/api` (Compose subset) + Docker-client conformance tests.
 6. `images/` Nix definitions for `postgres` and `redis`.
 7. **The proof:** two independent Compose stacks (`postgres` + `redis` + a tiny

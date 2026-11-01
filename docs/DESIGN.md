@@ -106,206 +106,207 @@ than silently doing nothing. Silent no-ops would be a fidelity bug.
 
 ### Layout
 
-An image is unpacked once into a content-addressed store:
+All state lives under one root, `~/.fws` by default (`fwsd -root`). The root
+is resolved through symlinks at start-up, because Seatbelt matches resolved
+paths.
 
 ```
-~/Library/Caches/fun-with-sandboxes/
-  images/<digest>/rootfs/        # unpacked, read-only reference copy
-  layers/<digest>/               # per-layer cache
+~/.fws/
+  docker.sock                      # the Docker Engine API
+  alloc.json                       # per-stack port blocks and assignments
+  images/images.json               # image index
+  images/roots/<config-digest>/    # each image, flattened once
+  stacks/<stack>/c/<id12>/
+    r/                             # the container root: an APFS clone
+    config.json  log.jsonl  profile.sb
+  volumes/<name>/_data/            # named and anonymous volumes
+  networks.json  volumes.json
 ```
 
-On container create, the engine makes an **APFS clone** of the image rootfs
-(`clonefile(2)`, copy-on-write, O(1) and near-zero bytes until written):
+An image is unpacked once, all layers applied in order with OCI whiteouts,
+into `images/roots/<digest>`. On create, the engine gives the container an
+**APFS clone** of it (`clonefile(2)`): copy-on-write, constant time, and near
+zero bytes until the container writes. `clonefile` is the one primitive macOS
+offers that fits this exactly: instant writable roots with no union mount and
+no root.
 
-```
-~/Library/Application Support/fun-with-sandboxes/
-  stacks/<stack>/containers/<cid>/rootfs/   # the clone, writable
-  stacks/<stack>/volumes/<vol>/             # named/anonymous volumes
-```
-
-`clonefile` is the one genuinely good fit macOS offers: instant per-container
-writable roots with no union-mount machinery and no root.
+The engine runs unprivileged, so layer extraction drops ownership and
+setuid/setgid bits, skips device nodes (the host's `/dev` serves containers),
+and refuses entries that would land outside the root.
 
 ### The "rooted at a directory, not at /" contract
 
-Because we cannot remount `/`, images are built (§7) so that every path they
-care about is **relative to a root the engine supplies in an environment
-variable** (call it `$SANDBOX_ROOT`), or is a system path under `/usr`,
-`/System` that is identical on every host. Concretely:
+We cannot remount `/`, so a container's paths live under a root the engine
+names in `SANDBOX_ROOT`. An image's entrypoint maps the paths it cares about
+into that root (`internal/sandboxenv.Path`): Postgres's
+`PGDATA=/var/lib/postgresql/data` becomes
+`$SANDBOX_ROOT/var/lib/postgresql/data`. The engine maps `PATH` itself, and
+`argv[0]` is resolved inside the root.
 
-- The service's data dir, config dir, sockets, and pid files live under
-  `$SANDBOX_ROOT`, e.g. Postgres `PGDATA=$SANDBOX_ROOT/var/lib/postgresql/data`.
-- The service's own binaries and libraries are shipped in the image under
-  `$SANDBOX_ROOT/usr` and loaded from there.
-- Only the immutable macOS system libraries are read from their real host
-  locations.
-
-This is the concrete form of "services take their data paths from
-configuration." Seatbelt then allows writes only under that one root.
+A mount — a named volume, an anonymous volume from the image's `VOLUME`, a
+bind or a tmpfs — becomes a symlink at its destination inside the root that
+points at the backing host directory. The kernel follows it, and Seatbelt
+checks the resolved path, so the profile grants the backing directory. A new
+volume first receives the image's content at its mount point, as Docker's
+copy-up does.
 
 ---
 
 ## 5. Per-stack resource assignment
 
-A **stack** is one `docker compose` project (its project name). The allocator
-owns three namespaces, each partitioned per stack so two stacks are disjoint by
-construction:
+A **stack** is one Compose project: the `com.docker.compose.project` label. A
+container without one is a stack of its own (`run-<id>`).
 
-1. **Ports.** Each stack is assigned a contiguous block of free host ports
-   (probed with `net.Listen` then released). Every `ports:` and inter-service
-   port a container needs is mapped into that block. The mapping table is the
-   stack's source of truth.
+1. **Ports.** Each stack holds a contiguous block of host ports
+   (`-port-base`, `-port-limit`, `-block-size`; 20000–29999 in blocks of 100
+   by default). Each exposed container port gets the lowest free port of the
+   block the host can bind, keyed by service, replica number and container
+   port, so a recreated container keeps its port.
+2. **Paths.** Each stack gets `stacks/<stack>/`. No path outside it, other
+   than the container's own volumes, appears in its containers' profiles.
+3. **Release.** When a stack's last container goes, its block and directory
+   are freed.
 
-2. **Paths.** Each stack gets `stacks/<stack>/…` (above). No path outside it
-   appears in any of its containers' Seatbelt profiles.
-
-3. **Names/DNS.** Each stack gets a view that maps service names to the assigned
-   host ports (§6). Names are not globally unique across stacks; the view is
-   per-stack, so stack A's `db` and stack B's `db` never resolve to each other.
-
-The allocator persists assignments so `compose up` → `compose down` → `up` is
-stable, and releases them on `down`/prune.
+Assignments persist in `alloc.json`, so a restarted engine hands out the same
+ports.
 
 ---
 
 ## 6. Networking without root or a network stack
 
-The host has one loopback and one port space. We do not virtualize it; we make
-the assignment visible to services the way the user accepted — through config.
+The host has one loopback and one port space. The engine does not virtualise
+it; it tells services their assignment through the environment.
 
-- **Binding.** A service reads the port it should listen on from its
-  environment/config (e.g. `PGPORT`, `--port`, a rendered config file). The
-  engine sets that to the stack's assigned port. Seatbelt allows binding exactly
-  that port and denies the rest.
+- **Binding.** A container's own ports arrive as `SANDBOX_PORT_<n>`; the
+  service listens on `127.0.0.1` at that port. Seatbelt allows binding
+  exactly those ports on loopback and nothing else.
+- **Discovery.** Each stack peer's ports arrive as
+  `SANDBOX_<SERVICE>_PORT_<n>` with `SANDBOX_<SERVICE>_HOST=127.0.0.1`, for
+  both the service name and the container name. With replicas, the names
+  point at replica 1. A client of `db:5432` reads
+  `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
+- **Published ports.** `ports:` entries bind real host listeners in the
+  engine, which forward each connection to the container's assigned port. A
+  taken host port fails the start with Docker's "port is already allocated".
+- **Isolation.** A container may connect to every port of its own stack's
+  block and nowhere else, so stack A cannot reach stack B even though both
+  live on `127.0.0.1`. That includes B's published ports.
+- **Networks.** Compose's networks are recorded and reported faithfully, but
+  they carry no traffic: reachability is the stack. A container cannot join a
+  network another stack owns, and `host` and `container:` network modes are
+  refused.
 
-- **Service discovery.** The engine writes, per stack, the mapping from service
-  name to `127.0.0.1:<assigned-port>` into:
-  - environment variables the Compose service template references
-    (`${DB_HOST}`, `${DB_PORT}`), and
-  - an `/etc/hosts`-style file and a small resolver config placed under the
-    container root,
-  so `db:5432` in a compose file is expressed as
-  `${DB_HOST}:${DB_PORT}` → `127.0.0.1:<assigned>`.
-
-- **Published ports (`-p`).** The container's assigned port *is* a real host
-  port, so "publishing" is mostly identity; where a compose file requests a
-  specific host port, the engine records it in the stack block (and errors on a
-  cross-stack clash rather than silently remapping).
-
-- **Isolation.** A container's Seatbelt profile denies `network-bind` and
-  `network-outbound` except to its own assigned ports and its stack's ports.
-  Stack A cannot connect to stack B's services even though both are on
-  `127.0.0.1`, because A's profile never names B's ports.
-
-The honest limitation: discovery is by assigned port, not a faked fixed port.
-Services that hard-code `5432` with no way to configure the port do not work;
-services that read the port from config (the accepted contract) do.
+Discovery is by assigned port, never by a faked fixed port. Software that
+hard-codes `5432` and cannot be told otherwise needs an entrypoint that
+configures it.
 
 ---
 
 ## 7. Images: a curated, Nix-built catalog
 
-Stock Docker Hub images are Linux. We build a small catalog of macOS-native
-images instead:
+Stock Docker Hub images are Linux. The catalog is built from Nixpkgs for
+`aarch64-darwin` (`scripts/build-images.sh`):
 
-- **Build tool.** Nixpkgs `aarch64-darwin`/`x86_64-darwin` already builds
-  Postgres, Redis, nginx, etc. A `nix build` closure is converted to OCI layers
-  with a `darwin/<arch>` platform entry and an entrypoint that reads
-  `$SANDBOX_ROOT`, the assigned port, and the data path from the environment.
-- **Shell and coreutils.** Images ship their own `sh`/coreutils under
-  `$SANDBOX_ROOT/usr` (SIP-protected system binaries strip custom env, so the
-  image must not depend on `/bin/sh` for its entrypoint; see §9).
-- **Catalog (initial).** `postgres`, `redis`. Enough to prove a real two-service
-  stack. More added the same way.
-- **Distribution.** Pushed to a registry as a normal OCI index; compose files
-  name them explicitly (e.g. `image: ghcr.io/e6qu/fws-postgres:16`). The engine
-  never silently substitutes an image name — that would be consumer-aware
-  special-casing.
+- **`cmd/fws-mkimage`** copies a Nix closure into the image under
+  `/nix/store`. It rewrites every absolute store reference a Mach-O file
+  loads through (`LC_LOAD_DYLIB`, `LC_RPATH`) to an `@loader_path`-relative
+  one with `install_name_tool`, re-signs the file ad hoc (arm64 macOS refuses
+  modified code otherwise), turns absolute store symlinks into relative ones,
+  and links each package's `bin/` into `/bin`. The image is then
+  self-contained wherever its root lands. The profile denies the host's
+  `/nix`, so the tests prove it.
+- **Entrypoints are Go programs** (`images/*/entry`) that read the
+  `SANDBOX_*` variables, configure the service, and `exec` it. Images carry no
+  `#!` scripts: the kernel resolves interpreters on the host.
+- **Catalog.** `fws/postgres:16`, with `initdb`, `POSTGRES_PASSWORD`,
+  `POSTGRES_DB` and `docker-entrypoint-initdb.d/*.sql` handled the way the
+  official image handles them; `fws/redis:7`; and `fws/toolbox:1`, a small
+  HTTP app backed by its stack's Redis that doubles as the tests' probe.
+  macOS allows only 87 System V semaphores machine-wide by default, so the
+  Postgres entrypoint keeps each server's process limits small.
+- **Distribution.** Archives for `docker load`, or any registry as an
+  ordinary image with a `darwin/<arch>` platform. Compose files name these
+  images explicitly. The engine never substitutes an image name.
 
 ---
 
 ## 8. Docker Engine API surface
 
-Served over `unix://~/Library/.../fun-with-sandboxes.sock`. Compose v2 drives
-these; we implement exactly the subset it calls:
+Served on `unix://~/.fws/docker.sock` at API version 1.51 (minimum 1.24),
+with or without the `/v1.xx` prefix:
 
-- `GET /_ping`, `GET /version`, `GET /info`
-- Images: `GET /images/json`, `POST /images/create` (pull), `GET
-  /images/{name}/json`, `POST /images/{name}/tag`, `DELETE /images/{name}`
-- Containers: `POST /containers/create`, `/start`, `/stop`, `/kill`, `/wait`,
-  `/restart`, `GET /containers/json`, `GET /containers/{id}/json`, `DELETE`,
-  `GET /containers/{id}/logs`, `POST /containers/{id}/attach`, `GET
-  /containers/{id}/stats`
-- Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `GET
-  /exec/{id}/json` (healthchecks, `compose exec`)
-- Networks: `POST /networks/create`, `GET /networks`, `DELETE`, `/connect`,
-  `/disconnect` (modeled as the per-stack discovery view, §6)
-- Volumes: `POST /volumes/create`, `GET /volumes`, `DELETE`
-- `GET /events` (compose waits on these)
+- `GET|HEAD /_ping`, `GET /version`, `GET /info`, `GET /events`
+- Containers: `create`, `json` (list, with Docker's filters), `{id}/json`,
+  `start`, `stop`, `restart`, `kill`, `wait` (all three conditions),
+  `rename`, `resize`, `logs` (follow, tail, since, until, timestamps),
+  `attach` (hijacked, multiplexed or raw), `DELETE`, `prune`
+- Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached,
+  detached, TTY), `/exec/{id}/resize`, `GET /exec/{id}/json`
+- Images: `json`, `create` (registry pull for `darwin/<arch>`), `load`,
+  `{ref}/json`, `{ref}/tag`, `DELETE`
+- Networks: `json`, `create`, `{id}`, `connect`, `disconnect`, `prune`, `DELETE`
+- Volumes: `json`, `create`, `{name}`, `prune`, `DELETE`
 
-Unsupported `HostConfig` knobs (`Memory`, `NanoCpus`, non-default `User`,
-privileged, cap-add, arbitrary bind of host paths outside the stack) return a
-`400` with a precise message. No silent acceptance.
+Health checks run on the image's or container's own cadence (interval,
+timeout, start period, retries) and report Docker's states and events. Restart
+policies follow Docker's back-off.
+
+Requests the engine cannot honour return an error rather than being
+accepted: `501` for memory, CPU, PID, ulimit and device limits; privileged
+mode; capabilities; non-default users; `host` networking; non-`bridge`
+network drivers; custom IPAM; UDP publishing; and `build`, `stats`, `top`,
+`cp`, `pause` and `update`.
 
 ---
 
 ## 9. Runtime launch sequence
 
-Per container start:
+On create: clone the image root, assign the stack's ports, realise the
+mounts, and record the container. On start:
 
-1. Clone the image rootfs → container root (`clonefile`).
-2. Allocate/look up the stack's ports and paths; render the service's config and
-   environment (`$SANDBOX_ROOT`, assigned ports, discovery map).
-3. Write the container's `/etc/hosts`-style discovery file and volume mounts
-   (volumes are directories under the stack tree, referenced by path — no bind
-   mount needed).
-4. Generate the Seatbelt profile from the stack's grants (allowed read paths,
-   the single writable root + volumes, the allowed ports, same-sandbox signals).
-5. Launch the entrypoint under the profile. Because `DYLD_*` and custom env are
-   stripped when the kernel execs a SIP-protected binary, the engine execs the
-   **image's own** entrypoint binary (shipped in the image, not a system one),
-   which then keeps the environment and starts the service.
-6. Track the process tree via kqueue `EVFILT_PROC` (`NOTE_FORK`/`NOTE_EXIT`) for
-   `wait`, exit codes, restart policy, and stats (`proc_pid_rusage`).
+1. Render the Seatbelt profile from the container's grants (§3) and write it
+   next to the container's state, outside the root.
+2. Build the environment: image and container variables, `PATH` mapped into
+   the root, `HOME` under the root, and the `SANDBOX_*` variables.
+3. Bind the published host ports.
+4. Run `/usr/bin/sandbox-exec -f <profile> <root>/<argv0> …`, the main
+   process leading its own process group (or session, with a TTY). Output
+   reaches the json-file log through real pipes, so the engine sees the exit
+   at once even if a descendant still holds stdout.
+5. When the main process exits, kill its process group, drain the output, and
+   apply the restart policy.
 
-`exec`/attach spawn additional processes into the **same** profile, root, and
-env, with pipes or a pty (`creack/pty`).
+`exec` and health checks start further processes under the same profile,
+root and environment, with pipes or a pty (`creack/pty`).
 
 ---
 
 ## 10. Go implementation
 
-Pure Go where possible; the macOS-specific calls use direct syscalls or
-`purego`/`cgo` for the handful without a `syscall` wrapper:
-
-- `clonefile(2)` — `golang.org/x/sys/unix` (`unix.Clonefile`) where available,
-  else `syscall.Syscall` on the `clonefileat` number.
-- `sandbox_init`/`sandbox-exec` — exec `/usr/bin/sandbox-exec -p <profile>` for
-  v1 (simplest, no private API); the profile is generated per container.
-- kqueue — `unix.Kqueue`/`unix.Kevent`.
-- `proc_pid_rusage`, libproc listing — via `purego` dlopen of libproc, or cgo.
-
-Module layout:
+Pure Go; the engine cross-compiles with `CGO_ENABLED=0` for `darwin/arm64`
+and `darwin/amd64`. `clonefile` comes from `golang.org/x/sys/unix`, image
+handling from `go-containerregistry`, and the API types from
+`github.com/moby/moby/api`, so the JSON matches what Docker clients decode.
 
 ```
-cmd/fwsd/            # the daemon (Docker API server)
-cmd/fws/             # a thin CLI for smoke tests
-internal/api/        # Docker Engine API handlers
-internal/runtime/    # launch, Seatbelt profile gen, kqueue tracking
-internal/image/      # OCI pull/unpack, clonefile root
-internal/alloc/      # per-stack port/path/name allocator
-internal/compose/    # fixtures + the discovery-view writer
-images/              # Nix definitions for the catalog
+cmd/fwsd/             # the daemon
+cmd/fws-mkimage/      # Nix closure -> darwin image archive
+internal/alloc/       # per-stack port blocks and directories
+internal/seatbelt/    # profile rendering
+internal/image/       # image store, layer extraction, clonefile
+internal/runtime/     # launch under sandbox-exec, process groups, pipes
+internal/engine/      # containers, volumes, networks, exec, health, events
+internal/api/         # the Docker Engine API
+internal/sandboxenv/  # the container side of the SANDBOX_* contract
+images/               # entrypoints and specs for the catalog
+tests/e2e/            # Docker CLI + Compose end-to-end suite
 ```
-
-Cross-compiles with `GOOS=darwin GOARCH=arm64`/`amd64`. CGO parts build on the
-macOS CI runner; the `purego` path keeps most of it CGO-free.
 
 ---
 
 ## 11. Testing — the milestone's definition of done
 
-All tests run on a **macOS CI runner** (GitHub Actions `macos-14`, Apple
+All tests run on a **macOS CI runner** (GitHub Actions `macos-15`, Apple
 Silicon). No `t.Skip` for "tool missing" — required tools are installed in the
 workflow.
 
@@ -323,14 +324,13 @@ workflow.
 3. **Isolation assertions.** From inside a container: writing outside its root
    fails; reading `$HOME` fails; signalling the other stack's PID fails; reading
    the other stack's data dir fails.
-4. **Accepted-exception assertions.** Document-and-verify that `ps` *can* list
-   the other stack (so the exception is explicit and bounded), while every
-   *action* on it is denied.
-5. **API conformance.** Drive the real `docker compose` binary and the Docker Go
+4. **API conformance.** Drive the real `docker compose` binary and the Docker Go
    client against the daemon for the full `up`/`ps`/`logs`/`exec`/`down` cycle —
    same client code a real-Docker user runs, differing only in the socket path.
 
-The milestone is done when (2)–(5) are green in CI on macOS.
+The milestone is done when (2)–(4) are green in CI on macOS. The accepted
+exceptions (§1) are documented in `LIMITATIONS.md`; the tests assert that
+every *action* across stacks is denied.
 
 ---
 
@@ -346,7 +346,7 @@ The milestone is done when (2)–(5) are green in CI on macOS.
   by Chrome, Bazel, and the major coding-agent sandboxes; there is no supported
   replacement for this use.
 - Running the engine *inside* another Seatbelt sandbox (e.g. a coding agent's)
-  may fail to nest; verified early in CI.
+  is untested; Seatbelt profiles may not nest.
 
 ---
 
@@ -357,7 +357,7 @@ One branch, one PR, fully tested:
 1. Repo skeleton, Go module, CI workflow (macOS runner).
 2. `internal/alloc` + unit tests.
 3. `internal/image` (pull/unpack + `clonefile` root) + tests.
-4. `internal/runtime` (Seatbelt profile gen, launch, kqueue) + tests.
+4. `internal/runtime` (launch under `sandbox-exec`, process groups) + tests.
 5. `internal/api` (the Compose subset) + Docker-client conformance tests.
 6. `images/` Nix definitions for `postgres` and `redis`.
 7. The two-stack concurrent integration test (§11.2) — the proof.
