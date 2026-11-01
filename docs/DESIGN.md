@@ -259,7 +259,10 @@ with or without the `/v1.xx` prefix:
 - Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached,
   detached, TTY), `/exec/{id}/resize`, `GET /exec/{id}/json`
 - Images: `json`, `create` (registry pull for `darwin/<arch>`), `load`,
-  `{ref}/json`, `{ref}/tag`, `DELETE`
+  `{ref}/json`, `{ref}/tag`, `{ref}/history`, `get` and `{ref}/get`
+  (`docker save`), `{ref}/push` (with `X-Registry-Auth`), `DELETE`
+- Containers to images: `POST /commit` (with `changes`, pausing by default)
+  and `GET /containers/{id}/export`
 - Networks: `json`, `create`, `{id}`, `connect`, `disconnect`, `prune`, `DELETE`
 - Volumes: `json`, `create`, `{name}`, `prune`, `DELETE`
 

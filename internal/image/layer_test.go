@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
 type entry struct {
@@ -202,5 +204,72 @@ func TestRemoveUntagsBeforeDeleting(t *testing.T) {
 	}
 	if _, err := os.Stat(s.Root(img.ID)); !os.IsNotExist(err) {
 		t.Fatalf("deleted image's root survived: %v", err)
+	}
+}
+
+// A built image exports with its own ID, and loading the export gives back
+// the same root.
+func TestV1ImageRoundTrip(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := os.MkdirTemp(s.dir, "root-")
+	os.MkdirAll(filepath.Join(d, "srv"), 0o755)
+	os.WriteFile(filepath.Join(d, "srv", "app"), []byte("app"), 0o755)
+	os.Symlink("srv/app", filepath.Join(d, "app"))
+	var cfg v1.ConfigFile
+	cfg.Created = v1.Time{Time: time.Unix(1700000000, 0).UTC()}
+	cfg.Config.Cmd = []string{"/app"}
+	built, err := s.AddRoot(d, cfg, []string{"built:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, rec, err := s.V1Image("built:1")
+	if err != nil || rec.ID != built.ID {
+		t.Fatalf("V1Image: %v %v", rec.ID, err)
+	}
+	if name, err := img.ConfigName(); err != nil || name.String() != built.ID {
+		t.Fatalf("exported image ID %v, want the built %s (%v)", name, built.ID, err)
+	}
+	var buf bytes.Buffer
+	ref, _ := name.NewTag("copy:1")
+	if err := tarball.Write(ref, img, &buf); err != nil {
+		t.Fatal(err)
+	}
+	other, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := other.Load(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(other.Root(loaded[0].ID), "srv", "app")); string(b) != "app" {
+		t.Fatalf("loaded root lacks its file: %q", b)
+	}
+	if l, _ := os.Readlink(filepath.Join(other.Root(loaded[0].ID), "app")); l != "srv/app" {
+		t.Fatalf("loaded symlink %q", l)
+	}
+}
+
+func TestWriteTarWithEmptiesMountPoints(t *testing.T) {
+	root, host := t.TempDir(), t.TempDir()
+	os.WriteFile(filepath.Join(host, "secret"), []byte("x"), 0o600)
+	os.MkdirAll(filepath.Join(root, "var"), 0o755)
+	os.Symlink(host, filepath.Join(root, "var", "data"))
+	var buf bytes.Buffer
+	if err := WriteTarWith(root, &buf, func(rel string) bool { return rel == "var/data" }); err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(&buf)
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if h.Name == "var/data/" && h.Typeflag != tar.TypeDir || h.Linkname != "" {
+			t.Fatalf("mount point archived as %+v", h)
+		}
 	}
 }

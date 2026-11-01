@@ -132,6 +132,15 @@ func (s *Server) routes() {
 		res, err := s.e.Update(r.PathValue("id"), req)
 		respond(w, res, err)
 	})
+	m.HandleFunc("GET /containers/{id}/export", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := s.e.Container(r.PathValue("id")); err != nil {
+			writeEngineError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-tar")
+		w.WriteHeader(http.StatusOK)
+		s.e.Export(r.PathValue("id"), w)
+	})
 	m.HandleFunc("HEAD /containers/{id}/archive", s.archiveHead)
 	m.HandleFunc("GET /containers/{id}/archive", s.archiveGet)
 	m.HandleFunc("PUT /containers/{id}/archive", s.archivePut)
@@ -256,8 +265,7 @@ func (s *Server) routes() {
 		m.HandleFunc("POST /grpc", unsupported("BuildKit"))
 		m.HandleFunc("POST /session", unsupported("BuildKit sessions"))
 	}
-	m.HandleFunc("POST /containers/{id}/commit", unsupported("committing containers"))
-	m.HandleFunc("POST /commit", unsupported("committing containers"))
+	m.HandleFunc("POST /commit", s.commit)
 }
 
 func (s *Server) ping(w http.ResponseWriter, r *http.Request) {
@@ -700,4 +708,22 @@ func (s *Server) containerStats(w http.ResponseWriter, r *http.Request) {
 	if err != nil && !started {
 		writeEngineError(w, err)
 	}
+}
+
+func (s *Server) commit(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var cfg container.Config
+	if !decode(w, r, &cfg) {
+		return
+	}
+	opts := engine.CommitOptions{
+		Container: q.Get("container"), Repo: q.Get("repo"), Tag: q.Get("tag"),
+		Comment: q.Get("comment"), Author: q.Get("author"), Changes: q["changes"],
+		Pause: q.Get("pause") == "" || boolParam(q.Get("pause")),
+	}
+	if r.ContentLength != 0 {
+		opts.Config = &cfg
+	}
+	id, err := s.e.Commit(r.Context(), opts)
+	respondCode(w, http.StatusCreated, map[string]string{"Id": id}, err)
 }

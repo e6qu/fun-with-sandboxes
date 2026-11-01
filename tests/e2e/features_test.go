@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -449,5 +450,75 @@ CMD ["cat", "/srv/built.txt"]
 	defer docker(t, "rmi", "e2e/composed:1")
 	if got := strings.TrimSpace(mustDocker(t, "run", "--rm", "e2e/composed:1")); got != "written by RUN" {
 		t.Errorf("composed image ran with %q", got)
+	}
+}
+
+func TestImageLifecycle(t *testing.T) {
+	const box = "fws-e2e-commit"
+	mustDocker(t, "run", "--name", box, "fws/toolbox:1", "put", "/greeting", "committed")
+	defer docker(t, "rm", "-f", box)
+
+	mustDocker(t, "commit", "--change", `CMD ["cat","/greeting"]`, "--change", "LABEL fws.e2e=commit", box, "fws-e2e/committed:1")
+	defer docker(t, "rmi", "-f", "fws-e2e/committed:1")
+	if out := mustDocker(t, "run", "--rm", "fws-e2e/committed:1"); strings.TrimSpace(out) != "committed" {
+		t.Fatalf("the committed image ran with output %q", out)
+	}
+	if l := mustDocker(t, "image", "inspect", "-f", `{{index .Config.Labels "fws.e2e"}}`, "fws-e2e/committed:1"); strings.TrimSpace(l) != "commit" {
+		t.Fatalf("the committed image's label is %q", l)
+	}
+	if h := mustDocker(t, "history", "--no-trunc", "fws-e2e/committed:1"); !strings.Contains(h, "put /greeting committed") {
+		t.Fatalf("history does not show the committed command:\n%s", h)
+	}
+
+	dir := t.TempDir()
+	exported := filepath.Join(dir, "export.tar")
+	mustDocker(t, "export", "-o", exported, box)
+	if !tarHas(t, exported, "greeting") {
+		t.Fatal("the export does not hold /greeting")
+	}
+
+	saved := filepath.Join(dir, "save.tar")
+	mustDocker(t, "save", "-o", saved, "fws-e2e/committed:1")
+	id := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Id}}", "fws-e2e/committed:1"))
+	mustDocker(t, "rmi", "fws-e2e/committed:1")
+	mustDocker(t, "load", "-i", saved)
+	if again := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Id}}", "fws-e2e/committed:1")); again != id {
+		t.Fatalf("save and load changed the image ID from %s to %s", id, again)
+	}
+
+	reg := httptest.NewServer(registry.New())
+	defer reg.Close()
+	pushed := strings.TrimPrefix(reg.URL, "http://") + "/e2e/committed:pushed"
+	mustDocker(t, "tag", "fws-e2e/committed:1", pushed)
+	if out := mustDocker(t, "push", pushed); !strings.Contains(out, "digest: sha256:") {
+		t.Fatalf("push output:\n%s", out)
+	}
+	mustDocker(t, "rmi", pushed)
+	mustDocker(t, "pull", pushed)
+	defer docker(t, "rmi", pushed)
+	if out := mustDocker(t, "run", "--rm", pushed); strings.TrimSpace(out) != "committed" {
+		t.Fatalf("the pushed and pulled image ran with output %q", out)
+	}
+}
+
+func tarHas(t *testing.T, path, entry string) bool {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return false
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimPrefix(h.Name, "./") == entry {
+			return true
+		}
 	}
 }

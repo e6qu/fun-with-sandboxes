@@ -24,7 +24,12 @@ machine — and from what macOS offers an unprivileged process under them.
 - **Build steps run under Seatbelt** with internet through a build-only
   egress proxy (none with `--network none`); shell-form `RUN` needs
   `/bin/sh` in the image, as in Docker.
-- **No `docker commit`, `docker push` or image export.**
+- **`docker save` and `docker push` flatten an image to one layer.** The
+  engine stores each image as one unpacked root, so a saved or pushed image
+  carries that root as a single layer. A built or committed image keeps its
+  ID; a loaded or pulled image's ID changes, because its layers do.
+- **`docker commit` and `docker export` leave volumes out**, as Docker does:
+  mount points stay as empty directories.
 - **Image health checks lose `StartInterval`**: the image config library the
   engine uses does not carry it. A container's own health check keeps it.
 

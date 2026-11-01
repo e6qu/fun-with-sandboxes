@@ -69,6 +69,10 @@ docker buildx build --load -t my/app:1 .
 
 The classic builder stays available with `DOCKER_BUILDKIT=0`.
 
+`docker commit`, `docker export`, `docker save` and `docker push` turn
+containers and images back into archives and registry images; a saved or
+pushed image carries its root as one layer.
+
 ## The container contract
 
 macOS gives an unprivileged process no private `/` and no private network
