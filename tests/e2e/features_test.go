@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -179,9 +181,39 @@ func TestTopAndStats(t *testing.T) {
 	}
 }
 
+// waitHealthy blocks until the container reports healthy, reading Docker's
+// event stream from since so an event emitted before the call is not missed.
+func waitHealthy(t *testing.T, name string, since time.Time) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "events", "--since", strconv.FormatInt(since.Unix(), 10),
+		"--filter", "container="+name, "--filter", "event=health_status", "--format", "{{.Action}}")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cancel()
+		cmd.Wait()
+	}()
+	sc := bufio.NewScanner(out)
+	for sc.Scan() {
+		if strings.TrimSpace(sc.Text()) == "health_status: healthy" {
+			return
+		}
+	}
+	t.Fatalf("%s never reported healthy: %v", name, ctx.Err())
+}
+
 func TestPauseUnpauseUpdate(t *testing.T) {
+	since := time.Now().Add(-time.Second)
 	mustDocker(t, "run", "-d", "--name", "pausetest", "-p", "8080", "fws/toolbox:1")
 	defer docker(t, "rm", "-f", "pausetest")
+	waitHealthy(t, "pausetest", since)
 	port := strings.TrimSpace(mustDocker(t, "port", "pausetest", "8080"))
 	_, p, _ := net.SplitHostPort(port)
 	get := func() error {
