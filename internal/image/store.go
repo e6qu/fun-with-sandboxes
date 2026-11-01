@@ -1,5 +1,7 @@
-// Package image keeps the engine's images: each one is stored once as a
-// flattened root directory that containers receive as an APFS clone.
+// Package image keeps the engine's images. Each one is stored as an OCI
+// image (manifest, config and layers) in an OCI image layout, which save,
+// push and BuildKit read, and unpacked as a root directory that containers
+// receive as an APFS clone.
 package image
 
 import (
@@ -19,6 +21,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
@@ -28,18 +31,27 @@ var ErrNotFound = errors.New("image not found")
 // Platform is the only platform the engine runs.
 var Platform = v1.Platform{OS: "darwin", Architecture: runtime.GOARCH}
 
+// Image is a stored image. Its ID is its config's digest, as in Docker.
 type Image struct {
-	ID       string        `json:"id"`
-	RepoTags []string      `json:"repoTags"`
-	Created  time.Time     `json:"created"`
-	Size     int64         `json:"size"`
-	Config   v1.ConfigFile `json:"config"`
+	ID       string    `json:"id"`
+	RepoTags []string  `json:"repoTags"`
+	Created  time.Time `json:"created"`
+	// Size is the sum of LayerSizes.
+	Size   int64         `json:"size"`
+	Config v1.ConfigFile `json:"config"`
+	// Manifest is the image manifest's descriptor in the store's layout.
+	Manifest v1.Descriptor `json:"manifest"`
+	// LayerSizes are the uncompressed sizes of the manifest's layers.
+	LayerSizes []int64 `json:"layerSizes"`
 }
 
 type Store struct {
 	dir string
 	mu  sync.Mutex
 	idx map[string]*Image
+	// blobs is held shared while an image's blobs are written and
+	// exclusively while unreferenced blobs are collected.
+	blobs sync.RWMutex
 }
 
 func Open(dir string) (*Store, error) {
@@ -56,6 +68,14 @@ func Open(dir string) (*Store, error) {
 		if err := json.Unmarshal(b, &s.idx); err != nil {
 			return nil, fmt.Errorf("image: read index: %w", err)
 		}
+	}
+	for id, img := range s.idx {
+		if img.Manifest.Digest.Hex == "" {
+			return nil, fmt.Errorf("image: %s holds image %s in the flattened format an earlier engine wrote; remove the directory to start a layered store", dir, id)
+		}
+	}
+	if err := s.openLayout(); err != nil {
+		return nil, fmt.Errorf("image: open the OCI layout: %w", err)
 	}
 	return s, nil
 }
@@ -212,7 +232,12 @@ func (s *Store) Remove(ref string, force bool, inUse func(id string) bool) (Remo
 		return Removal{}, err
 	}
 	delete(s.idx, img.ID)
-	return Removal{Image: *img, Untagged: img.RepoTags, Deleted: true}, s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		return Removal{}, err
+	}
+	s.blobs.Lock()
+	defer s.blobs.Unlock()
+	return Removal{Image: *img, Untagged: img.RepoTags, Deleted: true}, s.collectLocked()
 }
 
 // Pull fetches the image for the engine's platform from its registry.
@@ -229,10 +254,12 @@ func (s *Store) Pull(ref string) (Image, error) {
 	if err != nil {
 		return Image{}, err
 	}
-	return s.add(img, []string{n})
+	return s.Add(img, []string{n}, "")
 }
 
-// Load imports every image in a `docker save` archive.
+// Load imports every image in a `docker save` archive: an OCI image
+// layout, which Docker writes alongside its manifest.json and which keeps
+// manifests byte for byte, or a manifest.json archive alone.
 func (s *Store) Load(r io.Reader) ([]Image, error) {
 	tmp, err := os.CreateTemp(s.dir, "load-*.tar")
 	if err != nil {
@@ -243,8 +270,143 @@ func (s *Store) Load(r io.Reader) ([]Image, error) {
 	if _, err := io.Copy(tmp, r); err != nil {
 		return nil, err
 	}
-	opener := func() (io.ReadCloser, error) { return os.Open(tmp.Name()) }
-	manifest, err := readManifest(tmp.Name())
+	names, err := archiveNames(tmp.Name())
+	if err != nil {
+		return nil, err
+	}
+	if names["index.json"] && names["oci-layout"] {
+		return s.loadLayout(tmp.Name())
+	}
+	if !names["manifest.json"] {
+		return nil, errors.New("archive has neither an OCI index.json nor a manifest.json")
+	}
+	return s.loadManifest(tmp.Name())
+}
+
+func archiveNames(path string) (map[string]bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	out := map[string]bool{}
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[filepath.Clean(h.Name)] = true
+	}
+}
+
+func (s *Store) loadLayout(archivePath string) ([]Image, error) {
+	dir, err := os.MkdirTemp(s.dir, "load-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return nil, err
+	}
+	err = Extract(dir, f, false)
+	f.Close()
+	if err != nil {
+		return nil, err
+	}
+	idx, err := layout.ImageIndexFromPath(dir)
+	if err != nil {
+		return nil, err
+	}
+	im, err := idx.IndexManifest()
+	if err != nil {
+		return nil, err
+	}
+	type entry struct {
+		img  v1.Image
+		tags []string
+	}
+	var order []v1.Hash
+	found := map[v1.Hash]*entry{}
+	for _, d := range im.Manifests {
+		img, err := platformImage(idx, d)
+		if err != nil {
+			return nil, err
+		}
+		dg, err := img.Digest()
+		if err != nil {
+			return nil, err
+		}
+		e, ok := found[dg]
+		if !ok {
+			e = &entry{img: img}
+			found[dg] = e
+			order = append(order, dg)
+		}
+		if t := annotatedName(d.Annotations); t != "" {
+			n, err := Normalize(t)
+			if err != nil {
+				return nil, err
+			}
+			e.tags = append(e.tags, n)
+		}
+	}
+	var out []Image
+	for _, dg := range order {
+		added, err := s.Add(found[dg].img, found[dg].tags, "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, added)
+	}
+	return out, nil
+}
+
+// annotatedName is the image name an index descriptor carries:
+// containerd's full name, or a ref name that is a whole reference rather
+// than a bare tag.
+func annotatedName(a map[string]string) string {
+	if n := a[AnnotationImageName]; n != "" {
+		return n
+	}
+	if n := a[AnnotationRefName]; strings.ContainsAny(n, "/:") {
+		return n
+	}
+	return ""
+}
+
+// platformImage resolves an index descriptor to the image for the engine's
+// platform: the image itself, or its entry in a nested index.
+func platformImage(idx v1.ImageIndex, d v1.Descriptor) (v1.Image, error) {
+	switch {
+	case d.MediaType.IsImage():
+		return idx.Image(d.Digest)
+	case d.MediaType.IsIndex():
+		child, err := idx.ImageIndex(d.Digest)
+		if err != nil {
+			return nil, err
+		}
+		cm, err := child.IndexManifest()
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range cm.Manifests {
+			if c.MediaType.IsImage() && c.Platform != nil && c.Platform.OS == Platform.OS && c.Platform.Architecture == Platform.Architecture {
+				return child.Image(c.Digest)
+			}
+		}
+		return nil, fmt.Errorf("index %s has no image for %s/%s", d.Digest, Platform.OS, Platform.Architecture)
+	}
+	return nil, fmt.Errorf("index entry %s has media type %s, not an image", d.Digest, d.MediaType)
+}
+
+func (s *Store) loadManifest(path string) ([]Image, error) {
+	opener := func() (io.ReadCloser, error) { return os.Open(path) }
+	manifest, err := readManifest(path)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +432,7 @@ func (s *Store) Load(r io.Reader) ([]Image, error) {
 		if err != nil {
 			return nil, err
 		}
-		added, err := s.add(img, tags)
+		added, err := s.Add(img, tags, "")
 		if err != nil {
 			return nil, err
 		}
@@ -313,70 +475,176 @@ func readManifest(path string) ([]manifestEntry, error) {
 	}
 }
 
-func (s *Store) add(img v1.Image, tags []string) (Image, error) {
+// Add stores img under tags. Its blobs go into the layout as they are, so
+// its manifest digest stays the same. root, when set, is the image already
+// unpacked, which the store takes over; otherwise the store unpacks the
+// layers.
+func (s *Store) Add(img v1.Image, tags []string, root string) (Image, error) {
+	discard := func() {
+		if root != "" {
+			os.RemoveAll(root)
+		}
+	}
 	cfg, err := img.ConfigFile()
 	if err != nil {
+		discard()
 		return Image{}, err
 	}
 	if cfg.OS != Platform.OS || cfg.Architecture != Platform.Architecture {
+		discard()
 		return Image{}, fmt.Errorf("image platform (%s/%s) does not match the engine platform (%s/%s)", cfg.OS, cfg.Architecture, Platform.OS, Platform.Architecture)
 	}
 	digest, err := img.ConfigName()
 	if err != nil {
+		discard()
 		return Image{}, err
 	}
 	id := digest.String()
-
-	s.mu.Lock()
-	if existing, ok := s.idx[id]; ok {
-		for _, t := range tags {
-			s.untagLocked(t)
-			existing.RepoTags = append(existing.RepoTags, t)
-		}
-		out := *existing
-		err := s.saveLocked()
-		s.mu.Unlock()
+	if out, ok, err := s.retag(id, tags); ok {
+		discard()
 		return out, err
 	}
-	s.mu.Unlock()
 
-	stage, err := os.MkdirTemp(filepath.Join(s.dir, "roots"), ".stage-")
+	s.blobs.RLock()
+	defer s.blobs.RUnlock()
+	rec, err := s.unpack(img, root)
 	if err != nil {
 		return Image{}, err
 	}
-	defer os.RemoveAll(stage)
-	layers, err := img.Layers()
-	if err != nil {
-		return Image{}, err
-	}
-	var size int64
-	for _, l := range layers {
-		rc, err := l.Uncompressed()
-		if err != nil {
-			return Image{}, err
-		}
-		err = ApplyLayer(stage, rc)
-		rc.Close()
-		if err != nil {
-			return Image{}, err
-		}
-		n, err := l.Size()
-		if err == nil {
-			size += n
-		}
-	}
+	rec.ID, rec.Created, rec.Config = id, cfg.Created.Time, *cfg
 
+	if out, ok, err := s.retag(id, tags); ok {
+		// Another add stored the same image meanwhile.
+		os.RemoveAll(rec.stage)
+		return out, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.Rename(stage, s.Root(id)); err != nil {
+	if err := os.Rename(rec.stage, s.Root(id)); err != nil {
+		os.RemoveAll(rec.stage)
 		return Image{}, err
 	}
 	for _, t := range tags {
 		s.untagLocked(t)
 	}
-	rec := &Image{ID: id, RepoTags: tags, Created: cfg.Created.Time, Size: size, Config: *cfg}
-	s.idx[id] = rec
-	return *rec, s.saveLocked()
+	rec.Image.RepoTags = tags
+	s.idx[id] = &rec.Image
+	return rec.Image, s.saveLocked()
+}
+
+// retag adds tags to the image id when the store holds it already.
+func (s *Store) retag(id string, tags []string) (Image, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.idx[id]
+	if !ok {
+		return Image{}, false, nil
+	}
+	for _, t := range tags {
+		s.untagLocked(t)
+		existing.RepoTags = append(existing.RepoTags, t)
+	}
+	return *existing, true, s.saveLocked()
+}
+
+type unpacked struct {
+	Image
+	stage string
+}
+
+// unpack writes img's blobs into the layout and measures its layers,
+// applying them onto a fresh root unless root is the image already
+// unpacked. It removes the root on failure.
+func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
+	stage := root
+	defer func() {
+		if err != nil && stage != "" {
+			os.RemoveAll(stage)
+		}
+	}()
+	if err := s.layout().WriteImage(img); err != nil {
+		return unpacked{}, err
+	}
+	dg, err := img.Digest()
+	if err != nil {
+		return unpacked{}, err
+	}
+	raw, err := img.RawManifest()
+	if err != nil {
+		return unpacked{}, err
+	}
+	mt, err := img.MediaType()
+	if err != nil {
+		return unpacked{}, err
+	}
+	desc := v1.Descriptor{MediaType: mt, Digest: dg, Size: int64(len(raw)), Platform: &v1.Platform{OS: Platform.OS, Architecture: Platform.Architecture}}
+	local, err := s.stored(desc)
+	if err != nil {
+		return unpacked{}, err
+	}
+	if stage == "" {
+		if stage, err = os.MkdirTemp(filepath.Join(s.dir, "roots"), ".stage-"); err != nil {
+			return unpacked{}, err
+		}
+	}
+	out := unpacked{Image: Image{Manifest: desc, LayerSizes: []int64{}}, stage: stage}
+	layers, err := local.Layers()
+	if err != nil {
+		return unpacked{}, err
+	}
+	for _, l := range layers {
+		n, err := measure(l, stage, root == "")
+		if err != nil {
+			return unpacked{}, err
+		}
+		out.LayerSizes = append(out.LayerSizes, n)
+		out.Size += n
+	}
+	return out, nil
+}
+
+// measure reads a layer's uncompressed stream, applying it onto dir when
+// apply is set, and returns its length.
+func measure(l v1.Layer, dir string, apply bool) (int64, error) {
+	rc, err := l.Uncompressed()
+	if err != nil {
+		return 0, err
+	}
+	defer rc.Close()
+	n := &countingReader{r: rc}
+	if apply {
+		if err := ApplyLayer(dir, n); err != nil {
+			return 0, err
+		}
+	}
+	if _, err := io.Copy(io.Discard, n); err != nil {
+		return 0, err
+	}
+	return n.n, nil
+}
+
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// V1Image reads a stored image back as the OCI image it was stored as.
+func (s *Store) V1Image(ref string) (v1.Image, Image, error) {
+	rec, err := s.Get(ref)
+	if err != nil {
+		return nil, Image{}, err
+	}
+	img, err := s.stored(rec.Manifest)
+	if err != nil {
+		return nil, Image{}, err
+	}
+	return img, rec, nil
 }
 
 func (s *Store) saveLocked() error {
@@ -388,7 +656,10 @@ func (s *Store) saveLocked() error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.indexPath())
+	if err := os.Rename(tmp, s.indexPath()); err != nil {
+		return err
+	}
+	return s.writeIndexLocked()
 }
 
 func isHex(s string) bool {

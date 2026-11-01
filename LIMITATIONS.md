@@ -24,7 +24,16 @@ machine — and from what macOS offers an unprivileged process under them.
 - **Build steps run under Seatbelt** with internet through a build-only
   egress proxy (none with `--network none`); shell-form `RUN` needs
   `/bin/sh` in the image, as in Docker.
-- **No `docker commit`, `docker push` or image export.**
+- **`docker commit` and `docker export` leave volumes out**, as Docker does:
+  a commit keeps the image's own content at a mount point, an export an
+  empty directory.
+- **Images keep one platform.** Pulling or loading a multi-platform index
+  stores its `darwin/<arch>` image alone, and a BuildKit build's
+  attestations stay out of the engine's store, as dockerd's classic image
+  store leaves them out.
+- **The engine's image store holds no images from an earlier, flattened
+  store.** `fwsd` refuses to open such a store; remove its `images`
+  directory and load or pull the images again.
 - **Image health checks lose `StartInterval`**: the image config library the
   engine uses does not carry it. A container's own health check keeps it.
 

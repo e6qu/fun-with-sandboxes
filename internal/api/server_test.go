@@ -11,9 +11,11 @@ import (
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/moby/moby/api/types/network"
@@ -222,4 +224,69 @@ func TestBuildReadsContextWhileStreaming(t *testing.T) {
 	if !strings.Contains(string(out), "Step 1/2 : FROM fws/tiny:1") {
 		t.Fatalf("build did not start:\n%s", out)
 	}
+}
+
+func TestSaveHistoryAndPush(t *testing.T) {
+	ts, e := newEngineServer(t)
+	loadImage(t, e, "fws/tiny:1")
+
+	res, err := http.Get(ts.URL + "/images/get?names=fws/tiny:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != 200 || res.Header.Get("Content-Type") != "application/x-tar" {
+		t.Fatalf("save: %d %s", res.StatusCode, archive)
+	}
+	other, err := engine.Open(engine.Config{Root: t.TempDir(), PortBase: 42100, PortLimit: 42200, BlockSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := other.Images().Load(bytes.NewReader(archive))
+	if err != nil || len(loaded) != 1 || loaded[0].RepoTags[0] != "fws/tiny:1" {
+		t.Fatalf("loading the saved archive: %+v, %v", loaded, err)
+	}
+	if res := call(t, ts, "GET", "/images/get?names=missing:1", "", nil); res.StatusCode != 404 {
+		t.Fatalf("saving a missing image: %d", res.StatusCode)
+	}
+
+	var history []map[string]any
+	if res := call(t, ts, "GET", "/images/fws/tiny:1/history", "", &history); res.StatusCode != 200 || len(history) == 0 {
+		t.Fatalf("history: %d %v", res.StatusCode, history)
+	}
+
+	reg := httptest.NewServer(registry.New())
+	defer reg.Close()
+	host := strings.TrimPrefix(reg.URL, "http://")
+	if res := call(t, ts, "POST", "/images/fws/tiny:1/tag?repo="+host+"/e2e/tiny&tag=pushed", "", nil); res.StatusCode != 201 {
+		t.Fatalf("tag: %d", res.StatusCode)
+	}
+	req, _ := http.NewRequest("POST", ts.URL+"/images/"+host+"/e2e/tiny/push?tag=pushed", nil)
+	req.Header.Set("X-Registry-Auth", "e30=")
+	pres, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(pres.Body)
+	pres.Body.Close()
+	if strings.Contains(string(out), `"error"`) || !strings.Contains(string(out), "digest: sha256:") {
+		t.Fatalf("push stream:\n%s", out)
+	}
+	pulled, err := remote.Image(mustRef(t, host+"/e2e/tiny:pushed"))
+	if err != nil {
+		t.Fatalf("pushed image is not in the registry: %v", err)
+	}
+	if cfg, _ := pulled.ConfigFile(); cfg.OS != image.Platform.OS {
+		t.Fatalf("pushed image config %+v", cfg)
+	}
+}
+
+func mustRef(t *testing.T, s string) name.Reference {
+	t.Helper()
+	r, err := name.ParseReference(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }

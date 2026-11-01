@@ -16,5 +16,10 @@ for archive in "$dir"/*.tar; do
   esac
   ref="$prefix/fws-${tag#fws/}"
   echo "pushing $tag as $ref"
-  "${crane[@]}" push "$archive" "$ref"
+  # Push the archive's OCI layout, so the registry gets its manifest byte for
+  # byte rather than one rebuilt from manifest.json.
+  layout=$(mktemp -d)
+  tar -xf "$archive" -C "$layout"
+  "${crane[@]}" push "$layout" "$ref"
+  rm -rf "$layout"
 done

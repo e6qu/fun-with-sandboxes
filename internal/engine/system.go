@@ -13,6 +13,8 @@ import (
 	"github.com/moby/moby/api/types/container"
 	imagetypes "github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/system"
+	digest "github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 )
@@ -165,6 +167,10 @@ func (e *Engine) ImageInspect(ref string) (imagetypes.InspectResponse, error) {
 		ID: img.ID, RepoTags: tags, RepoDigests: []string{}, Created: img.Created.Format(time.RFC3339Nano),
 		Author: img.Config.Author, Config: &cfg, Architecture: img.Config.Architecture, Os: img.Config.OS,
 		Variant: img.Config.Variant, Size: img.Size, RootFS: imagetypes.RootFS{Type: "layers", Layers: layers},
+		Descriptor: &ocispec.Descriptor{
+			MediaType: string(img.Manifest.MediaType), Digest: digest.Digest(img.Manifest.Digest.String()), Size: img.Manifest.Size,
+			Platform: &ocispec.Platform{OS: img.Config.OS, Architecture: img.Config.Architecture},
+		},
 	}, nil
 }
 

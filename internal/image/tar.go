@@ -2,22 +2,22 @@ package image
 
 import (
 	"archive/tar"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"time"
-
-	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 // WriteTar writes dir as one layer: entries in lexical order, relative
 // names, no ownership, so the same tree yields the same bytes.
-func WriteTar(dir string, w io.Writer) error {
+func WriteTar(dir string, w io.Writer) error { return WriteTarWith(dir, w, nil) }
+
+// WriteTarWith is WriteTar with asEmptyDir naming entries, by path relative
+// to dir, to write as empty directories instead: a container's mount points,
+// which are symlinks to the host directories behind its volumes.
+func WriteTarWith(dir string, w io.Writer, asEmptyDir func(rel string) bool) error {
 	tw := tar.NewWriter(w)
 	var paths []string
 	if err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -36,6 +36,15 @@ func WriteTar(dir string, w io.Writer) error {
 		fi, err := os.Lstat(p)
 		if err != nil {
 			return err
+		}
+		if asEmptyDir != nil {
+			if rel, _ := filepath.Rel(dir, p); asEmptyDir(filepath.ToSlash(rel)) {
+				h := &tar.Header{Name: filepath.ToSlash(rel) + "/", Typeflag: tar.TypeDir, Mode: 0o755, ModTime: fi.ModTime(), Format: tar.FormatPAX}
+				if err := tw.WriteHeader(h); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 		if !fi.Mode().IsRegular() && !fi.IsDir() && fi.Mode()&fs.ModeSymlink == 0 {
 			continue
@@ -74,49 +83,6 @@ func WriteTar(dir string, w io.Writer) error {
 		}
 	}
 	return tw.Close()
-}
-
-type countingWriter struct{ n int64 }
-
-func (c *countingWriter) Write(p []byte) (int, error) { c.n += int64(len(p)); return len(p), nil }
-
-// AddRoot registers dir, a complete root directory, as an image with cfg.
-// The store takes dir over: it moves it into place, or removes it when an
-// identical image is already stored.
-func (s *Store) AddRoot(dir string, cfg v1.ConfigFile, tags []string) (Image, error) {
-	h := sha256.New()
-	size := &countingWriter{}
-	if err := WriteTar(dir, io.MultiWriter(h, size)); err != nil {
-		return Image{}, err
-	}
-	diffID := v1.Hash{Algorithm: "sha256", Hex: hex.EncodeToString(h.Sum(nil))}
-	cfg.OS, cfg.Architecture = Platform.OS, Platform.Architecture
-	cfg.RootFS = v1.RootFS{Type: "layers", DiffIDs: []v1.Hash{diffID}}
-	b, err := json.Marshal(cfg)
-	if err != nil {
-		return Image{}, err
-	}
-	sum := sha256.Sum256(b)
-	id := "sha256:" + hex.EncodeToString(sum[:])
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, t := range tags {
-		s.untagLocked(t)
-	}
-	if existing, ok := s.idx[id]; ok {
-		if err := os.RemoveAll(dir); err != nil {
-			return Image{}, err
-		}
-		existing.RepoTags = append(existing.RepoTags, tags...)
-		return *existing, s.saveLocked()
-	}
-	if err := os.Rename(dir, s.Root(id)); err != nil {
-		return Image{}, err
-	}
-	rec := &Image{ID: id, RepoTags: tags, Created: cfg.Created.Time, Size: size.n, Config: cfg}
-	s.idx[id] = rec
-	return *rec, s.saveLocked()
 }
 
 // BuildDir is where builds keep their working roots, on the same volume as

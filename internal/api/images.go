@@ -1,10 +1,17 @@
 package api
 
 import (
+	"bufio"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/moby/moby/api/types/registry"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
@@ -88,8 +95,13 @@ func (s *Server) imageGet(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(ref, "/json"):
 		res, err := s.e.ImageInspect(strings.TrimSuffix(ref, "/json"))
 		respond(w, res, err)
-	case strings.HasSuffix(ref, "/history"), strings.HasSuffix(ref, "/get"):
-		writeError(w, http.StatusNotImplemented, "image history and export are not supported by this engine")
+	case strings.HasSuffix(ref, "/history"):
+		res, err := s.e.History(strings.TrimSuffix(ref, "/history"))
+		respond(w, res, err)
+	case ref == "get":
+		s.save(w, r.URL.Query()["names"])
+	case strings.HasSuffix(ref, "/get"):
+		s.save(w, []string{strings.TrimSuffix(ref, "/get")})
 	default:
 		writeError(w, http.StatusNotFound, "page not found")
 	}
@@ -102,7 +114,7 @@ func (s *Server) imagePost(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		respondStatus(w, http.StatusCreated, s.e.ImageTag(strings.TrimSuffix(ref, "/tag"), q.Get("repo"), q.Get("tag")))
 	case strings.HasSuffix(ref, "/push"):
-		writeError(w, http.StatusNotImplemented, "pushing images is not supported by this engine")
+		s.push(w, r, strings.TrimSuffix(ref, "/push"))
 	default:
 		writeError(w, http.StatusNotFound, "page not found")
 	}
@@ -111,7 +123,7 @@ func (s *Server) imagePost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) build(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if q.Get("version") == "2" {
-		writeError(w, http.StatusNotImplemented, "BuildKit is not supported by this engine; use the classic builder (DOCKER_BUILDKIT=0)")
+		writeError(w, http.StatusBadRequest, "POST /build is the classic builder; BuildKit builds run through POST /grpc, as docker buildx does")
 		return
 	}
 	if q.Get("remote") != "" {
@@ -165,5 +177,69 @@ func (s *Server) build(w http.ResponseWriter, r *http.Request) {
 	send(jsonMessage{Aux: map[string]string{"ID": img.ID}})
 	if quiet {
 		send(jsonMessage{Stream: img.ID + "\n"})
+	}
+}
+
+// save streams a `docker save` archive. Errors before the first byte get a
+// status; once the archive streams, a failure can only cut it short.
+func (s *Server) save(w http.ResponseWriter, refs []string) {
+	if len(refs) == 0 {
+		writeError(w, http.StatusBadRequest, "no images named")
+		return
+	}
+	pr, pw := io.Pipe()
+	go func() { pw.CloseWithError(s.e.Save(refs, pw)) }()
+	buf := bufio.NewReader(pr)
+	if _, err := buf.Peek(1); err != nil && err != io.EOF {
+		pr.Close()
+		writeEngineError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-tar")
+	w.WriteHeader(http.StatusOK)
+	io.Copy(w, buf)
+}
+
+// registryAuth decodes the X-Registry-Auth header the Docker CLI sends with
+// pushes: base64url-encoded JSON credentials.
+func registryAuth(header string) (authn.Authenticator, error) {
+	if header == "" {
+		return authn.Anonymous, nil
+	}
+	raw, err := base64.URLEncoding.DecodeString(header)
+	if err != nil {
+		if raw, err = base64.StdEncoding.DecodeString(header); err != nil {
+			return nil, fmt.Errorf("X-Registry-Auth: %w", err)
+		}
+	}
+	var ac registry.AuthConfig
+	if err := json.Unmarshal(raw, &ac); err != nil {
+		return nil, fmt.Errorf("X-Registry-Auth: %w", err)
+	}
+	cfg := authn.AuthConfig{Username: ac.Username, Password: ac.Password, Auth: ac.Auth, IdentityToken: ac.IdentityToken, RegistryToken: ac.RegistryToken}
+	if cfg == (authn.AuthConfig{}) {
+		return authn.Anonymous, nil
+	}
+	return authn.FromConfig(cfg), nil
+}
+
+func (s *Server) push(w http.ResponseWriter, r *http.Request, repo string) {
+	auth, err := registryAuth(r.Header.Get("X-Registry-Auth"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	results, err := s.e.Push(r.Context(), repo, r.URL.Query().Get("tag"), auth, func(line string) {
+		enc.Encode(jsonMessage{Status: line})
+		flush(w)
+	})
+	for _, res := range results {
+		enc.Encode(jsonMessage{Aux: map[string]any{"Tag": res.Tag, "Digest": res.Digest, "Size": res.Size}})
+	}
+	if err != nil {
+		enc.Encode(jsonMessage{Error: err.Error(), ErrorDetail: &errorDetails{Message: err.Error()}})
 	}
 }

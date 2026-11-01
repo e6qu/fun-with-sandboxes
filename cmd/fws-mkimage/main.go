@@ -1,5 +1,7 @@
 // Command fws-mkimage builds a darwin image archive that `docker load` accepts
-// from a Nix closure, extra files, and an image config.
+// from a Nix closure, extra files, and an image config. The image is an OCI
+// image with a layer per store path of the closure, so images that share
+// store paths share those layers, and a last layer with everything else.
 //
 // Every absolute /nix/store reference a Mach-O file loads through, and every
 // absolute symlink, is rewritten relative to the file itself, so the image is
@@ -8,9 +10,7 @@ package main
 
 import (
 	"archive/tar"
-	"crypto/sha256"
 	"debug/macho"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -24,6 +24,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/types"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/image"
 )
 
 type Spec struct {
@@ -76,9 +84,9 @@ func build(specPath, closure string, pkgs, files []string, out, arch string) err
 	}
 	defer os.RemoveAll(stage)
 
+	var paths []string
 	if closure != "" {
-		paths, err := readLines(closure)
-		if err != nil {
+		if paths, err = readLines(closure); err != nil {
 			return err
 		}
 		for _, p := range paths {
@@ -118,7 +126,7 @@ func build(specPath, closure string, pkgs, files []string, out, arch string) err
 			return err
 		}
 	}
-	return writeArchive(stage, spec, out, arch)
+	return writeArchive(stage, spec, paths, out, arch)
 }
 
 func readLines(path string) ([]string, error) {
@@ -354,78 +362,85 @@ func linkBin(stage, pkg string) error {
 	return nil
 }
 
-// writeArchive writes the stage as a single-layer image in the `docker save`
-// layout: manifest.json, the config, and the layer.
-func writeArchive(stage string, spec Spec, out, arch string) error {
-	layerPath := out + ".layer"
-	defer os.Remove(layerPath)
-	if err := writeLayer(stage, layerPath); err != nil {
-		return err
-	}
-	diffID, err := fileDigest(layerPath)
+// writeArchive writes the stage as an OCI image in the `docker save`
+// layout: a layer per store path, in the closure's sorted order, then one
+// with the rest of the stage.
+func writeArchive(stage string, spec Spec, storePaths []string, out, arch string) error {
+	dir, err := os.MkdirTemp("", "fws-mkimage-layers-")
 	if err != nil {
 		return err
 	}
-	var cfg map[string]any
-	if err := json.Unmarshal(spec.Config, &cfg); err != nil {
-		return fmt.Errorf("config: %w", err)
+	defer os.RemoveAll(dir)
+	epoch := v1.Time{Time: time.Unix(0, 0).UTC()}
+	var adds []mutate.Addendum
+	var history []v1.History
+	var diffIDs []v1.Hash
+	addLayer := func(createdBy string, include func(rel string) bool) error {
+		p := filepath.Join(dir, fmt.Sprintf("%d.tar", len(adds)))
+		if err := writeLayer(stage, p, include); err != nil {
+			return err
+		}
+		l, err := tarball.LayerFromFile(p, tarball.WithMediaType(types.OCILayer))
+		if err != nil {
+			return err
+		}
+		d, err := l.DiffID()
+		if err != nil {
+			return err
+		}
+		adds = append(adds, mutate.Addendum{Layer: l, MediaType: types.OCILayer})
+		diffIDs = append(diffIDs, d)
+		history = append(history, v1.History{Created: epoch, CreatedBy: createdBy})
+		return nil
 	}
-	image := map[string]any{
-		"architecture": arch,
-		"os":           "darwin",
-		"created":      time.Unix(0, 0).UTC().Format(time.RFC3339),
-		"config":       cfg,
-		"rootfs":       map[string]any{"type": "layers", "diff_ids": []string{"sha256:" + diffID}},
-		"history":      []map[string]any{{"created_by": "fws-mkimage"}},
+	sorted := append([]string(nil), storePaths...)
+	sort.Strings(sorted)
+	for _, sp := range sorted {
+		own := strings.TrimPrefix(sp, "/")
+		if err := addLayer("fws-mkimage: "+sp, func(rel string) bool {
+			return rel == "nix" || rel == "nix/store" || rel == own || strings.HasPrefix(rel, own+"/")
+		}); err != nil {
+			return err
+		}
 	}
-	cb, err := json.Marshal(image)
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(cb)
-	cfgName := hex.EncodeToString(sum[:]) + ".json"
-	manifest, err := json.Marshal([]map[string]any{{"Config": cfgName, "RepoTags": []string{spec.Tag}, "Layers": []string{diffID + "/layer.tar"}}})
-	if err != nil {
+	if err := addLayer("fws-mkimage", func(rel string) bool {
+		if len(sorted) > 0 && rel == "nix" {
+			return false
+		}
+		return !strings.HasPrefix(rel+"/", "nix/store/")
+	}); err != nil {
 		return err
 	}
 
+	var cfg v1.Config
+	if err := json.Unmarshal(spec.Config, &cfg); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	img, err := mutate.Append(mutate.ConfigMediaType(mutate.MediaType(empty.Image, types.OCIManifestSchema1), types.OCIConfigJSON), adds...)
+	if err != nil {
+		return err
+	}
+	img, err = mutate.ConfigFile(img, &v1.ConfigFile{
+		Architecture: arch, OS: "darwin", Created: epoch, Config: cfg,
+		RootFS: v1.RootFS{Type: "layers", DiffIDs: diffIDs}, History: history,
+	})
+	if err != nil {
+		return err
+	}
 	f, err := os.Create(out)
 	if err != nil {
 		return err
 	}
-	tw := tar.NewWriter(f)
-	add := func(name string, data []byte) error {
-		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
-			return err
-		}
-		_, err := tw.Write(data)
-		return err
-	}
-	if err := add("manifest.json", manifest); err != nil {
-		return err
-	}
-	if err := add(cfgName, cb); err != nil {
-		return err
-	}
-	lf, err := os.Open(layerPath)
-	if err != nil {
-		return err
-	}
-	defer lf.Close()
-	li, _ := lf.Stat()
-	if err := tw.WriteHeader(&tar.Header{Name: diffID + "/layer.tar", Mode: 0o644, Size: li.Size(), Typeflag: tar.TypeReg}); err != nil {
-		return err
-	}
-	if _, err := io.Copy(tw, lf); err != nil {
-		return err
-	}
-	if err := tw.Close(); err != nil {
+	if err := image.WriteArchive(f, []image.ArchiveEntry{{Image: img, Tags: []string{spec.Tag}}}); err != nil {
+		f.Close()
 		return err
 	}
 	return f.Close()
 }
 
-func writeLayer(stage, path string) error {
+// writeLayer writes the stage entries include accepts, by slash-separated
+// path relative to the stage, as a deterministic layer tar.
+func writeLayer(stage, path string, include func(rel string) bool) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -436,7 +451,7 @@ func writeLayer(stage, path string) error {
 		if err != nil {
 			return err
 		}
-		if p != stage {
+		if rel, _ := filepath.Rel(stage, p); p != stage && include(filepath.ToSlash(rel)) {
 			paths = append(paths, p)
 		}
 		return nil
@@ -488,17 +503,4 @@ func writeLayer(stage, path string) error {
 		return err
 	}
 	return f.Close()
-}
-
-func fileDigest(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }

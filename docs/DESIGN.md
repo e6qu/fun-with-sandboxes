@@ -114,8 +114,10 @@ paths.
 ~/.fws/
   docker.sock                      # the Docker Engine API
   alloc.json                       # per-stack port blocks and assignments
-  images/images.json               # image index
-  images/roots/<config-digest>/    # each image, flattened once
+  images/images.json               # image records: tags, config, manifest
+  images/oci/                      # an OCI image layout: oci-layout,
+                                   #   index.json, blobs/sha256/
+  images/roots/<config-digest>/    # each image, unpacked once
   stacks/<stack>/c/<id12>/
     r/                             # the container root: an APFS clone
     config.json  log.jsonl  profile.sb
@@ -123,8 +125,15 @@ paths.
   networks.json  volumes.json
 ```
 
-An image is unpacked once, all layers applied in order with OCI whiteouts,
-into `images/roots/<digest>`. On create, the engine gives the container an
+Every image is an OCI image in `images/oci`, an OCI image layout whose
+`index.json` names each tagged image as containerd and `docker save` name
+them (`io.containerd.image.name`, `org.opencontainers.image.ref.name`). Pulled
+and loaded images keep their manifests, configs and layers byte for byte, so
+their digests and IDs (the config digest, as in Docker) survive a save, load,
+push or pull. Removing an image removes the blobs no other image refers to.
+
+An image is also unpacked once, all layers applied in order with OCI
+whiteouts, into `images/roots/<digest>`. On create, the engine gives the container an
 **APFS clone** of it (`clonefile(2)`): copy-on-write, constant time, and near
 zero bytes until the container writes. `clonefile` is the one primitive macOS
 offers that fits this exactly: instant writable roots with no union mount and
@@ -223,7 +232,9 @@ Stock Docker Hub images are Linux. The catalog is built from Nixpkgs for
   one with `install_name_tool`, re-signs the file ad hoc (arm64 macOS refuses
   modified code otherwise), turns absolute store symlinks into relative ones,
   and links each package's `bin/` into `/bin`. The image is then
-  self-contained wherever its root lands. The profile denies the host's
+  self-contained wherever its root lands. It writes an OCI image with a
+  layer per store path, in sorted order, and a last layer with everything
+  else, so images that share store paths share layers. The profile denies the host's
   `/nix`, so the tests prove it.
 - **Entrypoints are Go programs** (`images/*/entry`) that read the
   `SANDBOX_*` variables, configure the service, and `exec` it. Images carry no
@@ -236,7 +247,8 @@ Stock Docker Hub images are Linux. The catalog is built from Nixpkgs for
   Postgres entrypoint keeps each server's process limits small.
 - **Distribution.** Archives for `docker load`, or any registry as an
   ordinary image with a `darwin/<arch>` platform:
-  `scripts/publish-images.sh` pushes the archives as `<prefix>/fws-<name>`.
+  `scripts/publish-images.sh` pushes each archive's OCI layout as
+  `<prefix>/fws-<name>`.
   CI publishes the catalog to a local registry on every pull request to prove
   the script, and the end-to-end suite pulls through the engine from an
   in-process registry. Compose files name these
@@ -259,7 +271,10 @@ with or without the `/v1.xx` prefix:
 - Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached,
   detached, TTY), `/exec/{id}/resize`, `GET /exec/{id}/json`
 - Images: `json`, `create` (registry pull for `darwin/<arch>`), `load`,
-  `{ref}/json`, `{ref}/tag`, `DELETE`
+  `{ref}/json`, `{ref}/tag`, `{ref}/history`, `get` and `{ref}/get`
+  (`docker save`), `{ref}/push` (with `X-Registry-Auth`), `DELETE`
+- Containers to images: `POST /commit` (with `changes`, pausing by default)
+  and `GET /containers/{id}/export`
 - Networks: `json`, `create`, `{id}`, `connect`, `disconnect`, `prune`, `DELETE`
 - Volumes: `json`, `create`, `{name}`, `prune`, `DELETE`
 
@@ -294,10 +309,13 @@ Linux-specific:
 - **Identity mapping.** Container uid and gid 0 map to the engine's user, as
   in rootless BuildKit, so BuildKit's chowns stay ones an unprivileged
   process may make.
-- **Images.** `FROM` resolves the engine's images first: an image is written
-  into BuildKit's content store as a one-layer OCI image on first use. The
-  `moby` exporter, which `docker build` and `--load` use, clones the result
-  into the engine's image store.
+- **Images.** `FROM` resolves the engine's images first: on first use an
+  image's manifest, config and layers are written into BuildKit's content
+  store as stored, so BuildKit unpacks and caches it layer by layer. The
+  `moby` exporter, which `docker build` and `--load` use, writes the result
+  with BuildKit's own image writer as an OCI image whose layers extend the
+  base's, stores it in the engine's image store, and clones the result's
+  snapshot as the image's root.
 
 The BuildKit packages the engine uses live in `third_party/buildkit`, copied
 by `scripts/sync-buildkit.sh` with their imports rewritten into this module
@@ -315,9 +333,13 @@ root as a chroot would, absolute symlinks from the root, so nothing lands
 outside it; they read the uploaded context, which the CLI has already filtered
 through `.dockerignore`, or an earlier stage or image with `--from`. `RUN`
 executes under a Seatbelt profile confined to the stage root, with internet
-only through an egress proxy on a stack the build owns. The last stage's root
-moves into the image store as the image, its single layer's digest computed
-from a deterministic tar of the tree.
+only through an egress proxy on a stack the build owns. Each `RUN`,
+`COPY` and `ADD`, and a `WORKDIR` that makes its directory, adds a layer: the
+difference, whiteouts included, between an APFS clone of the stage root taken
+before the step and the root after it. The image is the base's layers and the
+last stage's, as an OCI image, and the last stage's root moves into the image
+store as its root. `docker commit` adds one layer the same way, the
+container's root against its image's.
 
 `pause` sends SIGSTOP to each of the container's process groups and `unpause`
 SIGCONT; health checks and `exec` wait while a container is paused, and
