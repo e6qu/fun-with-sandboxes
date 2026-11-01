@@ -49,6 +49,10 @@ type Engine struct {
 	egressMu sync.Mutex
 	egress   map[string]*egress.Proxy
 
+	// buildMu is held shared by classic builds and exclusively by a prune of
+	// their cache.
+	buildMu sync.RWMutex
+
 	mu         sync.Mutex
 	containers map[string]*Container
 	volumes    map[string]*Volume

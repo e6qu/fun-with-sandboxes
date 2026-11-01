@@ -371,6 +371,22 @@ last stage's, as an OCI image, and the last stage's root moves into the image
 store as its root. `docker commit` adds one layer the same way, the
 container's root against its image's.
 
+The classic builder caches each step as dockerd's reuses intermediate
+images. A key chains every instruction from the base image's ID; a `RUN`
+also folds in the build arguments in effect, and a `COPY`, `ADD` or
+directory-making `WORKDIR`, which are cheap, runs and folds in what it
+changed, by entry names, modes, links and contents, times left out. A `RUN`
+found in the cache does not run: its layer goes on the root. A cheap step
+found in the cache gives way to the cached layer, byte for byte, and the
+cache keeps each step's first history time, so a rebuild that hits on every
+step makes the same image. `--no-cache` skips lookups; `docker image prune`
+and `POST /build/prune` empty the cache, as pruning dangling intermediate
+images does in Docker. `ONBUILD` records triggers in the image config, and a
+stage built on such an image runs them first. With `remote`, the engine
+fetches the context itself: a Git repository at the fragment's ref and
+subdirectory, fetched shallow with submodules, a tarball, or a plain
+Dockerfile.
+
 `pause` sends SIGSTOP to each of the container's process groups and `unpause`
 SIGCONT; health checks and `exec` wait while a container is paused, and
 stopping a paused container resumes it to deliver the stop signal.

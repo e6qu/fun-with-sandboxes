@@ -19,8 +19,8 @@ machine — and from what macOS offers an unprivileged process under them.
   `# syntax=` directives (gateway frontends ship as Linux images), and
   `RUN --mount=type=ssh`. Build steps run as the engine's user; a Dockerfile
   `USER` other than root fails.
-- **The classic builder (`DOCKER_BUILDKIT=0`) has no cache**, no `ONBUILD`,
-  no heredocs and no remote contexts.
+- **The classic builder (`DOCKER_BUILDKIT=0`) takes no heredocs**, as
+  Docker's classic builder takes none; BuildKit builds take them.
 - **Build steps run under Seatbelt** with internet through a build-only
   egress proxy (none with `--network none`); shell-form `RUN` needs
   `/bin/sh` in the image, as in Docker.
