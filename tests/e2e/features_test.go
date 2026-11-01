@@ -691,3 +691,70 @@ func dockerIn(t *testing.T, stdin string, args ...string) (string, error) {
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
+
+// waitLog follows a container's log until a line holds text.
+func waitLog(t *testing.T, name, text string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "logs", "--follow", name)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); cmd.Wait() }()
+	sc := bufio.NewScanner(out)
+	for sc.Scan() {
+		if strings.Contains(sc.Text(), text) {
+			return
+		}
+	}
+	t.Fatalf("%s's log ended without %q", name, text)
+}
+
+func TestPublishUDPAndHostPortRanges(t *testing.T) {
+	const name = "fws-e2e-udp"
+	mustDocker(t, "run", "-d", "--name", name, "-p", "127.0.0.1::9999/udp", "fws/toolbox:1", "udpecho", "9999")
+	defer docker(t, "rm", "-f", name)
+	waitLog(t, name, "listening on udp")
+	addr := strings.TrimSpace(mustDocker(t, "port", name, "9999/udp"))
+	for _, client := range []string{"first", "second"} {
+		c, err := net.Dial("udp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		if _, err := c.Write([]byte(client)); err != nil {
+			t.Fatal(err)
+		}
+		c.SetReadDeadline(time.Now().Add(10 * time.Second))
+		buf := make([]byte, 100)
+		n, err := c.Read(buf)
+		if err != nil || string(buf[:n]) != "echo:"+client {
+			t.Fatalf("the %s client got %q, %v through %s", client, buf[:n], err, addr)
+		}
+	}
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	span := fmt.Sprintf("127.0.0.1:%d-%d:8080", lo, lo+1)
+	for i := 0; i < 2; i++ {
+		box := fmt.Sprintf("fws-e2e-range-%d", i)
+		mustDocker(t, "run", "-d", "--name", box, "-p", span, "fws/toolbox:1", "udpecho", "8080")
+		defer docker(t, "rm", "-f", box)
+		if got := strings.TrimSpace(mustDocker(t, "port", box, "8080")); got != fmt.Sprintf("127.0.0.1:%d", lo+i) {
+			t.Fatalf("container %d of the range published %s, want 127.0.0.1:%d", i, got, lo+i)
+		}
+	}
+	if out, err := docker(t, "run", "-d", "--name", "fws-e2e-range-full", "-p", span, "fws/toolbox:1", "udpecho", "8080"); err == nil || !strings.Contains(out+err.Error(), "port is already allocated") {
+		t.Fatalf("a third container on a two-port range: %v\n%s", err, out)
+	}
+	docker(t, "rm", "-f", "fws-e2e-range-full")
+}

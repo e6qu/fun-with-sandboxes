@@ -246,7 +246,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	ports := map[string]int{}
 	if string(req.HostConfig.NetworkMode) != "none" {
 		for _, p := range exposedPorts(cfg, req.HostConfig) {
-			hp, err := e.alloc.Port(stack, portKey+"/"+p.String())
+			// One host port serves a container port's TCP and UDP alike, so
+			// SANDBOX_PORT_<n> names it whatever the protocol.
+			hp, err := e.alloc.Port(stack, portKey+"/"+p.Port()+"/tcp")
 			if err != nil {
 				return container.CreateResponse{}, err
 			}
@@ -332,12 +334,12 @@ func checkHostConfig(hc *container.HostConfig) error {
 		return unsupported("network mode %q is not supported: containers do not share network stacks", mode)
 	}
 	for p, bs := range hc.PortBindings {
-		if p.Proto() != network.TCP {
-			return unsupported("publishing %s is not supported; only TCP ports can be published", p)
+		if p.Proto() != network.TCP && p.Proto() != network.UDP {
+			return unsupported("publishing %s is not supported; only TCP and UDP ports can be published", p)
 		}
 		for _, b := range bs {
-			if b.HostPort != "" && strings.Contains(b.HostPort, "-") {
-				return unsupported("host port ranges (%s) are not supported", b.HostPort)
+			if _, _, err := hostPortRange(b.HostPort); err != nil {
+				return invalid("invalid host port %q for %s: %v", b.HostPort, p, err)
 			}
 		}
 	}

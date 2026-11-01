@@ -65,6 +65,9 @@ type Allocator struct {
 	cfg Config
 	mu  sync.Mutex
 	st  state
+	// leased holds the ports of each stack's block lent out for a while,
+	// kept in memory: a lease ends with the engine that made it.
+	leased map[string]map[int]bool
 }
 
 func Open(cfg Config) (*Allocator, error) {
@@ -162,10 +165,7 @@ func (a *Allocator) Port(stack, key string) (int, error) {
 	if p, ok := s.Ports[key]; ok {
 		return p, nil
 	}
-	taken := map[int]bool{}
-	for _, p := range s.Ports {
-		taken[p] = true
-	}
+	taken := a.takenLocked(s)
 	for p := s.PortBase; p < s.PortBase+s.BlockSize; p++ {
 		if taken[p] || !hostPortFree(p) {
 			continue
@@ -178,6 +178,52 @@ func (a *Allocator) Port(stack, key string) (int, error) {
 		return p, nil
 	}
 	return 0, fmt.Errorf("%w: %s", ErrBlockFull, stack)
+}
+
+func (a *Allocator) takenLocked(s *Stack) map[int]bool {
+	taken := map[int]bool{}
+	for _, p := range s.Ports {
+		taken[p] = true
+	}
+	for p := range a.leased[s.Name] {
+		taken[p] = true
+	}
+	return taken
+}
+
+// Lease lends out a free port of the stack's block until Unlease returns
+// it, for a socket the engine opens on the stack's behalf that the stack's
+// containers must be able to reach, such as the source of a UDP flow its
+// published port forwards.
+func (a *Allocator) Lease(stack string) (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s, ok := a.st.Stacks[stack]
+	if !ok {
+		return 0, fmt.Errorf("alloc: stack %s holds no block", stack)
+	}
+	taken := a.takenLocked(s)
+	for p := s.PortBase; p < s.PortBase+s.BlockSize; p++ {
+		if taken[p] || !hostPortFree(p) {
+			continue
+		}
+		if a.leased == nil {
+			a.leased = map[string]map[int]bool{}
+		}
+		if a.leased[stack] == nil {
+			a.leased[stack] = map[int]bool{}
+		}
+		a.leased[stack][p] = true
+		return p, nil
+	}
+	return 0, fmt.Errorf("%w: %s", ErrBlockFull, stack)
+}
+
+// Unlease returns a leased port to the stack's block.
+func (a *Allocator) Unlease(stack string, port int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.leased[stack], port)
 }
 
 // Release frees the stack's block and removes its directory tree.
@@ -195,6 +241,7 @@ func (a *Allocator) Release(stack string) error {
 		return err
 	}
 	delete(a.st.Stacks, stack)
+	delete(a.leased, stack)
 	return a.saveLocked()
 }
 
@@ -231,11 +278,19 @@ func copyStack(s *Stack) Stack {
 	return c
 }
 
+// hostPortFree reports whether the host can bind p for both TCP and UDP: a
+// container port takes one host port for both protocols.
 func hostPortFree(p int) bool {
-	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(p))
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return false
 	}
 	l.Close()
+	u, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		return false
+	}
+	u.Close()
 	return true
 }
