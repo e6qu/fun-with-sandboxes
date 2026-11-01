@@ -214,7 +214,15 @@ it; it tells services their assignment through the environment.
   `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
 - **Published ports.** `ports:` entries bind real host listeners in the
   engine, which forward each connection to the container's assigned port. A
-  taken host port fails the start with Docker's "port is already allocated".
+  taken host port fails the start with Docker's "port is already allocated",
+  and a host port range binds the first port of it the host has free. UDP
+  ports publish through a userland proxy, as Docker's `docker-proxy` does:
+  one upstream socket per client, so replies reach the client that asked,
+  and a flow ends after 90 seconds without traffic. A container may send
+  only to its stack's ports, so each upstream socket binds a port of the
+  stack's block, leased from the allocator for the flow's life. A container
+  port takes one host port for TCP and UDP alike, which `SANDBOX_PORT_<n>`
+  names.
 - **Isolation.** A container may connect to every port of its own stack's
   block and nowhere else, so stack A cannot reach stack B even though both
   live on `127.0.0.1`. That includes B's published ports.
@@ -308,8 +316,7 @@ policies follow Docker's back-off.
 Requests the engine cannot honour return an error rather than being
 accepted: `501` for memory, CPU, PID, ulimit and device limits; privileged
 mode; capabilities; non-default users; `host` networking; non-`bridge`
-network drivers; custom IPAM; UDP publishing; resource updates; and
-BuildKit.
+network drivers; custom IPAM; SCTP publishing; and resource updates.
 
 `POST /grpc` and `POST /session` serve an embedded BuildKit
 (`internal/buildkit`), as dockerd does, so buildx's docker driver, `docker

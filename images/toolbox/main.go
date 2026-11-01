@@ -120,6 +120,28 @@ func run(op, arg string) error {
 			return err
 		}
 		return c.Close()
+	case "udpecho":
+		// Answer each datagram on container port arg/udp with "echo:" and
+		// the datagram.
+		port, err := sandboxenv.Port(arg)
+		if err != nil {
+			return err
+		}
+		pc, err := net.ListenPacket("udp", "127.0.0.1:"+port)
+		if err != nil {
+			return err
+		}
+		fmt.Println("listening on udp", port)
+		buf := make([]byte, 1500)
+		for {
+			n, from, err := pc.ReadFrom(buf)
+			if err != nil {
+				return err
+			}
+			if _, err := pc.WriteTo(append([]byte("echo:"), buf[:n]...), from); err != nil {
+				return err
+			}
+		}
 	case "signal":
 		pid, err := strconv.Atoi(arg)
 		if err != nil {

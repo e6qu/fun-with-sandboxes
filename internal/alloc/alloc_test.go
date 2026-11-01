@@ -115,3 +115,35 @@ func TestRejectsUnsafeNames(t *testing.T) {
 		}
 	}
 }
+
+// A lease takes a port of the stack's block that no key holds, and assigned
+// keys skip it until it returns.
+func TestLease(t *testing.T) {
+	a, err := Open(Config{Root: t.TempDir(), PortBase: 44000, PortLimit: 44100, BlockSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Lease("s"); err == nil {
+		t.Fatal("leased a port of a stack that holds no block")
+	}
+	first, err := a.Port("s", "a/80/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := a.Lease("s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := a.Stack("s")
+	if l == first || !st.Contains(l) {
+		t.Fatalf("leased %d, want a free port of the block other than %d", l, first)
+	}
+	next, err := a.Port("s", "b/80/tcp")
+	if err != nil || next == l {
+		t.Fatalf("a key took the leased port %d: %d, %v", l, next, err)
+	}
+	a.Unlease("s", l)
+	if again, err := a.Lease("s"); err != nil || again != l {
+		t.Fatalf("leasing after the return got %d, %v; want %d", again, err, l)
+	}
+}

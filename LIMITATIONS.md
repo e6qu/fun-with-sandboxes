@@ -73,7 +73,12 @@ machine — and from what macOS offers an unprivileged process under them.
   Software must honour `HTTP_PROXY`/`HTTPS_PROXY`; other protocols (raw TCP,
   UDP, DNS from the container) do not leave the machine. `fwsd -egress=false`
   turns the proxy off.
-- **UDP ports cannot be published**, and host port ranges are not supported.
+- **A published UDP port's concurrent clients are bounded by the stack's
+  block.** Each client's flow sends to the container from a port of the
+  stack's block, the only ports a container may send to, so a stack serves
+  as many UDP clients at once as its block has ports to spare; a flow ends
+  after 90 seconds without traffic, as with Docker's userland proxy. SCTP
+  ports cannot be published.
 - **Unix socket paths are capped at 104 bytes** on macOS. Keep the state root
   short (the default `~/.fws` is).
 
