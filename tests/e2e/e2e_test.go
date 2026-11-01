@@ -58,7 +58,10 @@ func run(m *testing.M) int {
 	stateRoot, _ = filepath.EvalSymlinks(root)
 
 	bin := filepath.Join(os.TempDir(), "fwsd-e2e")
-	if out, err := exec.Command("go", "build", "-o", bin, "../../cmd/fwsd").CombinedOutput(); err != nil {
+	build := exec.Command("go", "build", "-o", bin, "./cmd/fwsd")
+	// The engine is its own module; this suite only drives its binary.
+	build.Dir = "../.."
+	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "build fwsd: %v\n%s", err, out)
 		return 1
 	}

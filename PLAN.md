@@ -65,11 +65,12 @@ internal/alloc/       # per-stack port blocks and directories
 internal/seatbelt/    # Seatbelt profile rendering
 internal/image/       # image store, layer extraction, clonefile roots
 internal/runtime/     # launch under sandbox-exec, process groups, pipes
+internal/egress/      # the per-stack HTTP proxy to the internet
 internal/engine/      # containers, volumes, networks, exec, health, events
 internal/api/         # the Docker Engine API (the Compose subset)
 internal/sandboxenv/  # the container side of the SANDBOX_* contract
 images/               # entrypoints and specs for the darwin catalog
-tests/e2e/            # Docker CLI + Compose end-to-end suite
+tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite
 ```
 
 ## Image catalog

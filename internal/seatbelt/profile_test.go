@@ -29,12 +29,16 @@ func TestRenderGrantsOnlyOwnResources(t *testing.T) {
 		`(allow process-exec*` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/containers/c1/root")`,
 		`  (literal "/bin/sh")`,
 		`(allow signal (target same-sandbox))`,
+		`  (global-name "com.apple.trustd")`,
 		`(allow file-read-metadata` + "\n" + `  (literal "/")`,
 		`  (literal "/Users/u/.fws/stacks/a/containers")`,
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("profile missing %s\n%s", want, p)
 		}
+	}
+	if strings.Contains(p, "com.apple.SecurityServer") {
+		t.Errorf("profile grants the keychain service")
 	}
 	if strings.Count(p, `"localhost:41001"`) != 1 {
 		t.Errorf("duplicate connect port rendered twice")

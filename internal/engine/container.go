@@ -733,6 +733,19 @@ func (e *Engine) environment(c *Container, extra []string) []string {
 	set("SANDBOX_ROOT=" + root)
 	set("SANDBOX_STACK=" + c.rec.Stack)
 	set("SANDBOX_HOST=127.0.0.1")
+	if port := e.egressPort(c.rec.Stack); port != 0 && e.hasEgress(c) {
+		proxy := fmt.Sprintf("http://127.0.0.1:%d", port)
+		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+			if _, ok := vars[k]; !ok {
+				set(k + "=" + proxy)
+			}
+		}
+		for _, k := range []string{"NO_PROXY", "no_proxy"} {
+			if _, ok := vars[k]; !ok {
+				set(k + "=localhost,127.0.0.1,::1")
+			}
+		}
+	}
 	for _, p := range sortedKeys(c.rec.Ports) {
 		num, _, _ := strings.Cut(p, "/")
 		set(fmt.Sprintf("SANDBOX_PORT_%s=%d", num, c.rec.Ports[p]))
@@ -801,7 +814,14 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	for _, p := range sortedKeys(c.rec.Ports) {
 		spec.BindPorts = append(spec.BindPorts, c.rec.Ports[p])
 	}
+	// Every port of the stack's block is reachable except the egress proxy,
+	// which only containers with internet access may use.
+	proxy := e.egressPort(c.rec.Stack)
+	withEgress := e.hasEgress(c)
 	for p := s.PortBase; p < s.PortBase+s.BlockSize; p++ {
+		if p == proxy && !withEgress {
+			continue
+		}
 		spec.ConnectPorts = append(spec.ConnectPorts, p)
 	}
 	return spec, nil
@@ -859,6 +879,11 @@ func (c *Container) start(e *Engine) error {
 			if err := os.MkdirAll(m.Source, 0o1777); err != nil {
 				return err
 			}
+		}
+	}
+	if e.hasEgress(c) {
+		if _, err := e.ensureEgress(c.rec.Stack); err != nil {
+			return err
 		}
 	}
 	proxies, published, err := e.publish(c)
@@ -1258,6 +1283,7 @@ func (e *Engine) releaseStackIfEmptyLocked(stack string) {
 			return
 		}
 	}
+	e.closeEgress(stack)
 	e.alloc.Release(stack)
 }
 

@@ -21,7 +21,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: toolbox serve|health|echo|env|write|read|list|bind|connect|signal|exec [arg]")
+		fmt.Fprintln(os.Stderr, "usage: toolbox serve|health|echo|env|cat|fetch|dial|write|read|list|bind|connect|signal|exec [arg]")
 		os.Exit(2)
 	}
 	arg := ""
@@ -65,6 +65,31 @@ func run(op, arg string) error {
 			}
 		}
 		return nil
+	case "cat":
+		b, err := os.ReadFile(sandboxenv.Path(arg))
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(b)
+		return err
+	case "fetch":
+		c := http.Client{Timeout: 30 * time.Second}
+		res, err := c.Get(arg)
+		if err != nil {
+			return err
+		}
+		res.Body.Close()
+		if res.StatusCode >= 400 {
+			return fmt.Errorf("%s: %s", arg, res.Status)
+		}
+		fmt.Println(res.Status)
+		return nil
+	case "dial":
+		c, err := net.DialTimeout("tcp", arg, 5*time.Second)
+		if err != nil {
+			return err
+		}
+		return c.Close()
 	case "write":
 		return os.WriteFile(arg, []byte("x"), 0o600)
 	case "read":

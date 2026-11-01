@@ -191,6 +191,16 @@ it; it tells services their assignment through the environment.
 - **Isolation.** A container may connect to every port of its own stack's
   block and nowhere else, so stack A cannot reach stack B even though both
   live on `127.0.0.1`. That includes B's published ports.
+- **Egress.** Seatbelt can allow loopback ports or every destination, nothing
+  in between, so containers reach the internet through an HTTP proxy the
+  engine runs for each stack on a port of the stack's block
+  (`internal/egress`). Containers receive `HTTP_PROXY`, `HTTPS_PROXY` and
+  `NO_PROXY`. The proxy resolves each destination once, refuses it if any
+  address is loopback, link-local, multicast, unspecified or assigned to one
+  of the host's interfaces, and dials an address it checked, so DNS cannot
+  rebind a name onto the host. Containers with `network_mode: none`, or only
+  on `internal: true` networks, get no proxy variables and their profiles omit
+  the proxy's port.
 - **Networks.** Compose's networks are recorded and reported faithfully, but
   they carry no traffic: reachability is the stack. A container cannot join a
   network another stack owns, and `host` and `container:` network modes are
@@ -239,7 +249,8 @@ with or without the `/v1.xx` prefix:
 - Containers: `create`, `json` (list, with Docker's filters), `{id}/json`,
   `start`, `stop`, `restart`, `kill`, `wait` (all three conditions),
   `rename`, `resize`, `logs` (follow, tail, since, until, timestamps),
-  `attach` (hijacked, multiplexed or raw), `DELETE`, `prune`
+  `attach` (hijacked, multiplexed or raw), `archive` (`HEAD`, `GET`, `PUT`:
+  `docker cp`), `DELETE`, `prune`
 - Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached,
   detached, TTY), `/exec/{id}/resize`, `GET /exec/{id}/json`
 - Images: `json`, `create` (registry pull for `darwin/<arch>`), `load`,
@@ -255,7 +266,12 @@ Requests the engine cannot honour return an error rather than being
 accepted: `501` for memory, CPU, PID, ulimit and device limits; privileged
 mode; capabilities; non-default users; `host` networking; non-`bridge`
 network drivers; custom IPAM; UDP publishing; and `build`, `stats`, `top`,
-`cp`, `pause` and `update`.
+`pause` and `update`.
+
+`docker cp` resolves paths as the container's processes do, absolute symlinks
+on the host, and refuses any result outside the container's root and mounts.
+It archives mounts as their contents rather than as the symlinks that
+implement them.
 
 ---
 
@@ -295,11 +311,12 @@ internal/alloc/       # per-stack port blocks and directories
 internal/seatbelt/    # profile rendering
 internal/image/       # image store, layer extraction, clonefile
 internal/runtime/     # launch under sandbox-exec, process groups, pipes
+internal/egress/      # the per-stack HTTP proxy to the internet
 internal/engine/      # containers, volumes, networks, exec, health, events
 internal/api/         # the Docker Engine API
 internal/sandboxenv/  # the container side of the SANDBOX_* contract
 images/               # entrypoints and specs for the catalog
-tests/e2e/            # Docker CLI + Compose end-to-end suite
+tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite (own module)
 ```
 
 ---

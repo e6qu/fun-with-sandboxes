@@ -45,8 +45,9 @@ var DeniedReadRoots = []string{
 var SystemShells = []string{"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash"}
 
 // MachServices are the only global Mach services a container may look up:
-// user/group lookup, notifications, and logging. Everything else — keychain,
-// pasteboard, Launch Services, TCC — stays out of reach.
+// user/group lookup, notifications, logging, and certificate trust
+// evaluation, which TLS needs and which hands out no secrets. Everything
+// else — the keychain, pasteboard, Launch Services, TCC — stays out of reach.
 var MachServices = []string{
 	"com.apple.system.opendirectoryd.libinfo",
 	"com.apple.system.opendirectoryd.membership",
@@ -55,6 +56,8 @@ var MachServices = []string{
 	"com.apple.system.logger",
 	"com.apple.logd",
 	"com.apple.diagnosticd",
+	"com.apple.trustd",
+	"com.apple.trustd.agent",
 }
 
 type Volume struct {
