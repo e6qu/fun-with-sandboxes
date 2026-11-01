@@ -1,6 +1,7 @@
 package api
 
 import (
+	"archive/tar"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -190,5 +191,35 @@ func TestCreateOnDefaultNetwork(t *testing.T) {
 	}
 	if msg, _ := res["message"].(string); strings.Contains(msg, "network") {
 		t.Fatalf("create on the default network: %d %v", r.StatusCode, res)
+	}
+}
+
+// The build context arrives while progress already streams back, so the
+// handler must keep reading the upload after it starts responding.
+func TestBuildReadsContextWhileStreaming(t *testing.T) {
+	ts, e := newEngineServer(t)
+	loadImage(t, e, "fws/tiny:1")
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	df := []byte("FROM fws/tiny:1\nCOPY big.bin /big.bin\n")
+	tw.WriteHeader(&tar.Header{Name: "Dockerfile", Mode: 0o644, Size: int64(len(df))})
+	tw.Write(df)
+	big := bytes.Repeat([]byte("x"), 4<<10)
+	tw.WriteHeader(&tar.Header{Name: "big.bin", Mode: 0o644, Size: int64(len(big))})
+	tw.Write(big)
+	tw.Close()
+	// The Docker CLI streams the context with chunked encoding, without a
+	// length; hiding the buffer's length makes the client do the same.
+	res, err := http.Post(ts.URL+"/build?t=x:1", "application/x-tar", io.MultiReader(&buf))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	out, _ := io.ReadAll(res.Body)
+	if strings.Contains(string(out), "closed Body") || strings.Contains(string(out), "read build context") {
+		t.Fatalf("build lost its context upload:\n%s", out)
+	}
+	if !strings.Contains(string(out), "Step 1/2 : FROM fws/tiny:1") {
+		t.Fatalf("build did not start:\n%s", out)
 	}
 }

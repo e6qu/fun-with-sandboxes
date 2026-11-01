@@ -135,6 +135,13 @@ func (s *Server) build(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	quiet := q.Get("q") == "1" || q.Get("q") == "true"
+	// Progress streams while the context upload is still being read; an
+	// HTTP/1 server closes the request body once a response starts unless
+	// told otherwise.
+	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	flush(w)
