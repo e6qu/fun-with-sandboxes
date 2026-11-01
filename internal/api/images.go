@@ -213,9 +213,11 @@ func (s *Server) save(w http.ResponseWriter, refs []string) {
 	}
 	pr, pw := io.Pipe()
 	go func() { pw.CloseWithError(s.e.Save(refs, pw)) }()
+	// Closing the read side ends the writer when the client goes away
+	// mid-archive.
+	defer pr.Close()
 	buf := bufio.NewReader(pr)
 	if _, err := buf.Peek(1); err != nil && err != io.EOF {
-		pr.Close()
 		writeEngineError(w, err)
 		return
 	}

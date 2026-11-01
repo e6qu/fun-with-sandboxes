@@ -58,7 +58,9 @@ func run(m *testing.M) int {
 	stateRoot, _ = filepath.EvalSymlinks(root)
 
 	bin := filepath.Join(os.TempDir(), "fwsd-e2e")
-	build := exec.Command("go", "build", "-o", bin, "./cmd/fwsd")
+	// The race detector turns a data race in the engine into a report the
+	// suite fails on, rather than a crash some later run might hit.
+	build := exec.Command("go", "build", "-race", "-o", bin, "./cmd/fwsd")
 	// The engine is its own module; this suite only drives its binary.
 	build.Dir = "../.."
 	if out, err := build.CombinedOutput(); err != nil {
@@ -73,19 +75,32 @@ func run(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	defer func() {
+	stopped := false
+	stop := func() error {
+		if stopped {
+			return nil
+		}
+		stopped = true
 		daemon.Process.Signal(syscall.SIGTERM)
-		daemon.Wait()
-	}()
+		return daemon.Wait()
+	}
+	defer stop()
 	ready := make(chan struct{})
+	logged := make(chan struct{})
+	var crashes []string
 	go func() {
+		defer close(logged)
 		sc := bufio.NewScanner(stderr)
 		announced := false
 		for sc.Scan() {
-			fmt.Fprintln(os.Stderr, "fwsd:", sc.Text())
-			if !announced && strings.Contains(sc.Text(), "serving the Docker API") {
+			line := sc.Text()
+			fmt.Fprintln(os.Stderr, "fwsd:", line)
+			if !announced && strings.Contains(line, "serving the Docker API") {
 				announced = true
 				close(ready)
+			}
+			if crashLine(line) {
+				crashes = append(crashes, line)
 			}
 		}
 	}()
@@ -109,7 +124,27 @@ func run(m *testing.M) int {
 			return 1
 		}
 	}
-	return m.Run()
+	code := m.Run()
+	// The engine recovers a panicking handler and keeps serving, and the race
+	// detector reports without stopping it, so the suite reads the engine's
+	// log for both: a crash fails the run even when every request around it
+	// succeeded.
+	if err := stop(); err != nil {
+		fmt.Fprintf(os.Stderr, "fwsd exited with %v\n", err)
+		code = 1
+	}
+	<-logged
+	if len(crashes) > 0 {
+		fmt.Fprintf(os.Stderr, "fwsd crashed while the suite ran:\n  %s\n", strings.Join(crashes, "\n  "))
+		code = 1
+	}
+	return code
+}
+
+// crashLine reports a log line that marks a panic, recovered or not, or a
+// data race.
+func crashLine(line string) bool {
+	return strings.Contains(line, "panic") || strings.Contains(line, "WARNING: DATA RACE") || strings.HasPrefix(line, "fatal error:")
 }
 
 // commandTimeout bounds each CLI call, so an engine that never answers fails
