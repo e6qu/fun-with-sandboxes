@@ -6,8 +6,8 @@
 coverage.*
 
 # Nix
-result
-result-*
+/result
+/result-*
 
 # Engine state from local runs
 /.fws/
