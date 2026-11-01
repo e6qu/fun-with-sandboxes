@@ -299,6 +299,15 @@ Linux-specific:
   `moby` exporter, which `docker build` and `--load` use, clones the result
   into the engine's image store.
 
+The BuildKit packages the engine uses live in `third_party/buildkit`, copied
+by `scripts/sync-buildkit.sh` with their imports rewritten into this module
+and the patches in `third_party/buildkit-patches` applied. One patch matters:
+BuildKit's darwin mounter mounts a read-only snapshot with `mount(2)`, which
+needs root; the patched mounter reads the snapshot's directory directly, as it
+already did for read-write ones. Keeping the packages in the module, rather
+than behind a `replace` directive, keeps `go install …/cmd/fwsd@<version>`
+working.
+
 `POST /build` is the classic builder (`internal/dockerfile` parses; the
 engine builds), for `DOCKER_BUILDKIT=0`. Each stage starts from an APFS clone of its base image, or an
 empty root for `scratch`. `COPY` and `ADD` resolve paths inside the stage
@@ -367,6 +376,7 @@ internal/egress/      # the per-stack HTTP proxy to the internet
 internal/procs/       # the host process table, for top and stats
 internal/dockerfile/  # Dockerfile parsing and variable expansion
 internal/buildkit/    # embedded BuildKit with a darwin worker
+third_party/buildkit/ # the BuildKit packages it uses, patched (sync-buildkit.sh)
 internal/rootfs/      # chroot-style path resolution inside a root
 internal/engine/      # containers, volumes, networks, exec, health, events
 internal/api/         # the Docker Engine API

@@ -14,11 +14,11 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/moby/buildkit/executor"
-	resourcestypes "github.com/moby/buildkit/executor/resources/types"
-	gatewayapi "github.com/moby/buildkit/frontend/gateway/pb"
-	"github.com/moby/buildkit/snapshot"
-	"github.com/moby/buildkit/solver/pb"
+	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/executor"
+	resourcestypes "github.com/e6qu/fun-with-sandboxes/third_party/buildkit/executor/resources/types"
+	gatewayapi "github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/gateway/pb"
+	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/snapshot"
+	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/pb"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"

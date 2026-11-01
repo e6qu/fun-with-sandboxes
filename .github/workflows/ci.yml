@@ -22,17 +22,22 @@ jobs:
           go-version-file: go.mod
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-      - name: vet (darwin)
-        run: |
-          GOOS=darwin GOARCH=arm64 go vet ./...
-          GOOS=darwin GOARCH=amd64 go vet ./...
-          (cd tests/e2e && GOOS=darwin GOARCH=arm64 go vet -tags e2e ./...)
       - name: cross-build
         run: |
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build ./...
           GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build ./...
+      - name: vet (darwin)
+        run: |
+          GOOS=darwin GOARCH=arm64 scripts/vet.sh
+          GOOS=darwin GOARCH=amd64 scripts/vet.sh
+          (cd tests/e2e && GOOS=darwin GOARCH=arm64 go vet -tags e2e ./...)
       - name: portable unit tests
         run: go test ./...
+      - name: third_party/buildkit matches its sync script
+        run: |
+          scripts/sync-buildkit.sh
+          git diff --exit-code -- third_party/buildkit
+          test -z "$(git status --porcelain -- third_party/buildkit)"
 
   macos:
     runs-on: macos-15

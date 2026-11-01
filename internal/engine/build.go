@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -155,6 +156,7 @@ func (b *builder) run(ctx context.Context, ins []dockerfile.Instruction) (*stage
 		if ins[i].Cmd != "ARG" {
 			return nil, invalid("line %d: %s before the first FROM; only ARG may come first", ins[i].Line, ins[i].Cmd)
 		}
+		b.progress(stepLine(i+1, len(ins), ins[i]))
 		k, v, err := b.arg(ins[i], func(string) (string, bool) { return "", false })
 		if err != nil {
 			return nil, err
@@ -193,7 +195,7 @@ func (b *builder) run(ctx context.Context, ins []dockerfile.Instruction) (*stage
 		}
 		in := ins[i]
 		b.step++
-		b.progress(fmt.Sprintf("Step %d/%d : %s %s\n", b.step, b.steps, in.Cmd, in.Raw))
+		b.progress(stepLine(b.step, b.steps, in))
 		if in.Cmd == "FROM" {
 			s, err := b.from(ctx, in, globals)
 			if err != nil {
@@ -208,6 +210,20 @@ func (b *builder) run(ctx context.Context, ins []dockerfile.Instruction) (*stage
 		}
 	}
 	return cur, nil
+}
+
+// stepLine is the classic builder's "Step i/N : INSTRUCTION args" line.
+func stepLine(i, n int, in dockerfile.Instruction) string {
+	keys := make([]string, 0, len(in.Flags))
+	for k := range in.Flags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var flags strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&flags, "--%s=%s ", k, in.Flags[k])
+	}
+	return fmt.Sprintf("Step %d/%d : %s %s%s\n", i, n, in.Cmd, flags.String(), in.Raw)
 }
 
 func fromParts(in dockerfile.Instruction) (ref, name string) {

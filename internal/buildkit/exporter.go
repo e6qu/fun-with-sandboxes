@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter"
+	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/containerimage/exptypes"
+	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/session"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/moby/buildkit/exporter"
-	"github.com/moby/buildkit/exporter/containerimage/exptypes"
-	"github.com/moby/buildkit/session"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 )
