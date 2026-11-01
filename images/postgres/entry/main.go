@@ -38,7 +38,7 @@ func main() {
 	}
 	user := getenv("POSTGRES_USER", "postgres")
 	if len(os.Args) > 1 && os.Args[1] == "health" {
-		os.Exit(run("pg_isready", "-q", "-h", "127.0.0.1", "-p", port, "-U", user, "-d", "postgres"))
+		os.Exit(run(bin("pg_isready"), "-q", "-h", "127.0.0.1", "-p", port, "-U", user, "-d", "postgres"))
 	}
 	pgdata := sandboxenv.Path(getenv("PGDATA", "/var/lib/postgresql/data"))
 	sockets := sandboxenv.Path("/var/run/postgresql")
@@ -57,11 +57,23 @@ func main() {
 	for _, s := range serverSettings {
 		server = append(server, "-c", s)
 	}
-	bin, err := exec.LookPath("postgres")
+	postgres := bin("postgres")
+	server[0] = postgres
+	log.Fatal(syscall.Exec(postgres, append(server, args...), os.Environ()))
+}
+
+// bin returns the real path of a PostgreSQL program. PostgreSQL finds its
+// share and lib directories relative to the path it was started from, so it
+// must not start from the /bin symlink.
+func bin(name string) string {
+	p, err := exec.LookPath(name)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Fatal(syscall.Exec(bin, append(server, args...), os.Environ()))
+	if p, err = filepath.EvalSymlinks(p); err != nil {
+		log.Fatal(err)
+	}
+	return p
 }
 
 func getenv(k, def string) string {
@@ -120,7 +132,7 @@ func initialise(pgdata, user string) error {
 	if extra := os.Getenv("POSTGRES_INITDB_ARGS"); extra != "" {
 		args = append(args, strings.Fields(extra)...)
 	}
-	if code := run("initdb", args...); code != 0 {
+	if code := run(bin("initdb"), args...); code != 0 {
 		return fmt.Errorf("initdb exited with %d", code)
 	}
 	db := getenv("POSTGRES_DB", user)
@@ -154,7 +166,7 @@ func single(pgdata, db string, sql io.Reader) error {
 	for _, s := range serverSettings {
 		args = append(args, "-c", s)
 	}
-	cmd := exec.Command("postgres", append(args, db)...)
+	cmd := exec.Command(bin("postgres"), append(args, db)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = sql, os.Stdout, os.Stderr
 	return cmd.Run()
 }
