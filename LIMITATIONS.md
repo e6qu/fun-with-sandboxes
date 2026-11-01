@@ -48,9 +48,12 @@ machine — and from what macOS offers an unprivileged process under them.
 - **A host process that later binds a port inside a stack's block is
   reachable from that stack.** The allocator skips ports in use when it
   assigns them, but cannot stop other host software from binding them later.
-- **No internet access from containers.** Seatbelt cannot express "any host
-  but this machine", so outbound traffic is limited to the stack's loopback
-  ports.
+- **Internet access is HTTP and HTTPS through a proxy.** Seatbelt cannot
+  express "any host but this machine", so containers reach the internet only
+  through their stack's egress proxy, which refuses destinations on the host.
+  Software must honour `HTTP_PROXY`/`HTTPS_PROXY`; other protocols (raw TCP,
+  UDP, DNS from the container) do not leave the machine. `fwsd -egress=false`
+  turns the proxy off.
 - **UDP ports cannot be published**, and host port ranges are not supported.
 - **Unix socket paths are capped at 104 bytes** on macOS. Keep the state root
   short (the default `~/.fws` is).
@@ -59,6 +62,10 @@ machine — and from what macOS offers an unprivileged process under them.
 
 - **No memory, CPU, PID or block-I/O limits**; requests for them fail.
 - **No user switching**: `user:` must be empty or the engine's own user.
-- **No `docker stats`, `top`, `cp`, `pause` or `update`.**
+- **No `docker stats`, `top`, `pause` or `update`.**
+- **`docker cp` copies the container's view**, mounts included, but refuses
+  paths that resolve outside the container's root and mounts.
+- **Testcontainers needs `TESTCONTAINERS_RYUK_DISABLED=true`.** Its reaper,
+  Ryuk, ships only as a Linux image.
 - **tmpfs mounts are directories** under the container's state, emptied at
   each start, not memory-backed.

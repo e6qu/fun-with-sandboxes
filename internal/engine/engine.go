@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
+	"github.com/e6qu/fun-with-sandboxes/internal/egress"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 )
 
@@ -32,6 +33,9 @@ type Config struct {
 	Root string
 	// PortBase, PortLimit and BlockSize bound the host ports stacks receive.
 	PortBase, PortLimit, BlockSize int
+	// Egress gives each stack an HTTP proxy to the internet that refuses
+	// destinations on the host.
+	Egress bool
 }
 
 type Engine struct {
@@ -40,6 +44,9 @@ type Engine struct {
 	images *image.Store
 	events *eventBus
 	user   *user.User
+
+	egressMu sync.Mutex
+	egress   map[string]*egress.Proxy
 
 	mu         sync.Mutex
 	containers map[string]*Container
@@ -76,6 +83,7 @@ func Open(cfg Config) (*Engine, error) {
 	}
 	e := &Engine{
 		cfg: cfg, alloc: a, images: imgs, events: newEventBus(), user: u,
+		egress:     map[string]*egress.Proxy{},
 		containers: map[string]*Container{},
 		volumes:    map[string]*Volume{},
 		networks:   map[string]*Network{},
@@ -109,6 +117,7 @@ func (e *Engine) Close() {
 		}(c)
 	}
 	wg.Wait()
+	e.closeAllEgress()
 }
 
 func newID() string {

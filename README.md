@@ -69,7 +69,10 @@ stack, so a container cannot pretend to own `/var/lib/postgresql/data` or port
 | `SANDBOX_<SERVICE>_HOST` | the host to reach that peer on (`127.0.0.1`) |
 | `SANDBOX_STACK` | the stack (Compose project) name |
 
-`PATH` entries in the image config are mapped into the root. Volumes and bind
+`PATH` entries in the image config are mapped into the root. Containers with
+a network also get `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` pointing at
+their stack's egress proxy; `network_mode: none` and `internal: true`
+networks get none, as in Docker. Volumes and bind
 mounts appear at their destination inside the root. An image's entrypoint
 reads these variables and configures its service — see
 `images/postgres/entry` and `internal/sandboxenv`.
@@ -79,13 +82,22 @@ reads these variables and configures its service — see
 | | Allowed | Denied |
 |---|---|---|
 | Files | read and write its root and read-write volumes; read the macOS system tree | write anywhere else; read `/Users`, `/Volumes`, `/Library`, `/opt`, `/usr/local`, `/nix`, temp dirs, other stacks |
-| Network | listen on its assigned loopback ports; connect to its stack's ports | listen on any other port or address; connect to anything else |
+| Network | listen on its assigned loopback ports; connect to its stack's ports; reach the internet over HTTP(S) through its stack's egress proxy | listen on any other port or address; connect to anything else; reach the host through the proxy |
 | Processes | exec binaries in its root and the system shell; signal its own processes | exec other host binaries; signal or inspect other sandboxes' processes |
 | Mach services | user lookup, notifications, logging | keychain, pasteboard, Launch Services, TCC and everything else |
 
 Requests the engine cannot honour without root — memory and CPU limits, user
 switching, privileged mode, host networking, other network drivers — fail
 with an error rather than being ignored.
+
+## Testcontainers
+
+Testcontainers drives the engine through `DOCKER_HOST` like any Docker
+daemon. Its reaper, Ryuk, ships only as a Linux image, so turn it off:
+
+```bash
+export TESTCONTAINERS_RYUK_DISABLED=true
+```
 
 ## Develop
 
@@ -98,5 +110,5 @@ On macOS the Seatbelt package also runs a probe under the real
 and Docker Compose:
 
 ```bash
-FWS_E2E_IMAGES=./images-out go test -tags e2e ./tests/e2e
+cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e ./...
 ```

@@ -22,6 +22,23 @@ const (
 // engine runs unprivileged, so it drops ownership and setuid/setgid bits, and
 // refuses entries that would land outside dir.
 func ApplyLayer(dir string, r io.Reader) error {
+	return extract(dir, r, extractOptions{whiteouts: true})
+}
+
+// Extract unpacks a plain tar stream onto dir with ApplyLayer's safety rules,
+// treating ".wh." names as ordinary files. With noOverwriteDirNonDir it
+// refuses to replace a directory with a non-directory or the reverse, as
+// `docker cp` asks.
+func Extract(dir string, r io.Reader, noOverwriteDirNonDir bool) error {
+	return extract(dir, r, extractOptions{noOverwriteDirNonDir: noOverwriteDirNonDir})
+}
+
+type extractOptions struct {
+	whiteouts            bool
+	noOverwriteDirNonDir bool
+}
+
+func extract(dir string, r io.Reader, o extractOptions) error {
 	br := bufio.NewReader(r)
 	if magic, err := br.Peek(2); err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
 		gz, err := gzip.NewReader(br)
@@ -42,13 +59,13 @@ func ApplyLayer(dir string, r io.Reader) error {
 		if err != nil {
 			return err
 		}
-		if err := applyEntry(dir, h, tr); err != nil {
-			return fmt.Errorf("layer entry %q: %w", h.Name, err)
+		if err := applyEntry(dir, h, tr, o); err != nil {
+			return fmt.Errorf("tar entry %q: %w", h.Name, err)
 		}
 	}
 }
 
-func applyEntry(dir string, h *tar.Header, r io.Reader) error {
+func applyEntry(dir string, h *tar.Header, r io.Reader, o extractOptions) error {
 	rel, err := cleanName(h.Name)
 	if err != nil {
 		return err
@@ -63,7 +80,16 @@ func applyEntry(dir string, h *tar.Header, r io.Reader) error {
 	base := path.Base(rel)
 	parent := filepath.Dir(target)
 
+	if o.noOverwriteDirNonDir {
+		if fi, err := os.Lstat(target); err == nil && fi.IsDir() != (h.Typeflag == tar.TypeDir) {
+			if fi.IsDir() {
+				return fmt.Errorf("cannot overwrite directory %q with non-directory", "/"+rel)
+			}
+			return fmt.Errorf("cannot overwrite non-directory %q with directory", "/"+rel)
+		}
+	}
 	switch {
+	case !o.whiteouts:
 	case base == opaqueWhiteout:
 		entries, err := os.ReadDir(parent)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {

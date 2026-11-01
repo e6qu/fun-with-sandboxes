@@ -26,7 +26,7 @@ jobs:
         run: |
           GOOS=darwin GOARCH=arm64 go vet ./...
           GOOS=darwin GOARCH=amd64 go vet ./...
-          GOOS=darwin GOARCH=arm64 go vet -tags e2e ./tests/e2e
+          (cd tests/e2e && GOOS=darwin GOARCH=arm64 go vet -tags e2e ./...)
       - name: cross-build
         run: |
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build ./...
@@ -60,4 +60,5 @@ jobs:
       - name: end-to-end tests
         env:
           FWS_E2E_IMAGES: ${{ runner.temp }}/images
-        run: go test -tags e2e -v -count=1 -timeout 30m ./tests/e2e
+        working-directory: tests/e2e
+        run: go test -tags e2e -v -count=1 -timeout 30m ./...

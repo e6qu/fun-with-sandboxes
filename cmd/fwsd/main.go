@@ -30,6 +30,7 @@ func main() {
 	portBase := flag.Int("port-base", 20000, "first host port handed to stacks")
 	portLimit := flag.Int("port-limit", 30000, "end of the host port range handed to stacks (exclusive)")
 	block := flag.Int("block-size", 100, "host ports reserved for each stack")
+	egress := flag.Bool("egress", true, "give each stack an HTTP proxy to the internet that refuses destinations on this host")
 	flag.Parse()
 
 	if os.Geteuid() == 0 {
@@ -38,13 +39,14 @@ func main() {
 	if *socket == "" {
 		*socket = filepath.Join(*root, "docker.sock")
 	}
-	if err := run(*root, *socket, *portBase, *portLimit, *block); err != nil {
+	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress}
+	if err := run(cfg, *socket); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(root, socket string, portBase, portLimit, block int) error {
-	e, err := engine.Open(engine.Config{Root: root, PortBase: portBase, PortLimit: portLimit, BlockSize: block})
+func run(cfg engine.Config, socket string) error {
+	e, err := engine.Open(cfg)
 	if err != nil {
 		return err
 	}

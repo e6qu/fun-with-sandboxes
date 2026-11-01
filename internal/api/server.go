@@ -109,6 +109,9 @@ func (s *Server) routes() {
 		}
 		return s.e.Remove(r.PathValue("id"), engine.RemoveOptions{Force: boolParam(q.Get("force")), RemoveVolumes: boolParam(q.Get("v"))})
 	}, http.StatusNoContent))
+	m.HandleFunc("HEAD /containers/{id}/archive", s.archiveHead)
+	m.HandleFunc("GET /containers/{id}/archive", s.archiveGet)
+	m.HandleFunc("PUT /containers/{id}/archive", s.archivePut)
 	m.HandleFunc("POST /containers/{id}/exec", s.execCreate)
 	m.HandleFunc("POST /exec/{id}/start", s.execStart)
 	m.HandleFunc("POST /exec/{id}/resize", s.simple(func(r *http.Request) error {
@@ -226,9 +229,6 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /session", unsupported("BuildKit sessions"))
 	m.HandleFunc("GET /containers/{id}/stats", unsupported("container stats"))
 	m.HandleFunc("GET /containers/{id}/top", unsupported("container top"))
-	m.HandleFunc("GET /containers/{id}/archive", unsupported("copying files from containers"))
-	m.HandleFunc("PUT /containers/{id}/archive", unsupported("copying files into containers"))
-	m.HandleFunc("HEAD /containers/{id}/archive", unsupported("copying files from containers"))
 	m.HandleFunc("POST /containers/{id}/pause", unsupported("pausing containers"))
 	m.HandleFunc("POST /containers/{id}/unpause", unsupported("pausing containers"))
 	m.HandleFunc("POST /containers/{id}/update", unsupported("updating container resources"))
