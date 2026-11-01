@@ -18,6 +18,7 @@ import (
 	registryremotecache "github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/remotecache/registry"
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/control"
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter"
+	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/containerimage"
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend"
 	dockerfile "github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/dockerfile/builder"
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/gateway/forwarder"
@@ -149,7 +150,13 @@ func newWorker(ctx context.Context, cfg Config) (*darwinWorker, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &darwinWorker{Worker: w, moby: &mobyExporter{store: cfg.Images}}, nil
+	writer, err := containerimage.NewImageWriter(containerimage.WriterOpt{
+		Snapshotter: opt.Snapshotter, ContentStore: opt.ContentStore, Applier: opt.Applier, Differ: opt.Differ,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &darwinWorker{Worker: w, moby: &mobyExporter{store: cfg.Images, writer: writer, content: opt.ContentStore, leases: lm}}, nil
 }
 
 // New starts BuildKit's controller on the darwin worker.

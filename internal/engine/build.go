@@ -38,8 +38,12 @@ type BuildOptions struct {
 }
 
 type stage struct {
-	name    string
-	root    string
+	name string
+	root string
+	// base is the image the stage builds on, empty for scratch; layers are
+	// the uncompressed layer tars the stage's steps added on top of it.
+	base    string
+	layers  []string
 	cfg     v1.ConfigFile
 	args    map[string]string
 	shell   []string
@@ -79,12 +83,13 @@ type builder struct {
 	proxy    int
 	steps    int
 	step     int
+	nlayers  int
 }
 
 // Build runs a Dockerfile against the uploaded context, as the classic
 // builder does: each stage starts from a clone of its base image, RUN steps
-// execute under the stage's Seatbelt profile, and the last stage becomes the
-// image.
+// execute under the stage's Seatbelt profile, each RUN, COPY and ADD adds a
+// layer, and the last stage becomes the image.
 func (e *Engine) Build(ctx context.Context, opts BuildOptions, buildContext io.Reader, progress func(string)) (image.Image, error) {
 	if opts.Dockerfile == "" {
 		opts.Dockerfile = "Dockerfile"
@@ -137,7 +142,7 @@ func (e *Engine) Build(ctx context.Context, opts BuildOptions, buildContext io.R
 		last.cfg.Config.Labels[k] = v
 	}
 	last.cfg.Created = v1.Time{Time: time.Now().UTC()}
-	img, err := e.images.AddRoot(last.root, last.cfg, tags)
+	img, err := e.images.Extend(last.base, last.layers, last.root, last.cfg, tags)
 	if err != nil {
 		return image.Image{}, err
 	}
@@ -278,6 +283,7 @@ func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals m
 			return nil, err
 		}
 		s.cfg = *prev.cfg.DeepCopy()
+		s.base, s.layers = prev.base, append([]string(nil), prev.layers...)
 		s.shell = append([]string(nil), prev.shell...)
 		s.workdir = prev.workdir
 	default:
@@ -289,13 +295,13 @@ func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals m
 			return nil, err
 		}
 		s.cfg = *img.Config.DeepCopy()
+		s.base = img.ID
 		s.workdir = s.cfg.Config.WorkingDir
 		if len(s.cfg.Config.Shell) > 0 {
 			s.shell = append([]string(nil), s.cfg.Config.Shell...)
 		}
 		b.progress(fmt.Sprintf(" ---> %s\n", strings.TrimPrefix(img.ID, "sha256:")[:12]))
 	}
-	s.cfg.History = append(s.cfg.History, v1.History{Created: v1.Time{Time: time.Now().UTC()}, CreatedBy: "FROM " + ref})
 	return s, nil
 }
 
@@ -328,8 +334,9 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		}
 		return out, nil
 	}
+	emptyLayer := true
 	record := func() {
-		s.cfg.History = append(s.cfg.History, v1.History{Created: v1.Time{Time: time.Now().UTC()}, CreatedBy: in.Cmd + " " + in.Raw})
+		s.cfg.History = append(s.cfg.History, v1.History{Created: v1.Time{Time: time.Now().UTC()}, CreatedBy: in.Cmd + " " + in.Raw, EmptyLayer: emptyLayer})
 	}
 	cfg := &s.cfg.Config
 	switch in.Cmd {
@@ -389,8 +396,11 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(host, 0o755); err != nil {
-			return err
+		if _, err := os.Lstat(host); errors.Is(err, os.ErrNotExist) {
+			emptyLayer = false
+			if err := b.layer(ctx, s, func() error { return os.MkdirAll(host, 0o755) }); err != nil {
+				return err
+			}
 		}
 	case "USER":
 		u, err := expand(in.Raw)
@@ -464,11 +474,13 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		}
 		cfg.Healthcheck = hc
 	case "COPY", "ADD":
-		if err := b.copy(ctx, s, in, expand); err != nil {
+		emptyLayer = false
+		if err := b.layer(ctx, s, func() error { return b.copy(ctx, s, in, expand) }); err != nil {
 			return err
 		}
 	case "RUN":
-		if err := b.runStep(ctx, s, in); err != nil {
+		emptyLayer = false
+		if err := b.layer(ctx, s, func() error { return b.runStep(ctx, s, in) }); err != nil {
 			return err
 		}
 	case "ONBUILD":
@@ -646,6 +658,36 @@ func (b *builder) copy(ctx context.Context, s *stage, in dockerfile.Instruction,
 			}
 		}
 	}
+	return nil
+}
+
+// layer runs a step that changes the stage's files and records the change
+// as a layer: the difference between an APFS clone of the root taken before
+// the step and the root after it.
+func (b *builder) layer(ctx context.Context, s *stage, step func() error) error {
+	n := b.nlayers
+	b.nlayers++
+	before := filepath.Join(b.dir, "before"+strconv.Itoa(n))
+	if err := image.CloneDir(s.root, before); err != nil {
+		return err
+	}
+	defer os.RemoveAll(before)
+	if err := step(); err != nil {
+		return err
+	}
+	p := filepath.Join(b.dir, "layer"+strconv.Itoa(n)+".tar")
+	f, err := os.Create(p)
+	if err != nil {
+		return err
+	}
+	err = image.Diff(ctx, before, s.root, f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	s.layers = append(s.layers, p)
 	return nil
 }
 

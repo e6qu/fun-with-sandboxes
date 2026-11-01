@@ -13,7 +13,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
 	imagetypes "github.com/moby/moby/api/types/image"
@@ -52,7 +51,9 @@ func (c *Container) mountDests() map[string]bool {
 }
 
 // Commit makes an image of the container's root and config, as docker
-// commit does: volumes stay out, their mount points left empty.
+// commit does: the container's image's layers and one more holding the
+// container's changes. Volumes stay out; the image's content at a mount
+// point stays as the image had it.
 func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error) {
 	c, err := e.Container(opts.Container)
 	if err != nil {
@@ -98,14 +99,31 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 			os.RemoveAll(dst)
 		}
 	}()
+	baseRoot := e.images.Root(base.ID)
 	for rel := range c.mountDests() {
 		p := filepath.Join(dst, rel)
 		if err := os.RemoveAll(p); err != nil {
 			return "", err
 		}
-		if err := os.MkdirAll(p, 0o755); err != nil {
+		if _, err := os.Lstat(filepath.Join(baseRoot, rel)); err == nil {
+			if err := image.CloneDir(filepath.Join(baseRoot, rel), p); err != nil {
+				return "", err
+			}
+		} else if err := os.MkdirAll(p, 0o755); err != nil {
 			return "", err
 		}
+	}
+	diff, err := os.CreateTemp(e.images.BuildDir(), "commit-*.tar")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(diff.Name())
+	err = image.Diff(ctx, baseRoot, dst, diff)
+	if cerr := diff.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return "", err
 	}
 
 	cfg := *base.Config.DeepCopy()
@@ -117,6 +135,9 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 		applyContainerConfig(&cfg.Config, *opts.Config)
 	}
 	if len(opts.Changes) > 0 {
+		// The changes edit the config; the commit itself is the one history
+		// entry they add up to.
+		history := len(cfg.History)
 		st := &stage{root: dst, cfg: cfg, args: map[string]string{}, shell: []string{"/bin/sh", "-c"}, workdir: cfg.Config.WorkingDir}
 		b := &builder{e: e, progress: func(string) {}}
 		for _, ch := range opts.Changes {
@@ -134,16 +155,17 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 			}
 		}
 		cfg = st.cfg
+		cfg.History = cfg.History[:history]
 	}
 	now := time.Now().UTC()
 	cfg.Created = v1.Time{Time: now}
 	cfg.Author = opts.Author
 	cfg.History = append(cfg.History, v1.History{Created: cfg.Created, CreatedBy: argv, Comment: opts.Comment, Author: opts.Author})
-	img, err := e.images.AddRoot(dst, cfg, tags)
+	ok = true
+	img, err := e.images.Extend(base.ID, []string{diff.Name()}, dst, cfg, tags)
 	if err != nil {
 		return "", err
 	}
-	ok = true
 	e.publishContainer(c, events.ActionCommit, map[string]string{"comment": opts.Comment, "imageID": img.ID})
 	return img.ID, nil
 }
@@ -209,31 +231,23 @@ func (e *Engine) Export(ref string, w io.Writer) error {
 	return nil
 }
 
-// Save writes the named images as a `docker save` archive. An image named by
-// ID is saved under all its tags.
+// Save writes the named images as a `docker save` archive. An image named
+// by tag is saved under that tag; one named by ID is saved untagged, as
+// Docker saves it.
 func (e *Engine) Save(refs []string, w io.Writer) error {
-	images := map[name.Reference]v1.Image{}
+	var entries []image.ArchiveEntry
 	for _, ref := range refs {
 		img, rec, err := e.images.V1Image(ref)
 		if err != nil {
 			return notFound("reference does not exist: %s", ref)
 		}
-		tags := rec.RepoTags
+		var tags []string
 		if n, err := image.Normalize(ref); err == nil && contains(rec.RepoTags, n) {
 			tags = []string{n}
 		}
-		if len(tags) == 0 {
-			return unsupported("image %s has no tags; tag it to save it", ref)
-		}
-		for _, t := range tags {
-			tag, err := name.NewTag(t)
-			if err != nil {
-				return invalid("%v", err)
-			}
-			images[tag] = img
-		}
+		entries = append(entries, image.ArchiveEntry{Image: img, Tags: tags})
 	}
-	return tarball.MultiRefWrite(images, w)
+	return image.WriteArchive(w, entries)
 }
 
 func contains(list []string, s string) bool {
@@ -300,24 +314,31 @@ func (e *Engine) Push(ctx context.Context, repo, tag string, auth authn.Authenti
 	return out, nil
 }
 
-// History lists an image's history, newest first, as docker history does.
+// History lists an image's history, newest first, as docker history does,
+// each entry that added a layer showing that layer's size.
 func (e *Engine) History(ref string) ([]imagetypes.HistoryResponseItem, error) {
 	img, err := e.images.Get(ref)
 	if err != nil {
 		return nil, notFound("No such image: %s", ref)
 	}
 	h := img.Config.History
+	// Pair the entries that added a layer with the layers from the top down,
+	// so a history shorter than the layer list still lines up at the top.
+	sizes := map[int]int64{}
+	l := len(img.LayerSizes) - 1
+	for i := len(h) - 1; i >= 0 && l >= 0; i-- {
+		if !h[i].EmptyLayer {
+			sizes[i] = img.LayerSizes[l]
+			l--
+		}
+	}
 	out := make([]imagetypes.HistoryResponseItem, 0, len(h))
-	sizeShown := false
 	for i := len(h) - 1; i >= 0; i-- {
 		item := imagetypes.HistoryResponseItem{
-			ID: "<missing>", Created: h[i].Created.Unix(), CreatedBy: h[i].CreatedBy, Comment: h[i].Comment, Tags: nil,
+			ID: "<missing>", Created: h[i].Created.Unix(), CreatedBy: h[i].CreatedBy, Comment: h[i].Comment, Size: sizes[i],
 		}
 		if i == len(h)-1 {
 			item.ID, item.Tags = img.ID, img.RepoTags
-		}
-		if !h[i].EmptyLayer && !sizeShown {
-			item.Size, sizeShown = img.Size, true
 		}
 		out = append(out, item)
 	}

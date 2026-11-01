@@ -69,9 +69,13 @@ docker buildx build --load -t my/app:1 .
 
 The classic builder stays available with `DOCKER_BUILDKIT=0`.
 
-`docker commit`, `docker export`, `docker save` and `docker push` turn
-containers and images back into archives and registry images; a saved or
-pushed image carries its root as one layer.
+Images are layered OCI images. The catalog images carry a layer per Nix
+store path, so images that share libraries share those layers; builds add a
+layer per filesystem step on top of their base's layers, and `docker commit`
+adds one. `docker save` writes an OCI image layout that also carries Docker's
+`manifest.json`, `docker load` reads either, and `docker push` sends an
+image's manifest and layers exactly as stored, so its digest survives a push
+and a pull.
 
 ## The container contract
 

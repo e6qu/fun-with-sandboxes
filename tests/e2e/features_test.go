@@ -361,6 +361,9 @@ CMD ["cat", "/srv/built.txt"]
 		}
 	}
 
+	// WORKDIR (which makes /srv), two COPYs and two RUNs each add a layer.
+	extendsBy(t, "fws/toolbox:1", "e2e/built:1", 5)
+
 	write("Dockerfile", "FROM fws/toolbox:1\nRUN echo needs a shell\n")
 	if out, err := build("-t", "e2e/noshell:1"); err == nil || !strings.Contains(out, "/bin/sh") {
 		t.Errorf("shell-form RUN in an image without /bin/sh: %v\n%s", err, out)
@@ -427,6 +430,8 @@ CMD ["cat", "/srv/built.txt"]
 		t.Errorf("image inspect: %q", env)
 	}
 
+	extendsBy(t, "fws/toolbox:1", "e2e/bk:1", -1)
+
 	out, err = cli("docker", "build", "-t", "e2e/bk:2", "--build-arg", "GREETING=hi", dir)
 	if err != nil {
 		t.Fatalf("docker build through BuildKit: %v\n%s", err, out)
@@ -453,6 +458,30 @@ CMD ["cat", "/srv/built.txt"]
 	}
 }
 
+// layersOf lists an image's layer diff IDs.
+func layersOf(t *testing.T, ref string) []string {
+	t.Helper()
+	return strings.Fields(mustDocker(t, "image", "inspect", "-f", "{{range .RootFS.Layers}}{{.}} {{end}}", ref))
+}
+
+// extendsBy checks that image is an OCI image whose layers are base's
+// followed by n more, or by at least one when n is negative.
+func extendsBy(t *testing.T, base, image string, n int) {
+	t.Helper()
+	b, i := layersOf(t, base), layersOf(t, image)
+	if len(b) == 0 || len(i) <= len(b) || (n >= 0 && len(i) != len(b)+n) {
+		t.Fatalf("%s has %d layers on %s's %d, want %d more", image, len(i), base, len(b), n)
+	}
+	for k := range b {
+		if b[k] != i[k] {
+			t.Fatalf("%s's layer %d is %s, not %s's %s", image, k, i[k], base, b[k])
+		}
+	}
+	if mt := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Descriptor.MediaType}}", image)); mt != "application/vnd.oci.image.manifest.v1+json" {
+		t.Fatalf("%s's manifest is %s, not an OCI image manifest", image, mt)
+	}
+}
+
 func TestImageLifecycle(t *testing.T) {
 	const box = "fws-e2e-commit"
 	mustDocker(t, "run", "--name", box, "fws/toolbox:1", "put", "/greeting", "committed")
@@ -469,6 +498,8 @@ func TestImageLifecycle(t *testing.T) {
 	if h := mustDocker(t, "history", "--no-trunc", "fws-e2e/committed:1"); !strings.Contains(h, "put /greeting committed") {
 		t.Fatalf("history does not show the committed command:\n%s", h)
 	}
+	extendsBy(t, "fws/toolbox:1", "fws-e2e/committed:1", 1)
+	digest := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Descriptor.Digest}}", "fws-e2e/committed:1"))
 
 	dir := t.TempDir()
 	exported := filepath.Join(dir, "export.tar")
@@ -479,25 +510,33 @@ func TestImageLifecycle(t *testing.T) {
 
 	saved := filepath.Join(dir, "save.tar")
 	mustDocker(t, "save", "-o", saved, "fws-e2e/committed:1")
+	for _, f := range []string{"oci-layout", "index.json", "manifest.json"} {
+		if !tarHas(t, saved, f) {
+			t.Fatalf("the saved archive lacks %s", f)
+		}
+	}
 	id := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Id}}", "fws-e2e/committed:1"))
 	mustDocker(t, "rmi", "fws-e2e/committed:1")
 	mustDocker(t, "load", "-i", saved)
-	if again := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Id}}", "fws-e2e/committed:1")); again != id {
-		t.Fatalf("save and load changed the image ID from %s to %s", id, again)
+	if again := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Id}} {{.Descriptor.Digest}}", "fws-e2e/committed:1")); again != id+" "+digest {
+		t.Fatalf("save and load changed the image from %s %s to %s", id, digest, again)
 	}
 
 	reg := httptest.NewServer(registry.New())
 	defer reg.Close()
 	pushed := strings.TrimPrefix(reg.URL, "http://") + "/e2e/committed:pushed"
 	mustDocker(t, "tag", "fws-e2e/committed:1", pushed)
-	if out := mustDocker(t, "push", pushed); !strings.Contains(out, "digest: sha256:") {
-		t.Fatalf("push output:\n%s", out)
+	if out := mustDocker(t, "push", pushed); !strings.Contains(out, "digest: "+digest) {
+		t.Fatalf("push output, wanting digest %s:\n%s", digest, out)
 	}
 	mustDocker(t, "rmi", pushed)
 	mustDocker(t, "pull", pushed)
 	defer docker(t, "rmi", pushed)
 	if out := mustDocker(t, "run", "--rm", pushed); strings.TrimSpace(out) != "committed" {
 		t.Fatalf("the pushed and pulled image ran with output %q", out)
+	}
+	if again := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Id}} {{.Descriptor.Digest}}", pushed)); again != id+" "+digest {
+		t.Fatalf("push and pull changed the image from %s %s to %s", id, digest, again)
 	}
 }
 

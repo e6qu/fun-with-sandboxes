@@ -135,7 +135,7 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
-func TestAddRootIsContentAddressed(t *testing.T) {
+func TestExtendIsContentAddressed(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -153,11 +153,11 @@ func TestAddRootIsContentAddressed(t *testing.T) {
 	}
 	var cfg v1.ConfigFile
 	cfg.Config.Cmd = []string{"/x"}
-	a, err := s.AddRoot(mk(), cfg, []string{"built:1"})
+	a, err := extendRoot(t, s, "", mk(), cfg, []string{"built:1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := s.AddRoot(mk(), cfg, []string{"built:2"})
+	b, err := extendRoot(t, s, "", mk(), cfg, []string{"built:2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestRemoveUntagsBeforeDeleting(t *testing.T) {
 	}
 	d, _ := os.MkdirTemp(s.dir, "root-")
 	var cfg v1.ConfigFile
-	img, err := s.AddRoot(d, cfg, []string{"first:1", "second:1"})
+	img, err := extendRoot(t, s, "", d, cfg, []string{"first:1", "second:1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestV1ImageRoundTrip(t *testing.T) {
 	var cfg v1.ConfigFile
 	cfg.Created = v1.Time{Time: time.Unix(1700000000, 0).UTC()}
 	cfg.Config.Cmd = []string{"/app"}
-	built, err := s.AddRoot(d, cfg, []string{"built:1"})
+	built, err := extendRoot(t, s, "", d, cfg, []string{"built:1"})
 	if err != nil {
 		t.Fatal(err)
 	}
