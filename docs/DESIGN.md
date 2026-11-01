@@ -271,7 +271,53 @@ Requests the engine cannot honour return an error rather than being
 accepted: `501` for memory, CPU, PID, ulimit and device limits; privileged
 mode; capabilities; non-default users; `host` networking; non-`bridge`
 network drivers; custom IPAM; UDP publishing; resource updates; and
-`build`.
+BuildKit.
+
+`POST /grpc` and `POST /session` serve an embedded BuildKit
+(`internal/buildkit`), as dockerd does, so buildx's docker driver, `docker
+build` and `docker compose build` reach the real BuildKit solver and its
+Dockerfile frontend. Its darwin worker supplies what is otherwise
+Linux-specific:
+
+- **Snapshotter.** A containerd snapshotter over directories: a new snapshot
+  is an APFS clone of its parent, and every snapshot, views included, is
+  handed out as a read-write bind mount, which BuildKit's darwin mounter uses
+  without `mount(2)`.
+- **Differ and applier.** containerd's walking differ and filesystem applier
+  without their temporary mounts: diffs walk the two snapshot directories,
+  layers unpack with the engine's own extractor.
+- **Executor.** Each process runs under a Seatbelt profile confined to its
+  root snapshot and mounts. BuildKit's mounts (cache, bind, secret, tmpfs)
+  become symlinks at their destinations for the run and are removed after,
+  so they never reach the layer. Network is the build's egress proxy, or
+  none.
+- **Identity mapping.** Container uid and gid 0 map to the engine's user, as
+  in rootless BuildKit, so BuildKit's chowns stay ones an unprivileged
+  process may make.
+- **Images.** `FROM` resolves the engine's images first: an image is written
+  into BuildKit's content store as a one-layer OCI image on first use. The
+  `moby` exporter, which `docker build` and `--load` use, clones the result
+  into the engine's image store.
+
+The BuildKit packages the engine uses live in `third_party/buildkit`, copied
+by `scripts/sync-buildkit.sh` with their imports rewritten into this module
+and the patches in `third_party/buildkit-patches` applied. One patch matters:
+BuildKit's darwin mounter mounts a read-only snapshot with `mount(2)`, which
+needs root; the patched mounter reads the snapshot's directory directly, as it
+already did for read-write ones. Keeping the packages in the module, rather
+than behind a `replace` directive, keeps `go install …/cmd/fwsd@<version>`
+working.
+
+`POST /build` is the classic builder (`internal/dockerfile` parses; the
+engine builds), for `DOCKER_BUILDKIT=0`. Each stage starts from an APFS clone of its base image, or an
+empty root for `scratch`. `COPY` and `ADD` resolve paths inside the stage
+root as a chroot would, absolute symlinks from the root, so nothing lands
+outside it; they read the uploaded context, which the CLI has already filtered
+through `.dockerignore`, or an earlier stage or image with `--from`. `RUN`
+executes under a Seatbelt profile confined to the stage root, with internet
+only through an egress proxy on a stack the build owns. The last stage's root
+moves into the image store as the image, its single layer's digest computed
+from a deterministic tar of the tree.
 
 `pause` sends SIGSTOP to each of the container's process groups and `unpause`
 SIGCONT; health checks and `exec` wait while a container is paused, and
@@ -328,6 +374,10 @@ internal/image/       # image store, layer extraction, clonefile
 internal/runtime/     # launch under sandbox-exec, process groups, pipes
 internal/egress/      # the per-stack HTTP proxy to the internet
 internal/procs/       # the host process table, for top and stats
+internal/dockerfile/  # Dockerfile parsing and variable expansion
+internal/buildkit/    # embedded BuildKit with a darwin worker
+third_party/buildkit/ # the BuildKit packages it uses, patched (sync-buildkit.sh)
+internal/rootfs/      # chroot-style path resolution inside a root
 internal/engine/      # containers, volumes, networks, exec, health, events
 internal/api/         # the Docker Engine API
 internal/sandboxenv/  # the container side of the SANDBOX_* contract

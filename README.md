@@ -56,6 +56,19 @@ for t in ./images-out/*.tar; do docker load -i "$t"; done
 closure's absolute `/nix/store` library paths and symlinks relative to each
 file, so the image is self-contained wherever its root lands.
 
+### Building images
+
+`docker build`, `docker buildx build` and `docker compose build` run on an
+embedded BuildKit with a darwin worker. Base a Dockerfile on a darwin image;
+`RUN` steps run under the same Seatbelt confinement as containers, with
+internet through a build-only egress proxy:
+
+```bash
+docker buildx build --load -t my/app:1 .
+```
+
+The classic builder stays available with `DOCKER_BUILDKIT=0`.
+
 ## The container contract
 
 macOS gives an unprivileged process no private `/` and no private network

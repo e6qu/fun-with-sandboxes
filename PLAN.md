@@ -28,8 +28,9 @@ top-level plan and milestone; the design doc is the full mechanism.
   test workloads, not multi-tenant isolation.
 - Full Docker API coverage. The engine serves the subset Docker Compose, the
   Docker CLI, and Testcontainers use (listed in the design doc).
-- `docker build`. Images come from the Nix image pipeline and reach the engine
-  through `docker load` or a registry pull.
+- Multi-platform builds. BuildKit builds darwin images on one worker; images
+  also come from the Nix image pipeline through `docker load` or a registry
+  pull.
 
 ## Core idea
 
@@ -67,6 +68,10 @@ internal/image/       # image store, layer extraction, clonefile roots
 internal/runtime/     # launch under sandbox-exec, process groups, pipes
 internal/egress/      # the per-stack HTTP proxy to the internet
 internal/procs/       # the host process table, for top and stats
+internal/dockerfile/  # Dockerfile parsing and variable expansion
+internal/buildkit/    # embedded BuildKit with a darwin worker
+third_party/buildkit/ # the BuildKit packages it uses, patched (sync-buildkit.sh)
+internal/rootfs/      # chroot-style path resolution inside a root
 internal/engine/      # containers, volumes, networks, exec, health, events
 internal/api/         # the Docker Engine API (the Compose subset)
 internal/sandboxenv/  # the container side of the SANDBOX_* contract

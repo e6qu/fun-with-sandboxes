@@ -22,13 +22,21 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
 )
 
+// BuildKit serves BuildKit's control API and sessions.
+type BuildKit interface {
+	ServeGRPC(http.ResponseWriter, *http.Request)
+	ServeSession(http.ResponseWriter, *http.Request)
+}
+
 type Server struct {
 	e   *engine.Engine
+	bk  BuildKit
 	mux *http.ServeMux
 }
 
-func New(e *engine.Engine) *Server {
-	s := &Server{e: e, mux: http.NewServeMux()}
+// New serves the engine's API; bk, when set, also serves BuildKit.
+func New(e *engine.Engine, bk BuildKit) *Server {
+	s := &Server{e: e, bk: bk, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
@@ -151,7 +159,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /images/{ref...}", s.imageGet)
 	m.HandleFunc("POST /images/{ref...}", s.imagePost)
 	m.HandleFunc("DELETE /images/{ref...}", func(w http.ResponseWriter, r *http.Request) {
-		res, err := s.e.ImageRemove(r.PathValue("ref"))
+		res, err := s.e.ImageRemove(r.PathValue("ref"), boolParam(r.URL.Query().Get("force")))
 		respond(w, res, err)
 	})
 
@@ -240,8 +248,14 @@ func (s *Server) routes() {
 			writeError(w, http.StatusNotImplemented, what+" is not supported by this engine")
 		}
 	}
-	m.HandleFunc("POST /build", unsupported("docker build"))
-	m.HandleFunc("POST /session", unsupported("BuildKit sessions"))
+	m.HandleFunc("POST /build", s.build)
+	if s.bk != nil {
+		m.HandleFunc("POST /grpc", s.bk.ServeGRPC)
+		m.HandleFunc("POST /session", s.bk.ServeSession)
+	} else {
+		m.HandleFunc("POST /grpc", unsupported("BuildKit"))
+		m.HandleFunc("POST /session", unsupported("BuildKit sessions"))
+	}
 	m.HandleFunc("POST /containers/{id}/commit", unsupported("committing containers"))
 	m.HandleFunc("POST /commit", unsupported("committing containers"))
 }
@@ -249,7 +263,13 @@ func (s *Server) routes() {
 func (s *Server) ping(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Builder-Version", "")
+	// "2" sends the Docker CLI and buildx to BuildKit over /grpc and
+	// /session; "1" to the classic builder over POST /build.
+	if s.bk != nil {
+		w.Header().Set("Builder-Version", "2")
+	} else {
+		w.Header().Set("Builder-Version", "1")
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodGet {

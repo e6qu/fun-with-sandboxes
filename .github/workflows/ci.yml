@@ -22,17 +22,22 @@ jobs:
           go-version-file: go.mod
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-      - name: vet (darwin)
-        run: |
-          GOOS=darwin GOARCH=arm64 go vet ./...
-          GOOS=darwin GOARCH=amd64 go vet ./...
-          (cd tests/e2e && GOOS=darwin GOARCH=arm64 go vet -tags e2e ./...)
       - name: cross-build
         run: |
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build ./...
           GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build ./...
+      - name: vet (darwin)
+        run: |
+          GOOS=darwin GOARCH=arm64 scripts/vet.sh
+          GOOS=darwin GOARCH=amd64 scripts/vet.sh
+          (cd tests/e2e && GOOS=darwin GOARCH=arm64 go vet -tags e2e ./...)
       - name: portable unit tests
         run: go test ./...
+      - name: third_party/buildkit matches its sync script
+        run: |
+          scripts/sync-buildkit.sh
+          git diff --exit-code -- third_party/buildkit
+          test -z "$(git status --porcelain -- third_party/buildkit)"
 
   macos:
     runs-on: macos-15
@@ -53,8 +58,12 @@ jobs:
         with:
           go-version-file: go.mod
       - uses: cachix/install-nix-action@v31
-      - name: install the Docker CLI and Docker Compose
-        run: brew install docker docker-compose
+      - name: install the Docker CLI, Docker Compose and buildx
+        run: |
+          brew install docker docker-compose docker-buildx
+          mkdir -p ~/.docker
+          echo "{\"cliPluginsExtraDirs\": [\"$(brew --prefix)/lib/docker/cli-plugins\"]}" > ~/.docker/config.json
+          docker buildx version
       - name: build images
         run: scripts/build-images.sh "$RUNNER_TEMP/images"
       - name: publish images to a local registry

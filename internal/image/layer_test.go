@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 type entry struct {
@@ -127,5 +130,77 @@ func TestNormalize(t *testing.T) {
 		if err != nil || got != want {
 			t.Errorf("Normalize(%q) = %q, %v; want %q", in, got, err, want)
 		}
+	}
+}
+
+func TestAddRootIsContentAddressed(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func() string {
+		d, _ := os.MkdirTemp(s.dir, "root-")
+		os.MkdirAll(filepath.Join(d, "etc"), 0o755)
+		os.WriteFile(filepath.Join(d, "etc", "f"), []byte("same"), 0o644)
+		// Modification times are layer content, so identical trees share them.
+		when := time.Unix(1700000000, 0)
+		for _, p := range []string{filepath.Join(d, "etc", "f"), filepath.Join(d, "etc")} {
+			os.Chtimes(p, when, when)
+		}
+		return d
+	}
+	var cfg v1.ConfigFile
+	cfg.Config.Cmd = []string{"/x"}
+	a, err := s.AddRoot(mk(), cfg, []string{"built:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.AddRoot(mk(), cfg, []string{"built:2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID != b.ID {
+		t.Fatalf("identical roots got different IDs %s and %s", a.ID, b.ID)
+	}
+	got, err := s.Get("built:1")
+	if err != nil || got.ID != a.ID || got.Config.OS != "darwin" || len(got.Config.RootFS.DiffIDs) != 1 {
+		t.Fatalf("Get built:1 = %+v, %v", got, err)
+	}
+	if body, _ := os.ReadFile(filepath.Join(s.Root(a.ID), "etc", "f")); string(body) != "same" {
+		t.Fatalf("stored root lacks its file: %q", body)
+	}
+}
+
+func TestRemoveUntagsBeforeDeleting(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := os.MkdirTemp(s.dir, "root-")
+	var cfg v1.ConfigFile
+	img, err := s.AddRoot(d, cfg, []string{"first:1", "second:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unused := func(string) bool { return false }
+	if _, err := s.Remove(img.ID, false, unused); !errors.Is(err, ErrConflict) {
+		t.Fatalf("removing a multiply tagged image by ID without force: %v", err)
+	}
+	r, err := s.Remove("second:1", false, func(string) bool { return true })
+	if err != nil || r.Deleted || len(r.Untagged) != 1 || r.Untagged[0] != "second:1" {
+		t.Fatalf("removing one of two tags: %+v, %v", r, err)
+	}
+	if _, err := s.Get("first:1"); err != nil {
+		t.Fatalf("the other tag went with it: %v", err)
+	}
+	if _, err := s.Remove("first:1", false, func(string) bool { return true }); !errors.Is(err, ErrConflict) {
+		t.Fatalf("deleting an image a container uses: %v", err)
+	}
+	r, err = s.Remove("first:1", false, unused)
+	if err != nil || !r.Deleted {
+		t.Fatalf("removing the last tag: %+v, %v", r, err)
+	}
+	if _, err := os.Stat(s.Root(img.ID)); !os.IsNotExist(err) {
+		t.Fatalf("deleted image's root survived: %v", err)
 	}
 }

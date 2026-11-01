@@ -54,6 +54,15 @@ func (e *Engine) egressPort(stack string) int {
 	return s.Ports[egressKey]
 }
 
+// BuildEgress returns the egress proxy port BuildKit's build steps use, on a
+// stack of their own.
+func (e *Engine) BuildEgress() (int, error) {
+	if !e.cfg.Egress {
+		return 0, nil
+	}
+	return e.ensureEgress("buildkit")
+}
+
 func (e *Engine) closeEgress(stack string) {
 	e.egressMu.Lock()
 	defer e.egressMu.Unlock()

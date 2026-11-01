@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"runtime"
@@ -167,19 +168,24 @@ func (e *Engine) ImageInspect(ref string) (imagetypes.InspectResponse, error) {
 	}, nil
 }
 
-func (e *Engine) ImageRemove(ref string) ([]imagetypes.DeleteResponse, error) {
-	img, err := e.images.Remove(ref, e.imageInUse)
-	if err != nil {
-		if strings.HasPrefix(err.Error(), "conflict") {
-			return nil, conflict("%v", err)
-		}
+func (e *Engine) ImageRemove(ref string, force bool) ([]imagetypes.DeleteResponse, error) {
+	r, err := e.images.Remove(ref, force, e.imageInUse)
+	switch {
+	case errors.Is(err, image.ErrConflict):
+		return nil, conflict("%v", err)
+	case errors.Is(err, image.ErrNotFound):
 		return nil, notFound("No such image: %s", ref)
+	case err != nil:
+		return nil, err
 	}
-	var out []imagetypes.DeleteResponse
-	for _, t := range img.RepoTags {
+	out := []imagetypes.DeleteResponse{}
+	for _, t := range r.Untagged {
 		out = append(out, imagetypes.DeleteResponse{Untagged: t})
 	}
-	return append(out, imagetypes.DeleteResponse{Deleted: img.ID}), nil
+	if r.Deleted {
+		out = append(out, imagetypes.DeleteResponse{Deleted: r.Image.ID})
+	}
+	return out, nil
 }
 
 func (e *Engine) ImageTag(ref, repo, tag string) error {
