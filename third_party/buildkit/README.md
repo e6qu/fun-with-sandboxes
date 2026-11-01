@@ -10,3 +10,4 @@ Changes from upstream:
 - Import paths point into this module.
 - The patches in `third_party/buildkit-patches` are applied:
   - `localmounter_darwin.patch`
+  - `resolvecache_race.patch`

@@ -26,8 +26,15 @@ type resolveResult struct {
 
 var _ client.Client = &withResolveCache{}
 
+// newWithResolveCache sets CacheError once, before any call: setting it in
+// every ResolveImageConfig raced, as stages resolve their bases concurrently.
+func newWithResolveCache(c client.Client) *withResolveCache {
+	w := &withResolveCache{Client: c}
+	w.g.CacheError = true
+	return w
+}
+
 func (c *withResolveCache) ResolveImageConfig(ctx context.Context, ref string, opt sourceresolver.Opt) (string, digest.Digest, []byte, error) {
-	c.g.CacheError = true
 	optHash, err := hashstructure.Hash(opt, nil)
 	if err != nil {
 		return "", "", nil, err
