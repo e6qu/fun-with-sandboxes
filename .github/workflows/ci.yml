@@ -53,8 +53,12 @@ jobs:
         with:
           go-version-file: go.mod
       - uses: cachix/install-nix-action@v31
-      - name: install the Docker CLI and Docker Compose
-        run: brew install docker docker-compose
+      - name: install the Docker CLI, Docker Compose and buildx
+        run: |
+          brew install docker docker-compose docker-buildx
+          mkdir -p ~/.docker
+          echo "{\"cliPluginsExtraDirs\": [\"$(brew --prefix)/lib/docker/cli-plugins\"]}" > ~/.docker/config.json
+          docker buildx version
       - name: build images
         run: scripts/build-images.sh "$RUNNER_TEMP/images"
       - name: publish images to a local registry

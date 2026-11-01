@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/api"
+	"github.com/e6qu/fun-with-sandboxes/internal/buildkit"
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
 )
 
@@ -31,6 +32,7 @@ func main() {
 	portLimit := flag.Int("port-limit", 30000, "end of the host port range handed to stacks (exclusive)")
 	block := flag.Int("block-size", 100, "host ports reserved for each stack")
 	egress := flag.Bool("egress", true, "give each stack an HTTP proxy to the internet that refuses destinations on this host")
+	withBuildKit := flag.Bool("buildkit", true, "serve BuildKit for docker build, buildx and docker compose build")
 	flag.Parse()
 
 	if os.Geteuid() == 0 {
@@ -40,15 +42,26 @@ func main() {
 		*socket = filepath.Join(*root, "docker.sock")
 	}
 	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress}
-	if err := run(cfg, *socket); err != nil {
+	if err := run(cfg, *socket, *withBuildKit); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(cfg engine.Config, socket string) error {
+func run(cfg engine.Config, socket string, withBuildKit bool) error {
 	e, err := engine.Open(cfg)
 	if err != nil {
 		return err
+	}
+	var bk api.BuildKit
+	if withBuildKit {
+		svc, err := buildkit.New(context.Background(), buildkit.Config{
+			Root: filepath.Join(e.Root(), "buildkit"), StateRoot: e.Root(), Images: e.Images(), Egress: e.BuildEgress,
+		})
+		if err != nil {
+			return fmt.Errorf("start BuildKit: %w", err)
+		}
+		defer svc.Close()
+		bk = svc
 	}
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		return err
@@ -65,7 +78,7 @@ func run(cfg engine.Config, socket string) error {
 	if err := os.Chmod(socket, 0o600); err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: api.New(e), ReadHeaderTimeout: 30 * time.Second}
+	srv := &http.Server{Handler: api.New(e, bk), ReadHeaderTimeout: 30 * time.Second}
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)

@@ -1,4 +1,6 @@
-package engine
+// Package rootfs resolves paths inside a root directory the way a chroot
+// would, so code outside any sandbox never follows a path out of the root.
+package rootfs
 
 import (
 	"errors"
@@ -10,11 +12,11 @@ import (
 // maxSymlinks bounds symlink resolution, as the kernel's ELOOP does.
 const maxSymlinks = 40
 
-// inRoot maps a path inside a root directory to the host, resolving each
+// Join maps a path inside a root directory to the host, resolving each
 // existing symlink as a chroot would: absolute targets from the root,
 // relative ones from their directory, never above the root. Components that
 // do not exist yet are kept as given, so the result is safe to create.
-func inRoot(root, p string) (string, error) {
+func Join(root, p string) (string, error) {
 	// ".." is resolved during the walk, after the symlinks before it, as the
 	// kernel resolves it; cleaning the path first would not.
 	rest := strings.Split(p, "/")

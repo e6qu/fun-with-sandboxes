@@ -21,6 +21,7 @@ import (
 
 	"github.com/e6qu/fun-with-sandboxes/internal/dockerfile"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
+	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
@@ -110,7 +111,7 @@ func (e *Engine) Build(ctx context.Context, opts BuildOptions, buildContext io.R
 	if err := image.Extract(b.context, buildContext, false); err != nil {
 		return image.Image{}, invalid("read build context: %v", err)
 	}
-	dfPath, err := inRoot(b.context, opts.Dockerfile)
+	dfPath, err := rootfs.Join(b.context, opts.Dockerfile)
 	if err != nil {
 		return image.Image{}, err
 	}
@@ -368,7 +369,7 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		}
 		s.workdir = path.Clean(wd)
 		cfg.WorkingDir = s.workdir
-		host, err := inRoot(s.root, s.workdir)
+		host, err := rootfs.Join(s.root, s.workdir)
 		if err != nil {
 			return err
 		}
@@ -559,7 +560,7 @@ func (b *builder) copy(ctx context.Context, s *stage, in dockerfile.Instruction,
 		}
 	}
 	destIsDir := strings.HasSuffix(dest, "/") || len(srcs) > 1
-	destHost, err := inRoot(s.root, dest)
+	destHost, err := rootfs.Join(s.root, dest)
 	if err != nil {
 		return err
 	}
@@ -589,7 +590,7 @@ func (b *builder) copy(ctx context.Context, s *stage, in dockerfile.Instruction,
 			}
 			continue
 		}
-		pattern, err := inRoot(srcRoot, src)
+		pattern, err := rootfs.Join(srcRoot, src)
 		if err != nil {
 			return err
 		}

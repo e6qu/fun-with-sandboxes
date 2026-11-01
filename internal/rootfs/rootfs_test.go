@@ -1,4 +1,4 @@
-package engine
+package rootfs
 
 import (
 	"os"
@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestInRootStaysInTheRoot(t *testing.T) {
+func TestJoinStaysInTheRoot(t *testing.T) {
 	root, _ := filepath.EvalSymlinks(t.TempDir())
 	outside := t.TempDir()
 	os.MkdirAll(filepath.Join(root, "usr", "bin"), 0o755)
@@ -26,16 +26,16 @@ func TestInRootStaysInTheRoot(t *testing.T) {
 		"/new/dir/file":    "new/dir/file",
 		"/bin/../lib/libc": "usr/lib/libc",
 	} {
-		got, err := inRoot(root, in)
+		got, err := Join(root, in)
 		if err != nil {
-			t.Errorf("inRoot(%q): %v", in, err)
+			t.Errorf("Join(%q): %v", in, err)
 			continue
 		}
-		if !within(got, root) || got != filepath.Join(root, want) {
-			t.Errorf("inRoot(%q) = %q, want %q", in, got, filepath.Join(root, want))
+		if got != filepath.Join(root, want) {
+			t.Errorf("Join(%q) = %q, want %q", in, got, filepath.Join(root, want))
 		}
 	}
-	if _, err := inRoot(root, "/loop"); err == nil {
+	if _, err := Join(root, "/loop"); err == nil {
 		t.Error("a symlink loop resolved")
 	}
 }

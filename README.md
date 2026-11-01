@@ -58,13 +58,16 @@ file, so the image is self-contained wherever its root lands.
 
 ### Building images
 
-`docker build` works with the classic builder. Base a Dockerfile on a darwin
-image; `RUN` steps run under the same Seatbelt confinement as containers,
-with internet through a build-only egress proxy:
+`docker build`, `docker buildx build` and `docker compose build` run on an
+embedded BuildKit with a darwin worker. Base a Dockerfile on a darwin image;
+`RUN` steps run under the same Seatbelt confinement as containers, with
+internet through a build-only egress proxy:
 
 ```bash
-DOCKER_BUILDKIT=0 docker build -t my/app:1 .
+docker buildx build --load -t my/app:1 .
 ```
+
+The classic builder stays available with `DOCKER_BUILDKIT=0`.
 
 ## The container contract
 

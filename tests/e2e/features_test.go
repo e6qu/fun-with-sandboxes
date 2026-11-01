@@ -369,3 +369,85 @@ CMD ["cat", "/srv/built.txt"]
 		t.Errorf("a RUN step reached the internet with --network none:\n%s", out)
 	}
 }
+
+func TestBuildKit(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("Dockerfile", `FROM fws/toolbox:1 AS first
+RUN ["/toolbox", "put", "/made/in-first", "from the first stage"]
+
+FROM fws/toolbox:1
+ARG GREETING=hello
+ENV GREETING=$GREETING
+WORKDIR /srv
+COPY greeting.txt ./
+COPY --from=first /made/in-first /etc/first.txt
+RUN --mount=type=cache,target=/cache ["/toolbox", "put", "/cache/seen", "cached"]
+RUN ["/toolbox", "put", "/srv/built.txt", "written by RUN"]
+RUN ["/toolbox", "fetch", "https://github.com/"]
+CMD ["cat", "/srv/built.txt"]
+`)
+	write("greeting.txt", "greetings from the context\n")
+	write("compose.yaml", "services:\n  app:\n    build: .\n    image: e2e/composed:1\n")
+
+	cli := func(name string, args ...string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+		return string(out), err
+	}
+	out, err := cli("docker", "buildx", "build", "--load", "-t", "e2e/bk:1", "--build-arg", "GREETING=hi", dir)
+	if err != nil {
+		t.Fatalf("docker buildx build: %v\n%s", err, out)
+	}
+	defer docker(t, "rmi", "e2e/bk:1")
+	for args, want := range map[string]string{
+		"":                      "written by RUN",
+		"cat /srv/greeting.txt": "greetings from the context",
+		"cat /etc/first.txt":    "from the first stage",
+	} {
+		run := []string{"run", "--rm", "e2e/bk:1"}
+		if args != "" {
+			run = append(run, strings.Fields(args)...)
+		}
+		if got := strings.TrimSpace(mustDocker(t, run...)); got != want {
+			t.Errorf("docker run e2e/bk:1 %s = %q, want %q", args, got, want)
+		}
+	}
+	if _, err := docker(t, "run", "--rm", "e2e/bk:1", "cat", "/cache/seen"); err == nil {
+		t.Error("the cache mount's content ended up in the image")
+	}
+	if env := mustDocker(t, "image", "inspect", "-f", "{{.Os}} {{range .Config.Env}}{{.}},{{end}}", "e2e/bk:1"); !strings.Contains(env, "darwin ") || !strings.Contains(env, "GREETING=hi,") {
+		t.Errorf("image inspect: %q", env)
+	}
+
+	out, err = cli("docker", "build", "-t", "e2e/bk:2", "--build-arg", "GREETING=hi", dir)
+	if err != nil {
+		t.Fatalf("docker build through BuildKit: %v\n%s", err, out)
+	}
+	defer docker(t, "rmi", "e2e/bk:2")
+	if !strings.Contains(out, "CACHED") {
+		t.Errorf("an identical rebuild used no cache:\n%s", out)
+	}
+
+	local := filepath.Join(t.TempDir(), "out")
+	if out, err := cli("docker", "buildx", "build", "--output", "type=local,dest="+local, dir); err != nil {
+		t.Fatalf("build to a local directory: %v\n%s", err, out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(local, "srv", "built.txt")); strings.TrimSpace(string(b)) != "written by RUN" {
+		t.Errorf("local output holds %q", b)
+	}
+
+	if out, err := cli("docker-compose", "-f", filepath.Join(dir, "compose.yaml"), "build"); err != nil {
+		t.Fatalf("docker compose build: %v\n%s", err, out)
+	}
+	defer docker(t, "rmi", "e2e/composed:1")
+	if got := strings.TrimSpace(mustDocker(t, "run", "--rm", "e2e/composed:1")); got != "written by RUN" {
+		t.Errorf("composed image ran with %q", got)
+	}
+}

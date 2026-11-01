@@ -34,7 +34,7 @@ func newEngineServer(t *testing.T) (*httptest.Server, *engine.Engine) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(New(e))
+	ts := httptest.NewServer(New(e, nil))
 	t.Cleanup(ts.Close)
 	return ts, e
 }

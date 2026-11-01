@@ -13,13 +13,17 @@ machine — and from what macOS offers an unprivileged process under them.
   change, needs an entrypoint that configures it.
 - **No `#!` interpreters inside the image.** The kernel resolves a script's
   interpreter on the host; only the host's system shells are executable.
-- **`docker build` is the classic builder.** BuildKit and `docker buildx`
-  are not supported, so `docker compose build` (which needs buildx) is not
-  either; set `DOCKER_BUILDKIT=0` if the CLI has buildx installed. There is
-  no build cache, no `ONBUILD`, no heredocs and no remote contexts. RUN steps
-  run under the stage's Seatbelt profile with internet through a build-only
-  egress proxy (none with `--network none`); shell-form RUN needs `/bin/sh`
-  in the image, as in Docker.
+- **BuildKit builds darwin images on one worker.** `docker build`,
+  `docker buildx build` (docker driver) and `docker compose build` run the
+  real BuildKit solver with its cache. Not supported: multi-platform builds,
+  `# syntax=` directives (gateway frontends ship as Linux images), and
+  `RUN --mount=type=ssh`. Build steps run as the engine's user; a Dockerfile
+  `USER` other than root fails.
+- **The classic builder (`DOCKER_BUILDKIT=0`) has no cache**, no `ONBUILD`,
+  no heredocs and no remote contexts.
+- **Build steps run under Seatbelt** with internet through a build-only
+  egress proxy (none with `--network none`); shell-form `RUN` needs
+  `/bin/sh` in the image, as in Docker.
 - **No `docker commit`, `docker push` or image export.**
 - **Image health checks lose `StartInterval`**: the image config library the
   engine uses does not carry it. A container's own health check keeps it.
