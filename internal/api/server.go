@@ -159,7 +159,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /images/{ref...}", s.imageGet)
 	m.HandleFunc("POST /images/{ref...}", s.imagePost)
 	m.HandleFunc("DELETE /images/{ref...}", func(w http.ResponseWriter, r *http.Request) {
-		res, err := s.e.ImageRemove(r.PathValue("ref"))
+		res, err := s.e.ImageRemove(r.PathValue("ref"), boolParam(r.URL.Query().Get("force")))
 		respond(w, res, err)
 	})
 

@@ -170,3 +170,37 @@ func TestAddRootIsContentAddressed(t *testing.T) {
 		t.Fatalf("stored root lacks its file: %q", body)
 	}
 }
+
+func TestRemoveUntagsBeforeDeleting(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := os.MkdirTemp(s.dir, "root-")
+	var cfg v1.ConfigFile
+	img, err := s.AddRoot(d, cfg, []string{"first:1", "second:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unused := func(string) bool { return false }
+	if _, err := s.Remove(img.ID, false, unused); !errors.Is(err, ErrConflict) {
+		t.Fatalf("removing a multiply tagged image by ID without force: %v", err)
+	}
+	r, err := s.Remove("second:1", false, func(string) bool { return true })
+	if err != nil || r.Deleted || len(r.Untagged) != 1 || r.Untagged[0] != "second:1" {
+		t.Fatalf("removing one of two tags: %+v, %v", r, err)
+	}
+	if _, err := s.Get("first:1"); err != nil {
+		t.Fatalf("the other tag went with it: %v", err)
+	}
+	if _, err := s.Remove("first:1", false, func(string) bool { return true }); !errors.Is(err, ErrConflict) {
+		t.Fatalf("deleting an image a container uses: %v", err)
+	}
+	r, err = s.Remove("first:1", false, unused)
+	if err != nil || !r.Deleted {
+		t.Fatalf("removing the last tag: %+v, %v", r, err)
+	}
+	if _, err := os.Stat(s.Root(img.ID)); !os.IsNotExist(err) {
+		t.Fatalf("deleted image's root survived: %v", err)
+	}
+}

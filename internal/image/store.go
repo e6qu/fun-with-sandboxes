@@ -169,21 +169,50 @@ func (s *Store) untagLocked(n string) {
 }
 
 // Remove deletes the image. inUse reports whether a container still needs it.
-func (s *Store) Remove(ref string, inUse func(id string) bool) (Image, error) {
+// ErrConflict reports a removal Docker refuses without force.
+var ErrConflict = errors.New("conflict")
+
+// Removal says what Remove did: the tags it dropped, and whether it deleted
+// the image itself.
+type Removal struct {
+	Image    Image
+	Untagged []string
+	Deleted  bool
+}
+
+// Remove follows `docker rmi`: naming one of several tags drops only that
+// tag; naming the last tag or the ID deletes the image, which no container
+// may still use, and an ID with several tags needs force.
+func (s *Store) Remove(ref string, force bool, inUse func(id string) bool) (Removal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	img, err := s.getLocked(ref)
 	if err != nil {
-		return Image{}, err
+		return Removal{}, err
+	}
+	tag := ""
+	if n, err := Normalize(ref); err == nil {
+		for _, t := range img.RepoTags {
+			if t == n {
+				tag = n
+			}
+		}
+	}
+	if tag != "" && len(img.RepoTags) > 1 {
+		s.untagLocked(tag)
+		return Removal{Image: *img, Untagged: []string{tag}}, s.saveLocked()
+	}
+	if tag == "" && len(img.RepoTags) > 1 && !force {
+		return Removal{}, fmt.Errorf("%w: unable to delete %s (must be forced) - image is referenced in multiple repositories", ErrConflict, strings.TrimPrefix(img.ID, "sha256:")[:12])
 	}
 	if inUse(img.ID) {
-		return Image{}, fmt.Errorf("conflict: unable to remove image %s: image is being used by a container", ref)
+		return Removal{}, fmt.Errorf("%w: unable to remove image %s: image is being used by a container", ErrConflict, ref)
 	}
 	if err := os.RemoveAll(s.Root(img.ID)); err != nil {
-		return Image{}, err
+		return Removal{}, err
 	}
 	delete(s.idx, img.ID)
-	return *img, s.saveLocked()
+	return Removal{Image: *img, Untagged: img.RepoTags, Deleted: true}, s.saveLocked()
 }
 
 // Pull fetches the image for the engine's platform from its registry.
