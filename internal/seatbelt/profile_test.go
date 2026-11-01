@@ -26,7 +26,8 @@ func TestRenderGrantsOnlyOwnResources(t *testing.T) {
 		`(allow network-bind (local ip "localhost:41000"))`,
 		`(allow network-outbound (remote ip "localhost:41000"))`,
 		`(allow network-outbound (remote ip "localhost:41001"))`,
-		`(allow process-exec* (subpath "/Users/u/.fws/stacks/a/containers/c1/root"))`,
+		`(allow process-exec*` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/containers/c1/root")`,
+		`  (literal "/bin/sh")`,
 		`(allow signal (target same-sandbox))`,
 		`(literal "/Users/u/.fws/stacks/a/containers")`,
 	} {

@@ -1,0 +1,26 @@
+services:
+  db:
+    image: fws/postgres:16
+    environment:
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: app
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432"
+  cache:
+    image: fws/redis:7
+    ports:
+      - "6379"
+  app:
+    image: fws/toolbox:1
+    ports:
+      - "8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+
+volumes:
+  pgdata: {}

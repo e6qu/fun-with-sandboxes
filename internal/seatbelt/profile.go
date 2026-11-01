@@ -35,8 +35,14 @@ var DeniedReadRoots = []string{
 	"/Applications",
 	"/opt",
 	"/usr/local",
+	"/nix",
 	"/private/etc/ssh",
 }
+
+// SystemShells are the only host executables a container may run: the C
+// library's popen() and system() hard-code /bin/sh, which on macOS hands off
+// to the shell /private/var/select/sh names.
+var SystemShells = []string{"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash"}
 
 // MachServices are the only global Mach services a container may look up:
 // user/group lookup, notifications, and logging. Everything else — keychain,
@@ -151,7 +157,12 @@ func Render(s Spec) (string, error) {
 	w(")")
 
 	w("(deny process-exec*)")
-	w("(allow process-exec* (subpath %q))", s.Root)
+	w("(allow process-exec*")
+	w("  (subpath %q)", s.Root)
+	for _, sh := range SystemShells {
+		w("  (literal %q)", sh)
+	}
+	w(")")
 
 	w("(deny network-bind)")
 	w("(allow network-bind (local unix-socket (subpath %q)))", s.Root)
