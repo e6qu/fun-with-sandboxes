@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -112,7 +113,12 @@ func TestMariaDB(t *testing.T) {
 	if err := again.QueryRow("SELECT body FROM notes").Scan(&body); err != nil || body != "kept" {
 		t.Fatalf("after a restart the table holds %q, %v", body, err)
 	}
-	if logs := mustDocker(t, "logs", name); !strings.Contains(logs, "skipping initialization") {
+	// docker logs writes the container's standard error, where MariaDB logs, to its own.
+	logs, err := exec.Command("docker", "logs", name).CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker logs %s: %v\n%s", name, err, logs)
+	}
+	if !strings.Contains(string(logs), "skipping initialization") {
 		t.Errorf("the restarted server initialised again:\n%s", logs)
 	}
 }
