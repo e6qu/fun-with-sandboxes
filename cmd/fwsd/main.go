@@ -81,6 +81,7 @@ func run(cfg engine.Config, socket string, withBuildKit bool) error {
 	if withBuildKit {
 		svc, err := buildkit.New(context.Background(), buildkit.Config{
 			Root: filepath.Join(e.Root(), "buildkit"), StateRoot: e.Root(), Images: e.Images(), Egress: e.BuildEgress,
+			Library: e.Library,
 		})
 		if err != nil {
 			return fmt.Errorf("start BuildKit: %w", err)

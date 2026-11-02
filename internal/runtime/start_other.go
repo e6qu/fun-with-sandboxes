@@ -12,7 +12,7 @@ import (
 // role.
 const RoleVar = roles.Var
 
-// Start fails: Seatbelt and sandbox-exec are macOS's.
+// Start fails: Seatbelt is macOS's.
 func Start(s Spec) (*Process, error) {
 	return nil, errors.New("containers run on macOS only")
 }

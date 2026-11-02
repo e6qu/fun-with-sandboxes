@@ -20,6 +20,7 @@ import (
 
 	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
+	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 )
 
 const (
@@ -54,6 +55,10 @@ type Engine struct {
 	// detach closes when the engine leaves its containers running as it
 	// stops.
 	detach chan struct{}
+
+	libOnce sync.Once
+	lib     string
+	libErr  error
 
 	// buildMu is held shared by classic builds and exclusively by a prune of
 	// their cache.
@@ -113,7 +118,14 @@ func Open(cfg Config) (*Engine, error) {
 	return e, nil
 }
 
-func (e *Engine) Root() string            { return e.cfg.Root }
+func (e *Engine) Root() string { return e.cfg.Root }
+
+// Library is the container library every container process loads, built
+// on first use, as only a host that runs containers needs a C compiler.
+func (e *Engine) Library() (string, error) {
+	e.libOnce.Do(func() { e.lib, e.libErr = pathmap.Build(filepath.Join(e.cfg.Root, "lib")) })
+	return e.lib, e.libErr
+}
 func (e *Engine) Images() *image.Store    { return e.images }
 func (e *Engine) Alloc() *alloc.Allocator { return e.alloc }
 

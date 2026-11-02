@@ -21,7 +21,9 @@ import (
 	"github.com/moby/moby/api/types/network"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/egress"
+	"github.com/e6qu/fun-with-sandboxes/internal/identity"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
+	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
@@ -344,11 +346,29 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	return container.CreateResponse{ID: id, Warnings: []string{}}, nil
 }
 
+// checkUser accepts a user as Docker does at create: the container's own
+// passwd and group files resolve it as it starts.
 func (e *Engine) checkUser(u string) error {
-	if u == "" || u == e.user.Uid || u == e.user.Username {
-		return nil
+	if strings.HasPrefix(u, ":") || strings.Count(u, ":") > 1 {
+		return invalid("invalid user %q", u)
 	}
-	return unsupported("user %q: containers run as the engine's own user (%s); switching users needs root", u, e.user.Username)
+	return nil
+}
+
+// processEnv is the environment of a process of the container running as
+// user: the container's, with the identity and hostname the container
+// library presents.
+func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string, error) {
+	id, err := identity.Resolve(c.root(), user)
+	if err != nil {
+		return nil, err
+	}
+	env := e.environment(c, extra)
+	host := c.rec.Config.Hostname
+	if host == "" {
+		host = c.rec.ID[:12]
+	}
+	return append(append(env, id.Env()...), pathmap.HostnameVar+"="+host), nil
 }
 
 func checkHostConfig(hc *container.HostConfig) error {
@@ -931,9 +951,13 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	if err != nil {
 		return seatbelt.Spec{}, err
 	}
+	lib, err := e.Library()
+	if err != nil {
+		return seatbelt.Spec{}, err
+	}
 	spec := seatbelt.Spec{
 		Root: c.root(), StateRoot: e.cfg.Root, ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
-		IPC: ipc, IPCPrefix: prefix,
+		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib},
 	}
 	for _, m := range c.rec.Mounts {
 		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW})
@@ -1027,11 +1051,15 @@ func (c *Container) start(e *Engine) error {
 	if err != nil {
 		return err
 	}
+	env, err := e.processEnv(c, nil, c.rec.Config.User)
+	if err != nil {
+		return invalid("%v", err)
+	}
 	cfg := shim.Config{
 		ID: c.rec.ID,
 		Spec: runtime.Spec{
-			Root: c.root(), Argv: argv, Env: e.environment(c, nil), WorkDir: c.rec.Config.WorkingDir,
-			Profile: spec, ProfilePath: filepath.Join(c.dir, "profile.sb"), Limits: limits,
+			Root: c.root(), Argv: argv, Env: env, WorkDir: c.rec.Config.WorkingDir,
+			Profile: spec, ProfilePath: filepath.Join(c.dir, "profile.sb"), Limits: limits, Library: spec.Libraries[0],
 		},
 		TTY: c.rec.Config.Tty, Console: c.rec.HostConfig.ConsoleSize, OpenStdin: c.rec.Config.OpenStdin,
 		LogPath: c.logs.path, Socket: e.shimSocket(c), ExitPath: c.exitPath(),

@@ -117,7 +117,8 @@ same knobs, each enforced by a real mechanism or refused:
   privacy (TCC) grant of whatever launched the engine. The helper applies
   `--ulimit` (nofile, fsize, cpu, core, stack), the nice value `--cpu-shares`
   maps to, the disk I/O policy tier `--blkio-weight` maps to, and the
-  controlling terminal, then executes `sandbox-exec`. A limit the user cannot
+  controlling terminal, applies the Seatbelt profile, and executes the
+  command with the container library loaded. A limit the user cannot
   set fails the start, reported on a close-on-exec status pipe.
 - **Supervisor.** Each container runs under a shim, `fws-shim` in its
   supervisor role and a session of its own; each stack's egress proxy is
@@ -143,6 +144,15 @@ same knobs, each enforced by a real mechanism or refused:
   containers, and the next engine reconnects to the shims through their
   sockets. Without it, an engine stops its containers as it stops, and ends
   any an earlier, crashed engine left running as it starts.
+- **Container library.** Every container process loads `fwsroot`
+  (`internal/pathmap`), a library the engine builds from embedded C source
+  and the spawn helper injects with `DYLD_INSERT_LIBRARIES`, having applied
+  the Seatbelt profile itself through `sandbox_init_with_parameters` so no
+  Apple binary sits between them to drop the variable. It interposes
+  libSystem's path, identity, user database and hostname calls to present
+  the container's root at `/`, its user, its `/etc/passwd` and `/etc/group`,
+  and its hostname: fakechroot and fakeroot in one, presented and not
+  enforced, as Seatbelt still decides every access by the engine's user.
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would
@@ -483,8 +493,9 @@ mounts, and record the container. On start:
 2. Build the environment: image and container variables, `PATH` mapped into
    the root, `HOME` under the root, and the `SANDBOX_*` variables.
 3. Start the container's shim (§3a), which binds the published host ports.
-4. The shim spawns the helper, which applies the limits and runs
-   `/usr/bin/sandbox-exec -f <profile> <root>/<argv0> …`, the main process
+4. The shim spawns the helper, which applies the limits and the Seatbelt
+   profile and executes `<root>/<argv0> …` with the container library
+   loaded (a script under its interpreter from the root), the main process
    leading its own process group (or session, with a TTY). Output reaches
    the json-file log through real pipes, so the shim sees the exit at once
    even if a descendant still holds stdout.
@@ -510,7 +521,9 @@ cmd/fws-mkimage/      # Nix closure -> darwin image archive
 internal/alloc/       # per-stack port blocks and directories
 internal/seatbelt/    # profile rendering
 internal/image/       # image store, layer extraction, clonefile
-internal/runtime/     # launch under sandbox-exec, process groups, pipes
+internal/runtime/     # the spawn helper: limits, Seatbelt, the container library
+internal/pathmap/     # the container library: paths, identity, users, hostname
+internal/identity/    # resolve --user and USER against the container's files
 internal/egress/      # the per-stack HTTP proxy to the internet
 internal/procs/       # the host process table, for top and stats
 internal/dockerfile/  # Dockerfile parsing and variable expansion
@@ -563,11 +576,12 @@ every *action* across stacks is denied.
   stock images don't run.
 - Memory, CPU and pids limits are enforced by a supervisor that kills or
   stops processes, not by a kernel that refuses an allocation or a fork.
-- No `user:` switch to arbitrary UIDs; runs as the invoking user.
+- `user:` and `USER` are presented by the container library; every process
+  runs as the invoking user.
 - Process listing (`ps`/`pstree`) crosses sandboxes; every action does not.
-- `sandbox-exec` is Apple-deprecated (since 2016) but still functional and used
-  by Chrome, Bazel, and the major coding-agent sandboxes; there is no supported
-  replacement for this use.
+- Seatbelt's `sandbox_init` and `sandbox-exec` are Apple-deprecated (since
+  2016) but still functional and used by Chrome, Bazel, and the major
+  coding-agent sandboxes; there is no supported replacement for this use.
 - Running the engine *inside* another Seatbelt sandbox (e.g. a coding agent's)
   is untested; Seatbelt profiles may not nest.
 

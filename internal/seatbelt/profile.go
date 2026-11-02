@@ -90,6 +90,9 @@ type Spec struct {
 	// IPCPrefix is the name prefix POSIX IPC objects must carry under
 	// IPCPrivate.
 	IPCPrefix string
+	// Libraries are files outside the root every process of the container
+	// loads, such as the container library.
+	Libraries []string
 }
 
 // IPCMode is a container's IPC confinement.
@@ -132,6 +135,11 @@ func Render(s Spec) (string, error) {
 	paths := []string{s.Root, s.StateRoot}
 	for _, v := range s.Volumes {
 		paths = append(paths, v.Path)
+	}
+	for _, l := range s.Libraries {
+		if err := checkPath(l); err != nil {
+			return "", err
+		}
 	}
 	for _, p := range paths {
 		if err := checkPath(p); err != nil {
@@ -199,7 +207,17 @@ func Render(s Spec) (string, error) {
 	for _, d := range SystemReadPaths {
 		w("  (subpath %q)", d)
 	}
+	for _, l := range s.Libraries {
+		w("  (literal %q)", l)
+	}
 	w(")")
+	if len(s.Libraries) > 0 {
+		w("(allow file-map-executable")
+		for _, l := range s.Libraries {
+			w("  (literal %q)", l)
+		}
+		w(")")
+	}
 	// stat and realpath walk each ancestor of the root and volumes; they may
 	// learn the ancestors exist, but not list them.
 	w("(allow file-read-metadata")

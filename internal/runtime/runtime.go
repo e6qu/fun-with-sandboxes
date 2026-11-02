@@ -18,9 +18,6 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
 
-// SandboxExec is the macOS tool that applies a profile and execs the command.
-const SandboxExec = "/usr/bin/sandbox-exec"
-
 type Spec struct {
 	// Root is the container's root directory; Argv[0] and WorkDir are paths
 	// inside it.
@@ -28,8 +25,8 @@ type Spec struct {
 	Argv    []string
 	Env     []string
 	WorkDir string
-	// Profile is the rendered profile; ProfilePath is where it is written for
-	// sandbox-exec, outside the container root.
+	// Profile is the profile the process runs under; ProfilePath is where
+	// its text is kept, outside the container root, for inspection.
 	Profile     seatbelt.Spec
 	ProfilePath string
 	Stdin       io.Reader `json:"-"`
@@ -40,6 +37,9 @@ type Spec struct {
 	TTY *os.File `json:"-"`
 	// Limits apply to the process and everything it starts.
 	Limits Limits
+	// Library is the container library (package pathmap) every process
+	// of the container loads; the profile must let it read the library.
+	Library string
 }
 
 // Limits are what the spawn helper applies to the process before it

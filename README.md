@@ -33,7 +33,8 @@ docker compose up -d --wait
 ```
 
 `fwsd` runs each container's supervisor, and the processes it starts, from
-`fws-shim`, which must sit beside it. `fwsd` refuses to run as root. State lives in `~/.fws` (`-root`), stacks get
+`fws-shim`, which must sit beside it. It builds its container library with
+clang from the Xcode Command Line Tools (`xcode-select --install`). `fwsd` refuses to run as root. State lives in `~/.fws` (`-root`), stacks get
 host ports from 20000–29999 in blocks of 100 (`-port-base`, `-port-limit`,
 `-block-size`). With `-live-restore` containers keep running while `fwsd`
 stops, for an upgrade say, and the next `fwsd` takes them back.

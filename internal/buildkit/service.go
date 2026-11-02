@@ -54,6 +54,8 @@ type Config struct {
 	Images    *image.Store
 	// Egress returns the loopback port of the egress proxy build steps use.
 	Egress func() (int, error)
+	// Library returns the container library build steps load.
+	Library func() (string, error)
 }
 
 // Service is the embedded BuildKit daemon.
@@ -108,7 +110,7 @@ func newWorker(ctx context.Context, cfg Config) (*darwinWorker, error) {
 	if err != nil {
 		return nil, err
 	}
-	exe, err := newExecutor(execOpt{StateRoot: cfg.StateRoot, ProfileDir: filepath.Join(root, "executor"), Egress: cfg.Egress})
+	exe, err := newExecutor(execOpt{StateRoot: cfg.StateRoot, ProfileDir: filepath.Join(root, "executor"), Egress: cfg.Egress, Library: cfg.Library})
 	if err != nil {
 		return nil, err
 	}

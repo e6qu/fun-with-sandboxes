@@ -22,6 +22,7 @@ import (
 
 	"github.com/e6qu/fun-with-sandboxes/internal/dockerfile"
 	"github.com/e6qu/fun-with-sandboxes/internal/egress"
+	"github.com/e6qu/fun-with-sandboxes/internal/identity"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
@@ -1020,8 +1021,16 @@ func (b *builder) runStep(ctx context.Context, s *stage, in dockerfile.Instructi
 	if err != nil {
 		return err
 	}
-	env := b.runEnv(s, proxy)
-	spec := seatbelt.Spec{Root: s.root, StateRoot: b.e.cfg.Root, IPCPrefix: seatbelt.IPCPrefixFor(s.root)}
+	id, err := identity.Resolve(s.root, s.cfg.Config.User)
+	if err != nil {
+		return invalid("line %d: %v", in.Line, err)
+	}
+	lib, err := b.e.Library()
+	if err != nil {
+		return err
+	}
+	env := append(b.runEnv(s, proxy), id.Env()...)
+	spec := seatbelt.Spec{Root: s.root, StateRoot: b.e.cfg.Root, IPCPrefix: seatbelt.IPCPrefixFor(s.root), Libraries: []string{lib}}
 	if proxy != 0 {
 		spec.ConnectPorts = []int{proxy}
 	}
@@ -1029,7 +1038,7 @@ func (b *builder) runStep(ctx context.Context, s *stage, in dockerfile.Instructi
 	proc, err := runtime.Start(runtime.Spec{
 		Root: s.root, Argv: argv, Env: env, WorkDir: s.workdir,
 		Profile: spec, ProfilePath: filepath.Join(b.dir, "run-"+strconv.Itoa(b.step)+".sb"),
-		Stdout: w, Stderr: w,
+		Stdout: w, Stderr: w, Library: lib,
 	})
 	if err != nil {
 		return invalid("line %d: RUN %s: %v", in.Line, in.Raw, err)

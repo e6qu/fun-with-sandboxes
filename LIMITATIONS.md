@@ -11,14 +11,32 @@ machine — and from what macOS offers an unprivileged process under them.
   ports from `SANDBOX_*` variables (see the README). Software that hard-codes
   an absolute path outside its root, or a fixed port it cannot be told to
   change, needs an entrypoint that configures it.
-- **Scripts name their interpreter through `/usr/bin/env`.** The kernel
-  resolves a script's interpreter on the host, so a script runs when its
-  `#!` line names a system shell or `/usr/bin/env` with a program on the
-  container's `PATH`. `fws-mkimage` rewrites the catalog's scripts so.
-- **Arguments are paths on the host.** The engine maps a command's program
-  into the container's root, not its arguments, which the program reads on
-  the host: pass a path relative to the working directory, or one under
-  `$SANDBOX_ROOT`.
+- **A container's view is presented by a library, not the kernel.** Every
+  container process loads the engine's container library, which maps
+  absolute paths into the container's root (as fakechroot does), presents
+  the container's user and group (as fakeroot does), its users and groups
+  from its own `/etc/passwd` and `/etc/group`, and its hostname. So
+  arguments, entrypoints, `CMD`, `--user`, `USER`, `exec -u`, `--hostname`
+  and `-w` behave as in Docker. Its limits:
+  - A path names the root's file when the root holds it, or its parent, so
+    a file can be made there; any other path, such as `/dev` or the system
+    frameworks, names the host's. An absolute symbolic link inside the
+    image resolves on the host, as the kernel follows it.
+  - Programs Apple signs, and programs with the hardened runtime, load no
+    library: the host's `/bin/sh`, `/usr/bin/env` and Chrome see host paths.
+    Catalog images carry their own `/bin/sh`, so `system()`, `popen()` and
+    package managers keep the library.
+  - A statically linked program, or one making system calls without
+    libSystem, sees host paths. Go and every other macOS program use
+    libSystem.
+  - The identity is presented, not enforced: every process runs as the
+    engine's user, so a container's non-root user can do what its root can,
+    and `chown` records an owner in an extended attribute that `stat`
+    reports rather than changing the file's owner.
+  - A script's `#!` interpreter runs from the root when the root holds it,
+    else from the host.
+- The engine builds the library with clang on the first container start:
+  install the Xcode Command Line Tools (`xcode-select --install`).
 - **BuildKit builds darwin images on one worker.** `docker build`,
   `docker buildx build` (docker driver) and `docker compose build` run the
   real BuildKit solver with its cache, secret and SSH mounts included. Not
@@ -128,7 +146,6 @@ machine — and from what macOS offers an unprivileged process under them.
     does not enforce, are refused.
 - **Each container costs a supervisor process**, `fws-shim`, held under
   16 MiB of memory footprint by the test suite.
-- **No user switching**: `user:` must be empty or the engine's own user.
 - **`docker pause` stops the container's processes with SIGSTOP**, not a
   cgroup freezer; TCP connections to a paused container are still accepted
   by the kernel and wait for it to resume.

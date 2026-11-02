@@ -38,45 +38,52 @@ pkg_with() {
   exit 1
 }
 
+# Every catalog image carries a shell of its own at /bin/sh: the loader
+# drops the container library from Apple's shells, and with it from what
+# system(), popen() and package managers run through them.
+dash=$(pkg_with dash dash)
+closure() { nix-store -qR "$@" "$dash" | sort -u; }
+mkimage() { "$build/fws-mkimage" "$@" -pkg "$dash" -link /bin/sh=dash; }
+
 for v in 16 18; do
   pg=$(pkg_with "postgresql_$v" postgres)
-  nix-store -qR "$pg" > "$build/pg$v.closure"
-  "$build/fws-mkimage" -spec images/postgres/image.json -tag "fws/postgres:$v" -closure "$build/pg$v.closure" -pkg "$pg" \
+  closure "$pg" > "$build/pg$v.closure"
+  mkimage -spec images/postgres/image.json -tag "fws/postgres:$v" -closure "$build/pg$v.closure" -pkg "$pg" \
     -file "/entry=$build/postgres-entry" -out "$out/postgres-$v.tar"
 done
 
 redis=$(pkg_with redis redis-server)
-nix-store -qR "$redis" > "$build/redis.closure"
-"$build/fws-mkimage" -spec images/redis/image.json -closure "$build/redis.closure" -pkg "$redis" \
+closure "$redis" > "$build/redis.closure"
+mkimage -spec images/redis/image.json -closure "$build/redis.closure" -pkg "$redis" \
   -file "/entry=$build/redis-entry" -out "$out/redis.tar"
 
 nginx=$(pkg_with nginx nginx)
-nix-store -qR "$nginx" > "$build/nginx.closure"
-"$build/fws-mkimage" -spec images/nginx/image.json -closure "$build/nginx.closure" -pkg "$nginx" \
+closure "$nginx" > "$build/nginx.closure"
+mkimage -spec images/nginx/image.json -closure "$build/nginx.closure" -pkg "$nginx" \
   -file "/entry=$build/nginx-entry" -file "/usr/share/nginx/html/index.html=$nginx/html/index.html" -out "$out/nginx.tar"
 
 mariadb=$(pkg_with mariadb mariadbd)
-nix-store -qR "$mariadb" > "$build/mariadb.closure"
-"$build/fws-mkimage" -spec images/mariadb/image.json -closure "$build/mariadb.closure" -pkg "$mariadb" \
+closure "$mariadb" > "$build/mariadb.closure"
+mkimage -spec images/mariadb/image.json -closure "$build/mariadb.closure" -pkg "$mariadb" \
   -file "/entry=$build/mariadb-entry" -out "$out/mariadb.tar"
 
 python=$(pkg_with python314 python3.14)
-nix-store -qR "$python" > "$build/python.closure"
-"$build/fws-mkimage" -spec images/python/image.json -closure "$build/python.closure" -pkg "$python" -out "$out/python.tar"
+closure "$python" > "$build/python.closure"
+mkimage -spec images/python/image.json -closure "$build/python.closure" -pkg "$python" -out "$out/python.tar"
 
 node=$(pkg_with nodejs_26 node)
-nix-store -qR "$node" > "$build/node.closure"
-"$build/fws-mkimage" -spec images/node/image.json -closure "$build/node.closure" -pkg "$node" -out "$out/node.tar"
+closure "$node" > "$build/node.closure"
+mkimage -spec images/node/image.json -closure "$build/node.closure" -pkg "$node" -out "$out/node.tar"
 
 bun=$(pkg_with bun bun)
-nix-store -qR "$bun" > "$build/bun.closure"
-"$build/fws-mkimage" -spec images/bun/image.json -closure "$build/bun.closure" -pkg "$bun" -out "$out/bun.tar"
+closure "$bun" > "$build/bun.closure"
+mkimage -spec images/bun/image.json -closure "$build/bun.closure" -pkg "$bun" -out "$out/bun.tar"
 
 gitea=$(pkg_with gitea gitea)
 gitea_data=$(NIXPKGS_ALLOW_UNFREE=1 nix --extra-experimental-features 'nix-command flakes' build --impure --no-link --print-out-paths "$nixpkgs#gitea.data")
 git=$(pkg_with git git)
-nix-store -qR "$gitea" "$gitea_data" "$git" | sort -u > "$build/gitea.closure"
-"$build/fws-mkimage" -spec images/gitea/image.json -closure "$build/gitea.closure" -pkg "$gitea" -pkg "$git" \
+closure "$gitea" "$gitea_data" "$git" > "$build/gitea.closure"
+mkimage -spec images/gitea/image.json -closure "$build/gitea.closure" -pkg "$gitea" -pkg "$git" \
   -env "GITEA_DATA=$gitea_data" -file "/entry=$build/gitea-entry" -out "$out/gitea.tar"
 
 dynamodb=$(pkg_with dynamodb-local dynamodb-local)
@@ -89,28 +96,28 @@ done
 jdk=$(pkg_with jdk_headless javac)
 mkdir -p "$build/dynamodb-launcher"
 "$jdk/bin/javac" --release 17 -d "$build/dynamodb-launcher" images/dynamodb/launcher/Launcher.java
-nix-store -qR "$dynamodb" > "$build/dynamodb.closure"
-"$build/fws-mkimage" -spec images/dynamodb/image.json -closure "$build/dynamodb.closure" -pkg "$jre" \
+closure "$dynamodb" > "$build/dynamodb.closure"
+mkimage -spec images/dynamodb/image.json -closure "$build/dynamodb.closure" -pkg "$jre" \
   -env "DYNAMODB_HOME=$dynamodb/share/dynamodb-local" -file "/entry=$build/dynamodb-entry" \
   -file "/opt/fws=$build/dynamodb-launcher" -out "$out/dynamodb.tar"
 
 rabbitmq=$(pkg_with rabbitmq-server rabbitmq-server)
-nix-store -qR "$rabbitmq" > "$build/rabbitmq.closure"
-"$build/fws-mkimage" -spec images/rabbitmq/image.json -closure "$build/rabbitmq.closure" -pkg "$rabbitmq" \
+closure "$rabbitmq" > "$build/rabbitmq.closure"
+mkimage -spec images/rabbitmq/image.json -closure "$build/rabbitmq.closure" -pkg "$rabbitmq" \
   -file "/entry=$build/rabbitmq-entry" -out "$out/rabbitmq.tar"
 
 # The Lambda images: AWS's Runtime Interface Emulator, an interpreter, and
 # the image's client of the Lambda Runtime API.
 rie=$(pkg_with aws-lambda-rie aws-lambda-rie)
 
-nix-store -qR "$python" "$rie" | sort -u > "$build/lambda-python.closure"
-"$build/fws-mkimage" -spec images/lambda/python/image.json -closure "$build/lambda-python.closure" -pkg "$python" -pkg "$rie" \
+closure "$python" "$rie" > "$build/lambda-python.closure"
+mkimage -spec images/lambda/python/image.json -closure "$build/lambda-python.closure" -pkg "$python" -pkg "$rie" \
   -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" \
   -out "$out/lambda-python.tar"
 
 node24=$(pkg_with nodejs_24 node)
-nix-store -qR "$node24" "$rie" | sort -u > "$build/lambda-nodejs.closure"
-"$build/fws-mkimage" -spec images/lambda/nodejs/image.json -closure "$build/lambda-nodejs.closure" -pkg "$node24" -pkg "$rie" \
+closure "$node24" "$rie" > "$build/lambda-nodejs.closure"
+mkimage -spec images/lambda/nodejs/image.json -closure "$build/lambda-nodejs.closure" -pkg "$node24" -pkg "$rie" \
   -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.mjs=images/lambda/nodejs/bootstrap.mjs" \
   -out "$out/lambda-nodejs.tar"
 
@@ -131,8 +138,8 @@ JARS
 mkdir -p "$build/lambda-java/classes"
 "$jdk17/bin/javac" --release 17 -cp "$lib/*" -d "$build/lambda-java/classes" images/lambda/java/src/fws/lambda/Bootstrap.java
 "$jdk17/bin/jar" --create --file "$lib/fws-lambda-runtime.jar" -C "$build/lambda-java/classes" .
-nix-store -qR "$jdk17" "$rie" | sort -u > "$build/lambda-java.closure"
-"$build/fws-mkimage" -spec images/lambda/java/image.json -closure "$build/lambda-java.closure" -pkg "$jdk17" -pkg "$rie" \
+closure "$jdk17" "$rie" > "$build/lambda-java.closure"
+mkimage -spec images/lambda/java/image.json -closure "$build/lambda-java.closure" -pkg "$jdk17" -pkg "$rie" \
   -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/lib=$lib" \
   -out "$out/lambda-java.tar"
 
@@ -153,8 +160,8 @@ curl -fsSL --retry 5 -o "$build/playwright/shell.zip" \
   "https://storage.googleapis.com/chrome-for-testing-public/$pw_chrome/$pw_platform/chrome-headless-shell-$pw_platform.zip"
 echo "$pw_sum  $build/playwright/shell.zip" | shasum -a 256 -c - >/dev/null
 unzip -q "$build/playwright/shell.zip" -d "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
-nix-store -qR "$node24" > "$build/playwright.closure"
-"$build/fws-mkimage" -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" \
+closure "$node24" > "$build/playwright.closure"
+mkimage -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" \
   -file "/entry=$build/playwright-entry" -file "/usr/lib/node_modules=$build/playwright/modules/node_modules" \
   -file "/ms-playwright=$build/playwright/browsers" -out "$out/playwright.tar"
 

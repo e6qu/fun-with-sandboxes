@@ -124,3 +124,21 @@ func TestRenderDeniesByDefault(t *testing.T) {
 		t.Errorf("profile allows kernel control or link-layer sockets")
 	}
 }
+
+func TestLibrariesReadableAndMappable(t *testing.T) {
+	s := spec()
+	s.Libraries = []string{"/Users/u/.fws/lib/fwsroot-1.dylib"}
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deny := strings.Index(p, `(deny file-read*`)
+	lib := strings.Index(p, `(literal "/Users/u/.fws/lib/fwsroot-1.dylib")`)
+	if lib < deny || !strings.Contains(p, "(allow file-map-executable\n  (literal \"/Users/u/.fws/lib/fwsroot-1.dylib\")") {
+		t.Fatalf("library not granted after the state root's denial:\n%s", p)
+	}
+	s.Libraries = []string{"relative.dylib"}
+	if _, err := Render(s); err == nil {
+		t.Fatal("a relative library path was accepted")
+	}
+}

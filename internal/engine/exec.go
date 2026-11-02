@@ -111,9 +111,17 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	if err != nil {
 		return err
 	}
+	user := x.cfg.User
+	if user == "" {
+		user = c.rec.Config.User
+	}
+	env, err := e.processEnv(c, x.cfg.Env, user)
+	if err != nil {
+		return invalid("%v", err)
+	}
 	rs := runtime.Spec{
-		Root: c.root(), Argv: x.cfg.Cmd, Env: e.environment(c, x.cfg.Env), WorkDir: wd,
-		Profile: spec, ProfilePath: c.dir + "/exec-" + id[:12] + ".sb", Limits: limits,
+		Root: c.root(), Argv: x.cfg.Cmd, Env: env, WorkDir: wd,
+		Profile: spec, ProfilePath: c.dir + "/exec-" + id[:12] + ".sb", Limits: limits, Library: spec.Libraries[0],
 	}
 	defer os.Remove(rs.ProfilePath)
 	var master, slave *os.File
@@ -242,11 +250,15 @@ func (e *Engine) probe(c *Container, argv []string, timeout time.Duration) (int,
 	if err != nil {
 		return -1, err.Error()
 	}
+	env, err := e.processEnv(c, nil, c.rec.Config.User)
+	if err != nil {
+		return -1, err.Error()
+	}
 	var out limitedBuffer
 	rs := runtime.Spec{
-		Root: c.root(), Argv: argv, Env: e.environment(c, nil), WorkDir: c.rec.Config.WorkingDir,
+		Root: c.root(), Argv: argv, Env: env, WorkDir: c.rec.Config.WorkingDir,
 		Profile: spec, ProfilePath: c.dir + "/health-" + newID()[:12] + ".sb", Stdout: &out, Stderr: &out,
-		Limits: limits,
+		Limits: limits, Library: spec.Libraries[0],
 	}
 	defer os.Remove(rs.ProfilePath)
 	proc, err := runtime.Start(rs)
