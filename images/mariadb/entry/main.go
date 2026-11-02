@@ -115,7 +115,8 @@ func initialise(server, base, datadir string, common []string) error {
 			"\tYou need to specify one of MARIADB_ROOT_PASSWORD, MARIADB_ALLOW_EMPTY_ROOT_PASSWORD and MARIADB_RANDOM_ROOT_PASSWORD")
 	}
 	var system bytes.Buffer
-	system.WriteString("use mysql;\nSET @auth_root_socket=NULL;\n")
+	// As mariadb-install-db does, the system database comes first.
+	system.WriteString("CREATE DATABASE IF NOT EXISTS mysql;\nuse mysql;\nSET @auth_root_socket=NULL;\n")
 	share := filepath.Join(base, "share", "mysql")
 	// The scripts mariadb-install-db feeds the server, in its order.
 	for _, f := range []string{"mariadb_system_tables.sql", "mariadb_performance_tables.sql", "mariadb_system_tables_data.sql", "fill_help_tables.sql", "mariadb_sys_schema.sql"} {

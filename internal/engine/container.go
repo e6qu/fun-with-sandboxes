@@ -313,6 +313,13 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err != nil {
 		return container.CreateResponse{}, err
 	}
+	hostname := cfg.Hostname
+	if hostname == "" {
+		hostname = id[:12]
+	}
+	if err := writeHostsFiles(c.root(), hostname, req.HostConfig.ExtraHosts, mounts); err != nil {
+		return container.CreateResponse{}, err
+	}
 
 	if c.logs, err = openLogStore(filepath.Join(c.dir, "log.jsonl")); err != nil {
 		return container.CreateResponse{}, err

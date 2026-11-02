@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <pthread.h>
 #include <pwd.h>
 #include <sys/utsname.h>
 #include <limits.h>
@@ -961,7 +962,7 @@ static struct passwd *find_passwd(const char *name, uid_t uid, int byname) {
         if ((byname && strcmp(name, "root") == 0) || (!byname && uid == 0)) {
             strcpy(pwbuf, "root");
             pw = (struct passwd){.pw_name = pwbuf, .pw_passwd = "*", .pw_uid = 0, .pw_gid = 0,
-                                 .pw_gecos = "root", .pw_dir = "/root", .pw_shell = "/bin/sh"};
+                                 .pw_gecos = "root", .pw_dir = "/root", .pw_shell = "/bin/sh", .pw_class = ""};
             return &pw;
         }
         return NULL;
@@ -982,7 +983,7 @@ static struct passwd *find_passwd(const char *name, uid_t uid, int byname) {
             fclose(f);
             pw = (struct passwd){.pw_name = fields[0], .pw_passwd = fields[1], .pw_uid = u,
                                  .pw_gid = (gid_t)strtoul(fields[3], NULL, 10), .pw_gecos = fields[4],
-                                 .pw_dir = fields[5], .pw_shell = fields[6]};
+                                 .pw_dir = fields[5], .pw_shell = fields[6], .pw_class = ""};
             return &pw;
         }
     }
@@ -1026,25 +1027,68 @@ static struct group *find_group(const char *name, gid_t gid, int byname) {
     return NULL;
 }
 
-static struct passwd *fws_getpwuid(uid_t uid) { return find_passwd(NULL, uid, 0); }
+// The lookups share one buffer, which a lock keeps whole for the reentrant
+// variants; a user or group that does not exist leaves errno as it was, as
+// libSystem's lookups do.
+static pthread_mutex_t db_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static struct passwd *lookup_passwd(const char *name, uid_t uid, int byname) {
+    int saved = errno;
+    struct passwd *p = find_passwd(name, uid, byname);
+    errno = saved;
+    return p;
+}
+static struct group *lookup_group(const char *name, gid_t gid, int byname) {
+    int saved = errno;
+    struct group *g = find_group(name, gid, byname);
+    errno = saved;
+    return g;
+}
+static struct passwd *fws_getpwuid(uid_t uid) { return lookup_passwd(NULL, uid, 0); }
 INTERPOSE(fws_getpwuid, getpwuid);
-static struct passwd *fws_getpwnam(const char *name) { return find_passwd(name, 0, 1); }
+static struct passwd *fws_getpwnam(const char *name) { return lookup_passwd(name, 0, 1); }
 INTERPOSE(fws_getpwnam, getpwnam);
-static struct group *fws_getgrgid(gid_t gid) { return find_group(NULL, gid, 0); }
+static struct group *fws_getgrgid(gid_t gid) { return lookup_group(NULL, gid, 0); }
 INTERPOSE(fws_getgrgid, getgrgid);
-static struct group *fws_getgrnam(const char *name) { return find_group(name, 0, 1); }
+static struct group *fws_getgrnam(const char *name) { return lookup_group(name, 0, 1); }
 INTERPOSE(fws_getgrnam, getgrnam);
+
+// getlogin names the container's user, not the host session's.
+static char login[256];
+static char *fws_getlogin(void) {
+    pthread_mutex_lock(&db_lock);
+    struct passwd *p = lookup_passwd(NULL, fake_uid, 0);
+    char *r = NULL;
+    if (p) {
+        strlcpy(login, p->pw_name, sizeof login);
+        r = login;
+    }
+    pthread_mutex_unlock(&db_lock);
+    return r;
+}
+INTERPOSE(fws_getlogin, getlogin);
+static int fws_getlogin_r(char *buf, size_t size) {
+    pthread_mutex_lock(&db_lock);
+    struct passwd *p = lookup_passwd(NULL, fake_uid, 0);
+    int r = ENOENT;
+    if (p) {
+        r = strlcpy(buf, p->pw_name, size) < size ? 0 : ERANGE;
+    }
+    pthread_mutex_unlock(&db_lock);
+    return r;
+}
+INTERPOSE(fws_getlogin_r, getlogin_r);
 
 static int copy_passwd(struct passwd *found, struct passwd *out, char *buf, size_t size, struct passwd **result) {
     *result = NULL;
     if (!found) {
         return 0;
     }
-    const char *src[] = {found->pw_name, found->pw_passwd, found->pw_gecos, found->pw_dir, found->pw_shell};
-    char **dst[] = {&out->pw_name, &out->pw_passwd, &out->pw_gecos, &out->pw_dir, &out->pw_shell};
+    const char *src[] = {found->pw_name, found->pw_passwd, found->pw_gecos, found->pw_dir, found->pw_shell, found->pw_class};
+    char **dst[] = {&out->pw_name, &out->pw_passwd, &out->pw_gecos, &out->pw_dir, &out->pw_shell, &out->pw_class};
     size_t used = 0;
     *out = *found;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         size_t n = strlen(src[i]) + 1;
         if (used + n > size) {
             return ERANGE;
@@ -1057,11 +1101,17 @@ static int copy_passwd(struct passwd *found, struct passwd *out, char *buf, size
     return 0;
 }
 static int fws_getpwuid_r(uid_t uid, struct passwd *out, char *buf, size_t size, struct passwd **result) {
-    return copy_passwd(find_passwd(NULL, uid, 0), out, buf, size, result);
+    pthread_mutex_lock(&db_lock);
+    int r = copy_passwd(lookup_passwd(NULL, uid, 0), out, buf, size, result);
+    pthread_mutex_unlock(&db_lock);
+    return r;
 }
 INTERPOSE(fws_getpwuid_r, getpwuid_r);
 static int fws_getpwnam_r(const char *name, struct passwd *out, char *buf, size_t size, struct passwd **result) {
-    return copy_passwd(find_passwd(name, 0, 1), out, buf, size, result);
+    pthread_mutex_lock(&db_lock);
+    int r = copy_passwd(lookup_passwd(name, 0, 1), out, buf, size, result);
+    pthread_mutex_unlock(&db_lock);
+    return r;
 }
 INTERPOSE(fws_getpwnam_r, getpwnam_r);
 
@@ -1087,11 +1137,17 @@ static int copy_group(struct group *found, struct group *out, char *buf, size_t 
     return 0;
 }
 static int fws_getgrgid_r(gid_t gid, struct group *out, char *buf, size_t size, struct group **result) {
-    return copy_group(find_group(NULL, gid, 0), out, buf, size, result);
+    pthread_mutex_lock(&db_lock);
+    int r = copy_group(lookup_group(NULL, gid, 0), out, buf, size, result);
+    pthread_mutex_unlock(&db_lock);
+    return r;
 }
 INTERPOSE(fws_getgrgid_r, getgrgid_r);
 static int fws_getgrnam_r(const char *name, struct group *out, char *buf, size_t size, struct group **result) {
-    return copy_group(find_group(name, 0, 1), out, buf, size, result);
+    pthread_mutex_lock(&db_lock);
+    int r = copy_group(lookup_group(name, 0, 1), out, buf, size, result);
+    pthread_mutex_unlock(&db_lock);
+    return r;
 }
 INTERPOSE(fws_getgrnam_r, getgrnam_r);
 

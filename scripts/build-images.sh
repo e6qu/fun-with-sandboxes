@@ -42,8 +42,14 @@ pkg_with() {
 # drops the container library from Apple's shells, and with it from what
 # system(), popen() and package managers run through them.
 dash=$(pkg_with dash dash)
+# The network databases a C library reads, which Debian-based official
+# images carry in netbase.
+iana=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths "$nixpkgs#iana-etc")
 closure() { nix-store -qR "$@" "$dash" | sort -u; }
-mkimage() { "$build/fws-mkimage" "$@" -pkg "$dash" -link /bin/sh=dash; }
+mkimage() {
+  "$build/fws-mkimage" "$@" -pkg "$dash" -link /bin/sh=dash \
+    -file "/etc/services=$iana/etc/services" -file "/etc/protocols=$iana/etc/protocols"
+}
 
 # accounts NAME [USER UID GID HOME]... writes the /etc/passwd and
 # /etc/group of image NAME, which hold root, nobody and the users the
@@ -53,7 +59,7 @@ accounts() {
   shift
   mkdir -p "$d"
   printf 'root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/nonexistent:/bin/false\n' > "$d/passwd"
-  printf 'root:x:0:\nnogroup:x:65534:\n' > "$d/group"
+  printf 'root:x:0:\nnobody:x:65534:\n' > "$d/group"
   while [ $# -ge 4 ]; do
     printf '%s:x:%s:%s::%s:/bin/sh\n' "$1" "$2" "$3" "$4" >> "$d/passwd"
     printf '%s:x:%s:\n' "$1" "$3" >> "$d/group"
@@ -103,8 +109,10 @@ mkimage $(accounts bun bun 1000 1000 /home/bun) -spec images/bun/image.json -clo
 gitea=$(pkg_with gitea gitea)
 gitea_data=$(NIXPKGS_ALLOW_UNFREE=1 nix --extra-experimental-features 'nix-command flakes' build --impure --no-link --print-out-paths "$nixpkgs#gitea.data")
 git=$(pkg_with git git)
-closure "$gitea" "$gitea_data" "$git" > "$build/gitea.closure"
-mkimage $(accounts gitea git 1000 1000 /data/git) -spec images/gitea/image.json -closure "$build/gitea.closure" -pkg "$gitea" -pkg "$git" \
+# Gitea's repository hooks are bash scripts, as in the official image.
+bash=$(pkg_with bash bash)
+closure "$gitea" "$gitea_data" "$git" "$bash" > "$build/gitea.closure"
+mkimage $(accounts gitea git 1000 1000 /data/git) -spec images/gitea/image.json -closure "$build/gitea.closure" -pkg "$gitea" -pkg "$git" -pkg "$bash" \
   -env "GITEA_DATA=$gitea_data" -file "/entry=$build/gitea-entry" -out "$out/gitea.tar"
 
 dynamodb=$(pkg_with dynamodb-local dynamodb-local)

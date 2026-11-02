@@ -88,3 +88,13 @@ jobs:
           FWS_E2E_IMAGES: ${{ runner.temp }}/images
         working-directory: tests/e2e
         run: go test -tags e2e -v -count=1 -timeout 90m ./...
+      - name: crash reports and Seatbelt denials
+        if: failure()
+        run: |
+          for f in ~/Library/Logs/DiagnosticReports/*.ips; do
+            [ -e "$f" ] || continue
+            echo "== $f"
+            head -c 20000 "$f"
+            echo
+          done
+          log show --last 2h --style compact --predicate 'sender == "Sandbox"' | grep -v "fwsd\|fws-shim" | tail -200
