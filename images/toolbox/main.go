@@ -20,7 +20,6 @@ import (
 
 	"golang.org/x/net/proxy"
 
-	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
 	"github.com/e6qu/fun-with-sandboxes/internal/sandboxenv"
 )
 
@@ -255,12 +254,7 @@ func run(op, arg string) error {
 		if rest, ok := strings.CutPrefix(arg, "+"); ok {
 			name = sandboxenv.IPCName(rest)
 		}
-		fd, err := libsystem.ShmOpen(name, os.O_CREATE|os.O_RDWR, 0o600)
-		if err != nil {
-			return fmt.Errorf("shm_open %s: %w", name, err)
-		}
-		syscall.Close(fd)
-		return libsystem.ShmUnlink(name)
+		return shm(name)
 	case "signal":
 		pid, err := strconv.Atoi(arg)
 		if err != nil {
