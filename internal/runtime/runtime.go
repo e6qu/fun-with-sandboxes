@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -38,10 +37,30 @@ type Spec struct {
 	// TTY, when set, is the pty slave that becomes the process's controlling
 	// terminal and all three standard streams.
 	TTY *os.File
+	// Limits apply to the process and everything it starts.
+	Limits Limits
+}
+
+// Limits are what the spawn helper applies to the process before it
+// executes the container's command, and what its descendants inherit.
+type Limits struct {
+	Rlimits []Rlimit `json:",omitempty"`
+	// Nice is the scheduling priority, 0 to 19.
+	Nice int `json:",omitempty"`
+	// IOPolicy is a disk I/O policy (libsystem.IOPolicy*), or 0 to keep
+	// the default.
+	IOPolicy int `json:",omitempty"`
+}
+
+// Rlimit is a resource limit, as setrlimit takes it.
+type Rlimit struct {
+	Resource int
+	Cur, Max uint64
 }
 
 type Process struct {
-	cmd  *exec.Cmd
+	pid  int
+	proc *os.Process
 	done chan struct{}
 	io   sync.WaitGroup
 	// readEnds are the engine's ends of the output pipes.
@@ -90,93 +109,6 @@ func isExecutable(p string) bool {
 	return err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0
 }
 
-// Start launches the process. The process leads its own process group, so
-// KillAll reaches everything it forks that stays in the group.
-func Start(s Spec) (*Process, error) {
-	if len(s.Argv) == 0 {
-		return nil, errors.New("no command specified")
-	}
-	exe, err := Resolve(s.Root, s.Argv[0], s.Env)
-	if err != nil {
-		return nil, err
-	}
-	text, err := seatbelt.Render(s.Profile)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(s.ProfilePath, []byte(text), 0o600); err != nil {
-		return nil, err
-	}
-	wd := filepath.Join(s.Root, path.Clean("/"+s.WorkDir))
-	if err := os.MkdirAll(wd, 0o755); err != nil {
-		return nil, err
-	}
-	cmd := exec.Command(SandboxExec, append([]string{"-f", s.ProfilePath, exe}, s.Argv[1:]...)...)
-	cmd.Env = s.Env
-	cmd.Dir = wd
-	p := &Process{cmd: cmd, done: make(chan struct{})}
-	// The process gets real pipes: with plain writers os/exec would hold Wait
-	// until every descendant closed its copy of stdout, and until the stdin
-	// source hit EOF.
-	var childEnds, parentEnds []*os.File
-	fail := func(err error) (*Process, error) {
-		closeAll(childEnds)
-		closeAll(parentEnds)
-		return nil, err
-	}
-	if s.TTY != nil {
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = s.TTY, s.TTY, s.TTY
-		// A session leader also leads its process group, so KillAll still
-		// reaches every descendant.
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
-	} else {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		for _, o := range []struct {
-			dst io.Writer
-			set *io.Writer
-		}{{s.Stdout, &cmd.Stdout}, {s.Stderr, &cmd.Stderr}} {
-			if o.dst == nil {
-				continue
-			}
-			r, w, err := os.Pipe()
-			if err != nil {
-				return fail(err)
-			}
-			*o.set = w
-			childEnds, parentEnds = append(childEnds, w), append(parentEnds, r)
-			p.io.Add(1)
-			go func(dst io.Writer, r *os.File) {
-				defer p.io.Done()
-				defer r.Close()
-				io.Copy(dst, r)
-			}(o.dst, r)
-		}
-		if s.Stdin != nil {
-			r, w, err := os.Pipe()
-			if err != nil {
-				return fail(err)
-			}
-			cmd.Stdin = r
-			childEnds = append(childEnds, r)
-			go func() {
-				defer w.Close()
-				io.Copy(w, s.Stdin)
-			}()
-		}
-	}
-	if err := cmd.Start(); err != nil {
-		closeAll(childEnds)
-		// The copy goroutines own the read ends and finish once the write
-		// ends close.
-		p.io.Wait()
-		return nil, err
-	}
-	closeAll(childEnds)
-	p.readEnds = parentEnds
-	go p.wait()
-	return p, nil
-}
-
 // DrainIO waits for the output pipes to drain, which happens once every
 // process holding them has exited. A descendant that left the process group
 // can hold them open forever, so after max the engine stops reading, as
@@ -202,19 +134,15 @@ func closeAll(fs []*os.File) {
 }
 
 func (p *Process) wait() {
-	err := p.cmd.Wait()
-	code := 0
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		ws := ee.Sys().(syscall.WaitStatus)
+	code := 255
+	if st, err := p.proc.Wait(); err == nil {
+		ws := st.Sys().(syscall.WaitStatus)
 		switch {
 		case ws.Signaled():
 			code = 128 + int(ws.Signal())
 		default:
 			code = ws.ExitStatus()
 		}
-	} else if err != nil {
-		code = 255
 	}
 	p.mu.Lock()
 	p.code = code
@@ -222,7 +150,7 @@ func (p *Process) wait() {
 	close(p.done)
 }
 
-func (p *Process) Pid() int { return p.cmd.Process.Pid }
+func (p *Process) Pid() int { return p.pid }
 
 func (p *Process) Done() <-chan struct{} { return p.done }
 
@@ -240,16 +168,16 @@ func (p *Process) Signal(sig syscall.Signal) error {
 		return nil
 	default:
 	}
-	return p.cmd.Process.Signal(sig)
+	return p.proc.Signal(sig)
 }
 
 // KillAll sends SIGKILL to the whole process group and returns once the
 // group is gone, so no process of it still writes to the container's files.
 func (p *Process) KillAll() {
-	pgid := p.cmd.Process.Pid
+	pgid := p.pid
 	err := syscall.Kill(-pgid, syscall.SIGKILL)
 	if err != nil && !errors.Is(err, syscall.ESRCH) {
-		p.cmd.Process.Kill()
+		p.proc.Kill()
 		return
 	}
 	// macOS has no notification for a process group emptying out, and the
