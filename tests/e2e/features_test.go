@@ -77,6 +77,15 @@ func TestEgressReachesTheInternetButNotTheHost(t *testing.T) {
 	if err := run("fws/toolbox:1", "dial", "github.com:443"); err == nil {
 		t.Error("container dialled the internet directly, bypassing the proxy")
 	}
+	// Any TCP leaves through the proxy's SOCKS5 side, which ALL_PROXY names,
+	// and is refused on the host as HTTP is.
+	if err := run("fws/toolbox:1", "tcp", "github.com:443"); err != nil {
+		t.Errorf("container could not open TCP to the internet through SOCKS5: %v", err)
+	}
+	hostTCP := net.JoinHostPort(hostAddress(t), strconv.Itoa(l.Addr().(*net.TCPAddr).Port))
+	if err := run("fws/toolbox:1", "tcp", hostTCP); err == nil {
+		t.Errorf("container reached the host at %s through SOCKS5", hostTCP)
+	}
 	if err := run("--network", "none", "fws/toolbox:1", "fetch", "https://github.com/"); err == nil {
 		t.Error("a container with network none reached the internet")
 	}

@@ -1,7 +1,8 @@
-// Package egress is the HTTP proxy through which a stack's containers reach
-// the internet. Seatbelt can only allow loopback ports or everything, so the
-// containers may connect to this proxy alone, and the proxy refuses every
-// destination on the host itself.
+// Package egress is the proxy through which a stack's containers reach the
+// internet: an HTTP proxy, and a SOCKS5 one on the same port for any TCP.
+// Seatbelt can only allow loopback ports or everything, so the containers may
+// connect to this proxy alone, and the proxy refuses every destination on the
+// host itself.
 package egress
 
 import (
@@ -123,8 +124,22 @@ func Listen(addr string, policy Policy) (*Proxy, error) {
 			}
 		},
 	}
-	go p.srv.Serve(l)
+	go p.srv.Serve(newSniffer(l, p))
 	return p, nil
+}
+
+// Variables are the environment variables that send a process's traffic
+// through the proxy on port: HTTP and HTTPS through its HTTP side, other
+// TCP, for software that honours ALL_PROXY, through its SOCKS5 side, which
+// resolves names itself (socks5h), and loopback around it.
+func Variables(port int) [][2]string {
+	web := fmt.Sprintf("http://127.0.0.1:%d", port)
+	socks := fmt.Sprintf("socks5h://127.0.0.1:%d", port)
+	return [][2]string{
+		{"HTTP_PROXY", web}, {"HTTPS_PROXY", web}, {"http_proxy", web}, {"https_proxy", web},
+		{"ALL_PROXY", socks}, {"all_proxy", socks},
+		{"NO_PROXY", "localhost,127.0.0.1,::1"}, {"no_proxy", "localhost,127.0.0.1,::1"},
+	}
 }
 
 func (p *Proxy) Addr() *net.TCPAddr { return p.l.Addr().(*net.TCPAddr) }
