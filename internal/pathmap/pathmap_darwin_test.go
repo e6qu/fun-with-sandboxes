@@ -84,7 +84,7 @@ func TestIdentityAndOwnership(t *testing.T) {
 		t.Errorf("owner: %q", got["owner"])
 	}
 	// root switches to a user for good, with a cleared environment too.
-	if got := probe(t, root, nil, "drop"); got["drop"] != "ids=1000:50\n" {
+	if got := probe(t, root, nil, "drop"); got["drop"] != "ids=1000:50" {
 		t.Errorf("a program executed after setuid runs as %q", got["drop"])
 	}
 }
