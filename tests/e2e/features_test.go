@@ -229,7 +229,27 @@ func waitHealthy(t *testing.T, name string, since time.Time) {
 	logs := exec.Command("docker", "logs", "--tail", "80", name)
 	text, _ := logs.CombinedOutput()
 	health, _ := docker(t, "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}} {{json .State.Health}}", name)
-	t.Fatalf("%s never reported healthy: %s\nstate: %s\nlogs:\n%s", name, why, health, text)
+	t.Fatalf("%s never reported healthy: %s\nstate: %s\nlogs:\n%s%s", name, why, health, text, stacks(t, name))
+}
+
+// stacks samples where each of a running container's processes is, for a
+// wait that timed out.
+func stacks(t *testing.T, name string) string {
+	t.Helper()
+	out, err := docker(t, "top", name, "-o", "pid")
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, pid := range strings.Fields(out)[1:] {
+		s, _ := exec.Command("sample", pid, "1", "-mayDie").CombinedOutput()
+		lines := strings.Split(string(s), "\n")
+		if len(lines) > 120 {
+			lines = lines[:120]
+		}
+		fmt.Fprintf(&b, "\nprocess %s:\n%s\n", pid, strings.Join(lines, "\n"))
+	}
+	return b.String()
 }
 
 // startedAt is when the container last started, from which its events are

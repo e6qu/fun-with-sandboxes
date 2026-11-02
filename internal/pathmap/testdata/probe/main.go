@@ -9,6 +9,8 @@ import (
 	"os/user"
 	"path/filepath"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 func main() {
@@ -96,17 +98,17 @@ func run(check string) string {
 	case "mountat":
 		// As MariaDB opens a table: a component at a time, following no
 		// symlink, from /.
-		fd, err := syscall.Open("/", syscall.O_RDONLY|syscall.O_DIRECTORY, 0)
+		fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY, 0)
 		if err != nil {
 			return result("", err)
 		}
-		dfd, err := syscall.Openat(fd, "data", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
-		syscall.Close(fd)
+		dfd, err := unix.Openat(fd, "data", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		unix.Close(fd)
 		if err != nil {
 			return result("", err)
 		}
-		ffd, err := syscall.Openat(dfd, "file", syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
-		syscall.Close(dfd)
+		ffd, err := unix.Openat(dfd, "file", unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+		unix.Close(dfd)
 		if err != nil {
 			return result("", err)
 		}
