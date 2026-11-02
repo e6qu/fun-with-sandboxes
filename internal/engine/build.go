@@ -23,6 +23,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/dockerfile"
 	"github.com/e6qu/fun-with-sandboxes/internal/egress"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
+	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
@@ -1036,6 +1037,9 @@ func (b *builder) runStep(ctx context.Context, s *stage, in dockerfile.Instructi
 		<-proc.Done()
 	}
 	proc.KillAll()
+	if err := procs.KillTagged("SANDBOX_ROOT=" + s.root); err != nil {
+		return err
+	}
 	proc.DrainIO(outputDrain)
 	if err := ctx.Err(); err != nil {
 		return err

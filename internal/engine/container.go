@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/e6qu/fun-with-sandboxes/internal/egress"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
+	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
@@ -105,6 +107,9 @@ func (c *Container) Name() string {
 	return c.rec.Name
 }
 func (c *Container) root() string { return filepath.Join(c.dir, "r") }
+
+// tag is the environment entry every process of the container carries.
+func (c *Container) tag() string { return "SANDBOX_ROOT=" + c.root() }
 
 func (c *Container) isRunning() bool {
 	c.mu.Lock()
@@ -990,9 +995,13 @@ func (c *Container) start(e *Engine) error {
 
 func (e *Engine) onExit(c *Container, proc *runtime.Process, done chan struct{}, stdout, stderr *lineWriter) {
 	<-proc.Done()
-	// A container ends with its main process: whatever it left running in
-	// its process group goes with it.
+	// A container ends with its main process: whatever it left running goes
+	// with it, in its process group or, having left the group, found by the
+	// root its environment names.
 	proc.KillAll()
+	if err := procs.KillTagged(c.tag()); err != nil {
+		log.Printf("container %s: %v", c.rec.ID[:12], err)
+	}
 	proc.DrainIO(outputDrain)
 	stdout.flush()
 	stderr.flush()

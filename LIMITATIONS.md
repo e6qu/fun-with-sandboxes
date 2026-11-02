@@ -53,9 +53,11 @@ machine — and from what macOS offers an unprivileged process under them.
   user data.
 - **The host's system shell is executable**, because `popen()` and
   `system()` hard-code `/bin/sh`.
-- **A process that leaves its process group** (`setsid`) survives the
-  container's stop; the engine kills the group, and macOS offers no
-  unprivileged way to track a process across sessions.
+- **A container's processes are those that started with its root in their
+  environment.** A process that leaves the container's process group, or its
+  session, keeps `SANDBOX_ROOT` in the environment it started with, so a
+  stop still kills it and `top` and `stats` still count it; only one that
+  executes a program with that variable cleared escapes the container.
 
 ## Networking
 

@@ -164,6 +164,23 @@ func run(op, arg string) error {
 				return err
 			}
 		}
+	case "detach":
+		// Start a process in a session of its own, outside the container's
+		// process group, print its pid, and stay running.
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		child, err := os.StartProcess(self, []string{self, "hold"}, &os.ProcAttr{
+			Files: []*os.File{nil, nil, nil}, Sys: &syscall.SysProcAttr{Setsid: true},
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Println("detached", child.Pid)
+		select {}
+	case "hold":
+		select {}
 	case "signal":
 		pid, err := strconv.Atoi(arg)
 		if err != nil {

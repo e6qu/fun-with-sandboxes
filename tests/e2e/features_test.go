@@ -3,6 +3,9 @@
 package e2e
 
 import (
+	"errors"
+	"syscall"
+
 	"archive/tar"
 	"bufio"
 	"bytes"
@@ -986,5 +989,25 @@ func TestDiffSizeDiskUsageAndSearch(t *testing.T) {
 	}
 	if out := mustDocker(t, "search", "--limit", "5", "--filter", "is-official=true", "postgres"); !strings.Contains(out, "postgres") {
 		t.Fatalf("docker search:\n%s", out)
+	}
+}
+
+// A process that leaves the container's process group is still the
+// container's: docker top lists it and docker stop ends it.
+func TestProcessesOutsideTheGroupStayContained(t *testing.T) {
+	const name = "fws-e2e-detach"
+	mustDocker(t, "run", "-d", "--name", name, "fws/toolbox:1", "detach")
+	defer docker(t, "rm", "-f", name)
+	waitLog(t, name, "detached")
+	var pid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(mustDocker(t, "logs", name)), "detached %d", &pid); err != nil || pid == 0 {
+		t.Fatalf("the container's log names no detached process: %v", err)
+	}
+	if top := mustDocker(t, "top", name, "-o", "pid"); !strings.Contains(top, strconv.Itoa(pid)) {
+		t.Fatalf("docker top does not list detached process %d:\n%s", pid, top)
+	}
+	mustDocker(t, "stop", "--time", "1", name)
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("detached process %d outlived docker stop: kill(pid, 0) = %v", pid, err)
 	}
 }

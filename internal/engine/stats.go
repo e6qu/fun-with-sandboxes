@@ -33,10 +33,21 @@ func (e *Engine) groups(c *Container) map[int]bool {
 	return g
 }
 
+// members are the container's processes: those of its main process's and
+// its execs' process groups, and those that left them, which still name its
+// root in their environment.
 func (e *Engine) members(c *Container) ([]procs.Proc, error) {
 	g := e.groups(c)
 	if len(g) == 0 {
 		return nil, nil
+	}
+	tagged, err := procs.Tagged(c.tag())
+	if err != nil {
+		return nil, err
+	}
+	escaped := map[int]bool{}
+	for _, pid := range tagged {
+		escaped[pid] = true
 	}
 	all, err := procs.List()
 	if err != nil {
@@ -44,7 +55,7 @@ func (e *Engine) members(c *Container) ([]procs.Proc, error) {
 	}
 	var out []procs.Proc
 	for _, p := range all {
-		if g[p.PGID] {
+		if g[p.PGID] || escaped[p.PID] {
 			out = append(out, p)
 		}
 	}
