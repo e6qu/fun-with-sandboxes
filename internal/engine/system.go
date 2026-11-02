@@ -84,7 +84,10 @@ func (e *Engine) Info() system.Info {
 		OSType: runtime.GOOS, Architecture: runtime.GOARCH, NCPU: runtime.NumCPU(), MemTotal: int64(memTotal()),
 		DockerRootDir: e.cfg.Root, Name: host, ServerVersion: Version, IndexServerAddress: "https://index.docker.io/v1/",
 		SystemTime: time.Now().Format(time.RFC3339Nano), DefaultRuntime: "seatbelt",
-		SecurityOptions: []string{"name=seatbelt"}, Labels: []string{}, Warnings: []string{},
+		SecurityOptions: []string{"name=seatbelt", "name=no-new-privileges"}, Labels: []string{}, Warnings: []string{},
+		// Each container's supervisor enforces these limits without cgroups.
+		MemoryLimit: true, CPUCfsPeriod: true, CPUCfsQuota: true, CPUShares: true, PidsLimit: true,
+		CgroupDriver: "none", LiveRestoreEnabled: e.cfg.LiveRestore,
 	}
 }
 

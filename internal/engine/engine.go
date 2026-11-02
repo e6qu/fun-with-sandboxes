@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
-	"github.com/e6qu/fun-with-sandboxes/internal/egress"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 )
 
@@ -36,6 +35,9 @@ type Config struct {
 	// Egress gives each stack an HTTP proxy to the internet that refuses
 	// destinations on the host.
 	Egress bool
+	// LiveRestore keeps containers running when the engine stops, as
+	// dockerd's live-restore does; the next engine reconnects to them.
+	LiveRestore bool
 }
 
 type Engine struct {
@@ -47,7 +49,11 @@ type Engine struct {
 	started time.Time
 
 	egressMu sync.Mutex
-	egress   map[string]*egress.Proxy
+	egress   map[string]*egressProc
+
+	// detach closes when the engine leaves its containers running as it
+	// stops.
+	detach chan struct{}
 
 	// buildMu is held shared by classic builds and exclusively by a prune of
 	// their cache.
@@ -65,7 +71,7 @@ func Open(cfg Config) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "run"), 0o700); err != nil {
 		return nil, err
 	}
 	// Seatbelt matches resolved paths, so every path the engine hands a
@@ -88,7 +94,8 @@ func Open(cfg Config) (*Engine, error) {
 	}
 	e := &Engine{
 		cfg: cfg, alloc: a, images: imgs, events: newEventBus(), user: u, started: time.Now(),
-		egress:     map[string]*egress.Proxy{},
+		egress:     map[string]*egressProc{},
+		detach:     make(chan struct{}),
 		containers: map[string]*Container{},
 		volumes:    map[string]*Volume{},
 		networks:   map[string]*Network{},
@@ -111,8 +118,13 @@ func (e *Engine) Images() *image.Store    { return e.images }
 func (e *Engine) Alloc() *alloc.Allocator { return e.alloc }
 
 // Close stops every running container, as dockerd does when it shuts down
-// without live restore.
+// without live restore; with it, Close leaves the containers and their
+// stacks' egress proxies running for the next engine.
 func (e *Engine) Close() {
+	if e.cfg.LiveRestore {
+		close(e.detach)
+		return
+	}
 	var wg sync.WaitGroup
 	for _, c := range e.allContainers() {
 		wg.Add(1)

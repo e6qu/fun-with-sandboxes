@@ -8,39 +8,42 @@ import (
 	"io"
 	"os"
 	"sync"
-	"time"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/logfile"
 )
 
 // LogEntry is one line of container output, stored like Docker's json-file
 // log driver stores it.
-type LogEntry struct {
-	Stream string    `json:"stream"`
-	Log    string    `json:"log"`
-	Time   time.Time `json:"time"`
-}
+type LogEntry = logfile.Entry
 
-// logStore appends a container's output to its log file and wakes followers,
+// logStore is a container's log file, which its shim appends the
+// container's output to and the engine its own notes; it wakes followers,
 // which read new entries from the file at their own pace.
 type logStore struct {
 	path string
+	app  *logfile.Appender
 	mu   sync.Mutex
-	f    *os.File
 	subs map[chan struct{}]struct{}
 }
 
 func openLogStore(path string) (*logStore, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	app, err := logfile.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	return &logStore{path: path, f: f, subs: map[chan struct{}]struct{}{}}, nil
+	l := &logStore{path: path, app: app, subs: map[chan struct{}]struct{}{}}
+	app.Notify = l.wake
+	return l, nil
 }
 
 func (l *logStore) append(stream, line string) {
-	b, _ := json.Marshal(LogEntry{Stream: stream, Log: line, Time: time.Now().UTC()})
+	l.app.Append(stream, line)
+}
+
+// wake tells followers the file has grown.
+func (l *logStore) wake() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.f.Write(append(b, '\n'))
 	for ch := range l.subs {
 		select {
 		case ch <- struct{}{}:
@@ -50,9 +53,7 @@ func (l *logStore) append(stream, line string) {
 }
 
 func (l *logStore) close() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.f.Close()
+	l.app.Close()
 }
 
 type followOptions struct {
@@ -142,38 +143,5 @@ func (l *logStore) followEntries(ctx context.Context, o followOptions, fn func(L
 				return err
 			}
 		}
-	}
-}
-
-// lineWriter turns a byte stream into log lines, keeping the newline as
-// Docker's json-file driver does.
-type lineWriter struct {
-	stream string
-	store  *logStore
-	mu     sync.Mutex
-	buf    []byte
-}
-
-func (w *lineWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.buf = append(w.buf, p...)
-	for {
-		i := bytes.IndexByte(w.buf, '\n')
-		if i < 0 {
-			break
-		}
-		w.store.append(w.stream, string(w.buf[:i+1]))
-		w.buf = w.buf[i+1:]
-	}
-	return len(p), nil
-}
-
-func (w *lineWriter) flush() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if len(w.buf) > 0 {
-		w.store.append(w.stream, string(w.buf))
-		w.buf = nil
 	}
 }

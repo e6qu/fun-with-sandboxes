@@ -27,6 +27,10 @@ var serverSettings = []string{
 	"autovacuum_max_workers=1",
 	"max_wal_senders=0",
 	"wal_level=minimal",
+	// Dynamic shared memory as files in the data directory: POSIX shared
+	// memory names are confined to the container's prefix, as a private IPC
+	// namespace confines them, and PostgreSQL picks its own.
+	"dynamic_shared_memory_type=mmap",
 }
 
 func main() {

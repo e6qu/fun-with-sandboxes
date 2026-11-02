@@ -102,6 +102,7 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 	bindNo := freePort(t)
 
 	e := newProbeEnv(t, Spec{
+		IPCPrefix:    IPCPrefixFor("enforce"),
 		Root:         root,
 		StateRoot:    state,
 		Volumes:      []Volume{{Path: vol}, {Path: ro, ReadOnly: true}},
@@ -137,5 +138,80 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 		e.denied("signal", strconv.Itoa(os.Getpid()))
 		e.denied("exec", "/bin/ls")
 		e.allowed("exec", "/bin/sh")
+	})
+}
+
+func probeRoot(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// The profile denies by default: a container opens the sockets an ordinary
+// program needs, and no kernel control or link-layer ones.
+func TestSocketDomains(t *testing.T) {
+	root := probeRoot(t)
+	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root)})
+	for _, k := range []string{"unix", "inet", "inet6", "route", "icmp", "icmp6"} {
+		e.allowed("socket", k)
+	}
+	for _, k := range []string{"system", "ndrv"} {
+		e.denied("socket", k)
+	}
+	e.allowed("sh", "echo ok")
+}
+
+// ICMP reaches nothing: a container's outbound traffic is held to its
+// stack's ports, and ICMP has none, so an ICMP datagram socket opens but
+// sends nowhere, not even to loopback.
+func TestICMPReachesNothing(t *testing.T) {
+	root := probeRoot(t)
+	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root)})
+	e.allowed("socket", "icmp")
+	e.denied("ping", "127.0.0.1")
+}
+
+func TestReadOnlyRoot(t *testing.T) {
+	root := probeRoot(t)
+	vol := filepath.Join(filepath.Dir(root), "vol")
+	os.MkdirAll(vol, 0o755)
+	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root), ReadOnlyRoot: true, Volumes: []Volume{{Path: vol}}})
+	e.denied("write", filepath.Join(root, "f"))
+	e.allowed("read", filepath.Join(root, "probe"))
+	e.allowed("write", filepath.Join(vol, "f"))
+}
+
+func TestIPCModes(t *testing.T) {
+	root := probeRoot(t)
+	prefix := IPCPrefixFor(root)
+	own, other := prefix+strconv.Itoa(os.Getpid()), "fwsother."+strconv.Itoa(os.Getpid())
+	key := strconv.Itoa(0x46570000 + os.Getpid()%0xffff)
+	spec := Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: prefix}
+	t.Run("private", func(t *testing.T) {
+		e := newProbeEnv(t, spec)
+		e.allowed("shm", own)
+		e.allowed("shm", "/"+own)
+		e.denied("shm", other)
+		e.allowed("sysvshm", key)
+	})
+	t.Run("host", func(t *testing.T) {
+		s := spec
+		s.IPC = IPCHost
+		e := newProbeEnv(t, s)
+		e.allowed("shm", other)
+	})
+	t.Run("none", func(t *testing.T) {
+		s := spec
+		s.IPC = IPCNone
+		e := newProbeEnv(t, s)
+		e.denied("shm", own)
+		e.denied("sysvshm", key)
 	})
 }

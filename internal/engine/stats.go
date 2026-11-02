@@ -19,8 +19,8 @@ const statsInterval = time.Second
 func (e *Engine) groups(c *Container) map[int]bool {
 	g := map[int]bool{}
 	c.mu.Lock()
-	if c.proc != nil {
-		g[c.proc.Pid()] = true
+	if c.task != nil {
+		g[c.task.Pid()] = true
 	}
 	c.mu.Unlock()
 	for _, x := range e.execsFor(c.rec.ID) {
@@ -33,10 +33,21 @@ func (e *Engine) groups(c *Container) map[int]bool {
 	return g
 }
 
+// members are the container's processes: those of its main process's and
+// its execs' process groups, and those that left them, which still name its
+// root in their environment.
 func (e *Engine) members(c *Container) ([]procs.Proc, error) {
 	g := e.groups(c)
 	if len(g) == 0 {
 		return nil, nil
+	}
+	tagged, err := procs.Tagged(c.tag())
+	if err != nil {
+		return nil, err
+	}
+	escaped := map[int]bool{}
+	for _, pid := range tagged {
+		escaped[pid] = true
 	}
 	all, err := procs.List()
 	if err != nil {
@@ -44,7 +55,7 @@ func (e *Engine) members(c *Container) ([]procs.Proc, error) {
 	}
 	var out []procs.Proc
 	for _, p := range all {
-		if g[p.PGID] {
+		if g[p.PGID] || escaped[p.PID] {
 			out = append(out, p)
 		}
 	}
@@ -91,17 +102,39 @@ func (e *Engine) sample(c *Container) (container.StatsResponse, error) {
 		rss += p.RSS
 	}
 	ncpu := uint64(runtime.NumCPU())
+	memLimit := memTotal()
+	c.mu.Lock()
+	r, task := c.rec.HostConfig.Resources, c.task
+	c.mu.Unlock()
+	if r.Memory > 0 {
+		memLimit = uint64(r.Memory)
+	}
+	var pidsLimit uint64
+	if r.PidsLimit != nil && *r.PidsLimit > 0 {
+		pidsLimit = uint64(*r.PidsLimit)
+	}
+	var throttling container.ThrottlingData
+	if task != nil {
+		if st, err := task.State(); err == nil {
+			throttling = container.ThrottlingData{
+				Periods: st.Periods, ThrottledPeriods: st.ThrottledPeriods, ThrottledTime: uint64(st.ThrottledTime),
+			}
+			// Report the measure the memory limit holds.
+			rss = st.Footprint
+		}
+	}
 	return container.StatsResponse{
 		ID: c.rec.ID, Name: "/" + c.Name(), OSType: runtime.GOOS, Read: time.Now(),
 		CPUStats: container.CPUStats{
 			CPUUsage: container.CPUUsage{TotalUsage: uint64(cpu)},
 			// Machine CPU time elapsed: with it the client's CPU% is the
 			// share of one CPU the container used, as Docker reports.
-			SystemUsage: uint64(time.Since(e.started)) * ncpu,
-			OnlineCPUs:  uint32(ncpu),
+			SystemUsage:    uint64(time.Since(e.started)) * ncpu,
+			OnlineCPUs:     uint32(ncpu),
+			ThrottlingData: throttling,
 		},
-		MemoryStats: container.MemoryStats{Usage: rss, Limit: memTotal()},
-		PidsStats:   container.PidsStats{Current: uint64(len(members))},
+		MemoryStats: container.MemoryStats{Usage: rss, Limit: memLimit},
+		PidsStats:   container.PidsStats{Current: uint64(len(members)), Limit: pidsLimit},
 	}, nil
 }
 

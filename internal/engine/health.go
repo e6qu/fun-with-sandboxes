@@ -64,6 +64,8 @@ func (e *Engine) monitorHealth(c *Container, hc container.HealthConfig, stop, do
 			return
 		case <-done:
 			return
+		case <-e.detach:
+			return
 		case <-time.After(wait):
 		}
 		if c.isPaused() {

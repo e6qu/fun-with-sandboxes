@@ -116,34 +116,44 @@ func TestRejectsUnsafeNames(t *testing.T) {
 	}
 }
 
-// A lease takes a port of the stack's block that no key holds, and assigned
-// keys skip it until it returns.
-func TestLease(t *testing.T) {
-	a, err := Open(Config{Root: t.TempDir(), PortBase: 44000, PortLimit: 44100, BlockSize: 10})
+// A flow binds a port of the stack's block that no key holds and no other
+// socket holds, reading the block from the state file.
+func TestDialFlow(t *testing.T) {
+	root := t.TempDir()
+	a, err := Open(Config{Root: root, PortBase: 44000, PortLimit: 44100, BlockSize: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Lease("s"); err == nil {
-		t.Fatal("leased a port of a stack that holds no block")
+	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	raddr := peer.LocalAddr().(*net.UDPAddr)
+	if _, err := DialFlow(root, "s", raddr); err == nil {
+		t.Fatal("dialled a flow for a stack that holds no block")
 	}
 	first, err := a.Port("s", "a/80/tcp")
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := a.Lease("s")
+	st, _ := a.Stack("s")
+	one, err := DialFlow(root, "s", raddr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, _ := a.Stack("s")
-	if l == first || !st.Contains(l) {
-		t.Fatalf("leased %d, want a free port of the block other than %d", l, first)
+	defer one.Close()
+	two, err := DialFlow(root, "s", raddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer two.Close()
+	p1, p2 := one.LocalAddr().(*net.UDPAddr).Port, two.LocalAddr().(*net.UDPAddr).Port
+	if p1 == first || p2 == first || p1 == p2 || !st.Contains(p1) || !st.Contains(p2) {
+		t.Fatalf("flows bound %d and %d; want two distinct ports of the block other than %d", p1, p2, first)
 	}
 	next, err := a.Port("s", "b/80/tcp")
-	if err != nil || next == l {
-		t.Fatalf("a key took the leased port %d: %d, %v", l, next, err)
-	}
-	a.Unlease("s", l)
-	if again, err := a.Lease("s"); err != nil || again != l {
-		t.Fatalf("leasing after the return got %d, %v; want %d", again, err, l)
+	if err != nil || next == p1 || next == p2 {
+		t.Fatalf("a key took a flow's port: %d, %v", next, err)
 	}
 }

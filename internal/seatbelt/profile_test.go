@@ -12,6 +12,7 @@ func spec() Spec {
 		Volumes:      []Volume{{Path: "/Users/u/.fws/stacks/a/volumes/data"}, {Path: "/Users/u/.fws/stacks/a/volumes/conf", ReadOnly: true}},
 		BindPorts:    []int{41000},
 		ConnectPorts: []int{41001, 41000, 41001},
+		IPCPrefix:    IPCPrefixFor("c1"),
 	}
 }
 
@@ -70,7 +71,7 @@ func TestReadOnlyVolumeIsNotWritable(t *testing.T) {
 func TestStateRootDeniedThenRootReallowed(t *testing.T) {
 	p, _ := Render(spec())
 	deny := strings.Index(p, `(deny file-read*`)
-	allow := strings.Index(p, `(allow file-read*`)
+	allow := deny + strings.Index(p[deny:], `(allow file-read*`)
 	if deny < 0 || allow < deny {
 		t.Fatalf("read allowance must follow the denial so it wins")
 	}
@@ -108,5 +109,18 @@ func TestMountedUnixSockets(t *testing.T) {
 	}
 	if strings.Contains(p, `(allow network-bind (local unix-socket (subpath "/Users/u/.fws/stacks/a/volumes/conf")))`) {
 		t.Error("a read-only mount allows making sockets")
+	}
+}
+
+func TestRenderDeniesByDefault(t *testing.T) {
+	p, err := Render(spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(p, "(allow default)") || !strings.Contains(p, "(deny default)\n(import \"system.sb\")") {
+		t.Fatalf("profile does not deny by default on Apple's baseline:\n%s", p)
+	}
+	if !strings.Contains(p, "(deny system-socket (socket-domain 32) (socket-domain 27))") {
+		t.Errorf("profile allows kernel control or link-layer sockets")
 	}
 }

@@ -2,9 +2,15 @@ package engine
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/egress"
+	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 )
 
 const egressKey = "_egress/tcp"
@@ -25,8 +31,39 @@ func (e *Engine) hasEgress(c *Container) bool {
 	return false
 }
 
-// ensureEgress starts the stack's egress proxy on a port of its block and
-// returns that port.
+// egressProc is a stack's egress proxy process. The proxy runs apart from
+// the engine so that, with live restore, it serves the stack's containers
+// while no engine runs; start tells it from a later process with its pid.
+type egressProc struct {
+	Pid   int   `json:"pid"`
+	Start int64 `json:"start"`
+	Port  int   `json:"port"`
+}
+
+func (e *Engine) egressFile(stack string) string {
+	return filepath.Join(e.cfg.Root, "run", "egress-"+stack+".json")
+}
+
+func processStart(pid int) (int64, bool) {
+	es, err := procs.Own()
+	if err != nil {
+		return 0, false
+	}
+	for _, p := range es {
+		if p.PID == pid {
+			return p.Start, true
+		}
+	}
+	return 0, false
+}
+
+func (p *egressProc) alive() bool {
+	start, ok := processStart(p.Pid)
+	return ok && start == p.Start
+}
+
+// ensureEgress starts the stack's egress proxy on a port of its block, or
+// keeps the one an earlier engine left running, and returns that port.
 func (e *Engine) ensureEgress(stack string) (int, error) {
 	e.egressMu.Lock()
 	defer e.egressMu.Unlock()
@@ -34,11 +71,27 @@ func (e *Engine) ensureEgress(stack string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if _, ok := e.egress[stack]; ok {
+	if p, ok := e.egress[stack]; ok && p.Port == port && p.alive() {
 		return port, nil
 	}
-	p, err := egress.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), egress.HostPolicy())
+	var left egressProc
+	if ok, _ := readJSON(e.egressFile(stack), &left); ok && left.Port == port && left.alive() {
+		e.egress[stack] = &left
+		return port, nil
+	}
+	logf, err := os.OpenFile(filepath.Join(e.cfg.Root, "run", "egress-"+stack+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
+		return 0, err
+	}
+	defer logf.Close()
+	proc, err := egress.Start(net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), logf)
+	if err != nil {
+		return 0, err
+	}
+	start, _ := processStart(proc.Pid)
+	p := &egressProc{Pid: proc.Pid, Start: start, Port: port}
+	if err := writeJSON(e.egressFile(stack), p); err != nil {
+		stopProcess(p)
 		return 0, err
 	}
 	e.egress[stack] = p
@@ -66,17 +119,48 @@ func (e *Engine) BuildEgress() (int, error) {
 func (e *Engine) closeEgress(stack string) {
 	e.egressMu.Lock()
 	defer e.egressMu.Unlock()
-	if p, ok := e.egress[stack]; ok {
-		p.Close()
-		delete(e.egress, stack)
-	}
+	e.closeEgressLocked(stack)
 }
 
+func (e *Engine) closeEgressLocked(stack string) {
+	p, ok := e.egress[stack]
+	if !ok {
+		var left egressProc
+		if found, _ := readJSON(e.egressFile(stack), &left); !found {
+			return
+		}
+		p = &left
+	}
+	if p.alive() {
+		stopProcess(p)
+	}
+	delete(e.egress, stack)
+	os.Remove(e.egressFile(stack))
+}
+
+// closeAllEgress stops every stack's proxy, this engine's and any an
+// earlier one left running.
 func (e *Engine) closeAllEgress() {
 	e.egressMu.Lock()
 	defer e.egressMu.Unlock()
-	for stack, p := range e.egress {
-		p.Close()
-		delete(e.egress, stack)
+	files, _ := filepath.Glob(filepath.Join(e.cfg.Root, "run", "egress-*.json"))
+	for _, f := range files {
+		e.closeEgressLocked(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(f), "egress-"), ".json"))
+	}
+	for stack := range e.egress {
+		e.closeEgressLocked(stack)
+	}
+}
+
+// stopProcess ends a proxy with SIGTERM, and SIGKILL if it lingers.
+func stopProcess(p *egressProc) {
+	syscall.Kill(p.Pid, syscall.SIGTERM)
+	deadline := time.Now().Add(5 * time.Second)
+	for p.alive() {
+		if time.Now().After(deadline) {
+			syscall.Kill(p.Pid, syscall.SIGKILL)
+			deadline = time.Now().Add(time.Hour)
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }

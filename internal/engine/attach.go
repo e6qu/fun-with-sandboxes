@@ -71,25 +71,29 @@ func (e *Engine) AttachStdin(ctx context.Context, ref string, r io.Reader) error
 		return nil
 	}
 	c.mu.Lock()
-	w, next := c.stdin, c.nextRun
+	task, next := c.task, c.nextRun
 	c.mu.Unlock()
-	if w == nil {
+	if task == nil {
 		select {
 		case <-next:
 		case <-ctx.Done():
 			return nil
 		}
 		c.mu.Lock()
-		w = c.stdin
+		task = c.task
 		c.mu.Unlock()
 	}
-	if w == nil {
+	if task == nil {
+		return nil
+	}
+	w, err := task.Stdin(c.rec.Config.StdinOnce && !c.rec.Config.Tty)
+	if err != nil {
+		// The run has ended, or its input is closed: there is nothing to
+		// feed, as with Docker.
 		return nil
 	}
 	_, err = io.Copy(w, r)
-	if c.rec.Config.StdinOnce && !c.rec.Config.Tty {
-		w.Close()
-	}
+	w.Close()
 	return err
 }
 

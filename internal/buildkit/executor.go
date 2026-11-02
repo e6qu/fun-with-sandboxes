@@ -21,6 +21,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/pb"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/egress"
+	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
@@ -271,7 +272,13 @@ func (x *seatbeltExecutor) Run(ctx context.Context, id string, rootMount executo
 		}()
 	}
 	defer close(r.done)
-	return nil, x.exec(ctx, r, process, started)
+	err = x.exec(ctx, r, process, started)
+	// The step ends with its main process: what it started outside its
+	// process group goes too, found by the root its environment names.
+	if kerr := procs.KillTagged("SANDBOX_ROOT=" + root); kerr != nil && err == nil {
+		err = kerr
+	}
+	return nil, err
 }
 
 func (x *seatbeltExecutor) Exec(ctx context.Context, id string, process executor.ProcessInfo) error {
@@ -292,7 +299,7 @@ func (x *seatbeltExecutor) exec(ctx context.Context, r *run, process executor.Pr
 	if len(meta.Args) == 0 {
 		return errors.New("no command specified")
 	}
-	spec := seatbelt.Spec{Root: r.root, StateRoot: x.opt.StateRoot, Volumes: r.volumes}
+	spec := seatbelt.Spec{Root: r.root, StateRoot: x.opt.StateRoot, Volumes: r.volumes, IPCPrefix: seatbelt.IPCPrefixFor(r.root)}
 	if r.proxy != 0 {
 		spec.ConnectPorts = []int{r.proxy}
 	}

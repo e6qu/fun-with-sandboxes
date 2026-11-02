@@ -172,8 +172,14 @@ func TestContainerErrors(t *testing.T) {
 	if res := call(t, ts, "POST", "/containers/create?name=x", `{"Image":"missing:1"}`, &e); res.StatusCode != 404 || !strings.Contains(e["message"], "No such image") {
 		t.Fatalf("missing image: %d %v", res.StatusCode, e)
 	}
-	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"Memory":1048576}}`, &e); res.StatusCode != 501 || !strings.Contains(e["message"], "memory limits") {
-		t.Fatalf("memory limit: %d %v", res.StatusCode, e)
+	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"Memory":1048576}}`, &e); res.StatusCode != 400 || !strings.Contains(e["message"], "Minimum memory limit allowed is 6MB") {
+		t.Fatalf("memory limit below Docker's minimum: %d %v", res.StatusCode, e)
+	}
+	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"CpusetCpus":"0"}}`, &e); res.StatusCode != 501 || !strings.Contains(e["message"], "cpusets") {
+		t.Fatalf("cpuset: %d %v", res.StatusCode, e)
+	}
+	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"Ulimits":[{"Name":"nproc","Soft":10,"Hard":10}]}}`, &e); res.StatusCode != 501 || !strings.Contains(e["message"], "nproc") {
+		t.Fatalf("ulimit nproc: %d %v", res.StatusCode, e)
 	}
 	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"NetworkMode":"host"}}`, &e); res.StatusCode != 501 {
 		t.Fatalf("host network: %d %v", res.StatusCode, e)

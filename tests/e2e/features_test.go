@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -255,8 +257,15 @@ func TestPauseUnpauseUpdate(t *testing.T) {
 	if s := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.RestartPolicy.Name}}:{{.HostConfig.RestartPolicy.MaximumRetryCount}}", "pausetest")); s != "on-failure:3" {
 		t.Fatalf("restart policy after update: %q", s)
 	}
-	if _, err := docker(t, "update", "--memory", "64m", "pausetest"); err == nil || !strings.Contains(err.Error(), "memory limits are not supported") {
-		t.Fatalf("memory update: %v", err)
+	mustDocker(t, "update", "--memory", "64m", "--memory-swap", "64m", "--cpus", "1.5", "--pids-limit", "40", "pausetest")
+	if s := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}", "pausetest")); s != "67108864 1500000000 40" {
+		t.Fatalf("limits after update: %q", s)
+	}
+	if s := mustDocker(t, "stats", "--no-stream", "--format", "{{.MemUsage}}", "pausetest"); !strings.Contains(s, "/ 64MiB") {
+		t.Fatalf("docker stats does not report the updated memory limit: %q", s)
+	}
+	if _, err := docker(t, "update", "--blkio-weight", "100", "pausetest"); err == nil || !strings.Contains(err.Error(), "block I/O weight of a running container") {
+		t.Fatalf("block I/O weight update of a running container: %v", err)
 	}
 	mustDocker(t, "pause", "pausetest")
 	mustDocker(t, "stop", "pausetest")
@@ -986,5 +995,25 @@ func TestDiffSizeDiskUsageAndSearch(t *testing.T) {
 	}
 	if out := mustDocker(t, "search", "--limit", "5", "--filter", "is-official=true", "postgres"); !strings.Contains(out, "postgres") {
 		t.Fatalf("docker search:\n%s", out)
+	}
+}
+
+// A process that leaves the container's process group is still the
+// container's: docker top lists it and docker stop ends it.
+func TestProcessesOutsideTheGroupStayContained(t *testing.T) {
+	const name = "fws-e2e-detach"
+	mustDocker(t, "run", "-d", "--name", name, "fws/toolbox:1", "detach")
+	defer docker(t, "rm", "-f", name)
+	waitLog(t, name, "detached")
+	var pid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(mustDocker(t, "logs", name)), "detached %d", &pid); err != nil || pid == 0 {
+		t.Fatalf("the container's log names no detached process: %v", err)
+	}
+	if top := mustDocker(t, "top", name, "-o", "pid"); !strings.Contains(top, strconv.Itoa(pid)) {
+		t.Fatalf("docker top does not list detached process %d:\n%s", pid, top)
+	}
+	mustDocker(t, "stop", "--time", "1", name)
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("detached process %d outlived docker stop: kill(pid, 0) = %v", pid, err)
 	}
 }

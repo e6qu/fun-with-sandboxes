@@ -45,20 +45,34 @@ machine — and from what macOS offers an unprivileged process under them.
 - **Process listings cross sandboxes.** `ps` inside or outside a container
   shows every process of the user; there is no unprivileged PID namespace.
   Signalling or inspecting another sandbox's process is denied.
-- **System V IPC and POSIX shared memory names are machine-wide.** A
-  container that guesses another's key or name could reach it. PostgreSQL
-  derives its keys from its port, which differs per stack.
+- **System V IPC keys are machine-wide.** POSIX shared memory and semaphore
+  names are confined to a per-container prefix (`SANDBOX_IPC_PREFIX`) under
+  the default private IPC mode, and `--ipc none` denies all IPC, but Seatbelt
+  cannot tell System V keys apart, so a container that guesses another's
+  key could reach it. PostgreSQL derives its keys from its port, which
+  differs per stack.
+- **POSIX shared memory needs the prefix.** Under private IPC a program must
+  name its objects with `SANDBOX_IPC_PREFIX`; `--ipc host` lifts the
+  confinement. The catalog's PostgreSQL uses `mmap` dynamic shared memory.
+- **Capabilities grant nothing to drop.** Containers run as the engine's
+  unprivileged user, so `--cap-drop` changes nothing; `--cap-add` beyond
+  Docker's default set needs root and is refused. AppArmor, SELinux and
+  seccomp options other than `unconfined`/`disable` are refused.
 - **The macOS system tree is readable** (`/System`, `/usr/lib`, `/usr/share`,
   `/bin/sh` and friends): binaries cannot run without it, and it holds no
   user data.
 - **The host's system shell is executable**, because `popen()` and
   `system()` hard-code `/bin/sh`.
-- **A process that leaves its process group** (`setsid`) survives the
-  container's stop; the engine kills the group, and macOS offers no
-  unprivileged way to track a process across sessions.
+- **A container's processes are those that started with its root in their
+  environment.** A process that leaves the container's process group, or its
+  session, keeps `SANDBOX_ROOT` in the environment it started with, so a
+  stop still kills it and `top` and `stats` still count it; only one that
+  executes a program with that variable cleared escapes the container.
 
 ## Networking
 
+- **ICMP reaches nothing.** A container's traffic is held to its stack's TCP
+  and UDP ports; `ping` opens its socket but sends nowhere.
 - **No container IP addresses.** Services talk over loopback on assigned host
   ports; `db:5432` in a client becomes `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
 - **One stack, one reachability domain.** A container can reach every port in
@@ -85,17 +99,46 @@ machine — and from what macOS offers an unprivileged process under them.
 
 ## Resources and identity
 
-- **No memory, CPU, PID or block-I/O limits**; requests for them fail.
+- **Limits are enforced by a supervisor, not the kernel.** Each container's
+  shim checks its processes every 100 ms:
+  - `--memory` caps the sum of their physical footprints, which counts
+    compressed and swapped memory, so `--memory-swap` may only equal it (or
+    be -1). Past the limit the largest process is killed and the container
+    reports `OOMKilled`; an allocation never fails first, and a burst within
+    100 ms can overshoot. `--memory-reservation`, swappiness and
+    `--oom-kill-disable` are refused.
+  - `--cpus` and `--cpu-quota` stop the processes with `SIGSTOP` once they
+    use more than the quota and continue them once it has paid the excess
+    back: a parent sees its children stop and continue, as with job
+    control. `--cpu-shares` sets the nice value, and since only root lowers
+    one, more shares than the default run at the default priority.
+    Cpusets and real-time scheduling are refused.
+  - `--pids-limit` kills processes started past the limit rather than
+    failing their fork.
+  - `--blkio-weight` picks a disk I/O policy tier (standard, utility,
+    throttle); per-device rates are refused, and a running container's
+    weight cannot change, as macOS lets a process set only its own policy.
+  - `--ulimit` sets nofile, fsize, cpu, core and stack; nproc, which macOS
+    counts across every process of the user, and data and as, which it
+    does not enforce, are refused.
+- **Each container costs a supervisor process** of the engine's binary, a
+  few megabytes of memory.
 - **No user switching**: `user:` must be empty or the engine's own user.
 - **`docker pause` stops the container's processes with SIGSTOP**, not a
   cgroup freezer; TCP connections to a paused container are still accepted
   by the kernel and wait for it to resume.
-- **`docker update` changes restart policies only**; resource limits fail.
+- **`docker update` changes restart policies and limits**, the limits of a
+  running container at once, except its block I/O weight.
+- **Live restore keeps containers running across an engine restart** with
+  `fwsd -live-restore`. Without it the engine stops its containers when it
+  stops, and ends any a crashed engine left running when it starts. Health
+  checks begin again as `starting` once the engine reconnects.
 - **`docker top` and `docker stats` see the container's process groups**: its
   main process's and its running execs'. They read the host's `ps`, as dockerd
-  does, so commands show their host paths. Stats report CPU time, resident
-  memory and process count; there is no per-container network or block-I/O
-  accounting, and the memory limit is the machine's memory.
+  does, so commands show their host paths. Stats report CPU time, CPU
+  throttling, the memory footprint the limit holds, the limits, and process
+  count; there is no per-container network or block-I/O accounting, and
+  without a limit the memory limit shown is the machine's memory.
 - **`docker cp` copies the container's view**, mounts included, but refuses
   paths that resolve outside the container's root and mounts.
 - **Testcontainers' reaper runs from the catalog's darwin build of Ryuk**,

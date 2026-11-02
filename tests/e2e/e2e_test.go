@@ -28,6 +28,10 @@ import (
 var (
 	dockerHost string
 	stateRoot  string
+	// fwsdBin is the engine binary under test, and imagesDir the image
+	// archives the suite loads.
+	fwsdBin   string
+	imagesDir string
 )
 
 func TestMain(m *testing.M) {
@@ -36,6 +40,7 @@ func TestMain(m *testing.M) {
 
 func run(m *testing.M) int {
 	images := os.Getenv("FWS_E2E_IMAGES")
+	imagesDir = images
 	if images == "" {
 		fmt.Fprintln(os.Stderr, "FWS_E2E_IMAGES must name the directory scripts/build-images.sh wrote")
 		return 1
@@ -58,6 +63,7 @@ func run(m *testing.M) int {
 	stateRoot, _ = filepath.EvalSymlinks(root)
 
 	bin := filepath.Join(os.TempDir(), "fwsd-e2e")
+	fwsdBin = bin
 	// The race detector turns a data race in the engine into a report the
 	// suite fails on, rather than a crash some later run might hit.
 	build := exec.Command("go", "build", "-race", "-o", bin, "./cmd/fwsd")
@@ -159,9 +165,19 @@ const commandTimeout = 5 * time.Minute
 
 func docker(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	return dockerAt(t, "", args...)
+}
+
+// dockerAt runs the Docker CLI against the engine at host, or the suite's
+// engine when host is empty.
+func dockerAt(t *testing.T, host string, args ...string) (string, error) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", args...)
+	if host != "" {
+		cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
+	}
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
@@ -205,8 +221,8 @@ func TestDockerRun(t *testing.T) {
 	if strings.TrimSpace(out) != "hello from a sandbox" {
 		t.Fatalf("docker run output %q", out)
 	}
-	if _, err := docker(t, "run", "--rm", "--memory", "64m", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "memory limits are not supported") {
-		t.Fatalf("memory limit: %v", err)
+	if _, err := docker(t, "run", "--rm", "--memory", "64m", "--memory-reservation", "32m", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "memory reservations are not supported") {
+		t.Fatalf("memory reservation: %v", err)
 	}
 	if _, err := docker(t, "run", "--rm", "--network", "host", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("host network: %v", err)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -97,7 +98,7 @@ func ParseCPUTime(s string) (time.Duration, error) {
 // Top runs ps with args and keeps the header and the rows whose PID column
 // names one of pids.
 func Top(args []string, pids map[int]bool) ([]string, [][]string, error) {
-	cmd := exec.Command(ps, args...)
+	cmd := exec.Command(ps, TopArgs(args, pids)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -105,6 +106,41 @@ func Top(args []string, pids map[int]bool) ([]string, [][]string, error) {
 		return nil, nil, fmt.Errorf("ps %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return ParseTop(out, pids)
+}
+
+// TopArgs adds the container's pids to ps arguments that select no
+// processes of their own, as dockerd adds them: without a selection ps lists
+// the processes on its terminal, and the engine has none.
+func TopArgs(args []string, pids map[int]bool) []string {
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsAny(a[1:], "AaepUuxgt") && !optionArgument(args, a) {
+			return args
+		}
+	}
+	list := make([]int, 0, len(pids))
+	for p := range pids {
+		list = append(list, p)
+	}
+	if len(list) == 0 {
+		return args
+	}
+	sort.Ints(list)
+	parts := make([]string, len(list))
+	for i, p := range list {
+		parts[i] = strconv.Itoa(p)
+	}
+	return append(append([]string{}, args...), "-p", strings.Join(parts, ","))
+}
+
+// optionArgument reports whether a is the value of the option before it,
+// such as the format after -o.
+func optionArgument(args []string, a string) bool {
+	for i := 1; i < len(args); i++ {
+		if args[i] == a && (args[i-1] == "-o" || args[i-1] == "-O") {
+			return true
+		}
+	}
+	return false
 }
 
 var ErrNoPIDColumn = errors.New("couldn't find PID field in ps output")

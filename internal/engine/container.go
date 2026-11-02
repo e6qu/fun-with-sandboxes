@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -13,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
 	"github.com/moby/moby/api/types/mount"
@@ -21,8 +22,11 @@ import (
 
 	"github.com/e6qu/fun-with-sandboxes/internal/egress"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
+	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
+	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
+	"github.com/e6qu/fun-with-sandboxes/internal/shim"
 )
 
 const (
@@ -50,6 +54,8 @@ type stateRec struct {
 	Pid          int                      `json:"pid"`
 	RestartCount int                      `json:"restartCount"`
 	ManualStop   bool                     `json:"manualStop"`
+	OOMKilled    bool                     `json:"oomKilled,omitempty"`
+	Paused       bool                     `json:"paused,omitempty"`
 }
 
 type record struct {
@@ -82,20 +88,16 @@ type Container struct {
 	dir    string
 	logs   *logStore
 
-	proc    *runtime.Process
+	// task is the shim of the current run.
+	task    *shim.Client
 	runDone chan struct{}
 	// nextRun closes when the next run starts.
 	nextRun    chan struct{}
 	removed    chan struct{}
 	health     *container.Health
 	healthStop chan struct{}
-	proxies    []io.Closer
-	stdin      io.WriteCloser
-	ptyMaster  *os.File
 	restarting *time.Timer
 	starting   bool
-	// paused is set while the container's processes are stopped by SIGSTOP.
-	paused bool
 }
 
 func (c *Container) ID() string { return c.rec.ID }
@@ -105,6 +107,9 @@ func (c *Container) Name() string {
 	return c.rec.Name
 }
 func (c *Container) root() string { return filepath.Join(c.dir, "r") }
+
+// tag is the environment entry every process of the container carries.
+func (c *Container) tag() string { return "SANDBOX_ROOT=" + c.root() }
 
 func (c *Container) isRunning() bool {
 	c.mu.Lock()
@@ -128,19 +133,41 @@ func (e *Engine) loadContainers() error {
 		if c.logs, err = openLogStore(filepath.Join(c.dir, "log.jsonl")); err != nil {
 			return err
 		}
+		if c.rec.State.Status == container.StateRunning {
+			if task, err := shim.Connect(e.shimSocket(c)); err == nil {
+				if e.cfg.LiveRestore {
+					// The container ran on while no engine did: follow it
+					// again.
+					c.mu.Lock()
+					done := c.attachTaskLocked(e, task)
+					c.mu.Unlock()
+					go e.watch(c, task, done)
+					e.containers[c.rec.ID] = c
+					continue
+				}
+				// Without live restore an engine ends the containers an
+				// earlier one left running, as dockerd does.
+				task.Signal(syscall.SIGKILL)
+				exit, err := task.Wait(nil)
+				if err != nil {
+					exit = e.lostExit(c)
+				}
+				c.recordExit(exit)
+			} else {
+				c.recordExit(e.lostExit(c))
+			}
+		}
 		if c.rec.State.Status == container.StateRunning || c.rec.State.Status == container.StateRestarting {
-			// The previous engine died with the container running; its
-			// processes went with it.
-			c.rec.State.Status = container.StateExited
-			c.rec.State.ExitCode = 255
-			c.rec.State.FinishedAt = time.Now().UTC()
-			c.rec.State.Pid = 0
-			if p := c.rec.HostConfig.RestartPolicy.Name; (p == container.RestartPolicyAlways || p == container.RestartPolicyUnlessStopped) && !c.rec.State.ManualStop {
+			c.recordExit(shim.Exit{ExitCode: c.rec.State.ExitCode, FinishedAt: time.Now().UTC()})
+		}
+		// dockerd starts these as it starts, unless stopped by hand.
+		if c.rec.State.Status == container.StateExited && !c.rec.State.ManualStop {
+			if p := c.rec.HostConfig.RestartPolicy.Name; p == container.RestartPolicyAlways || p == container.RestartPolicyUnlessStopped {
 				restart = append(restart, c)
 			}
-			if err := c.save(); err != nil {
-				return err
-			}
+		}
+		if err := c.save(); err != nil {
+			return err
 		}
 		e.containers[c.rec.ID] = c
 	}
@@ -150,6 +177,17 @@ func (e *Engine) loadContainers() error {
 		}
 	}
 	return nil
+}
+
+// recordExit records how a run ended that no engine watched to its end.
+func (c *Container) recordExit(exit shim.Exit) {
+	c.rec.State.Status = container.StateExited
+	c.rec.State.ExitCode = exit.ExitCode
+	c.rec.State.OOMKilled = exit.OOMKilled
+	c.rec.State.FinishedAt = exit.FinishedAt
+	c.rec.State.Pid = 0
+	c.rec.State.Paused = false
+	c.rec.Published = nil
 }
 
 func closedChan() chan struct{} {
@@ -307,21 +345,15 @@ func checkHostConfig(hc *container.HostConfig) error {
 		set  bool
 		name string
 	}
+	if _, _, err := containerLimits(r); err != nil {
+		return err
+	}
 	for _, k := range []knob{
-		{r.Memory != 0 || r.MemorySwap != 0 || r.MemoryReservation != 0, "memory limits"},
-		{r.NanoCPUs != 0 || r.CPUQuota != 0 || r.CPUPeriod != 0 || r.CPUShares != 0 || r.CpusetCpus != "" || r.CPUCount != 0 || r.CPUPercent != 0, "CPU limits"},
-		{r.PidsLimit != nil && *r.PidsLimit > 0, "PID limits"},
-		{len(r.Ulimits) > 0, "ulimits"},
-		{len(r.Devices) > 0 || len(r.DeviceRequests) > 0 || len(r.DeviceCgroupRules) > 0, "devices"},
-		{r.BlkioWeight != 0 || len(r.BlkioWeightDevice) > 0 || len(r.BlkioDeviceReadBps) > 0 || len(r.BlkioDeviceWriteBps) > 0, "block I/O limits"},
 		{hc.Privileged, "privileged mode"},
-		{len(hc.CapAdd) > 0, "added capabilities"},
 		{len(hc.VolumesFrom) > 0, "volumes-from"},
 		{hc.PidMode != "" && hc.PidMode != "private", "PID modes"},
-		{hc.IpcMode != "" && hc.IpcMode != "private" && hc.IpcMode != "shareable", "IPC modes"},
 		{hc.UTSMode != "", "UTS modes"},
 		{hc.UsernsMode != "", "user namespaces"},
-		{hc.ReadonlyRootfs, "read-only root filesystems"},
 		{hc.Runtime != "" && hc.Runtime != "runc", "alternative runtimes"},
 		{hc.LogConfig.Type != "" && hc.LogConfig.Type != "json-file" && hc.LogConfig.Type != "local", "log drivers other than json-file"},
 		{len(hc.Sysctls) > 0, "sysctls"},
@@ -329,6 +361,14 @@ func checkHostConfig(hc *container.HostConfig) error {
 		if k.set {
 			return unsupported("%s are not supported: this engine runs without root or a VM and cannot enforce them", k.name)
 		}
+	}
+	if err := checkSecurity(hc); err != nil {
+		return err
+	}
+	switch ipc := string(hc.IpcMode); {
+	case ipc == "", ipc == "private", ipc == "shareable", ipc == "host", ipc == "none", strings.HasPrefix(ipc, "container:"):
+	default:
+		return invalid("invalid IPC mode: %q", ipc)
 	}
 	mode := string(hc.NetworkMode)
 	switch {
@@ -342,7 +382,7 @@ func checkHostConfig(hc *container.HostConfig) error {
 			return unsupported("publishing %s is not supported; only TCP and UDP ports can be published", p)
 		}
 		for _, b := range bs {
-			if _, _, err := hostPortRange(b.HostPort); err != nil {
+			if _, _, err := portproxy.HostPortRange(b.HostPort); err != nil {
 				return invalid("invalid host port %q for %s: %v", b.HostPort, p, err)
 			}
 		}
@@ -749,6 +789,11 @@ func (e *Engine) environment(c *Container, extra []string) []string {
 	set("SANDBOX_ROOT=" + root)
 	set("SANDBOX_STACK=" + c.rec.Stack)
 	set("SANDBOX_HOST=127.0.0.1")
+	// POSIX shared memory and semaphore names must start with the prefix
+	// under private IPC, so programs that name them need it.
+	if _, prefix, err := e.ipcMode(c); err == nil && prefix != "" {
+		set("SANDBOX_IPC_PREFIX=" + prefix)
+	}
 	if port := e.egressPort(c.rec.Stack); port != 0 && e.hasEgress(c) {
 		for _, kv := range egress.Variables(port) {
 			if _, ok := vars[kv[0]]; !ok {
@@ -819,7 +864,14 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	if err != nil {
 		return seatbelt.Spec{}, err
 	}
-	spec := seatbelt.Spec{Root: c.root(), StateRoot: e.cfg.Root}
+	ipc, prefix, err := e.ipcMode(c)
+	if err != nil {
+		return seatbelt.Spec{}, err
+	}
+	spec := seatbelt.Spec{
+		Root: c.root(), StateRoot: e.cfg.Root, ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
+		IPC: ipc, IPCPrefix: prefix,
+	}
 	for _, m := range c.rec.Mounts {
 		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW})
 	}
@@ -888,6 +940,10 @@ func (c *Container) start(e *Engine) error {
 	if err != nil {
 		return err
 	}
+	limits, res, err := containerLimits(c.rec.HostConfig.Resources)
+	if err != nil {
+		return err
+	}
 	for _, m := range c.rec.Mounts {
 		if m.Type == mount.TypeTmpfs {
 			os.RemoveAll(m.Source)
@@ -901,51 +957,27 @@ func (c *Container) start(e *Engine) error {
 			return err
 		}
 	}
-	proxies, published, err := e.publish(c)
+	plan, err := e.publishPlan(c)
 	if err != nil {
 		return err
 	}
-	closeAll := func() {
-		for _, p := range proxies {
-			p.Close()
-		}
+	cfg := shim.Config{
+		ID: c.rec.ID,
+		Spec: runtime.Spec{
+			Root: c.root(), Argv: argv, Env: e.environment(c, nil), WorkDir: c.rec.Config.WorkingDir,
+			Profile: spec, ProfilePath: filepath.Join(c.dir, "profile.sb"), Limits: limits,
+		},
+		TTY: c.rec.Config.Tty, Console: c.rec.HostConfig.ConsoleSize, OpenStdin: c.rec.Config.OpenStdin,
+		LogPath: c.logs.path, Socket: e.shimSocket(c), ExitPath: c.exitPath(),
+		Tag: c.tag(), AllocRoot: e.cfg.Root, Stack: c.rec.Stack, Resources: res,
 	}
-
-	rs := runtime.Spec{
-		Root: c.root(), Argv: argv, Env: e.environment(c, nil), WorkDir: c.rec.Config.WorkingDir,
-		Profile: spec, ProfilePath: filepath.Join(c.dir, "profile.sb"),
+	for _, p := range plan {
+		cfg.Publish = append(cfg.Publish, p.binding)
 	}
-	stdout := &lineWriter{stream: "stdout", store: c.logs}
-	stderr := &lineWriter{stream: "stderr", store: c.logs}
-	var stdin io.WriteCloser
-	var master, slave *os.File
-	if c.rec.Config.Tty {
-		master, slave, err = pty.Open()
-		if err != nil {
-			closeAll()
-			return err
-		}
-		if s := c.rec.HostConfig.ConsoleSize; s[0] > 0 && s[1] > 0 {
-			pty.Setsize(master, &pty.Winsize{Rows: uint16(s[0]), Cols: uint16(s[1])})
-		}
-		rs.TTY = slave
-		stdin = master
-	} else {
-		rs.Stdout, rs.Stderr = stdout, stderr
-		if c.rec.Config.OpenStdin {
-			pr, pw := io.Pipe()
-			rs.Stdin = pr
-			stdin = pw
-		}
-	}
-	proc, err := runtime.Start(rs)
-	if slave != nil {
-		slave.Close()
-	}
+	task, ready, err := shim.Launch(c.dir, cfg)
 	if err != nil {
-		closeAll()
-		if master != nil {
-			master.Close()
+		if errors.Is(err, shim.ErrPortInUse) {
+			return conflict("%v", err)
 		}
 		c.mu.Lock()
 		c.rec.State.Error = err.Error()
@@ -954,27 +986,33 @@ func (c *Container) start(e *Engine) error {
 		c.mu.Unlock()
 		return invalid("failed to create task for container: %v", err)
 	}
-	if master != nil {
-		go func() {
-			io.Copy(stdout, master)
-		}()
+	published := network.PortMap{}
+	for i, p := range plan {
+		published[p.port] = append(published[p.port], network.PortBinding{HostIP: p.binding.IP, HostPort: strconv.Itoa(ready.Ports[i])})
 	}
 
-	done := make(chan struct{})
 	c.mu.Lock()
-	c.proc = proc
-	c.proxies = proxies
-	c.stdin = stdin
-	c.ptyMaster = master
-	c.runDone = done
-	close(c.nextRun)
-	c.nextRun = make(chan struct{})
 	c.rec.State = stateRec{
-		Status: container.StateRunning, StartedAt: time.Now().UTC(), Pid: proc.Pid(),
+		Status: container.StateRunning, StartedAt: time.Now().UTC(), Pid: task.Pid(),
 		RestartCount: c.rec.State.RestartCount,
 	}
 	c.rec.Published = published
 	c.save()
+	done := c.attachTaskLocked(e, task)
+	c.mu.Unlock()
+	e.publishContainer(c, events.ActionStart, nil)
+	go e.watch(c, task, done)
+	return nil
+}
+
+// attachTaskLocked makes task the container's current run and starts what
+// follows a run: its health checks and the delivery of its log's growth.
+func (c *Container) attachTaskLocked(e *Engine, task *shim.Client) chan struct{} {
+	done := make(chan struct{})
+	c.task = task
+	c.runDone = done
+	close(c.nextRun)
+	c.nextRun = make(chan struct{})
 	if hc := c.rec.Config.Healthcheck; hc != nil && len(hc.Test) > 0 && hc.Test[0] != "NONE" {
 		c.health = &container.Health{Status: container.Starting}
 		c.healthStop = make(chan struct{})
@@ -982,53 +1020,90 @@ func (c *Container) start(e *Engine) error {
 	} else {
 		c.health = nil
 	}
-	c.mu.Unlock()
-	e.publishContainer(c, events.ActionStart, nil)
-	go e.onExit(c, proc, done, stdout, stderr)
-	return nil
+	return done
 }
 
-func (e *Engine) onExit(c *Container, proc *runtime.Process, done chan struct{}, stdout, stderr *lineWriter) {
-	<-proc.Done()
-	// A container ends with its main process: whatever it left running in
-	// its process group goes with it.
-	proc.KillAll()
-	proc.DrainIO(outputDrain)
-	stdout.flush()
-	stderr.flush()
-	code := proc.ExitCode()
+func (c *Container) exitPath() string { return filepath.Join(c.dir, "exit.json") }
 
-	c.mu.Lock()
-	for _, p := range c.proxies {
-		p.Close()
+// shimSocket is where the container's shim listens: under the engine's
+// root, kept short, as macOS caps socket paths at 104 bytes.
+func (e *Engine) shimSocket(c *Container) string {
+	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".sock")
+}
+
+// watch follows a run until its shim reports the main process's end, then
+// records it and applies the restart policy. It returns early when the
+// engine detaches from its containers, leaving them running.
+func (e *Engine) watch(c *Container, task *shim.Client, done chan struct{}) {
+	stopLogs := make(chan struct{})
+	go task.Logs(stopLogs, c.logs.wake)
+	exit, err := task.Wait(e.detach)
+	close(stopLogs)
+	select {
+	case <-e.detach:
+		return
+	default:
 	}
-	c.proxies = nil
+	if err != nil {
+		exit = e.lostExit(c)
+	}
+	c.logs.wake()
+	relayShimLog(c)
+	e.ended(c, exit, done)
+}
+
+// relayShimLog copies what the run's shim logged about itself into the
+// engine's log, where a supervisor's failure is seen, and empties it.
+func relayShimLog(c *Container) {
+	path := filepath.Join(c.dir, shim.LogFile)
+	b, err := os.ReadFile(path)
+	if err != nil || len(b) == 0 {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		log.Printf("container %s supervisor: %s", c.rec.ID[:12], line)
+	}
+	os.Truncate(path, 0)
+}
+
+// lostExit is how a run ended whose shim went away without answering: as
+// the shim recorded before it exited, or, when the shim itself died, ended
+// by the engine, which kills what is left of the container.
+func (e *Engine) lostExit(c *Container) shim.Exit {
+	if exit, err := shim.ReadExit(c.exitPath()); err == nil {
+		return exit
+	}
+	if err := procs.KillTagged(c.tag()); err != nil {
+		log.Printf("container %s: %v", c.rec.ID[:12], err)
+	}
+	return shim.Exit{ExitCode: 255, FinishedAt: time.Now().UTC()}
+}
+
+func (e *Engine) ended(c *Container, exit shim.Exit, done chan struct{}) {
+	code := exit.ExitCode
+	c.mu.Lock()
 	c.rec.Published = nil
 	if c.healthStop != nil {
 		close(c.healthStop)
 		c.healthStop = nil
 	}
-	if c.stdin != nil {
-		c.stdin.Close()
-		c.stdin = nil
-	}
-	if c.ptyMaster != nil {
-		c.ptyMaster.Close()
-		c.ptyMaster = nil
-	}
 	c.rec.State.Status = container.StateExited
-	c.paused = false
+	c.rec.State.Paused = false
 	c.rec.State.ExitCode = code
-	c.rec.State.FinishedAt = time.Now().UTC()
+	c.rec.State.OOMKilled = exit.OOMKilled
+	c.rec.State.FinishedAt = exit.FinishedAt
 	c.rec.State.Pid = 0
 	manual := c.rec.State.ManualStop
 	policy := c.rec.HostConfig.RestartPolicy
 	restarts := c.rec.State.RestartCount
 	runFor := c.rec.State.FinishedAt.Sub(c.rec.State.StartedAt)
 	c.save()
-	c.proc = nil
+	c.task = nil
 	c.mu.Unlock()
 	close(done)
+	if exit.OOMKilled {
+		e.publishContainer(c, events.ActionOOM, nil)
+	}
 	e.publishContainer(c, events.ActionDie, map[string]string{"exitCode": strconv.Itoa(code)})
 
 	restart := !manual && (policy.Name == container.RestartPolicyAlways || policy.Name == container.RestartPolicyUnlessStopped ||
@@ -1115,8 +1190,8 @@ func (e *Engine) Stop(ref string, timeout *int, signal string) error {
 
 func (c *Container) stopWith(e *Engine, timeout *int, signal string) error {
 	c.mu.Lock()
-	proc, done := c.proc, c.runDone
-	if proc == nil {
+	task, done := c.task, c.runDone
+	if task == nil {
 		c.mu.Unlock()
 		return nil
 	}
@@ -1139,20 +1214,23 @@ func (c *Container) stopWith(e *Engine, timeout *int, signal string) error {
 		sig = syscall.SIGTERM
 	}
 	e.publishContainer(c, events.ActionKill, map[string]string{"signal": strconv.Itoa(int(sig))})
-	proc.Signal(sig)
+	task.Signal(sig)
 	// A stopped process acts on its pending signal once it continues.
 	if c.isPaused() {
 		c.mu.Lock()
-		c.paused = false
+		c.rec.State.Paused = false
+		c.save()
 		c.mu.Unlock()
-		e.signalGroups(c, syscall.SIGCONT)
+		task.Unpause()
 	}
 	if wait >= 0 {
 		select {
 		case <-done:
 		case <-time.After(wait):
 			e.publishContainer(c, events.ActionKill, map[string]string{"signal": "9"})
-			proc.KillAll()
+			// The shim ends every process of the container once the main
+			// one is gone.
+			task.Signal(syscall.SIGKILL)
 			<-done
 		}
 	} else {
@@ -1175,8 +1253,8 @@ func (e *Engine) Kill(ref, signal string) error {
 		return err
 	}
 	c.mu.Lock()
-	proc := c.proc
-	if proc == nil || c.rec.State.Status != container.StateRunning {
+	task := c.task
+	if task == nil || c.rec.State.Status != container.StateRunning {
 		c.mu.Unlock()
 		return conflict("Cannot kill container: %s: container %s is not running", ref, c.rec.ID)
 	}
@@ -1186,11 +1264,7 @@ func (e *Engine) Kill(ref, signal string) error {
 	}
 	c.mu.Unlock()
 	e.publishContainer(c, events.ActionKill, map[string]string{"signal": strconv.Itoa(int(sig))})
-	if sig == syscall.SIGKILL {
-		proc.KillAll()
-		return nil
-	}
-	return proc.Signal(sig)
+	return task.Signal(sig)
 }
 
 func (e *Engine) Restart(ref string, timeout *int, signal string) error {
@@ -1259,7 +1333,7 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 		c.restarting.Stop()
 		c.restarting = nil
 	}
-	proc, done := c.proc, c.runDone
+	task, done := c.task, c.runDone
 	running := c.rec.State.Status == container.StateRunning
 	c.rec.State.ManualStop = true
 	c.mu.Unlock()
@@ -1268,7 +1342,9 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 			return conflict("cannot remove container \"/%s\": container is running: stop the container before removing or force remove", c.Name())
 		}
 		e.publishContainer(c, events.ActionKill, map[string]string{"signal": "9"})
-		proc.KillAll()
+		if task != nil {
+			task.Signal(syscall.SIGKILL)
+		}
 		<-done
 	}
 

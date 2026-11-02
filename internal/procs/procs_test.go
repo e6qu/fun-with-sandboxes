@@ -1,7 +1,11 @@
 package procs
 
 import (
+	"encoding/binary"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -73,4 +77,83 @@ func TestListSeesThisProcess(t *testing.T) {
 		}
 	}
 	t.Fatalf("this process (%d) is missing from %d processes", os.Getpid(), len(ps))
+}
+
+func TestParseProcargs(t *testing.T) {
+	var b []byte
+	b = binary.LittleEndian.AppendUint32(b, 2)
+	b = append(b, "/bin/app\x00\x00\x00\x00"...)
+	b = append(b, "app\x00-v\x00"...)
+	b = append(b, "PATH=/bin\x00SANDBOX_ROOT=/r\x00\x00\x00"...)
+	env, err := parseProcargs(b)
+	if err != nil || len(env) != 2 || env[0] != "PATH=/bin" || env[1] != "SANDBOX_ROOT=/r" {
+		t.Fatalf("parseProcargs = %q, %v", env, err)
+	}
+}
+
+// A process keeps its tag when it starts a session of its own, so Tagged
+// finds it and KillTagged ends it, leaving untagged processes alone.
+func TestKillTaggedEndsProcessesOutsideTheGroup(t *testing.T) {
+	tag := "SANDBOX_ROOT=/procs-test/" + strconv.Itoa(os.Getpid())
+	start := func(env ...string) *exec.Cmd {
+		cmd := exec.Command("sleep", "60")
+		cmd.Env = append(os.Environ(), env...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return cmd
+	}
+	tagged, other := start(tag), start()
+	defer other.Process.Kill()
+	reaped := make(chan error, 1)
+	go func() { reaped <- tagged.Wait() }()
+
+	pids, err := Tagged(tag)
+	if err != nil || len(pids) != 1 || pids[0] != tagged.Process.Pid {
+		t.Fatalf("Tagged = %v, %v; want [%d]", pids, err, tagged.Process.Pid)
+	}
+	if err := KillTagged(tag); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-reaped; err == nil {
+		t.Fatal("the tagged process exited cleanly instead of being killed")
+	}
+	if err := other.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("KillTagged ended an untagged process: %v", err)
+	}
+}
+
+func TestTopArgsSelectTheContainersProcesses(t *testing.T) {
+	pids := map[int]bool{30: true, 7: true}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-ef"}, "-ef"},
+		{[]string{"aux"}, "aux -p 7,30"},
+		{[]string{"-o", "pid"}, "-o pid -p 7,30"},
+		{[]string{"-o", "pid,user", "-A"}, "-o pid,user -A"},
+		{[]string{"-l"}, "-l -p 7,30"},
+	} {
+		if got := strings.Join(TopArgs(c.args, pids), " "); got != c.want {
+			t.Errorf("TopArgs(%q) = %q, want %q", c.args, got, c.want)
+		}
+	}
+}
+
+func TestOwnListsThisProcess(t *testing.T) {
+	es, err := Own()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range es {
+		if e.PID == os.Getpid() {
+			if e.PPID != os.Getppid() || e.PGID != syscall.Getpgrp() || e.Start == 0 {
+				t.Fatalf("this process listed as %+v; want ppid %d, pgid %d and a start time", e, os.Getppid(), syscall.Getpgrp())
+			}
+			return
+		}
+	}
+	t.Fatal("Own does not list this process")
 }
