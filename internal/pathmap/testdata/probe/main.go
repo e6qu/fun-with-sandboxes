@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -138,6 +139,35 @@ func run(check string) string {
 		cmd.Env = []string{"PATH=/bin"}
 		out, err := cmd.Output()
 		return result(string(out), err)
+	case "abslink":
+		// An image's absolute links name the image's files, as under chroot.
+		var parts []string
+		for _, p := range []string{"/usr/bin/link", "/lib/bin/real"} {
+			b, err := os.ReadFile(p)
+			parts = append(parts, result(string(b), err))
+		}
+		target, err := os.Readlink("/usr/bin/link")
+		parts = append(parts, result(target, err))
+		real, err := filepath.EvalSymlinks("/lib/bin/real")
+		parts = append(parts, result(real, err))
+		fi, err := os.Lstat("/usr/bin/link")
+		kind := "not a symlink"
+		if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			kind = "symlink"
+		}
+		parts = append(parts, result(kind, err))
+		err = os.Chdir("/usr/bin")
+		b, rerr := os.ReadFile("link")
+		if err == nil {
+			err = rerr
+		}
+		parts = append(parts, result(string(b), err))
+		// .. stops at the container's /.
+		for _, p := range []string{"/../../etc/marker", "/etc/up/etc/marker"} {
+			b, err := os.ReadFile(p)
+			parts = append(parts, result(string(b), err))
+		}
+		return strings.Join(parts, ",")
 	case "exec":
 		out, err := exec.Command("/bin/probe", "read").Output()
 		return result(string(out), err)

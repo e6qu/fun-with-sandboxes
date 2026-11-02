@@ -158,9 +158,14 @@ same knobs, each enforced by a real mechanism or refused:
   straight to its source and reports the source's paths as the
   destination's. The host's paths above the root and the mounts' sources,
   which a program walks when it resolves a `$SANDBOX_ROOT` path, stay the
-  host's. A script whose `#!` names `/usr/bin/env` runs the program its
-  argument names from the container's `PATH`, as `env` would, because
-  Apple's `env` cannot load the library.
+  host's. The library resolves a path's symbolic links itself wherever the
+  kernel would meet one, which it learns from `AT_SYMLINK_NOFOLLOW_ANY`: an
+  absolute target starts again at the container's `/`, and `..` stops
+  there, as under chroot; a call that follows no final link, as `lstat` and
+  `O_NOFOLLOW` do, leaves the last component unresolved. A script whose
+  `#!` names `/usr/bin/env` runs the program its argument names from the
+  container's `PATH`, as `env` would, because Apple's `env` cannot load the
+  library.
   `setuid` and its kin switch the presented identity, and every program a
   process executes inherits the identity it holds then, with the
   container's variables, whatever environment the process passes: an
@@ -173,7 +178,9 @@ same knobs, each enforced by a real mechanism or refused:
   that does not. The Mach bootstrap names a container registers, as
   Chrome registers its port rendezvous, carry its IPC prefix, under which
   alone Seatbelt lets it register and look up services of its own; a lookup
-  finds the container's service first, then the host's.
+  finds the container's service first, then the host's. POSIX shared
+  memory and semaphore names get the prefix the same way, so a program
+  names them as it would on a host of its own.
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would

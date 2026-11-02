@@ -106,7 +106,7 @@ stack, so a container cannot pretend to own `/var/lib/postgresql/data` or port
 | `SANDBOX_<SERVICE>_PORT_<n>` | the host port of stack peer `<service>`'s port `<n>` |
 | `SANDBOX_<SERVICE>_HOST` | the host to reach that peer on (`127.0.0.1`) |
 | `SANDBOX_STACK` | the stack (Compose project) name |
-| `SANDBOX_IPC_PREFIX` | the prefix POSIX shared memory and semaphore names must start with under private IPC |
+| `SANDBOX_IPC_PREFIX` | the prefix POSIX shared memory and semaphore names start with under private IPC, which the container library adds |
 
 `PATH` entries in the image config are mapped into the root. Containers with
 a network also get `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5, for
