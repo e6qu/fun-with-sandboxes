@@ -3,13 +3,11 @@
 package e2e
 
 import (
-	"errors"
-	"syscall"
-
 	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -258,8 +257,15 @@ func TestPauseUnpauseUpdate(t *testing.T) {
 	if s := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.RestartPolicy.Name}}:{{.HostConfig.RestartPolicy.MaximumRetryCount}}", "pausetest")); s != "on-failure:3" {
 		t.Fatalf("restart policy after update: %q", s)
 	}
-	if _, err := docker(t, "update", "--memory", "64m", "pausetest"); err == nil || !strings.Contains(err.Error(), "memory limits are not supported") {
-		t.Fatalf("memory update: %v", err)
+	mustDocker(t, "update", "--memory", "64m", "--memory-swap", "64m", "--cpus", "1.5", "--pids-limit", "40", "pausetest")
+	if s := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}", "pausetest")); s != "67108864 1500000000 40" {
+		t.Fatalf("limits after update: %q", s)
+	}
+	if s := mustDocker(t, "stats", "--no-stream", "--format", "{{.MemUsage}}", "pausetest"); !strings.Contains(s, "/ 64MiB") {
+		t.Fatalf("docker stats does not report the updated memory limit: %q", s)
+	}
+	if _, err := docker(t, "update", "--blkio-weight", "100", "pausetest"); err == nil || !strings.Contains(err.Error(), "block I/O weight of a running container") {
+		t.Fatalf("block I/O weight update of a running container: %v", err)
 	}
 	mustDocker(t, "pause", "pausetest")
 	mustDocker(t, "stop", "pausetest")

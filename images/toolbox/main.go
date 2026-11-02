@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/net/proxy"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
 	"github.com/e6qu/fun-with-sandboxes/internal/sandboxenv"
 )
 
@@ -181,6 +182,85 @@ func run(op, arg string) error {
 		hold()
 	case "hold":
 		hold()
+	case "alloc":
+		// Allocate and touch arg MiB, a MiB at a time, then hold it.
+		n, err := strconv.Atoi(arg)
+		if err != nil {
+			return err
+		}
+		var keep [][]byte
+		for i := 0; i < n; i++ {
+			b := make([]byte, 1<<20)
+			for j := range b {
+				b[j] = byte(j)
+			}
+			keep = append(keep, b)
+			time.Sleep(time.Millisecond)
+		}
+		fmt.Println("allocated", len(keep), "MiB")
+		hold()
+	case "burn":
+		// Spin for the wall time arg names and print the CPU time it got,
+		// in milliseconds.
+		d, err := time.ParseDuration(arg)
+		if err != nil {
+			return err
+		}
+		for end := time.Now().Add(d); time.Now().Before(end); {
+		}
+		var ru syscall.Rusage
+		syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+		fmt.Println("cpu", (ru.Utime.Nano()+ru.Stime.Nano())/1e6)
+		hold()
+	case "forkmany":
+		// Start arg children, reaping those that end, and stay running.
+		n, err := strconv.Atoi(arg)
+		if err != nil {
+			return err
+		}
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		for i := 0; i < n; i++ {
+			p, err := os.StartProcess(self, []string{self, "hold"}, &os.ProcAttr{Files: []*os.File{nil, nil, nil}})
+			if err != nil {
+				return err
+			}
+			go p.Wait()
+		}
+		fmt.Println("started", n)
+		hold()
+	case "openfiles":
+		// Open /dev/null arg times, holding every descriptor.
+		n, err := strconv.Atoi(arg)
+		if err != nil {
+			return err
+		}
+		var fs []*os.File
+		for i := 0; i < n; i++ {
+			f, err := os.Open("/dev/null")
+			if err != nil {
+				return fmt.Errorf("after %d files: %w", len(fs), err)
+			}
+			fs = append(fs, f)
+		}
+		fmt.Println("opened", len(fs))
+		return nil
+	case "shm":
+		// Create and remove the POSIX shared memory object arg, named as
+		// given, or under the container's IPC prefix when arg starts with
+		// a "+".
+		name := arg
+		if rest, ok := strings.CutPrefix(arg, "+"); ok {
+			name = sandboxenv.IPCName(rest)
+		}
+		fd, err := libsystem.ShmOpen(name, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return fmt.Errorf("shm_open %s: %w", name, err)
+		}
+		syscall.Close(fd)
+		return libsystem.ShmUnlink(name)
 	case "signal":
 		pid, err := strconv.Atoi(arg)
 		if err != nil {

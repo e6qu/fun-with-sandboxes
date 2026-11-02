@@ -47,7 +47,7 @@ func Environ(pid int) ([]string, error) {
 	return env, nil
 }
 
-// Own lists the user's processes from /proc.
+// Own lists the user's live processes from /proc.
 func Own() ([]Entry, error) {
 	pids, err := ownPIDs()
 	if err != nil {
@@ -66,7 +66,7 @@ func Own() ([]Entry, error) {
 			continue
 		}
 		f := bytes.Fields(b[i+1:])
-		if len(f) < 20 {
+		if len(f) < 20 || string(f[0]) == "Z" {
 			continue
 		}
 		ppid, _ := strconv.Atoi(string(f[1]))

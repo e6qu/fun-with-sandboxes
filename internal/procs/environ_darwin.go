@@ -29,7 +29,10 @@ func Environ(pid int) ([]string, error) {
 	return parseProcargs(b)
 }
 
-// Own lists the user's processes from one kern.proc.uid sysctl, without
+// sZomb is a zombie's p_stat (sys/proc.h).
+const sZomb = 5
+
+// Own lists the user's live processes from one kern.proc.uid sysctl, without
 // starting ps.
 func Own() ([]Entry, error) {
 	kps, err := unix.SysctlKinfoProcSlice("kern.proc.uid", os.Getuid())
@@ -38,6 +41,10 @@ func Own() ([]Entry, error) {
 	}
 	out := make([]Entry, 0, len(kps))
 	for _, kp := range kps {
+		// A zombie has ended; it stays listed until its parent reaps it.
+		if kp.Proc.P_stat == sZomb {
+			continue
+		}
 		st := kp.Proc.P_starttime
 		out = append(out, Entry{
 			PID: int(kp.Proc.P_pid), PPID: int(kp.Eproc.Ppid), PGID: int(kp.Eproc.Pgid),

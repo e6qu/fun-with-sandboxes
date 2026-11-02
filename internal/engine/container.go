@@ -789,6 +789,11 @@ func (e *Engine) environment(c *Container, extra []string) []string {
 	set("SANDBOX_ROOT=" + root)
 	set("SANDBOX_STACK=" + c.rec.Stack)
 	set("SANDBOX_HOST=127.0.0.1")
+	// POSIX shared memory and semaphore names must start with the prefix
+	// under private IPC, so programs that name them need it.
+	if _, prefix, err := e.ipcMode(c); err == nil && prefix != "" {
+		set("SANDBOX_IPC_PREFIX=" + prefix)
+	}
 	if port := e.egressPort(c.rec.Stack); port != 0 && e.hasEgress(c) {
 		for _, kv := range egress.Variables(port) {
 			if _, ok := vars[kv[0]]; !ok {
@@ -1043,7 +1048,22 @@ func (e *Engine) watch(c *Container, task *shim.Client, done chan struct{}) {
 		exit = e.lostExit(c)
 	}
 	c.logs.wake()
+	relayShimLog(c)
 	e.ended(c, exit, done)
+}
+
+// relayShimLog copies what the run's shim logged about itself into the
+// engine's log, where a supervisor's failure is seen, and empties it.
+func relayShimLog(c *Container) {
+	path := filepath.Join(c.dir, shim.LogFile)
+	b, err := os.ReadFile(path)
+	if err != nil || len(b) == 0 {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+		log.Printf("container %s supervisor: %s", c.rec.ID[:12], line)
+	}
+	os.Truncate(path, 0)
 }
 
 // lostExit is how a run ended whose shim went away without answering: as

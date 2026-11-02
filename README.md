@@ -34,7 +34,8 @@ docker compose up -d --wait
 
 `fwsd` refuses to run as root. State lives in `~/.fws` (`-root`), stacks get
 host ports from 20000–29999 in blocks of 100 (`-port-base`, `-port-limit`,
-`-block-size`).
+`-block-size`). With `-live-restore` containers keep running while `fwsd`
+stops, for an upgrade say, and the next `fwsd` takes them back.
 
 ## Images
 
@@ -90,6 +91,7 @@ stack, so a container cannot pretend to own `/var/lib/postgresql/data` or port
 | `SANDBOX_<SERVICE>_PORT_<n>` | the host port of stack peer `<service>`'s port `<n>` |
 | `SANDBOX_<SERVICE>_HOST` | the host to reach that peer on (`127.0.0.1`) |
 | `SANDBOX_STACK` | the stack (Compose project) name |
+| `SANDBOX_IPC_PREFIX` | the prefix POSIX shared memory and semaphore names must start with under private IPC |
 
 `PATH` entries in the image config are mapped into the root. Containers with
 a network also get `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5, for
@@ -107,10 +109,17 @@ reads these variables and configures its service — see
 | Network | listen on its assigned loopback ports; connect to its stack's ports; reach the internet over HTTP(S) or SOCKS5 through its stack's egress proxy | listen on any other port or address; connect to anything else; reach the host through the proxy |
 | Processes | exec binaries in its root and the system shell; signal its own processes | exec other host binaries; signal or inspect other sandboxes' processes |
 | Mach services | user lookup, notifications, logging, certificate trust evaluation | keychain, pasteboard, Launch Services, TCC and everything else |
+| IPC | POSIX shared memory and semaphores under its own prefix; System V IPC | other containers' POSIX names; all IPC with `--ipc none` |
+| Everything else | — | Seatbelt denies by default: IOKit, Mach registration, preferences, kernel control sockets |
 
-Requests the engine cannot honour without root — memory and CPU limits, user
-switching, privileged mode, host networking, other network drivers — fail
-with an error rather than being ignored.
+Each container runs under a supervisor that holds it to `--memory`,
+`--cpus`, `--cpu-quota` and `--pids-limit` without cgroups, and its
+processes start with its `--ulimit`s, `--cpu-shares` priority and
+`--blkio-weight` disk I/O tier; `docker update` changes them live (see
+[LIMITATIONS.md](LIMITATIONS.md) for how each is enforced). Requests the
+engine cannot honour without root — cpusets, user switching, privileged
+mode, added capabilities, host networking, other network drivers — fail with
+an error rather than being ignored.
 
 ## Testcontainers
 

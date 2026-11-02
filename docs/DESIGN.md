@@ -94,11 +94,57 @@ container using anything it was not handed.
 | Cross-stack visibility | Per-stack directory tree + per-stack Seatbelt path allowances | Stack A's profile names only A's paths; A cannot read or write B | — |
 | Ports | Engine allocates a disjoint range per stack; Seatbelt `(deny network-bind)` except the assigned ports | Two stacks never clash; a container binds only its grants | Host sees all listening sockets globally |
 | Process signalling | Seatbelt `(deny signal)` except same-sandbox; `(deny process-info*)` except self | A cannot `kill` or inspect B's processes | `ps` lists them (no PID namespace) |
-| Resource limits | `setrlimit` (fds, procs, core); QoS class | Bounded fds/procs | No hard CPU/memory cap (needs root/VM) → `mem_limit`/`cpus` are **rejected**, not ignored |
+| Default deny | Seatbelt `(deny default)` on Apple's `system.sb` baseline, each operation class re-allowed by name | A container gets no IOKit, Mach registration, preferences, AppleEvents, kernel control sockets or anything else the profile does not name | — |
+| IPC | Seatbelt `ipc-posix-name-prefix` filters | POSIX shared memory and semaphores confined to a per-container name prefix (`--ipc` private); `none` denies all IPC | System V keys are machine-wide under private IPC |
+| Resource limits | Per-container supervisor (§3a); `setrlimit` through a spawn helper | Memory, CPU, pids caps, `--ulimit`, priority and disk I/O tiers | Enforced by ending, stopping or killing processes, not by refusing allocations or forks |
 | Identity | Runs as the invoking user | — | No `user:`-switch to arbitrary UID (needs root) → non-default `user:` is **rejected** |
 
 Rejections are deliberate: an unsupported knob returns a clear API error rather
 than silently doing nothing. Silent no-ops would be a fidelity bug.
+
+### 3a. Isolation and limits without cgroups
+
+macOS gives an unprivileged process no cgroups, no namespaces and no
+capability sets. What it does give — `posix_spawn` attributes, `setrlimit`,
+`setpriority`, `setiopolicy_np`, `proc_pid_rusage`, kqueue process events,
+`SIGSTOP`/`SIGCONT`, and Seatbelt's filters — the engine composes into the
+same knobs, each enforced by a real mechanism or refused:
+
+- **Spawn helper.** Every container process (main, exec, health check, build
+  step) starts as the engine's own binary in a helper role, through
+  `posix_spawn` with responsibility disclaimed, so the process inherits no
+  privacy (TCC) grant of whatever launched the engine. The helper applies
+  `--ulimit` (nofile, fsize, cpu, core, stack), the nice value `--cpu-shares`
+  maps to, the disk I/O policy tier `--blkio-weight` maps to, and the
+  controlling terminal, then executes `sandbox-exec`. A limit the user cannot
+  set fails the start, reported on a close-on-exec status pipe.
+- **Supervisor.** Each container runs under a shim, the engine's binary in a
+  supervisor role and a session of its own. The shim owns the container's
+  output and json-file log, its pty, its published-port proxies, and its exit
+  status, and answers the engine over a Unix socket in `<root>/run`. It
+  tracks the container's processes — the main process group, descendants
+  found through kqueue `NOTE_FORK` events and the process table's parent
+  links, and anything that started with the container's `SANDBOX_ROOT` tag —
+  and enforces, every 100 ms:
+  - `--memory`: the sum of the processes' physical footprints, which counts
+    compressed and swapped-out memory, so `--memory-swap` may only equal it;
+    past the limit the largest process is killed, as the kernel OOM killer
+    picks one in a cgroup, and the container reports `OOMKilled`.
+  - `--cpus` / `--cpu-quota`: the processes' CPU time against the quota; a
+    run over it stops them with `SIGSTOP` until the quota has paid it back,
+    and the throttled periods and time show in `docker stats`.
+  - `--pids-limit`: processes past the limit are killed as they appear.
+  `docker update` changes these live; `docker pause` stops the processes
+  through the shim so throttling never continues them.
+- **Live restore.** The shim and each stack's egress proxy are processes of
+  their own, so with `-live-restore` the engine stops without stopping its
+  containers, and the next engine reconnects to the shims through their
+  sockets. Without it, an engine stops its containers as it stops, and ends
+  any an earlier, crashed engine left running as it starts.
+- **Capabilities.** A container runs as the engine's unprivileged user, so
+  Docker's default capabilities grant it nothing to give up: `--cap-drop` is
+  accepted, and `--cap-add` of anything beyond the default set, which would
+  need root, is refused. `no-new-privileges` holds for every container.
 
 ---
 
@@ -434,13 +480,15 @@ mounts, and record the container. On start:
    next to the container's state, outside the root.
 2. Build the environment: image and container variables, `PATH` mapped into
    the root, `HOME` under the root, and the `SANDBOX_*` variables.
-3. Bind the published host ports.
-4. Run `/usr/bin/sandbox-exec -f <profile> <root>/<argv0> …`, the main
-   process leading its own process group (or session, with a TTY). Output
-   reaches the json-file log through real pipes, so the engine sees the exit
-   at once even if a descendant still holds stdout.
-5. When the main process exits, kill its process group, drain the output, and
-   apply the restart policy.
+3. Start the container's shim (§3a), which binds the published host ports.
+4. The shim spawns the helper, which applies the limits and runs
+   `/usr/bin/sandbox-exec -f <profile> <root>/<argv0> …`, the main process
+   leading its own process group (or session, with a TTY). Output reaches
+   the json-file log through real pipes, so the shim sees the exit at once
+   even if a descendant still holds stdout.
+5. When the main process exits, the shim kills the rest of the container,
+   drains the output, records the exit, and tells the engine, which applies
+   the restart policy.
 
 `exec` and health checks start further processes under the same profile,
 root and environment, with pipes or a pty (`creack/pty`).
@@ -511,7 +559,8 @@ every *action* across stacks is denied.
 - macOS-native images only; no Linux images, ever, without a VM.
 - Images must be built for the `$SANDBOX_ROOT` + configurable-port contract;
   stock images don't run.
-- No hard CPU/memory limits; those knobs are rejected, not emulated.
+- Memory, CPU and pids limits are enforced by a supervisor that kills or
+  stops processes, not by a kernel that refuses an allocation or a fork.
 - No `user:` switch to arbitrary UIDs; runs as the invoking user.
 - Process listing (`ps`/`pstree`) crosses sandboxes; every action does not.
 - `sandbox-exec` is Apple-deprecated (since 2016) but still functional and used

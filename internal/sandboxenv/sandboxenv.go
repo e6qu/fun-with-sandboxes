@@ -49,3 +49,11 @@ func Peer(service, containerPort string) (string, error) {
 	}
 	return host + ":" + port, nil
 }
+
+// IPCName returns the POSIX shared memory or semaphore name for name: under
+// private IPC, the default, names must start with the container's prefix,
+// which also keeps them apart from other containers'. macOS caps the names
+// at 31 bytes.
+func IPCName(name string) string {
+	return os.Getenv("SANDBOX_IPC_PREFIX") + strings.TrimPrefix(name, "/")
+}

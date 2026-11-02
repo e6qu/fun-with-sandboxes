@@ -64,6 +64,13 @@ func launch(t *testing.T, args []string, mod func(*Config)) *harness {
 		t.Fatal(err)
 	}
 	tag := "SANDBOX_ROOT=" + root
+	// macOS caps socket paths at 104 bytes, more than a test's temporary
+	// directory leaves.
+	sockDir, err := os.MkdirTemp("/tmp", "shim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
 	cfg := Config{
 		ID: "test",
 		Spec: runtime.Spec{
@@ -71,7 +78,7 @@ func launch(t *testing.T, args []string, mod func(*Config)) *harness {
 			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)},
 			ProfilePath: filepath.Join(state, "profile.sb"),
 		},
-		LogPath: filepath.Join(state, "log.jsonl"), Socket: filepath.Join(state, "s.sock"),
+		LogPath: filepath.Join(state, "log.jsonl"), Socket: filepath.Join(sockDir, "s.sock"),
 		ExitPath: filepath.Join(state, "exit.json"), Tag: tag,
 	}
 	if mod != nil {
@@ -337,9 +344,14 @@ func TestPublishedPortInUse(t *testing.T) {
 	defer held.Close()
 	port := held.Addr().(*net.TCPAddr).Port
 	state, _ := filepath.EvalSymlinks(t.TempDir())
+	sockDir, err := os.MkdirTemp("/tmp", "shim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(sockDir)
 	cfg := Config{
 		Spec:    runtime.Spec{Root: state, Argv: []string{"/work", "hold"}},
-		LogPath: filepath.Join(state, "log.jsonl"), Socket: filepath.Join(state, "s.sock"), ExitPath: filepath.Join(state, "exit.json"),
+		LogPath: filepath.Join(state, "log.jsonl"), Socket: filepath.Join(sockDir, "s.sock"), ExitPath: filepath.Join(state, "exit.json"),
 		Publish: []Binding{{Proto: "tcp", IP: netip.MustParseAddr("127.0.0.1"), Lo: port, Hi: port, Upstream: "127.0.0.1:1"}},
 	}
 	if _, _, err := Launch(state, cfg); !errors.Is(err, ErrPortInUse) {
