@@ -28,6 +28,7 @@ type BuildKit interface {
 	ServeGRPC(http.ResponseWriter, *http.Request)
 	ServeSession(http.ResponseWriter, *http.Request)
 	Prune(ctx context.Context, all bool) ([]string, uint64, error)
+	DiskUsage(ctx context.Context) ([]build.CacheRecord, error)
 }
 
 type Server struct {
@@ -87,11 +88,17 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, s.e.Version()) })
 	m.HandleFunc("GET /info", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, s.e.Info()) })
 	m.HandleFunc("GET /events", s.events)
+	m.HandleFunc("GET /system/df", s.systemDF)
+	m.HandleFunc("GET /distribution/{ref...}", s.distribution)
 
 	m.HandleFunc("GET /containers/json", s.containerList)
 	m.HandleFunc("POST /containers/create", s.containerCreate)
 	m.HandleFunc("POST /containers/prune", s.containerPrune)
 	m.HandleFunc("GET /containers/{id}/json", s.containerInspect)
+	m.HandleFunc("GET /containers/{id}/changes", func(w http.ResponseWriter, r *http.Request) {
+		res, err := s.e.Changes(r.Context(), r.PathValue("id"))
+		respond(w, res, err)
+	})
 	m.HandleFunc("POST /containers/{id}/start", s.simple(func(r *http.Request) error { return s.e.Start(r.PathValue("id")) }, http.StatusNoContent))
 	m.HandleFunc("POST /containers/{id}/stop", s.simple(func(r *http.Request) error {
 		return s.e.Stop(r.PathValue("id"), timeoutParam(r), r.URL.Query().Get("signal"))
@@ -329,7 +336,7 @@ func (s *Server) containerList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	writeJSON(w, http.StatusOK, s.e.List(engine.ListOptions{All: boolParam(q.Get("all")), Limit: limit, Filters: f}))
+	writeJSON(w, http.StatusOK, s.e.List(engine.ListOptions{All: boolParam(q.Get("all")), Limit: limit, Filters: f, Size: boolParam(q.Get("size"))}))
 }
 
 func (s *Server) containerCreate(w http.ResponseWriter, r *http.Request) {
@@ -754,4 +761,50 @@ func (s *Server) buildPrune(w http.ResponseWriter, r *http.Request) {
 		report.SpaceReclaimed += n
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+// systemDF serves GET /system/df in API 1.51's shape, the build cache
+// holding the classic builder's steps and BuildKit's records.
+func (s *Server) systemDF(w http.ResponseWriter, r *http.Request) {
+	want := map[string]bool{}
+	for _, t := range r.URL.Query()["type"] {
+		switch t {
+		case "image", "container", "volume", "build-cache":
+			want[t] = true
+		default:
+			writeError(w, http.StatusBadRequest, "unknown object type: "+t)
+			return
+		}
+	}
+	u, err := s.e.DiskUsage(r.Context(), want)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	if s.bk != nil && (len(want) == 0 || want["build-cache"]) {
+		records, err := s.bk.DiskUsage(r.Context())
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+		u.BuildCache = append(u.BuildCache, records...)
+	}
+	writeJSON(w, http.StatusOK, u)
+}
+
+// distribution serves GET /distribution/{name}/json with the client's
+// credentials.
+func (s *Server) distribution(w http.ResponseWriter, r *http.Request) {
+	ref, ok := strings.CutSuffix(r.PathValue("ref"), "/json")
+	if !ok {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+	auth, err := registryAuth(r.Header.Get("X-Registry-Auth"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	res, err := s.e.Distribution(r.Context(), ref, auth)
+	respond(w, res, err)
 }

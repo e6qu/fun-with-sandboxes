@@ -33,6 +33,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/worker"
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/worker/base"
 	wlabel "github.com/e6qu/fun-with-sandboxes/third_party/buildkit/worker/label"
+	"github.com/moby/moby/api/types/build"
 	"github.com/moby/sys/user"
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 	bolt "go.etcd.io/bbolt"
@@ -274,4 +275,21 @@ func (s *Service) Prune(ctx context.Context, all bool) ([]string, uint64, error)
 	close(ch)
 	<-done
 	return ids, freed, err
+}
+
+// DiskUsage lists BuildKit's build cache records as the Docker API reports
+// them.
+func (s *Service) DiskUsage(ctx context.Context) ([]build.CacheRecord, error) {
+	infos, err := s.worker.DiskUsage(ctx, client.DiskUsageInfo{})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]build.CacheRecord, 0, len(infos))
+	for _, u := range infos {
+		out = append(out, build.CacheRecord{
+			ID: u.ID, Parents: u.Parents, Type: string(u.RecordType), Description: u.Description,
+			InUse: u.InUse, Shared: u.Shared, Size: u.Size, CreatedAt: u.CreatedAt, LastUsedAt: u.LastUsedAt, UsageCount: u.UsageCount,
+		})
+	}
+	return out, nil
 }

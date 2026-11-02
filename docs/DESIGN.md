@@ -297,8 +297,11 @@ Stock Docker Hub images are Linux. The catalog is built from Nixpkgs for
 Served on `unix://~/.fws/docker.sock` at API version 1.51 (minimum 1.24),
 with or without the `/v1.xx` prefix:
 
-- `GET|HEAD /_ping`, `GET /version`, `GET /info`, `GET /events`
-- Containers: `create`, `json` (list, with Docker's filters), `{id}/json`,
+- `GET|HEAD /_ping`, `GET /version`, `GET /info`, `GET /events`,
+  `GET /system/df` (in API 1.51's shape: image sizes counting each layer
+  once, containers' writes, volume usage, and both builders' caches)
+- Containers: `create`, `json` (list, with Docker's filters, and sizes with
+  `size`), `{id}/json`, `{id}/changes` (`docker diff`),
   `start`, `stop`, `restart`, `kill`, `wait` (all three conditions),
   `rename`, `resize`, `logs` (follow, tail, since, until, timestamps),
   `attach` (hijacked, multiplexed or raw), `archive` (`HEAD`, `GET`, `PUT`:
@@ -313,11 +316,19 @@ with or without the `/v1.xx` prefix:
   `{ref}/history`, `get` and `{ref}/get` (`docker save`), `{ref}/push`
   (with `X-Registry-Auth`), `prune` (`dangling`, `until`, `label`),
   `DELETE`; references may be repository@digest
-- Registries: `POST /auth` (`docker login`)
+- Registries: `POST /auth` (`docker login`), `GET /distribution/{name}/json`
+  (the descriptor and platforms a name resolves to in its registry, with
+  `X-Registry-Auth`), `GET /images/search` (`docker search`, against Docker
+  Hub's search API or the registry the term names)
 - Containers to images: `POST /commit` (with `changes`, pausing by default)
   and `GET /containers/{id}/export`
 - Networks: `json`, `create`, `{id}`, `connect`, `disconnect`, `prune`, `DELETE`
 - Volumes: `json`, `create`, `{name}`, `prune`, `DELETE`
+
+A container's create ends with an APFS clone of its root, taken once its
+mounts are set up: the state Docker's init layer holds. `docker diff` and a
+container's size compare the root against it, so they report what the
+container wrote and nothing the engine set up.
 
 Health checks run on the image's or container's own cadence (interval,
 timeout, start period, retries) and report Docker's states and events. Restart
