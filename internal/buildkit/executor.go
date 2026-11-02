@@ -193,7 +193,14 @@ func (x *seatbeltExecutor) prepare(ctx context.Context, root string, mounts []ex
 			return fail(err)
 		}
 		mm.links = append(mm.links, dest)
-		vols = append(vols, seatbelt.Volume{Path: src, ReadOnly: m.Readonly})
+		// Seatbelt matches resolved paths, and BuildKit makes some sources,
+		// such as an SSH mount's socket, under TMPDIR: /var is a symlink to
+		// /private/var.
+		resolved, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			return fail(err)
+		}
+		vols = append(vols, seatbelt.Volume{Path: resolved, ReadOnly: m.Readonly})
 	}
 	return mm, vols, nil
 }

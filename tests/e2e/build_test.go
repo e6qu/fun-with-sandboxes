@@ -29,16 +29,19 @@ func TestBuildKitSSHMount(t *testing.T) {
 	defer os.RemoveAll(sockDir)
 	sock := filepath.Join(sockDir, "s")
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	agentCmd := exec.CommandContext(ctx, "/usr/bin/ssh-agent", "-D", "-a", sock)
 	announce, err := agentCmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := agentCmd.Start(); err != nil {
+		cancel()
 		t.Fatal(err)
 	}
-	defer agentCmd.Wait()
+	defer func() {
+		cancel()
+		agentCmd.Wait()
+	}()
 	// The agent prints its environment once its socket listens.
 	if _, err := bufio.NewReader(announce).ReadString('\n'); err != nil {
 		t.Fatalf("ssh-agent did not start: %v", err)
