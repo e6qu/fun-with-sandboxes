@@ -111,15 +111,17 @@ capability sets. What it does give — `posix_spawn` attributes, `setrlimit`,
 same knobs, each enforced by a real mechanism or refused:
 
 - **Spawn helper.** Every container process (main, exec, health check, build
-  step) starts as the engine's own binary in a helper role, through
+  step) starts as `fws-shim`, a small binary beside `fwsd` that holds
+  only the engine's helper roles, in its spawn-helper role, through
   `posix_spawn` with responsibility disclaimed, so the process inherits no
   privacy (TCC) grant of whatever launched the engine. The helper applies
   `--ulimit` (nofile, fsize, cpu, core, stack), the nice value `--cpu-shares`
   maps to, the disk I/O policy tier `--blkio-weight` maps to, and the
   controlling terminal, then executes `sandbox-exec`. A limit the user cannot
   set fails the start, reported on a close-on-exec status pipe.
-- **Supervisor.** Each container runs under a shim, the engine's binary in a
-  supervisor role and a session of its own. The shim owns the container's
+- **Supervisor.** Each container runs under a shim, `fws-shim` in its
+  supervisor role and a session of its own; each stack's egress proxy is
+  `fws-shim` too. The shim owns the container's
   output and json-file log, its pty, its published-port proxies, and its exit
   status, and answers the engine over a Unix socket in `<root>/run`. It
   tracks the container's processes — the main process group, descendants

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/moby/moby/api/types/container"
+	"golang.org/x/sys/unix"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 )
@@ -114,6 +115,7 @@ func (e *Engine) sample(c *Container) (container.StatsResponse, error) {
 		pidsLimit = uint64(*r.PidsLimit)
 	}
 	var throttling container.ThrottlingData
+	var blkio container.BlkioStats
 	if task != nil {
 		if st, err := task.State(); err == nil {
 			throttling = container.ThrottlingData{
@@ -121,6 +123,7 @@ func (e *Engine) sample(c *Container) (container.StatsResponse, error) {
 			}
 			// Report the measure the memory limit holds.
 			rss = st.Footprint
+			blkio = blkioStats(c.root(), st.DiskRead, st.DiskWritten)
 		}
 	}
 	return container.StatsResponse{
@@ -135,6 +138,7 @@ func (e *Engine) sample(c *Container) (container.StatsResponse, error) {
 		},
 		MemoryStats: container.MemoryStats{Usage: rss, Limit: memLimit},
 		PidsStats:   container.PidsStats{Current: uint64(len(members)), Limit: pidsLimit},
+		BlkioStats:  blkio,
 	}, nil
 }
 
@@ -185,4 +189,18 @@ func (e *Engine) Stats(ctx context.Context, ref string, stream, oneShot bool, fn
 		}
 		prev = cur
 	}
+}
+
+// blkioStats reports the container's disk I/O against the device its root
+// lives on, as a cgroup v2 host reports io_service_bytes_recursive.
+func blkioStats(root string, read, written uint64) container.BlkioStats {
+	var st unix.Stat_t
+	if err := unix.Stat(root, &st); err != nil {
+		return container.BlkioStats{}
+	}
+	major, minor := uint64(unix.Major(uint64(st.Dev))), uint64(unix.Minor(uint64(st.Dev)))
+	return container.BlkioStats{IoServiceBytesRecursive: []container.BlkioStatEntry{
+		{Major: major, Minor: minor, Op: "read", Value: read},
+		{Major: major, Minor: minor, Op: "write", Value: written},
+	}}
 }

@@ -103,14 +103,19 @@ type Response struct {
 // State is the running container as the shim sees it.
 type State struct {
 	Pid int
+	// Shim is the supervisor's own pid.
+	Shim int
 	// Members are the processes the shim counts as the container's, and
 	// Footprint the sum of their physical footprints, the measure the
 	// memory limit holds.
-	Members          []int
-	Footprint        uint64
-	Periods          uint64
-	ThrottledPeriods uint64
-	ThrottledTime    time.Duration
-	OOMKills         uint64
-	Resources        Resources
+	Members   []int
+	Footprint uint64
+	// DiskRead and DiskWritten count the bytes the container's processes
+	// read from and wrote to disk, those that ended included.
+	DiskRead, DiskWritten uint64
+	Periods               uint64
+	ThrottledPeriods      uint64
+	ThrottledTime         time.Duration
+	OOMKills              uint64
+	Resources             Resources
 }

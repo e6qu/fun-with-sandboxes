@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
+	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
@@ -356,5 +358,44 @@ func TestPublishedPortInUse(t *testing.T) {
 	}
 	if _, _, err := Launch(state, cfg); !errors.Is(err, ErrPortInUse) {
 		t.Fatalf("Launch = %v, want ErrPortInUse", err)
+	}
+}
+
+func TestDiskIOCounted(t *testing.T) {
+	const mib = 16
+	h := launch(t, []string{"diskwrite", strconv.Itoa(mib)}, nil)
+	h.waitLog("wrote")
+	st, err := h.client.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.DiskWritten < mib<<20 {
+		t.Fatalf("the container wrote %d bytes to disk by the shim's count, want at least %d", st.DiskWritten, mib<<20)
+	}
+}
+
+// The supervisor fwsd runs, fws-shim built as it ships, stays small: a
+// container costs one of it.
+func TestSupervisorFootprint(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "fws-shim")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/fws-shim")
+	build.Dir = "../.."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build fws-shim: %v\n%s", err, out)
+	}
+	roles.Use(bin)
+	defer roles.Use("")
+	h := launch(t, []string{"hold"}, nil)
+	st, err := h.client.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := libsystem.ProcUsage(st.Shim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("fws-shim supervising one container: footprint %d KiB, resident %d KiB", u.Footprint>>10, u.Resident>>10)
+	if u.Footprint > 16<<20 {
+		t.Fatalf("the supervisor's footprint is %d KiB, over 16 MiB", u.Footprint>>10)
 	}
 }

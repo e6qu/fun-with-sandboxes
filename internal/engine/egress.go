@@ -154,13 +154,15 @@ func (e *Engine) closeAllEgress() {
 
 // stopProcess ends a proxy with SIGTERM, and SIGKILL if it lingers.
 func stopProcess(p *egressProc) {
-	syscall.Kill(p.Pid, syscall.SIGTERM)
-	deadline := time.Now().Add(5 * time.Second)
-	for p.alive() {
-		if time.Now().After(deadline) {
-			syscall.Kill(p.Pid, syscall.SIGKILL)
-			deadline = time.Now().Add(time.Hour)
-		}
-		time.Sleep(2 * time.Millisecond)
+	if !p.alive() {
+		return
 	}
+	syscall.Kill(p.Pid, syscall.SIGTERM)
+	if left, err := procs.WaitExit([]int{p.Pid}, egressStopTimeout); err == nil && len(left) == 0 {
+		return
+	}
+	syscall.Kill(p.Pid, syscall.SIGKILL)
+	procs.WaitExit([]int{p.Pid}, egressStopTimeout)
 }
+
+const egressStopTimeout = 5 * time.Second

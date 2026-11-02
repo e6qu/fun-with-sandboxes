@@ -37,8 +37,8 @@ func (e *Engine) Inspect(ref string) (container.InspectResponse, error) {
 		Pid: r.State.Pid, ExitCode: r.State.ExitCode, Error: r.State.Error, OOMKilled: r.State.OOMKilled,
 		StartedAt: timeString(r.State.StartedAt), FinishedAt: timeString(r.State.FinishedAt),
 	}
-	if c.health != nil {
-		h := *c.health
+	if c.rec.State.Health != nil {
+		h := *c.rec.State.Health
 		st.Health = &h
 	}
 	cfg := r.Config
@@ -117,12 +117,12 @@ func (c *Container) status() string {
 	switch s.Status {
 	case container.StateRunning:
 		h := ""
-		if c.health != nil {
-			switch c.health.Status {
+		if c.rec.State.Health != nil {
+			switch c.rec.State.Health.Status {
 			case container.Starting:
 				h = " (health: starting)"
 			default:
-				h = " (" + string(c.health.Status) + ")"
+				h = " (" + string(c.rec.State.Health.Status) + ")"
 			}
 		}
 		if c.rec.State.Paused {
@@ -208,8 +208,8 @@ func (c *Container) summary(opts ListOptions) (container.Summary, bool) {
 		return container.Summary{}, false
 	}
 	health := string(container.NoHealthcheck)
-	if c.health != nil {
-		health = string(c.health.Status)
+	if c.rec.State.Health != nil {
+		health = string(c.rec.State.Health.Status)
 	}
 	var nets []string
 	for n := range r.Networks {
@@ -256,8 +256,8 @@ func (c *Container) summary(opts ListOptions) (container.Summary, bool) {
 		Mounts:          c.mountPoints(),
 	}
 	s.HostConfig.NetworkMode = string(r.HostConfig.NetworkMode)
-	if c.health != nil {
-		s.Health = &container.HealthSummary{Status: c.health.Status, FailingStreak: c.health.FailingStreak}
+	if c.rec.State.Health != nil {
+		s.Health = &container.HealthSummary{Status: c.rec.State.Health.Status, FailingStreak: c.rec.State.Health.FailingStreak}
 	}
 	return s, true
 }

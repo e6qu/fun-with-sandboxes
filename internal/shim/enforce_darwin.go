@@ -3,6 +3,7 @@ package shim
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -43,6 +44,9 @@ type enforcer struct {
 	// time, so each is read once.
 	others map[int]int64
 
+	// goneRead and goneWritten are the disk I/O of members that ended.
+	goneRead, goneWritten uint64
+
 	periods, throttledPeriods, oomKills uint64
 	throttledTime                       time.Duration
 	oom                                 bool
@@ -57,6 +61,8 @@ type enforcer struct {
 type member struct {
 	start int64
 	cpu   uint64
+	// read and written are the bytes of disk I/O last sampled.
+	read, written uint64
 }
 
 func newEnforcer(tag string, main int, r Resources) *enforcer {
@@ -171,6 +177,8 @@ func (e *enforcer) scanLocked() {
 	}
 	for pid, m := range e.members {
 		if p, ok := live[pid]; !ok || p.Start != m.start {
+			e.goneRead += m.read
+			e.goneWritten += m.written
 			delete(e.members, pid)
 		}
 	}
@@ -254,7 +262,7 @@ func (e *enforcer) tickLocked(now time.Time, elapsed time.Duration) {
 		if u.CPU > m.cpu {
 			used += time.Duration(u.CPU - m.cpu)
 		}
-		m.cpu = u.CPU
+		m.cpu, m.read, m.written = u.CPU, u.DiskRead, u.DiskWritten
 		total += u.Footprint
 		if u.Footprint > largest {
 			largest, largestPID = u.Footprint, pid
@@ -369,14 +377,18 @@ func (e *enforcer) state() State {
 		e.scanLocked()
 	}
 	st := State{
-		Pid: e.main, Periods: e.periods, ThrottledPeriods: e.throttledPeriods,
+		Pid: e.main, Shim: os.Getpid(), Periods: e.periods, ThrottledPeriods: e.throttledPeriods,
 		ThrottledTime: e.throttledTime, OOMKills: e.oomKills, Resources: e.res,
 	}
-	for pid := range e.members {
+	st.DiskRead, st.DiskWritten = e.goneRead, e.goneWritten
+	for pid, m := range e.members {
 		st.Members = append(st.Members, pid)
 		if u, err := libsystem.ProcUsage(pid); err == nil {
 			st.Footprint += u.Footprint
+			m.read, m.written = u.DiskRead, u.DiskWritten
 		}
+		st.DiskRead += m.read
+		st.DiskWritten += m.written
 	}
 	sort.Ints(st.Members)
 	return st

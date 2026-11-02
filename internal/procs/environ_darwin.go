@@ -7,18 +7,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func ownPIDs() ([]int, error) {
-	kps, err := unix.SysctlKinfoProcSlice("kern.proc.uid", os.Getuid())
-	if err != nil {
-		return nil, fmt.Errorf("procs: list processes: %w", err)
-	}
-	out := make([]int, 0, len(kps))
-	for _, kp := range kps {
-		out = append(out, int(kp.Proc.P_pid))
-	}
-	return out, nil
-}
-
 // Environ returns the environment pid started with, from the kernel's copy
 // of its arguments, kern.procargs2.
 func Environ(pid int) ([]string, error) {
@@ -29,8 +17,12 @@ func Environ(pid int) ([]string, error) {
 	return parseProcargs(b)
 }
 
-// sZomb is a zombie's p_stat (sys/proc.h).
-const sZomb = 5
+// A zombie's p_stat, and the p_flag of a process working on its exit
+// (sys/proc.h).
+const (
+	sZomb  = 5
+	pWexit = 0x00002000
+)
 
 // Own lists the user's live processes from one kern.proc.uid sysctl, without
 // starting ps.
@@ -41,8 +33,10 @@ func Own() ([]Entry, error) {
 	}
 	out := make([]Entry, 0, len(kps))
 	for _, kp := range kps {
-		// A zombie has ended; it stays listed until its parent reaps it.
-		if kp.Proc.P_stat == sZomb {
+		// A zombie has ended; it stays listed until its parent reaps it. A
+		// process working on its exit has ended too, and has already
+		// reported NOTE_EXIT.
+		if kp.Proc.P_stat == sZomb || kp.Proc.P_flag&pWexit != 0 {
 			continue
 		}
 		st := kp.Proc.P_starttime

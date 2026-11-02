@@ -2,6 +2,7 @@ package procs
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -156,4 +157,32 @@ func TestOwnListsThisProcess(t *testing.T) {
 		}
 	}
 	t.Fatal("Own does not list this process")
+}
+
+// WaitExit returns once a process that is not this one's child exits.
+func TestWaitExitSeesAnotherProcessExit(t *testing.T) {
+	// The shell's child is the shell's to reap, not this process's.
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30 & echo $!; wait")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	var pid int
+	if _, err := fmt.Fscan(out, &pid); err != nil {
+		t.Fatal(err)
+	}
+	if left, err := WaitExit([]int{pid}, 50*time.Millisecond); err != nil || len(left) != 1 {
+		t.Fatalf("WaitExit on a running process = %v, %v; want it still running", left, err)
+	}
+	syscall.Kill(pid, syscall.SIGKILL)
+	if left, err := WaitExit([]int{pid}, 10*time.Second); err != nil || len(left) != 0 {
+		t.Fatalf("WaitExit after SIGKILL = %v, %v", left, err)
+	}
+	if left, err := WaitExit([]int{pid, 1 << 30}, time.Second); err != nil || len(left) != 0 {
+		t.Fatalf("WaitExit on gone processes = %v, %v", left, err)
+	}
 }

@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
+	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
 
@@ -68,8 +68,14 @@ func TestExitWithLingeringChild(t *testing.T) {
 	p.KillAll()
 	// KillAll returns only once nothing of the group is left to write into
 	// the container's files.
-	if err := syscall.Kill(-p.Pid(), 0); !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("the process group outlived KillAll: kill(-pgid, 0) = %v", err)
+	es, err := procs.Own()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range es {
+		if e.PGID == p.Pid() {
+			t.Fatalf("process %d of the group outlived KillAll", e.PID)
+		}
 	}
 	// The child sleeps for an hour holding stdout, so the output drains in
 	// time only if KillAll killed it.

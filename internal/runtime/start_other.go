@@ -2,11 +2,15 @@
 
 package runtime
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/roles"
+)
 
 // RoleVar names the variable that starts the engine's binary in a helper
 // role.
-const RoleVar = "FWS_ROLE"
+const RoleVar = roles.Var
 
 // Start fails: Seatbelt and sandbox-exec are macOS's.
 func Start(s Spec) (*Process, error) {

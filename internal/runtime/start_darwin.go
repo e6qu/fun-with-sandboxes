@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
+	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
 
@@ -22,7 +23,7 @@ import (
 // executes sandbox-exec. posix_spawn cannot set resource limits or a
 // controlling terminal, and Go cannot run code between fork and exec.
 const (
-	RoleVar    = "FWS_ROLE"
+	RoleVar    = roles.Var
 	spawnRole  = "spawn"
 	helperVar  = "FWS_SPAWN"
 	statusFD   = 3
@@ -126,7 +127,7 @@ func Start(s Spec) (*Process, error) {
 	if err := os.MkdirAll(wd, 0o755); err != nil {
 		return nil, err
 	}
-	self, err := os.Executable()
+	self, err := roles.Binary()
 	if err != nil {
 		return nil, err
 	}

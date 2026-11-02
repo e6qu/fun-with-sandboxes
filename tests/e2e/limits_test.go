@@ -250,6 +250,8 @@ func TestLiveRestore(t *testing.T) {
 	if err := get(); err != nil {
 		t.Fatal(err)
 	}
+	waitLiveHealthy(t, d.host, name)
+	t.Logf("the container's supervisor holds %d KiB resident", supervisorRSS(t, root))
 
 	d.stop()
 	if err := syscall.Kill(pid, 0); err != nil {
@@ -265,6 +267,9 @@ func TestLiveRestore(t *testing.T) {
 	}
 	if err := get(); err != nil {
 		t.Fatal(err)
+	}
+	if s := strings.TrimSpace(d.docker("inspect", "-f", "{{.State.Health.Status}}", name)); s != "healthy" {
+		t.Fatalf("after the engine reconnected the container's health reads %q, want healthy", s)
 	}
 	d.docker("update", "--cpus", "1", name)
 	d.docker("stop", "--time", "2", name)
@@ -338,4 +343,47 @@ func waitLiveLog(t *testing.T, host, name, text string) {
 		}
 	}
 	t.Fatalf("%s's log ended without %q", name, text)
+}
+
+func waitLiveHealthy(t *testing.T, host, name string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "events", "--since", "0",
+		"--filter", "container="+name, "--filter", "event=health_status", "--format", "{{.Action}}")
+	cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); cmd.Wait() }()
+	sc := bufio.NewScanner(out)
+	for sc.Scan() {
+		if strings.TrimSpace(sc.Text()) == "health_status: healthy" {
+			return
+		}
+	}
+	t.Fatalf("%s never reported healthy", name)
+}
+
+// supervisorRSS is the resident memory of the shim of the one container
+// under the engine root, in KiB, as ps reports it.
+func supervisorRSS(t *testing.T, root string) int {
+	t.Helper()
+	out, err := exec.Command("/bin/ps", "-ax", "-o", "rss=,command=").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 4 && f[2] == "shim" && strings.HasPrefix(f[3], root) {
+			kib, _ := strconv.Atoi(f[0])
+			return kib
+		}
+	}
+	t.Fatalf("no supervisor runs under %s:\n%s", root, out)
+	return 0
 }

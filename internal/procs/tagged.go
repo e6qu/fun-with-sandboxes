@@ -16,13 +16,14 @@ import (
 // call to unsetenv leaves the environment it started with as it was, so
 // only one that executes a program with a cleared environment sheds it.
 func Tagged(tag string) ([]int, error) {
-	pids, err := ownPIDs()
+	live, err := Own()
 	if err != nil {
 		return nil, err
 	}
 	self := os.Getpid()
 	var out []int
-	for _, pid := range pids {
+	for _, p := range live {
+		pid := p.PID
 		if pid == self {
 			continue
 		}
@@ -62,20 +63,13 @@ func KillTagged(tag string) error {
 				return fmt.Errorf("procs: kill %d: %w", pid, err)
 			}
 		}
-		// A killed process leaves within milliseconds; macOS notifies only
-		// a parent, which the engine is not of these.
-		for _, pid := range pids {
-			for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
-				time.Sleep(exitProbe)
-			}
+		if _, err := WaitExit(pids, time.Until(deadline)); err != nil {
+			return err
 		}
 	}
 }
 
-const (
-	killTimeout = 10 * time.Second
-	exitProbe   = 2 * time.Millisecond
-)
+const killTimeout = 10 * time.Second
 
 // parseProcargs reads the environment out of a kern.procargs2 buffer: the
 // argument count, the executable's path and its NUL padding, the arguments,
