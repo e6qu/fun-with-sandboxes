@@ -61,13 +61,15 @@ func main() {
 	flag.Var(&env, "env", "KEY=value to add to the image's environment (repeatable)")
 	var links multi
 	flag.Var(&links, "link", "image-path=target of a symbolic link to add, such as /bin/sh=dash (repeatable)")
+	var removes multi
+	flag.Var(&removes, "remove", "image path to leave out of the image, such as a store path's file (repeatable)")
 	arch := flag.String("arch", runtime.GOARCH, "image architecture")
 	flag.Parse()
 	if *specPath == "" || *out == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := build(*specPath, *closure, pkgs, files, *out, *arch, *tag, env, links); err != nil {
+	if err := build(*specPath, *closure, pkgs, files, *out, *arch, *tag, env, links, removes); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -77,7 +79,7 @@ type multi []string
 func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
-func build(specPath, closure string, pkgs, files []string, out, arch, tag string, env, links []string) error {
+func build(specPath, closure string, pkgs, files []string, out, arch, tag string, env, links, removes []string) error {
 	var spec Spec
 	b, err := os.ReadFile(specPath)
 	if err != nil {
@@ -141,6 +143,11 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 	for _, d := range spec.Dirs {
 		if err := os.MkdirAll(filepath.Join(stage, d), 0o755); err != nil {
 			return err
+		}
+	}
+	for _, r := range removes {
+		if err := os.Remove(filepath.Join(stage, r)); err != nil {
+			return fmt.Errorf("-remove %s: %w", r, err)
 		}
 	}
 	for _, l := range links {

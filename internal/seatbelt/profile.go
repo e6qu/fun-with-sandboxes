@@ -233,9 +233,14 @@ func Render(s Spec) (string, error) {
 	}
 	w(")")
 
+	// A container executes its root's programs and its mounts', as Docker
+	// lets it, and a script's interpreter, which Seatbelt checks apart.
 	w("(deny process-exec*)")
-	w("(allow process-exec*")
+	w("(allow process-exec* process-exec-interpreter")
 	w("  (subpath %q)", s.Root)
+	for _, v := range s.Volumes {
+		w("  (subpath %q)", v.Path)
+	}
 	for _, sh := range SystemShells {
 		w("  (literal %q)", sh)
 	}

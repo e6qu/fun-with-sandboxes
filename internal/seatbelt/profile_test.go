@@ -27,7 +27,7 @@ func TestRenderGrantsOnlyOwnResources(t *testing.T) {
 		`(allow network-bind (local ip "localhost:41000"))`,
 		`(allow network-outbound (remote ip "localhost:41000"))`,
 		`(allow network-outbound (remote ip "localhost:41001"))`,
-		`(allow process-exec*` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/containers/c1/root")`,
+		`(allow process-exec* process-exec-interpreter` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/containers/c1/root")` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/volumes/data")`,
 		`  (literal "/bin/sh")`,
 		`(allow signal (target same-sandbox))`,
 		`  (global-name "com.apple.trustd")`,

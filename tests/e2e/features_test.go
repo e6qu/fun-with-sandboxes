@@ -217,7 +217,9 @@ func waitHealthy(t *testing.T, name string, since time.Time) {
 			return
 		}
 	}
-	t.Fatalf("%s never reported healthy: %v", name, ctx.Err())
+	logs, _ := docker(t, "logs", "--tail", "60", name)
+	health, _ := docker(t, "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}} {{json .State.Health}}", name)
+	t.Fatalf("%s never reported healthy: %v\nstate: %s\nlogs:\n%s", name, ctx.Err(), health, logs)
 }
 
 func TestPauseUnpauseUpdate(t *testing.T) {

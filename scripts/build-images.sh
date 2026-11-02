@@ -69,7 +69,11 @@ mkimage -spec images/mariadb/image.json -closure "$build/mariadb.closure" -pkg "
 
 python=$(pkg_with python314 python3.14)
 closure "$python" > "$build/python.closure"
-mkimage -spec images/python/image.json -closure "$build/python.closure" -pkg "$python" -out "$out/python.tar"
+# nixpkgs marks its Python as managed by Nix, which keeps pip from installing
+# into it; the official image's Python takes packages.
+python_marker=$(cd "$python" && ls lib/python3.14/EXTERNALLY-MANAGED)
+mkimage -spec images/python/image.json -closure "$build/python.closure" -pkg "$python" \
+  -remove "$python/$python_marker" -out "$out/python.tar"
 
 node=$(pkg_with nodejs_26 node)
 closure "$node" > "$build/node.closure"
@@ -112,6 +116,7 @@ rie=$(pkg_with aws-lambda-rie aws-lambda-rie)
 
 closure "$python" "$rie" > "$build/lambda-python.closure"
 mkimage -spec images/lambda/python/image.json -closure "$build/lambda-python.closure" -pkg "$python" -pkg "$rie" \
+  -remove "$python/$python_marker" \
   -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" \
   -out "$out/lambda-python.tar"
 
