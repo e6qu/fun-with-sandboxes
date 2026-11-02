@@ -3,6 +3,7 @@ package shim
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -376,7 +377,7 @@ func (e *enforcer) state() State {
 		e.scanLocked()
 	}
 	st := State{
-		Pid: e.main, Periods: e.periods, ThrottledPeriods: e.throttledPeriods,
+		Pid: e.main, Shim: os.Getpid(), Periods: e.periods, ThrottledPeriods: e.throttledPeriods,
 		ThrottledTime: e.throttledTime, OOMKills: e.oomKills, Resources: e.res,
 	}
 	st.DiskRead, st.DiskWritten = e.goneRead, e.goneWritten

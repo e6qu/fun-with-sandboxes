@@ -17,7 +17,7 @@ its own directory tree, so two stacks never clash and never see each other.
 ## Run it
 
 ```bash
-go install github.com/e6qu/fun-with-sandboxes/cmd/fwsd@latest
+go install github.com/e6qu/fun-with-sandboxes/cmd/fwsd@latest github.com/e6qu/fun-with-sandboxes/cmd/fws-shim@latest
 ```
 
 ```bash
@@ -32,7 +32,8 @@ export DOCKER_HOST=unix://$HOME/.fws/docker.sock
 docker compose up -d --wait
 ```
 
-`fwsd` refuses to run as root. State lives in `~/.fws` (`-root`), stacks get
+`fwsd` runs each container's supervisor, and the processes it starts, from
+`fws-shim`, which must sit beside it. `fwsd` refuses to run as root. State lives in `~/.fws` (`-root`), stacks get
 host ports from 20000–29999 in blocks of 100 (`-port-base`, `-port-limit`,
 `-block-size`). With `-live-restore` containers keep running while `fwsd`
 stops, for an upgrade say, and the next `fwsd` takes them back.

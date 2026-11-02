@@ -103,6 +103,8 @@ type Response struct {
 // State is the running container as the shim sees it.
 type State struct {
 	Pid int
+	// Shim is the supervisor's own pid.
+	Shim int
 	// Members are the processes the shim counts as the container's, and
 	// Footprint the sum of their physical footprints, the measure the
 	// memory limit holds.

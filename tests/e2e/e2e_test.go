@@ -62,11 +62,17 @@ func run(m *testing.M) int {
 	defer os.RemoveAll(root)
 	stateRoot, _ = filepath.EvalSymlinks(root)
 
-	bin := filepath.Join(os.TempDir(), "fwsd-e2e")
+	binDir := filepath.Join(os.TempDir(), "fwsd-e2e")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	bin := filepath.Join(binDir, "fwsd")
 	fwsdBin = bin
 	// The race detector turns a data race in the engine into a report the
-	// suite fails on, rather than a crash some later run might hit.
-	build := exec.Command("go", "build", "-race", "-o", bin, "./cmd/fwsd")
+	// suite fails on, rather than a crash some later run might hit. fwsd
+	// runs its helper processes from fws-shim beside it.
+	build := exec.Command("go", "build", "-race", "-o", binDir+"/", "./cmd/fwsd", "./cmd/fws-shim")
 	// The engine is its own module; this suite only drives its binary.
 	build.Dir = "../.."
 	if out, err := build.CombinedOutput(); err != nil {

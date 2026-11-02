@@ -9,6 +9,8 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 )
 
 // Role is the value of the engine's role variable that starts its binary
@@ -16,8 +18,7 @@ import (
 // engine with the stack's containers.
 const Role = "egress"
 
-// roleVar is runtime.RoleVar; egress does not import the runtime.
-const roleVar = "FWS_ROLE"
+const roleVar = roles.Var
 
 func init() {
 	if os.Getenv(roleVar) == Role && len(os.Args) > 1 {
@@ -46,7 +47,7 @@ func serveRole(addr string) int {
 // Start runs a proxy process on addr, logging to log, and returns its pid
 // once it listens.
 func Start(addr string, log *os.File) (*os.Process, error) {
-	self, err := os.Executable()
+	self, err := roles.Binary()
 	if err != nil {
 		return nil, err
 	}

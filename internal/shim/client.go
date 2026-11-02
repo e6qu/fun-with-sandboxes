@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 )
 
@@ -46,7 +47,7 @@ func Launch(dir string, cfg Config) (*Client, Ready, error) {
 		return nil, Ready{}, err
 	}
 	os.Remove(cfg.ExitPath)
-	self, err := os.Executable()
+	self, err := roles.Binary()
 	if err != nil {
 		return nil, Ready{}, err
 	}

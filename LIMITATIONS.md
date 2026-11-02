@@ -121,8 +121,8 @@ machine — and from what macOS offers an unprivileged process under them.
   - `--ulimit` sets nofile, fsize, cpu, core and stack; nproc, which macOS
     counts across every process of the user, and data and as, which it
     does not enforce, are refused.
-- **Each container costs a supervisor process** of the engine's binary, a
-  few megabytes of memory.
+- **Each container costs a supervisor process**, `fws-shim`, held under
+  16 MiB of memory footprint by the test suite.
 - **No user switching**: `user:` must be empty or the engine's own user.
 - **`docker pause` stops the container's processes with SIGSTOP**, not a
   cgroup freezer; TCP connections to a paused container are still accepted

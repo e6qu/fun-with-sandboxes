@@ -19,6 +19,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/api"
 	"github.com/e6qu/fun-with-sandboxes/internal/buildkit"
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
+	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 )
 
 func main() {
@@ -42,10 +43,33 @@ func main() {
 	if *socket == "" {
 		*socket = filepath.Join(*root, "docker.sock")
 	}
+	helper, err := shimBinary()
+	if err != nil {
+		log.Fatal(err)
+	}
+	roles.Use(helper)
 	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress, LiveRestore: *liveRestore}
 	if err := run(cfg, *socket, *withBuildKit); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// shimBinary is fws-shim, which runs every container's supervisor and the
+// processes the engine starts; go install installs it beside fwsd.
+func shimBinary() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(filepath.Dir(self), "fws-shim")
+	if fi, err := os.Stat(p); err != nil || fi.IsDir() || fi.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("fws-shim must be installed beside fwsd, at %s: go install github.com/e6qu/fun-with-sandboxes/cmd/...", p)
+	}
+	return p, nil
 }
 
 func run(cfg engine.Config, socket string, withBuildKit bool) error {
