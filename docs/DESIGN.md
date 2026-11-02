@@ -170,7 +170,10 @@ same knobs, each enforced by a real mechanism or refused:
   notifications, which the sandbox's IOKit denial refuses, gets a
   registration that never fires, as a container has no sleep or wake of
   its own; the library binds IOKit weakly, so it loads it into no process
-  that does not.
+  that does not. The Mach bootstrap names a container registers, as
+  Chrome registers its port rendezvous, carry its IPC prefix, under which
+  alone Seatbelt lets it register and look up services of its own; a lookup
+  finds the container's service first, then the host's.
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would

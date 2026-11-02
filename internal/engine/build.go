@@ -1093,6 +1093,7 @@ func (b *builder) runEnv(s *stage, proxy int) []string {
 	os.MkdirAll(home, 0o755)
 	set("HOME", home)
 	set("SANDBOX_ROOT", s.root)
+	set("SANDBOX_IPC_PREFIX", seatbelt.IPCPrefixFor(s.root))
 	set("SANDBOX_HOST", "127.0.0.1")
 	if proxy != 0 {
 		for _, kv := range egress.Variables(proxy) {

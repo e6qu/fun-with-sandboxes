@@ -27,6 +27,7 @@
 #include <sys/utsname.h>
 #include <limits.h>
 #include <mach/mach.h>
+#include <servers/bootstrap.h>
 #include <spawn.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -120,7 +121,7 @@ static unsigned long env_number(const char *name) {
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "FWS_MOUNTS", "FWS_HOSTNAME", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
 __attribute__((constructor)) static void fwsroot_init(void) {
@@ -215,6 +216,39 @@ static const char *fws_map(const char *p, char *buf) {
 
 #define MAP(p) fws_map((p), (char[PATH_MAX]){0})
 
+// at_map maps path relative to directory fd as fws_map maps an absolute
+// path: where it leads from a directory of the root onto a mount's
+// destination, as a program that opens a path a component at a time without
+// following symlinks does, it names the mount's source.
+static const char *at_map(int fd, const char *path, char *buf) {
+    if (!nmounts || !rootlen || !path || path[0] == '/' || strstr(path, "..")) {
+        return fws_map(path, buf);
+    }
+    char dir[PATH_MAX];
+    if (fd == AT_FDCWD ? getcwd(dir, sizeof dir) == NULL : fcntl(fd, F_GETPATH, dir) == -1) {
+        return path;
+    }
+    if (!in_root(dir)) {
+        return path;
+    }
+    char full[PATH_MAX];
+    if (snprintf(full, sizeof full, "%s/%s", dir[rootlen] ? dir + rootlen : "", path) >= (int)sizeof full) {
+        return path;
+    }
+    for (size_t i = 0; i < nmounts; i++) {
+        struct mount *m = &mounts[i];
+        if (under(full, m->dest, m->destlen)) {
+            const char *rest = full + m->destlen;
+            if (m->srclen + strlen(rest) + 1 > PATH_MAX) return path;
+            memcpy(buf, m->src, m->srclen);
+            strcpy(buf + m->srclen, rest);
+            return buf;
+        }
+    }
+    return path;
+}
+#define AT_MAP(fd, p) at_map((fd), (p), (char[PATH_MAX]){0})
+
 // unmap turns a host path in the root or a mount's source into the
 // container's path, in place.
 static void unmap(char *p, size_t size) {
@@ -292,7 +326,7 @@ static int fws_openat(int fd, const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    const char *p = MAP(path);
+    const char *p = AT_MAP(fd, path);
     int fresh = (p[0] == '/' || fd == AT_FDCWD) && creating(p, flags);
     int r = openat(fd, p, flags, mode);
     if (r >= 0 && fresh) made(NULL, r, 0);
@@ -311,7 +345,7 @@ static int fws_openat_nocancel(int fd, const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    const char *p = MAP(path);
+    const char *p = AT_MAP(fd, path);
     int fresh = (p[0] == '/' || fd == AT_FDCWD) && creating(p, flags);
     int r = openat_nocancel(fd, p, flags, mode);
     if (r >= 0 && fresh) made(NULL, r, 0);
@@ -339,7 +373,7 @@ INTERPOSE(fws_creat, creat);
 
 static int fws_access(const char *path, int mode) { return access(MAP(path), mode); }
 INTERPOSE(fws_access, access);
-static int fws_faccessat(int fd, const char *path, int mode, int flag) { return faccessat(fd, MAP(path), mode, flag); }
+static int fws_faccessat(int fd, const char *path, int mode, int flag) { return faccessat(fd, AT_MAP(fd, path), mode, flag); }
 INTERPOSE(fws_faccessat, faccessat);
 
 static uid_t real_uid;
@@ -372,7 +406,7 @@ static int fws_fstat(int fd, struct stat *st) {
 }
 INTERPOSE(fws_fstat, fstat);
 static int fws_fstatat(int fd, const char *path, struct stat *st, int flag) {
-    const char *p = MAP(path);
+    const char *p = AT_MAP(fd, path);
     int r = fstatat(fd, p, st, flag);
     if (r == 0) {
         if (p[0] == '/' || fd == AT_FDCWD) {
@@ -416,7 +450,7 @@ static int fws_fstat64(int fd, void *st) {
 }
 INTERPOSE(fws_fstat64, fstat64);
 static int fws_fstatat64(int fd, const char *path, void *st, int flag) {
-    const char *p = MAP(path);
+    const char *p = AT_MAP(fd, path);
     int r = fstatat64(fd, p, st, flag);
     if (r == 0 && (p[0] == '/' || fd == AT_FDCWD)) own(st, p, -1, flag & AT_SYMLINK_NOFOLLOW);
     return r;
@@ -445,13 +479,13 @@ static int fws_mkdir(const char *path, mode_t mode) {
     return r;
 }
 INTERPOSE(fws_mkdir, mkdir);
-static int fws_mkdirat(int fd, const char *path, mode_t mode) { return mkdirat(fd, MAP(path), mode); }
+static int fws_mkdirat(int fd, const char *path, mode_t mode) { return mkdirat(fd, AT_MAP(fd, path), mode); }
 INTERPOSE(fws_mkdirat, mkdirat);
 static int fws_rmdir(const char *path) { return rmdir(MAP(path)); }
 INTERPOSE(fws_rmdir, rmdir);
 static int fws_unlink(const char *path) { return unlink(MAP(path)); }
 INTERPOSE(fws_unlink, unlink);
-static int fws_unlinkat(int fd, const char *path, int flag) { return unlinkat(fd, MAP(path), flag); }
+static int fws_unlinkat(int fd, const char *path, int flag) { return unlinkat(fd, AT_MAP(fd, path), flag); }
 INTERPOSE(fws_unlinkat, unlinkat);
 static int fws_rename(const char *from, const char *to) { return rename(MAP(from), MAP(to)); }
 INTERPOSE(fws_rename, rename);
@@ -479,17 +513,17 @@ static int fws_symlinkat(const char *target, int fd, const char *path) { return 
 INTERPOSE(fws_symlinkat, symlinkat);
 static ssize_t fws_readlink(const char *path, char *buf, size_t size) { return readlink(MAP(path), buf, size); }
 INTERPOSE(fws_readlink, readlink);
-static ssize_t fws_readlinkat(int fd, const char *path, char *buf, size_t size) { return readlinkat(fd, MAP(path), buf, size); }
+static ssize_t fws_readlinkat(int fd, const char *path, char *buf, size_t size) { return readlinkat(fd, AT_MAP(fd, path), buf, size); }
 INTERPOSE(fws_readlinkat, readlinkat);
 static int fws_chmod(const char *path, mode_t mode) { return chmod(MAP(path), mode); }
 INTERPOSE(fws_chmod, chmod);
-static int fws_fchmodat(int fd, const char *path, mode_t mode, int flag) { return fchmodat(fd, MAP(path), mode, flag); }
+static int fws_fchmodat(int fd, const char *path, mode_t mode, int flag) { return fchmodat(fd, AT_MAP(fd, path), mode, flag); }
 INTERPOSE(fws_fchmodat, fchmodat);
 static int fws_utimes(const char *path, const struct timeval t[2]) { return utimes(MAP(path), t); }
 INTERPOSE(fws_utimes, utimes);
 static int fws_lutimes(const char *path, const struct timeval t[2]) { return lutimes(MAP(path), t); }
 INTERPOSE(fws_lutimes, lutimes);
-static int fws_utimensat(int fd, const char *path, const struct timespec t[2], int flag) { return utimensat(fd, MAP(path), t, flag); }
+static int fws_utimensat(int fd, const char *path, const struct timespec t[2], int flag) { return utimensat(fd, AT_MAP(fd, path), t, flag); }
 INTERPOSE(fws_utimensat, utimensat);
 static int fws_truncate(const char *path, off_t len) { return truncate(MAP(path), len); }
 INTERPOSE(fws_truncate, truncate);
@@ -1250,3 +1284,33 @@ static fws_io_object_t fws_IORegisterForSystemPower(void *refcon, fws_notify_por
     return conn;
 }
 INTERPOSE(fws_IORegisterForSystemPower, IORegisterForSystemPower);
+
+// Mach services. As POSIX IPC names, the bootstrap names a container
+// registers carry its IPC prefix (SANDBOX_IPC_PREFIX), which the sandbox
+// lets it register and look up and no other container sees; a lookup finds
+// the container's own service first, then the host's.
+static int ipc_name(const char *name, char *out) {
+    const char *prefix = getenv("SANDBOX_IPC_PREFIX");
+    if (!prefix || !*prefix || strncmp(name, prefix, strlen(prefix)) == 0) {
+        return 0;
+    }
+    return snprintf(out, sizeof(name_t), "%s%s", prefix, name) < (int)sizeof(name_t);
+}
+
+static kern_return_t fws_bootstrap_check_in(mach_port_t bp, const name_t name, mach_port_t *sp) {
+    name_t own;
+    return bootstrap_check_in(bp, ipc_name(name, own) ? own : name, sp);
+}
+INTERPOSE(fws_bootstrap_check_in, bootstrap_check_in);
+
+static kern_return_t fws_bootstrap_look_up(mach_port_t bp, const name_t name, mach_port_t *sp) {
+    name_t own;
+    if (ipc_name(name, own)) {
+        kern_return_t r = bootstrap_look_up(bp, own, sp);
+        if (r != BOOTSTRAP_UNKNOWN_SERVICE) {
+            return r;
+        }
+    }
+    return bootstrap_look_up(bp, name, sp);
+}
+INTERPOSE(fws_bootstrap_look_up, bootstrap_look_up);

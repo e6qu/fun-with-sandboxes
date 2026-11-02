@@ -93,6 +93,28 @@ func run(check string) string {
 		}
 		wd, err := os.Getwd()
 		return result(string(b)+","+real+","+wd, err)
+	case "mountat":
+		// As MariaDB opens a table: a component at a time, following no
+		// symlink, from /.
+		fd, err := syscall.Open("/", syscall.O_RDONLY|syscall.O_DIRECTORY, 0)
+		if err != nil {
+			return result("", err)
+		}
+		dfd, err := syscall.Openat(fd, "data", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+		syscall.Close(fd)
+		if err != nil {
+			return result("", err)
+		}
+		ffd, err := syscall.Openat(dfd, "file", syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+		syscall.Close(dfd)
+		if err != nil {
+			return result("", err)
+		}
+		f := os.NewFile(uintptr(ffd), "file")
+		defer f.Close()
+		b := make([]byte, 64)
+		n, err := f.Read(b)
+		return result(string(b[:n]), err)
 	case "rootpath":
 		// A path through $SANDBOX_ROOT resolves on the host, as a program
 		// configuring itself from the container contract resolves it.

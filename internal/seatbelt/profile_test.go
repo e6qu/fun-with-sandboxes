@@ -142,3 +142,23 @@ func TestLibrariesReadableAndMappable(t *testing.T) {
 		t.Fatal("a relative library path was accepted")
 	}
 }
+
+func TestMachServicesUnderTheIPCPrefix(t *testing.T) {
+	s := spec()
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`(allow mach-register (global-name-prefix "` + s.IPCPrefix + `"))`,
+		`  (global-name-prefix "` + s.IPCPrefix + `")`,
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("profile missing %s", want)
+		}
+	}
+	s.IPC = IPCNone
+	if p, _ := Render(s); strings.Contains(p, "mach-register") {
+		t.Errorf("--ipc none lets a container register Mach services:\n%s", p)
+	}
+}

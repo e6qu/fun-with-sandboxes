@@ -105,9 +105,12 @@ func TestMountsAndEnvScripts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := probe(t, root, []string{mv, "PATH=" + filepath.Join(root, "bin")}, "mount", "rootpath", "envscript")
+	got := probe(t, root, []string{mv, "PATH=" + filepath.Join(root, "bin")}, "mount", "mountat", "rootpath", "envscript")
 	if want := "mounted,/data/file,/data"; got["mount"] != want {
 		t.Errorf("mount: %q, want %q", got["mount"], want)
+	}
+	if got["mountat"] != "mounted" {
+		t.Errorf("mountat: %q, want the mount's file", got["mountat"])
 	}
 	if want := filepath.Join(src, "file"); got["rootpath"] != want {
 		t.Errorf("rootpath: %q, want %q", got["rootpath"], want)
@@ -142,5 +145,31 @@ func TestPowerNotificationsWithoutIOKit(t *testing.T) {
 	}
 	if got := run("DYLD_INSERT_LIBRARIES=" + lib); got != "1 1" {
 		t.Errorf("with the library: %q, want a registration and its run loop source", got)
+	}
+}
+
+func TestMachServicesUnderTheIPCPrefix(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "mach")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/mach/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	run := func(env ...string) string {
+		cmd := exec.Command(bin)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("mach: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if got := run(); got != "0 0" {
+		t.Fatalf("without the library: %q, want the registration refused", got)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run("DYLD_INSERT_LIBRARIES="+lib, "SANDBOX_IPC_PREFIX=fwstest."); got != "1 1" {
+		t.Errorf("with the library: %q, want the service registered and found under the prefix", got)
 	}
 }

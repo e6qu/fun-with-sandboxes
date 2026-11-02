@@ -126,7 +126,7 @@ reads these variables and configures its service — see
 | Network | listen on its assigned loopback ports; connect to its stack's ports; reach the internet over HTTP(S) or SOCKS5 through its stack's egress proxy | listen on any other port or address; connect to anything else; reach the host through the proxy |
 | Processes | exec binaries in its root and the system shell; signal its own processes | exec other host binaries; signal or inspect other sandboxes' processes |
 | Mach services | user lookup, notifications, logging, certificate trust evaluation | keychain, pasteboard, Launch Services, TCC and everything else |
-| IPC | POSIX shared memory and semaphores under its own prefix; System V IPC | other containers' POSIX names; all IPC with `--ipc none` |
+| IPC | POSIX shared memory, semaphores and the Mach services it registers, under its own prefix; System V IPC | other containers' names; all IPC with `--ipc none` |
 | Everything else | — | Seatbelt denies by default: IOKit, Mach registration, preferences, kernel control sockets |
 
 Each container runs under a supervisor that holds it to `--memory`,

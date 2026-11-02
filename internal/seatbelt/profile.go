@@ -274,7 +274,15 @@ func Render(s Spec) (string, error) {
 	for _, m := range MachServices {
 		w("  (global-name %q)", m)
 	}
+	if s.IPC == IPCPrivate {
+		// The container's own Mach services, which the container library
+		// registers under its IPC prefix, as POSIX IPC names.
+		w("  (global-name-prefix %q)", s.IPCPrefix)
+	}
 	w(")")
+	if s.IPC == IPCPrivate {
+		w("(allow mach-register (global-name-prefix %q))", s.IPCPrefix)
+	}
 
 	switch s.IPC {
 	case IPCPrivate:
