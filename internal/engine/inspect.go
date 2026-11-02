@@ -167,6 +167,9 @@ type ListOptions struct {
 	All     bool
 	Limit   int
 	Filters Filters
+	// Size reports each container's writes since create and its root's
+	// whole size, as docker ps --size does.
+	Size bool
 }
 
 func (e *Engine) List(opts ListOptions) []container.Summary {
@@ -175,9 +178,18 @@ func (e *Engine) List(opts ListOptions) []container.Summary {
 		c.mu.Lock()
 		s, ok := c.summary(opts)
 		c.mu.Unlock()
-		if ok {
-			out = append(out, s)
+		if !ok {
+			continue
 		}
+		if opts.Size {
+			if rw, err := c.sizeRw(context.Background()); err == nil {
+				s.SizeRw = rw
+				if img, err := e.images.Get(c.rec.ImageID); err == nil {
+					s.SizeRootFs = img.Size + rw
+				}
+			}
+		}
+		out = append(out, s)
 		if opts.Limit > 0 && len(out) >= opts.Limit {
 			break
 		}

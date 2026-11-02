@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"compress/bzip2"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +23,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/moby/moby/api/types/events"
+	registrytypes "github.com/moby/moby/api/types/registry"
+	digest "github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 )
@@ -273,4 +279,112 @@ func decompressTo(r io.Reader, path string) error {
 		return err
 	}
 	return f.Close()
+}
+
+// Distribution resolves a reference against its registry, as dockerd does
+// for GET /distribution: the descriptor the reference names there, an image
+// or an index, and the platforms it carries.
+func (e *Engine) Distribution(ctx context.Context, ref string, auth authn.Authenticator) (registrytypes.DistributionInspect, error) {
+	r, err := name.ParseReference(ref, name.WithDefaultTag("latest"))
+	if err != nil {
+		return registrytypes.DistributionInspect{}, invalid("invalid reference format: %v", err)
+	}
+	desc, err := remote.Get(r, remote.WithContext(ctx), remote.WithAuth(auth))
+	if err != nil {
+		var te *transport.Error
+		if errors.As(err, &te) && te.StatusCode == http.StatusUnauthorized {
+			return registrytypes.DistributionInspect{}, unauthorized("%v", err)
+		}
+		if errors.As(err, &te) && te.StatusCode == http.StatusNotFound {
+			return registrytypes.DistributionInspect{}, notFound("%v", err)
+		}
+		return registrytypes.DistributionInspect{}, err
+	}
+	out := registrytypes.DistributionInspect{
+		Descriptor: ocispec.Descriptor{MediaType: string(desc.MediaType), Digest: digest.Digest(desc.Digest.String()), Size: desc.Size},
+		Platforms:  []ocispec.Platform{},
+	}
+	if desc.MediaType.IsIndex() {
+		idx, err := desc.ImageIndex()
+		if err != nil {
+			return out, err
+		}
+		im, err := idx.IndexManifest()
+		if err != nil {
+			return out, err
+		}
+		for _, m := range im.Manifests {
+			if p := m.Platform; p != nil {
+				out.Platforms = append(out.Platforms, ocispec.Platform{OS: p.OS, Architecture: p.Architecture, Variant: p.Variant, OSVersion: p.OSVersion})
+			}
+		}
+		return out, nil
+	}
+	img, err := desc.Image()
+	if err != nil {
+		return out, err
+	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return out, err
+	}
+	out.Platforms = append(out.Platforms, ocispec.Platform{OS: cfg.OS, Architecture: cfg.Architecture, Variant: cfg.Variant, OSVersion: cfg.OSVersion})
+	return out, nil
+}
+
+// Search queries a registry's search API, Docker Hub's unless term names
+// another registry, as dockerd does for docker search, keeping the results
+// the filters select: is-official, and stars as a minimum.
+func (e *Engine) Search(ctx context.Context, term string, limit int, f Filters, auth authn.Authenticator) ([]registrytypes.SearchResult, error) {
+	index, query := "index.docker.io", term
+	if host, rest, ok := strings.Cut(term, "/"); ok && (strings.ContainsAny(host, ".:") || host == "localhost") {
+		index, query = host, rest
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		return nil, invalid("limit %d is outside the range of [1, 100]", limit)
+	}
+	reg, err := name.NewRegistry(index)
+	if err != nil {
+		return nil, invalid("%v", err)
+	}
+	u := fmt.Sprintf("%s://%s/v1/search?q=%s&n=%d", reg.Scheme(), index, url.QueryEscape(query), limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	if a, err := auth.Authorization(); err == nil && a.Username != "" {
+		req.SetBasicAuth(a.Username, a.Password)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("search %s: %s", index, res.Status)
+	}
+	var found registrytypes.SearchResults
+	if err := json.NewDecoder(res.Body).Decode(&found); err != nil {
+		return nil, fmt.Errorf("search %s: %w", index, err)
+	}
+	minStars := 0
+	if v := f["stars"]; len(v) > 0 {
+		n, err := strconv.Atoi(v[0])
+		if err != nil {
+			return nil, invalid("invalid filter 'stars=%s'", v[0])
+		}
+		minStars = n
+	}
+	official, wantOfficial := f.boolValue("is-official")
+	out := []registrytypes.SearchResult{}
+	for _, r := range found.Results {
+		if r.StarCount < minStars || (wantOfficial && r.IsOfficial != official) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }

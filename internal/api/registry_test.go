@@ -193,3 +193,94 @@ func TestImport(t *testing.T) {
 		t.Fatalf("image imported from a URL: %+v, %v", img, err)
 	}
 }
+
+// GET /distribution resolves a name in its registry with the client's
+// credentials: the descriptor and the platforms behind it.
+func TestDistributionInspect(t *testing.T) {
+	ts, e := newEngineServer(t)
+	loadImage(t, e, "dist/src:1")
+	host := authRegistry(t, false)
+	if err := e.Images().Tag("dist/src:1", host+"/r/dist:1"); err != nil {
+		t.Fatal(err)
+	}
+	good := authHeader(t, regUser, regPass, host)
+	streamCall(t, "POST", ts.URL+"/images/"+host+"/r/dist/push?tag=1", good, nil)
+	img, _, _ := e.Images().V1Image("dist/src:1")
+	want, _ := img.Digest()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/distribution/"+host+"/r/dist:1/json", nil)
+	req.Header.Set("X-Registry-Auth", good)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inspect struct {
+		Descriptor struct{ Digest, MediaType string }
+		Platforms  []struct{ OS, Architecture string }
+	}
+	json.NewDecoder(res.Body).Decode(&inspect)
+	res.Body.Close()
+	if res.StatusCode != 200 || inspect.Descriptor.Digest != want.String() || len(inspect.Platforms) != 1 || inspect.Platforms[0].OS != "darwin" {
+		t.Fatalf("distribution inspect: %d %+v, want digest %s", res.StatusCode, inspect, want)
+	}
+	if res := call(t, ts, "GET", "/distribution/"+host+"/r/dist:1/json", "", nil); res.StatusCode != 401 {
+		t.Fatalf("distribution inspect without credentials: %d", res.StatusCode)
+	}
+}
+
+// docker system df reports, in API 1.51's shape, the images with their
+// sizes and the containers using them, the volumes with their usage, and
+// the build cache.
+func TestSystemDF(t *testing.T) {
+	ts, e := newEngineServer(t)
+	loadImage(t, e, "df/a:1")
+	loadImage(t, e, "df/b:1")
+	call(t, ts, "POST", "/volumes/create", `{"Name":"dfvol"}`, nil)
+	var du struct {
+		LayersSize int64
+		Images     []struct {
+			Size, SharedSize, Containers int64
+		}
+		Volumes []struct {
+			Name      string
+			UsageData *struct{ Size, RefCount int64 }
+		}
+		BuildCache []any
+	}
+	if res := call(t, ts, "GET", "/system/df", "", &du); res.StatusCode != 200 {
+		t.Fatalf("system df: %d", res.StatusCode)
+	}
+	if len(du.Images) != 2 || du.LayersSize != du.Images[0].Size+du.Images[1].Size || du.Images[0].Containers != 0 {
+		t.Fatalf("image usage %+v", du)
+	}
+	if len(du.Volumes) != 1 || du.Volumes[0].UsageData == nil || du.Volumes[0].UsageData.RefCount != 0 {
+		t.Fatalf("volume usage %+v", du.Volumes)
+	}
+	var images struct {
+		Images  []any
+		Volumes []any
+	}
+	call(t, ts, "GET", "/system/df?type=image", "", &images)
+	if len(images.Images) != 2 || images.Volumes != nil {
+		t.Fatalf("system df for images alone: %+v", images)
+	}
+	if res := call(t, ts, "GET", "/system/df?type=nonsense", "", nil); res.StatusCode != 400 {
+		t.Fatalf("system df for an unknown type: %d", res.StatusCode)
+	}
+}
+
+// The swarm API answers as a daemon outside any swarm.
+func TestSwarmEndpointsAnswerAsANonSwarmDaemon(t *testing.T) {
+	ts := newServer(t)
+	for path, want := range map[string]int{"/swarm": 503, "/nodes": 503, "/services": 503, "/services/x": 503, "/secrets": 503} {
+		if res := call(t, ts, "GET", path, "", nil); res.StatusCode != want {
+			t.Errorf("GET %s: %d, want %d", path, res.StatusCode, want)
+		}
+	}
+	if res := call(t, ts, "POST", "/swarm/init", "{}", nil); res.StatusCode != 501 {
+		t.Errorf("POST /swarm/init: %d", res.StatusCode)
+	}
+	if res := call(t, ts, "POST", "/swarm/leave", "", nil); res.StatusCode != 503 {
+		t.Errorf("POST /swarm/leave: %d", res.StatusCode)
+	}
+}

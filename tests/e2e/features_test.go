@@ -962,3 +962,35 @@ func TestTestcontainersReaper(t *testing.T) {
 		t.Fatalf("the reaper left %v in place", want)
 	}
 }
+
+func TestDiffSizeDiskUsageSearchAndSwarm(t *testing.T) {
+	const changed, fresh = "fws-e2e-diff", "fws-e2e-fresh"
+	mustDocker(t, "run", "--name", changed, "fws/toolbox:1", "put", "/made.txt", "hi")
+	defer docker(t, "rm", "-f", changed)
+	mustDocker(t, "create", "--name", fresh, "fws/toolbox:1")
+	defer docker(t, "rm", "-f", fresh)
+	if out := mustDocker(t, "diff", changed); !strings.Contains(out, "A /made.txt") {
+		t.Fatalf("docker diff of a container that wrote /made.txt:\n%s", out)
+	}
+	if out := strings.TrimSpace(mustDocker(t, "diff", fresh)); out != "" {
+		t.Fatalf("docker diff of a fresh container lists changes:\n%s", out)
+	}
+	if size := mustDocker(t, "ps", "-a", "--size", "--filter", "name="+changed, "--format", "{{.Size}}"); !strings.Contains(size, "B (virtual") || strings.HasPrefix(size, "0B") {
+		t.Fatalf("docker ps --size shows %q", size)
+	}
+	if out := mustDocker(t, "system", "df"); !strings.Contains(out, "Images") || !strings.Contains(out, "Build Cache") {
+		t.Fatalf("docker system df:\n%s", out)
+	}
+	if out := mustDocker(t, "system", "df", "--verbose"); !strings.Contains(out, "fws/toolbox") {
+		t.Fatalf("docker system df --verbose:\n%s", out)
+	}
+	if out := mustDocker(t, "search", "--limit", "5", "--filter", "is-official=true", "postgres"); !strings.Contains(out, "postgres") {
+		t.Fatalf("docker search:\n%s", out)
+	}
+	if _, err := docker(t, "swarm", "init"); err == nil || !strings.Contains(err.Error(), "swarm mode is not supported") {
+		t.Fatalf("docker swarm init: %v", err)
+	}
+	if _, err := docker(t, "service", "ls"); err == nil || !strings.Contains(err.Error(), "not a swarm manager") {
+		t.Fatalf("docker service ls: %v", err)
+	}
+}

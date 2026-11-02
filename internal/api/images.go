@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -146,6 +147,8 @@ func (s *Server) imageGet(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(ref, "/history"):
 		res, err := s.e.History(strings.TrimSuffix(ref, "/history"))
 		respond(w, res, err)
+	case ref == "search":
+		s.search(w, r)
 	case ref == "get":
 		s.save(w, r.URL.Query()["names"])
 	case strings.HasSuffix(ref, "/get"):
@@ -330,4 +333,28 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request, repo string) {
 	if err != nil {
 		enc.Encode(jsonMessage{Error: err.Error(), ErrorDetail: &errorDetails{Message: err.Error()}})
 	}
+}
+
+// search serves GET /images/search, docker search.
+func (s *Server) search(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f, err := engine.ParseFilters(q.Get("filters"))
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	limit := 0
+	if v := q.Get("limit"); v != "" {
+		if limit, err = strconv.Atoi(v); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid limit: "+v)
+			return
+		}
+	}
+	auth, err := registryAuth(r.Header.Get("X-Registry-Auth"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	res, err := s.e.Search(r.Context(), q.Get("term"), limit, f, auth)
+	respond(w, res, err)
 }

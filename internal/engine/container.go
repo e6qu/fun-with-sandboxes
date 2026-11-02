@@ -285,6 +285,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err := c.save(); err != nil {
 		return container.CreateResponse{}, err
 	}
+	if err := image.CloneDir(c.root(), c.initDir()); err != nil {
+		return container.CreateResponse{}, fmt.Errorf("record the initial root: %w", err)
+	}
 	e.containers[id] = c
 	ok = true
 	e.publishContainer(c, events.ActionCreate, nil)
