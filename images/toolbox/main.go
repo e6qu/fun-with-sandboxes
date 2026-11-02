@@ -178,9 +178,9 @@ func run(op, arg string) error {
 			return err
 		}
 		fmt.Println("detached", child.Pid)
-		select {}
+		hold()
 	case "hold":
-		select {}
+		hold()
 	case "signal":
 		pid, err := strconv.Atoi(arg)
 		if err != nil {
@@ -234,4 +234,12 @@ func incr(addr, key string) (int64, error) {
 		return 0, fmt.Errorf("redis: %s", line)
 	}
 	return strconv.ParseInt(line[1:], 10, 64)
+}
+
+// hold runs until the process is killed. A bare select{} would not: with
+// no other goroutine, Go's runtime ends the program as deadlocked.
+func hold() {
+	for {
+		time.Sleep(time.Hour)
+	}
 }
