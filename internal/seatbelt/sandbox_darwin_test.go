@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -213,4 +214,39 @@ func TestIPCModes(t *testing.T) {
 		e.denied("shm", own)
 		e.denied("sysvshm", key)
 	})
+}
+
+// The probe for rule precedence under a deny-by-default base: which head
+// keeps the read denials working, and whether ICMP reaches anything.
+func TestProbePrecedence(t *testing.T) {
+	state, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(state, "stacks", "a", "c", "c1", "root")
+	other := filepath.Join(state, "stacks", "b", "c", "c2", "root")
+	os.MkdirAll(root, 0o755)
+	os.MkdirAll(other, 0o755)
+	secret := filepath.Join(other, "secret")
+	os.WriteFile(secret, []byte("s"), 0o600)
+	os.WriteFile(filepath.Join(root, "own"), []byte("o"), 0o600)
+	e := newProbeEnv(t, Spec{Root: root, StateRoot: state, IPCPrefix: IPCPrefixFor(root), ICMP: true})
+	base := e.profile
+	broad := "(allow file-read-data file-read-metadata file-read-xattr)\n"
+	head := base[:strings.Index(base, "(deny default)")]
+	rest := base[strings.Index(base, "(deny default)"):]
+	variants := map[string]string{
+		"current":             base,
+		"filtered broad":      strings.Replace(base, broad, "(allow file-read* (subpath \"/\"))\n", 1),
+		"no broad":            strings.Replace(base, broad, "", 1),
+		"broad last-op names": strings.Replace(strings.Replace(base, broad, "", 1), "(deny file-read*\n", broad+"(deny file-read-data file-read-metadata file-read-xattr\n", 1),
+		"no system.sb":        strings.Replace(strings.Replace(base, broad, "(allow file-read* (subpath \"/\"))\n", 1), "(import \"system.sb\")\n", "", 1),
+		"allow default":       head + strings.Replace(strings.Replace(rest, "(deny default)\n(import \"system.sb\")\n", "(allow default)\n", 1), broad, "", 1),
+	}
+	for name, p := range variants {
+		e.profile = p
+		for _, c := range [][2]string{{"read", secret}, {"list", filepath.Dir(state)}, {"read", filepath.Join(root, "own")}, {"sh", "echo ok"}, {"socket", "icmp"}, {"ping", "127.0.0.1"}, {"ping", "1.1.1.1"}, {"socket", "system"}} {
+			t.Logf("%s: %s %s: %v", name, c[0], c[1], e.run(c[0], c[1]))
+		}
+	}
 }
