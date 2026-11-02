@@ -48,6 +48,29 @@ func run(op, arg string) error {
 		return syscall.Kill(pid, 0)
 	case "exec":
 		return syscall.Exec(arg, []string{arg}, nil)
+	case "socket":
+		// arg names a socket domain and type.
+		kinds := map[string][3]int{
+			"unix":   {syscall.AF_UNIX, syscall.SOCK_STREAM, 0},
+			"inet":   {syscall.AF_INET, syscall.SOCK_STREAM, 0},
+			"inet6":  {syscall.AF_INET6, syscall.SOCK_DGRAM, 0},
+			"route":  {syscall.AF_ROUTE, syscall.SOCK_RAW, 0},
+			"system": {syscall.AF_SYSTEM, syscall.SOCK_DGRAM, 2},
+			"ndrv":   {syscall.AF_NDRV, syscall.SOCK_RAW, 0},
+			"icmp":   {syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_ICMP},
+		}
+		k, ok := kinds[arg]
+		if !ok {
+			return fmt.Errorf("unknown socket kind %q", arg)
+		}
+		fd, err := syscall.Socket(k[0], k[1], k[2])
+		if err != nil {
+			return err
+		}
+		return syscall.Close(fd)
+	case "sh":
+		// Run a shell command, as images' scripts and popen do.
+		return syscall.Exec("/bin/sh", []string{"sh", "-c", arg}, os.Environ())
 	}
 	return fmt.Errorf("unknown op %q", op)
 }

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -138,4 +139,60 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 		e.denied("exec", "/bin/ls")
 		e.allowed("exec", "/bin/sh")
 	})
+}
+
+// sandboxDenials returns what Seatbelt refused in the last minute, as the
+// unified log records it, so a probe that fails says which operation a
+// profile is missing.
+func sandboxDenials(t *testing.T) string {
+	t.Helper()
+	out, _ := exec.Command("/usr/bin/log", "show", "--last", "1m", "--style", "compact",
+		"--predicate", `sender == "Sandbox" OR eventMessage CONTAINS "Sandbox: "`).CombinedOutput()
+	return string(out)
+}
+
+// The probe for a deny-by-default profile: Apple's system.sb baseline and
+// this engine's rules, with everything else denied, still run a Go program
+// and the system shell.
+func TestProbeDenyDefault(t *testing.T) {
+	if b, err := os.ReadFile("/System/Library/Sandbox/Profiles/system.sb"); err == nil {
+		t.Logf("system.sb (%d bytes) begins:\n%.1500s", len(b), b)
+	} else {
+		t.Logf("no system.sb: %v", err)
+	}
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, _ = filepath.EvalSymlinks(root)
+	s := Spec{Root: root, StateRoot: filepath.Dir(root)}
+	e := newProbeEnv(t, s)
+	base := e.profile
+	for name, head := range map[string]string{
+		"system.sb":         "(deny default)\n(import \"system.sb\")\n(allow process-fork)\n(allow sysctl-read)\n(allow file-read-metadata)",
+		"bare deny default": "(deny default)\n(allow process-fork)\n(allow sysctl-read)\n(allow file-read-metadata)",
+	} {
+		e.profile = strings.Replace(base, "(allow default)", head, 1)
+		for _, c := range [][2]string{{"write", filepath.Join(root, "f")}, {"sh", "echo ok"}, {"socket", "unix"}, {"socket", "inet"}} {
+			err := e.run(c[0], c[1])
+			t.Logf("%s: %s %s: %v", name, c[0], c[1], err)
+			if err != nil {
+				t.Logf("denials:\n%s", sandboxDenials(t))
+			}
+		}
+	}
+}
+
+// The probe for socket domains under the current profile: which a container
+// can create.
+func TestProbeSocketDomains(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	os.MkdirAll(root, 0o755)
+	root, _ = filepath.EvalSymlinks(root)
+	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root)})
+	for _, k := range []string{"unix", "inet", "inet6", "route", "system", "ndrv", "icmp"} {
+		t.Logf("socket %s: %v", k, e.run("socket", k))
+	}
+	e.profile = strings.Replace(e.profile, "(allow default)", "(allow default)\n(deny system-socket (socket-domain AF_ROUTE))", 1)
+	t.Logf("socket route with AF_ROUTE denied: %v", e.run("socket", "route"))
 }
