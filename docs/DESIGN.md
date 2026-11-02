@@ -268,7 +268,14 @@ Stock Docker Hub images are Linux. The catalog is built from Nixpkgs for
 - **Catalog.** `fws/postgres:16`, with `initdb`, `POSTGRES_PASSWORD`,
   `POSTGRES_DB` and `docker-entrypoint-initdb.d/*.sql` handled the way the
   official image handles them; `fws/redis:7`; and `fws/toolbox:1`, a small
-  HTTP app backed by its stack's Redis that doubles as the tests' probe.
+  HTTP app backed by its stack's Redis that doubles as the tests' probe;
+  and `fws/ryuk:0.14.0`, Testcontainers' reaper built from its release with
+  a patch that makes it listen on loopback, an entrypoint that points it at
+  its assigned port and at the engine socket Testcontainers mounts, and an
+  `nc` that checks a container port through its assigned host port, as
+  Testcontainers' in-container port check runs `nc -z`. A container reaches
+  a Unix socket it bind-mounts, as in Docker, and makes sockets in its
+  writable mounts.
   macOS allows only 87 System V semaphores machine-wide by default, so the
   Postgres entrypoint keeps each server's process limits small.
 - **Distribution.** Archives for `docker load`, or any registry as an

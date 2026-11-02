@@ -1,0 +1,24 @@
+{
+  "tag": "fws/ryuk:0.14.0",
+  "files": {},
+  "dirs": [
+    "/tmp",
+    "/var/run"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC"
+    ],
+    "Entrypoint": [
+      "/entry"
+    ],
+    "ExposedPorts": {
+      "8080/tcp": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes",
+      "org.testcontainers.ryuk.version": "0.14.0"
+    }
+  }
+}
