@@ -128,7 +128,7 @@ func TestTestcontainers(t *testing.T) {
 	defer cancel()
 	redis, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "fws/redis:7",
+			Image:        "fws/redis:8",
 			ExposedPorts: []string{"6379/tcp"},
 			WaitingFor:   wait.ForLog("Ready to accept connections"),
 			Files: []testcontainers.ContainerFile{{
@@ -198,8 +198,10 @@ func waitHealthy(t *testing.T, name string, since time.Time) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", "events", "--since", strconv.FormatInt(since.Unix(), 10),
-		"--filter", "container="+name, "--filter", "event=health_status", "--format", "{{.Action}}")
+	// A container that exits will never become healthy: its die event ends
+	// the wait.
+	cmd := exec.CommandContext(ctx, "docker", "events", "--since", since.Format(time.RFC3339Nano),
+		"--filter", "container="+name, "--filter", "event=health_status", "--filter", "event=die", "--format", "{{.Action}}")
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -212,12 +214,53 @@ func waitHealthy(t *testing.T, name string, since time.Time) {
 		cmd.Wait()
 	}()
 	sc := bufio.NewScanner(out)
+	why := "the wait timed out"
 	for sc.Scan() {
-		if strings.TrimSpace(sc.Text()) == "health_status: healthy" {
+		ev := strings.TrimSpace(sc.Text())
+		if ev == "health_status: healthy" {
 			return
 		}
+		if ev == "die" {
+			why = "the container exited"
+			break
+		}
 	}
-	t.Fatalf("%s never reported healthy: %v", name, ctx.Err())
+	// docker logs writes the container's standard error to its own.
+	logs := exec.Command("docker", "logs", "--tail", "80", name)
+	text, _ := logs.CombinedOutput()
+	health, _ := docker(t, "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}} {{json .State.Health}}", name)
+	t.Fatalf("%s never reported healthy: %s\nstate: %s\nlogs:\n%s%s", name, why, health, text, stacks(t, name))
+}
+
+// stacks samples where each of a running container's processes is, for a
+// wait that timed out.
+func stacks(t *testing.T, name string) string {
+	t.Helper()
+	out, err := docker(t, "top", name, "-o", "pid")
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, pid := range strings.Fields(out)[1:] {
+		s, _ := exec.Command("sample", pid, "1", "-mayDie").CombinedOutput()
+		lines := strings.Split(string(s), "\n")
+		if len(lines) > 120 {
+			lines = lines[:120]
+		}
+		fmt.Fprintf(&b, "\nprocess %s:\n%s\n", pid, strings.Join(lines, "\n"))
+	}
+	return b.String()
+}
+
+// startedAt is when the container last started, from which its events are
+// those of its current run.
+func startedAt(t *testing.T, name string) time.Time {
+	t.Helper()
+	at, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.StartedAt}}", name)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return at
 }
 
 func TestPauseUnpauseUpdate(t *testing.T) {

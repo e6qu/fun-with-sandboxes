@@ -1,0 +1,3 @@
+#!/bin/sh
+# The Lambda runtime: the Runtime API client runs the function _HANDLER names.
+exec node /var/runtime/bootstrap.mjs "$@"

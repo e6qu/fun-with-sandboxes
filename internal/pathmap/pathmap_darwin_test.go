@@ -1,0 +1,175 @@
+package pathmap
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// probe runs the probe under the library, with the container's root and
+// identity in its environment, and returns what each check reported.
+func probe(t *testing.T, root string, env []string, checks ...string) map[string]string {
+	t.Helper()
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join(root, "bin", "probe"), checks...)
+	cmd.Env = append([]string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_ROOT=" + root}, env...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe: %v\n%s", err, out)
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		k, v, _ := strings.Cut(line, "=")
+		got[k] = v
+	}
+	return got
+}
+
+func containerRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{"bin", "etc", "made"} {
+		os.MkdirAll(filepath.Join(root, d), 0o755)
+	}
+	os.WriteFile(filepath.Join(root, "etc", "marker"), []byte("inside"), 0o644)
+	os.WriteFile(filepath.Join(root, "etc", "passwd"), []byte("root:x:0:0:root:/root:/bin/sh\napp:x:1000:50:App:/home/app:/bin/sh\n"), 0o644)
+	if out, err := exec.Command("go", "build", "-o", filepath.Join(root, "bin", "probe"), "./testdata/probe").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	return root
+}
+
+func TestPathsNameTheRoot(t *testing.T) {
+	root := containerRoot(t)
+	got := probe(t, root, nil, "read", "system", "write", "list", "cwd", "exec")
+	for k, want := range map[string]string{"read": "inside", "system": "ok", "write": "ok", "cwd": "/made", "exec": "read=inside"} {
+		if got[k] != want {
+			t.Errorf("%s: %q, want %q", k, got[k], want)
+		}
+	}
+	if !strings.Contains(got["list"], "etc,") || !strings.Contains(got["list"], "made,") || strings.Contains(got["list"], "Users,") {
+		t.Errorf("/ lists %q, want the container's root", got["list"])
+	}
+	if _, err := os.Stat(filepath.Join(root, "made", "new")); err != nil {
+		t.Errorf("the write did not land in the root: %v", err)
+	}
+}
+
+func TestIdentityAndOwnership(t *testing.T) {
+	root := containerRoot(t)
+	got := probe(t, root, []string{"FWS_HOSTNAME=web-1"}, "ids", "user", "owner", "chown", "hostname")
+	for k, want := range map[string]string{"ids": "0:0", "user": "root:/root", "owner": "0:0", "chown": "1000:50", "hostname": "web-1"} {
+		if got[k] != want {
+			t.Errorf("%s: %q, want %q", k, got[k], want)
+		}
+	}
+	// The owner persists with the file, for the next process.
+	if got := probe(t, root, nil, "owner"); got["owner"] != "1000:50" {
+		t.Errorf("owner after chown, in a new process: %q", got["owner"])
+	}
+	// A user other than root sees itself, and may not give its files away.
+	got = probe(t, root, []string{"FWS_UID=1000", "FWS_GID=50"}, "ids", "user", "write")
+	if got["ids"] != "1000:50" || got["user"] != "app:/home/app" {
+		t.Errorf("as app: ids %q, user %q", got["ids"], got["user"])
+	}
+	if got := probe(t, root, nil, "owner"); got["owner"] != "1000:50" {
+		t.Errorf("owner: %q", got["owner"])
+	}
+	// root switches to a user for good, with a cleared environment too.
+	if got := probe(t, root, nil, "drop"); got["drop"] != "ids=1000:50" {
+		t.Errorf("a program executed after setuid runs as %q", got["drop"])
+	}
+}
+
+func TestMountsAndEnvScripts(t *testing.T) {
+	root := containerRoot(t)
+	src, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(src, "file"), []byte("mounted"), 0o644)
+	// The engine places a mount as a symlink in the root.
+	if err := os.Symlink(src, filepath.Join(root, "data")); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(root, "bin", "run"), []byte("#!/usr/bin/env -S probe read\n"), 0o755)
+	mv, err := MountsVar([]Mount{{Dest: "/data", Source: src}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := probe(t, root, []string{mv, "PATH=" + filepath.Join(root, "bin")}, "mount", "mountat", "rootpath", "envscript")
+	if want := "mounted,/data/file,/data"; got["mount"] != want {
+		t.Errorf("mount: %q, want %q", got["mount"], want)
+	}
+	if got["mountat"] != "mounted" {
+		t.Errorf("mountat: %q, want the mount's file", got["mountat"])
+	}
+	if want := filepath.Join(src, "file"); got["rootpath"] != want {
+		t.Errorf("rootpath: %q, want %q", got["rootpath"], want)
+	}
+	if !strings.Contains(got["envscript"], "read=inside") {
+		t.Errorf("a #!/usr/bin/env script ran as %q", got["envscript"])
+	}
+}
+
+func TestPowerNotificationsWithoutIOKit(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "power")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-framework", "IOKit", "-o", bin, "testdata/power/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	run := func(env ...string) string {
+		cmd := exec.Command(bin)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("power: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	// The sandbox refuses the registration itself.
+	if got := run(); got != "0 0" {
+		t.Fatalf("without the library: %q, want no registration", got)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run("DYLD_INSERT_LIBRARIES=" + lib); got != "1 1" {
+		t.Errorf("with the library: %q, want a registration and its run loop source", got)
+	}
+}
+
+func TestMachServicesUnderTheIPCPrefix(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "mach")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/mach/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	run := func(env ...string) string {
+		cmd := exec.Command(bin)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("mach: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if got := run(); got != "0 0" {
+		t.Fatalf("without the library: %q, want the registration refused", got)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run("DYLD_INSERT_LIBRARIES="+lib, "SANDBOX_IPC_PREFIX=fwstest."); got != "1 1" {
+		t.Errorf("with the library: %q, want the service registered and found under the prefix", got)
+	}
+}

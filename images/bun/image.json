@@ -1,0 +1,21 @@
+{
+  "tag": "fws/bun:1",
+  "files": {},
+  "dirs": [
+    "/app",
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC"
+    ],
+    "Cmd": [
+      "bun"
+    ],
+    "WorkingDir": "/app",
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

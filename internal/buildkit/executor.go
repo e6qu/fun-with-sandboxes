@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -21,6 +20,8 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/pb"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/egress"
+	"github.com/e6qu/fun-with-sandboxes/internal/identity"
+	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
@@ -39,13 +40,14 @@ type execOpt struct {
 	ProfileDir string
 	// Egress returns the loopback port of the build's egress proxy.
 	Egress func() (int, error)
+	// Library returns the container library every step loads.
+	Library func() (string, error)
 }
 
 // seatbeltExecutor runs BuildKit's processes on the host, each confined by a
 // Seatbelt profile to its root snapshot and mounts.
 type seatbeltExecutor struct {
 	opt  execOpt
-	me   *user.User
 	mu   sync.Mutex
 	runs map[string]*run
 }
@@ -53,31 +55,16 @@ type seatbeltExecutor struct {
 type run struct {
 	root    string
 	volumes []seatbelt.Volume
+	mounts  []pathmap.Mount
 	proxy   int
 	done    chan struct{}
 }
 
 func newExecutor(opt execOpt) (*seatbeltExecutor, error) {
-	me, err := user.Current()
-	if err != nil {
-		return nil, err
-	}
 	if err := os.MkdirAll(opt.ProfileDir, 0o700); err != nil {
 		return nil, err
 	}
-	return &seatbeltExecutor{opt: opt, me: me, runs: map[string]*run{}}, nil
-}
-
-// checkUser accepts the users a build may ask for. Processes run as the
-// engine's user; Dockerfiles without USER ask for root, which here is that
-// user, as in rootless Docker.
-func (x *seatbeltExecutor) checkUser(u string) error {
-	name, _, _ := strings.Cut(u, ":")
-	switch name {
-	case "", "root", "0", x.me.Username, x.me.Uid:
-		return nil
-	}
-	return fmt.Errorf("user %q: build steps run as the engine's own user (%s); switching users needs root", u, x.me.Username)
+	return &seatbeltExecutor{opt: opt, runs: map[string]*run{}}, nil
 }
 
 // mountMap places each BuildKit mount at its destination inside the root as
@@ -88,6 +75,9 @@ type mountMap struct {
 	hidden  map[string]string
 	created []string
 	release []func() error
+	// mounts presents each mount at its destination through the container
+	// library.
+	mounts []pathmap.Mount
 }
 
 func (m *mountMap) undo() error {
@@ -189,17 +179,18 @@ func (x *seatbeltExecutor) prepare(ctx context.Context, root string, mounts []ex
 			}
 			mm.hidden[dest] = aside
 		}
-		if err := os.Symlink(src, dest); err != nil {
-			return fail(err)
-		}
-		mm.links = append(mm.links, dest)
 		// Seatbelt matches resolved paths, and BuildKit makes some sources,
 		// such as an SSH mount's socket, under TMPDIR: /var is a symlink to
-		// /private/var.
+		// /private/var. A program following the link walks the real path.
 		resolved, err := filepath.EvalSymlinks(src)
 		if err != nil {
 			return fail(err)
 		}
+		if err := os.Symlink(resolved, dest); err != nil {
+			return fail(err)
+		}
+		mm.links = append(mm.links, dest)
+		mm.mounts = append(mm.mounts, pathmap.Mount{Dest: m.Dest, Source: resolved})
 		vols = append(vols, seatbelt.Volume{Path: resolved, ReadOnly: m.Readonly})
 	}
 	return mm, vols, nil
@@ -231,6 +222,7 @@ func env(meta executor.Meta, root string, proxy int) []string {
 	os.MkdirAll(home, 0o755)
 	set("HOME", home)
 	set("SANDBOX_ROOT", root)
+	set("SANDBOX_IPC_PREFIX", seatbelt.IPCPrefixFor(root))
 	set("SANDBOX_HOST", "127.0.0.1")
 	if proxy != 0 {
 		for _, kv := range egress.Variables(proxy) {
@@ -247,9 +239,6 @@ func env(meta executor.Meta, root string, proxy int) []string {
 }
 
 func (x *seatbeltExecutor) Run(ctx context.Context, id string, rootMount executor.Mount, mounts []executor.Mount, process executor.ProcessInfo, started chan<- struct{}) (resourcestypes.Recorder, error) {
-	if err := x.checkUser(process.Meta.User); err != nil {
-		return nil, err
-	}
 	root, releaseRoot, err := mountDir(ctx, rootMount.Src, false, x.opt.ProfileDir)
 	if err != nil {
 		return nil, err
@@ -267,7 +256,7 @@ func (x *seatbeltExecutor) Run(ctx context.Context, id string, rootMount executo
 			return nil, err
 		}
 	}
-	r := &run{root: root, volumes: vols, proxy: proxy, done: make(chan struct{})}
+	r := &run{root: root, volumes: vols, mounts: mm.mounts, proxy: proxy, done: make(chan struct{})}
 	if id != "" {
 		x.mu.Lock()
 		x.runs[id] = r
@@ -295,9 +284,6 @@ func (x *seatbeltExecutor) Exec(ctx context.Context, id string, process executor
 	if !ok {
 		return fmt.Errorf("container %s is not running", id)
 	}
-	if err := x.checkUser(process.Meta.User); err != nil {
-		return err
-	}
 	return x.exec(ctx, r, process, nil)
 }
 
@@ -306,7 +292,17 @@ func (x *seatbeltExecutor) exec(ctx context.Context, r *run, process executor.Pr
 	if len(meta.Args) == 0 {
 		return errors.New("no command specified")
 	}
-	spec := seatbelt.Spec{Root: r.root, StateRoot: x.opt.StateRoot, Volumes: r.volumes, IPCPrefix: seatbelt.IPCPrefixFor(r.root)}
+	// The step's user is presented through the container library, as for
+	// a container's processes.
+	id, err := identity.Resolve(r.root, meta.User)
+	if err != nil {
+		return err
+	}
+	lib, err := x.opt.Library()
+	if err != nil {
+		return err
+	}
+	spec := seatbelt.Spec{Root: r.root, StateRoot: x.opt.StateRoot, Volumes: r.volumes, IPCPrefix: seatbelt.IPCPrefixFor(r.root), Libraries: []string{lib}}
 	if r.proxy != 0 {
 		spec.ConnectPorts = []int{r.proxy}
 	}
@@ -316,9 +312,20 @@ func (x *seatbeltExecutor) exec(ctx context.Context, r *run, process executor.Pr
 	}
 	profile.Close()
 	defer os.Remove(profile.Name())
+	stepEnv := append(env(meta, r.root, r.proxy), id.Env()...)
+	if meta.Hostname != "" {
+		stepEnv = append(stepEnv, pathmap.HostnameVar+"="+meta.Hostname)
+	}
+	mv, err := pathmap.MountsVar(r.mounts)
+	if err != nil {
+		return err
+	}
+	if mv != "" {
+		stepEnv = append(stepEnv, mv)
+	}
 	rs := runtime.Spec{
-		Root: r.root, Argv: meta.Args, Env: env(meta, r.root, r.proxy), WorkDir: meta.Cwd,
-		Profile: spec, ProfilePath: profile.Name(),
+		Root: r.root, Argv: meta.Args, Env: stepEnv, WorkDir: meta.Cwd,
+		Profile: spec, ProfilePath: profile.Name(), Library: lib,
 	}
 	var master *os.File
 	if meta.Tty {

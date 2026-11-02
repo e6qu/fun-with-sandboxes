@@ -9,7 +9,7 @@ services:
     ports:
       - "5432"
   cache:
-    image: fws/redis:7
+    image: fws/redis:8
     ports:
       - "6379"
   app:

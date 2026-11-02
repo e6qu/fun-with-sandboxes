@@ -76,3 +76,11 @@ var libc_shm_open_trampoline_addr uintptr
 var libc_shm_unlink_trampoline_addr uintptr
 
 //go:cgo_import_dynamic libc_shm_unlink shm_unlink "/usr/lib/libSystem.B.dylib"
+
+var libsandbox_sandbox_init_with_parameters_trampoline_addr uintptr
+
+//go:cgo_import_dynamic libsandbox_sandbox_init_with_parameters sandbox_init_with_parameters "/usr/lib/libSystem.B.dylib"
+
+var libsandbox_sandbox_free_error_trampoline_addr uintptr
+
+//go:cgo_import_dynamic libsandbox_sandbox_free_error sandbox_free_error "/usr/lib/libSystem.B.dylib"

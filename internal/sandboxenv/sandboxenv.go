@@ -4,9 +4,13 @@ package sandboxenv
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/identity"
 )
 
 // Root is the container's root directory on the host.
@@ -56,4 +60,49 @@ func Peer(service, containerPort string) (string, error) {
 // at 31 bytes.
 func IPCName(name string) string {
 	return os.Getenv("SANDBOX_IPC_PREFIX") + strings.TrimPrefix(name, "/")
+}
+
+// Become runs the rest of the process as user, as the official images'
+// entrypoints do with gosu: a process the container runs as root first
+// gives user the paths own, and everything under them. Under any other
+// user, the container's choice stands and Become does nothing.
+func Become(user string, own ...string) error {
+	if os.Getuid() != 0 {
+		return nil
+	}
+	id, err := identity.Resolve(Root(), user)
+	if err != nil {
+		return err
+	}
+	uid, gid := int(id.UID), int(id.GID)
+	for _, p := range own {
+		// A volume's mount point is a symlink to the volume.
+		p, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			return err
+		}
+		err = filepath.WalkDir(p, func(path string, _ fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			return os.Lchown(path, uid, gid)
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if err := syscall.Setgroups([]int{gid}); err != nil {
+		return err
+	}
+	if err := syscall.Setgid(gid); err != nil {
+		return err
+	}
+	if err := syscall.Setuid(uid); err != nil {
+		return err
+	}
+	if id.Home != "" {
+		os.Setenv("HOME", Path(id.Home))
+	}
+	os.Setenv("USER", user)
+	return nil
 }

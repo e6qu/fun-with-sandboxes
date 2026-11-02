@@ -33,7 +33,8 @@ docker compose up -d --wait
 ```
 
 `fwsd` runs each container's supervisor, and the processes it starts, from
-`fws-shim`, which must sit beside it. `fwsd` refuses to run as root. State lives in `~/.fws` (`-root`), stacks get
+`fws-shim`, which must sit beside it. It builds its container library with
+clang from the Xcode Command Line Tools (`xcode-select --install`). `fwsd` refuses to run as root. State lives in `~/.fws` (`-root`), stacks get
 host ports from 20000–29999 in blocks of 100 (`-port-base`, `-port-limit`,
 `-block-size`). With `-live-restore` containers keep running while `fwsd`
 stops, for an upgrade say, and the next `fwsd` takes them back.
@@ -41,10 +42,23 @@ stops, for an upgrade say, and the next `fwsd` takes them back.
 ## Images
 
 Images are macOS-native (`darwin/arm64` or `darwin/amd64`). Linux images
-cannot run without a VM. `scripts/build-images.sh` builds the catalog —
-PostgreSQL 16, Redis 7 and a small `toolbox` app — from Nix packages into
-archives for `docker load`, and `scripts/publish-images.sh` pushes them to a
-registry the engine can pull from:
+cannot run without a VM. `scripts/build-images.sh` builds the catalog from
+Nix packages into archives for `docker load`, and `scripts/publish-images.sh`
+pushes them to a registry the engine can pull from:
+
+| Image | Configured like the official image through |
+|---|---|
+| `fws/postgres:16`, `fws/postgres:18` | `POSTGRES_PASSWORD`, `POSTGRES_USER`, `POSTGRES_DB`, `/docker-entrypoint-initdb.d/*.sql` |
+| `fws/mariadb:11` | `MARIADB_ROOT_PASSWORD` (or the `ALLOW_EMPTY`/`RANDOM` forms), `MARIADB_DATABASE`, `MARIADB_USER`, `MARIADB_PASSWORD`, `MARIADB_ROOT_HOST`, their `MYSQL_` names, `/docker-entrypoint-initdb.d/*.sql` |
+| `fws/redis:8` | arguments to `redis-server` |
+| `fws/rabbitmq:4` | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`; AMQP on 5672, the Erlang port mapper and distribution on their own assigned ports |
+| `fws/dynamodb-local:2` | arguments to DynamoDB Local (default `-sharedDb -dbPath /home/dynamodblocal/data`); port 8000 |
+| `fws/gitea:1` | `GITEA__section__KEY` variables, written into `/data/gitea/conf/app.ini`; HTTP on 3000, SSH on 22 |
+| `fws/nginx:1` | `/usr/share/nginx/html`, and `/etc/nginx/templates/*.template`, rendered into `conf.d` with environment variables substituted: a server listens on `127.0.0.1:${SANDBOX_PORT_80}` |
+| `fws/python:3.14`, `fws/node:26`, `fws/bun:1` | the language and its package manager (`python3 -m ensurepip` for pip) |
+| `fws/lambda/python:3.14`, `fws/lambda/nodejs:24`, `fws/lambda/java:17` | the handler as the command; functions in `/var/task`, invoked at `POST /2015-03-31/functions/function/invocations` on port 8080 through AWS's Runtime Interface Emulator |
+| `fws/playwright:1.59` | Node.js 24 with `playwright` and its Chromium headless shell |
+| `fws/toolbox:1` | the test suite's small app and probe |
 
 ```bash
 scripts/build-images.sh ./images-out
@@ -98,7 +112,9 @@ stack, so a container cannot pretend to own `/var/lib/postgresql/data` or port
 a network also get `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5, for
 any TCP) and `NO_PROXY` pointing at their stack's egress proxy; `network_mode: none` and `internal: true`
 networks get none, as in Docker. Volumes and bind
-mounts appear at their destination inside the root. An image's entrypoint
+mounts appear at their destination inside the root. As Docker does, the engine writes
+the container's `/etc/hosts`, with `localhost`, its hostname on loopback and
+its `--add-host` entries, and its `/etc/hostname`. An image's entrypoint
 reads these variables and configures its service — see
 `images/postgres/entry` and `internal/sandboxenv`.
 
@@ -110,7 +126,7 @@ reads these variables and configures its service — see
 | Network | listen on its assigned loopback ports; connect to its stack's ports; reach the internet over HTTP(S) or SOCKS5 through its stack's egress proxy | listen on any other port or address; connect to anything else; reach the host through the proxy |
 | Processes | exec binaries in its root and the system shell; signal its own processes | exec other host binaries; signal or inspect other sandboxes' processes |
 | Mach services | user lookup, notifications, logging, certificate trust evaluation | keychain, pasteboard, Launch Services, TCC and everything else |
-| IPC | POSIX shared memory and semaphores under its own prefix; System V IPC | other containers' POSIX names; all IPC with `--ipc none` |
+| IPC | POSIX shared memory, semaphores and the Mach services it registers, under its own prefix; System V IPC | other containers' names; all IPC with `--ipc none` |
 | Everything else | — | Seatbelt denies by default: IOKit, Mach registration, preferences, kernel control sockets |
 
 Each container runs under a supervisor that holds it to `--memory`,

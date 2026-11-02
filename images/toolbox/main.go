@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -286,6 +287,17 @@ func run(op, arg string) error {
 		for _, k := range keys {
 			fmt.Println(k.Comment)
 		}
+		return nil
+	case "whoami":
+		// Print the identity, hostname and working directory the process
+		// sees.
+		name := "?"
+		if u, err := user.Current(); err == nil {
+			name = u.Username
+		}
+		host, _ := os.Hostname()
+		wd, _ := os.Getwd()
+		fmt.Printf("uid=%d gid=%d user=%s host=%s cwd=%s\n", os.Getuid(), os.Getgid(), name, host, wd)
 		return nil
 	case "signal":
 		pid, err := strconv.Atoi(arg)

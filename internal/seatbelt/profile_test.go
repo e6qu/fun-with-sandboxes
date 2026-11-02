@@ -27,7 +27,7 @@ func TestRenderGrantsOnlyOwnResources(t *testing.T) {
 		`(allow network-bind (local ip "localhost:41000"))`,
 		`(allow network-outbound (remote ip "localhost:41000"))`,
 		`(allow network-outbound (remote ip "localhost:41001"))`,
-		`(allow process-exec*` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/containers/c1/root")`,
+		`(allow process-exec* process-exec-interpreter` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/containers/c1/root")` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/volumes/data")`,
 		`  (literal "/bin/sh")`,
 		`(allow signal (target same-sandbox))`,
 		`  (global-name "com.apple.trustd")`,
@@ -122,5 +122,43 @@ func TestRenderDeniesByDefault(t *testing.T) {
 	}
 	if !strings.Contains(p, "(deny system-socket (socket-domain 32) (socket-domain 27))") {
 		t.Errorf("profile allows kernel control or link-layer sockets")
+	}
+}
+
+func TestLibrariesReadableAndMappable(t *testing.T) {
+	s := spec()
+	s.Libraries = []string{"/Users/u/.fws/lib/fwsroot-1.dylib"}
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deny := strings.Index(p, `(deny file-read*`)
+	lib := strings.Index(p, `(literal "/Users/u/.fws/lib/fwsroot-1.dylib")`)
+	if lib < deny || !strings.Contains(p, "(allow file-map-executable\n  (literal \"/Users/u/.fws/lib/fwsroot-1.dylib\")") {
+		t.Fatalf("library not granted after the state root's denial:\n%s", p)
+	}
+	s.Libraries = []string{"relative.dylib"}
+	if _, err := Render(s); err == nil {
+		t.Fatal("a relative library path was accepted")
+	}
+}
+
+func TestMachServicesUnderTheIPCPrefix(t *testing.T) {
+	s := spec()
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`(allow mach-register (global-name-prefix "` + s.IPCPrefix + `"))`,
+		`  (global-name-prefix "` + s.IPCPrefix + `")`,
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("profile missing %s", want)
+		}
+	}
+	s.IPC = IPCNone
+	if p, _ := Render(s); strings.Contains(p, "mach-register") {
+		t.Errorf("--ipc none lets a container register Mach services:\n%s", p)
 	}
 }

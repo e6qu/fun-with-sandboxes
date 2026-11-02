@@ -1,0 +1,40 @@
+{
+  "tag": "fws/gitea:1",
+  "files": {},
+  "dirs": [
+    "/data",
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC"
+    ],
+    "Entrypoint": [
+      "/entry"
+    ],
+    "Cmd": [
+      "web"
+    ],
+    "ExposedPorts": {
+      "3000/tcp": {},
+      "22/tcp": {}
+    },
+    "Volumes": {
+      "/data": {}
+    },
+    "Healthcheck": {
+      "Test": [
+        "CMD",
+        "/entry",
+        "health"
+      ],
+      "Interval": 1000000000,
+      "Timeout": 5000000000,
+      "Retries": 60
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

@@ -19,9 +19,11 @@ import (
 )
 
 // The engine starts every container process through a helper: itself,
-// spawned with these variables, which applies the process's limits and
-// executes sandbox-exec. posix_spawn cannot set resource limits or a
-// controlling terminal, and Go cannot run code between fork and exec.
+// spawned with these variables, which applies the process's limits and its
+// Seatbelt profile, and executes the command with the container library
+// loaded. posix_spawn cannot set resource limits or a controlling
+// terminal, Go cannot run code between fork and exec, and sandbox-exec, an
+// Apple binary, has the loader drop the variables that load the library.
 const (
 	RoleVar    = roles.Var
 	spawnRole  = "spawn"
@@ -31,9 +33,12 @@ const (
 )
 
 type helperSpec struct {
-	Exec   []string
-	Limits Limits
-	TTY    bool
+	Path    string
+	Argv    []string
+	Profile string
+	Library string
+	Limits  Limits
+	TTY     bool
 }
 
 func init() {
@@ -54,16 +59,22 @@ func runHelper() {
 	if err := json.Unmarshal([]byte(os.Getenv(helperVar)), &h); err != nil {
 		fail(fmt.Errorf("spawn helper: %w", err))
 	}
-	if len(h.Exec) == 0 {
+	if h.Path == "" || len(h.Argv) == 0 {
 		fail(errors.New("spawn helper: no command"))
 	}
 	if err := applyLimits(h); err != nil {
 		fail(err)
 	}
+	env := withoutVars(os.Environ(), RoleVar, helperVar, "DYLD_INSERT_LIBRARIES")
+	if h.Library != "" {
+		env = append(env, "DYLD_INSERT_LIBRARIES="+h.Library)
+	}
+	if err := libsystem.SandboxInit(h.Profile); err != nil {
+		fail(err)
+	}
 	syscall.CloseOnExec(statusFD)
-	env := withoutVars(os.Environ(), RoleVar, helperVar)
-	err := syscall.Exec(h.Exec[0], h.Exec, env)
-	fail(fmt.Errorf("exec %s: %w", h.Exec[0], err))
+	err := syscall.Exec(h.Path, h.Argv, env)
+	fail(fmt.Errorf("exec %s: %w", h.Argv[0], err))
 }
 
 func applyLimits(h helperSpec) error {
@@ -131,8 +142,9 @@ func Start(s Spec) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
+	exe, argv := scriptCommand(s.Root, exe, s.Argv, s.Env)
 	hs, err := json.Marshal(helperSpec{
-		Exec:   append([]string{SandboxExec, "-f", s.ProfilePath, exe}, s.Argv[1:]...),
+		Path: exe, Argv: argv, Profile: text, Library: s.Library,
 		Limits: s.Limits, TTY: s.TTY != nil,
 	})
 	if err != nil {

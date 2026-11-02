@@ -138,6 +138,16 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 		e.denied("signal", strconv.Itoa(os.Getpid()))
 		e.denied("exec", "/bin/ls")
 		e.allowed("exec", "/bin/sh")
+		e.allowed("exec", "/usr/bin/env")
+		// A script in the root, and one in a mount, run under their
+		// interpreter.
+		for _, dir := range []string{root, vol} {
+			script := filepath.Join(dir, "script")
+			if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			e.allowed("exec", script)
+		}
 	})
 }
 

@@ -187,11 +187,14 @@ func (s *server) run(report func(Ready)) (int, error) {
 	if err := writeFile(cfg.ExitPath, exit); err != nil {
 		log.Printf("container %s: record the exit: %v", cfg.ID, err)
 	}
+	// Close the socket before answering the waiters: once a waiter learns
+	// the exit, no new client reaches this shim.
+	l.Close()
+	os.Remove(cfg.Socket)
 	s.mu.Lock()
 	s.exit = exit
 	close(s.exited)
 	s.mu.Unlock()
-	l.Close()
 	// Waiters get the exit status; streams end.
 	s.mu.Lock()
 	for c := range s.conns {

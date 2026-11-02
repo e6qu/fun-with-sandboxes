@@ -22,7 +22,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	p, err := os.StartProcess(os.Args[0], []string{os.Args[0], "child"}, &os.ProcAttr{Files: []*os.File{nil, os.Stdout, os.Stderr, w}})
+	// A container's argv[0] is the path it names in the container, which
+	// the host need not hold; the executable's own path the host does.
+	self, err := os.Executable()
+	if err != nil {
+		panic(err)
+	}
+	p, err := os.StartProcess(self, []string{self, "child"}, &os.ProcAttr{Files: []*os.File{nil, os.Stdout, os.Stderr, w}})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

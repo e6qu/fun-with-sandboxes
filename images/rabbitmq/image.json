@@ -1,0 +1,43 @@
+{
+  "tag": "fws/rabbitmq:4",
+  "files": {},
+  "dirs": [
+    "/var/lib/rabbitmq",
+    "/etc/rabbitmq",
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC",
+      "LANG=C.UTF-8"
+    ],
+    "Entrypoint": [
+      "/entry"
+    ],
+    "Cmd": [
+      "rabbitmq-server"
+    ],
+    "ExposedPorts": {
+      "5672/tcp": {},
+      "4369/tcp": {},
+      "25672/tcp": {}
+    },
+    "Volumes": {
+      "/var/lib/rabbitmq": {}
+    },
+    "Healthcheck": {
+      "Test": [
+        "CMD",
+        "/entry",
+        "health"
+      ],
+      "Interval": 1000000000,
+      "Timeout": 5000000000,
+      "Retries": 120
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

@@ -43,8 +43,11 @@ var DeniedReadRoots = []string{
 
 // SystemShells are the only host executables a container may run: the C
 // library's popen() and system() hard-code /bin/sh, which on macOS hands off
-// to the shell /private/var/select/sh names.
-var SystemShells = []string{"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash"}
+// to the shell /private/var/select/sh names, and a script names its
+// interpreter as /usr/bin/env finds it on the container's PATH, since the
+// kernel resolves a script's interpreter on the host. env runs nothing the
+// profile would not let the container run itself.
+var SystemShells = []string{"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/usr/bin/env"}
 
 // MachServices are the only global Mach services a container may look up:
 // user/group lookup, notifications, logging, and certificate trust
@@ -87,6 +90,9 @@ type Spec struct {
 	// IPCPrefix is the name prefix POSIX IPC objects must carry under
 	// IPCPrivate.
 	IPCPrefix string
+	// Libraries are files outside the root every process of the container
+	// loads, such as the container library.
+	Libraries []string
 }
 
 // IPCMode is a container's IPC confinement.
@@ -129,6 +135,11 @@ func Render(s Spec) (string, error) {
 	paths := []string{s.Root, s.StateRoot}
 	for _, v := range s.Volumes {
 		paths = append(paths, v.Path)
+	}
+	for _, l := range s.Libraries {
+		if err := checkPath(l); err != nil {
+			return "", err
+		}
 	}
 	for _, p := range paths {
 		if err := checkPath(p); err != nil {
@@ -196,7 +207,17 @@ func Render(s Spec) (string, error) {
 	for _, d := range SystemReadPaths {
 		w("  (subpath %q)", d)
 	}
+	for _, l := range s.Libraries {
+		w("  (literal %q)", l)
+	}
 	w(")")
+	if len(s.Libraries) > 0 {
+		w("(allow file-map-executable")
+		for _, l := range s.Libraries {
+			w("  (literal %q)", l)
+		}
+		w(")")
+	}
 	// stat and realpath walk each ancestor of the root and volumes; they may
 	// learn the ancestors exist, but not list them.
 	w("(allow file-read-metadata")
@@ -212,9 +233,14 @@ func Render(s Spec) (string, error) {
 	}
 	w(")")
 
+	// A container executes its root's programs and its mounts', as Docker
+	// lets it, and a script's interpreter, which Seatbelt checks apart.
 	w("(deny process-exec*)")
-	w("(allow process-exec*")
+	w("(allow process-exec* process-exec-interpreter")
 	w("  (subpath %q)", s.Root)
+	for _, v := range s.Volumes {
+		w("  (subpath %q)", v.Path)
+	}
 	for _, sh := range SystemShells {
 		w("  (literal %q)", sh)
 	}
@@ -248,7 +274,15 @@ func Render(s Spec) (string, error) {
 	for _, m := range MachServices {
 		w("  (global-name %q)", m)
 	}
+	if s.IPC == IPCPrivate {
+		// The container's own Mach services, which the container library
+		// registers under its IPC prefix, as POSIX IPC names.
+		w("  (global-name-prefix %q)", s.IPCPrefix)
+	}
 	w(")")
+	if s.IPC == IPCPrivate {
+		w("(allow mach-register (global-name-prefix %q))", s.IPCPrefix)
+	}
 
 	switch s.IPC {
 	case IPCPrivate:

@@ -126,3 +126,38 @@ func TestWriteArchiveLayersPerStorePath(t *testing.T) {
 		t.Fatalf("manifest %+v", m)
 	}
 }
+
+func TestRewriteShebangs(t *testing.T) {
+	stage := t.TempDir()
+	store := filepath.Join(stage, storeDir)
+	write := func(rel, body string) string {
+		p := filepath.Join(store, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	os.MkdirAll(filepath.Join(stage, "bin"), 0o755)
+	os.Symlink("../nix/store/aaa-python/bin/python3.14", filepath.Join(stage, "bin", "python3.14"))
+	pip := write("aaa-python/bin/pip", "#!/nix/store/aaa-python/bin/python3.14 -s\nimport pip\n")
+	wrapper := write("bbb-wrap/bin/tool", "#!/nix/store/ccc-bash-5/bin/bash -e\nexec \"/nix/store/bbb-wrap/bin/.tool-wrapped\" \"$@\"\n")
+	perl := write("ddd/bin/script", "#!/nix/store/eee-perl/bin/perl\nprint 1\n")
+	plain := write("fff/bin/data", "not a script\n")
+	if err := rewriteShebangs(stage); err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]string{
+		pip:     "#!/usr/bin/env -S python3.14 -s\nimport pip\n",
+		wrapper: "#!/bin/bash -e\nexec \"${SANDBOX_ROOT}/nix/store/bbb-wrap/bin/.tool-wrapped\" \"$@\"\n",
+		perl:    "#!/nix/store/eee-perl/bin/perl\nprint 1\n",
+		plain:   "not a script\n",
+	} {
+		if b, _ := os.ReadFile(p); string(b) != want {
+			t.Errorf("%s reads %q, want %q", p, b, want)
+		}
+	}
+	if fi, _ := os.Stat(pip); fi.Mode().Perm() != 0o755 {
+		t.Errorf("pip lost its mode: %v", fi.Mode())
+	}
+}
