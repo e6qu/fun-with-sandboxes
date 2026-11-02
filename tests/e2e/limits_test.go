@@ -98,11 +98,11 @@ func TestUlimits(t *testing.T) {
 }
 
 func TestReadOnlyRoot(t *testing.T) {
-	if _, err := docker(t, "run", "--rm", "--read-only", "fws/toolbox:1", "write", "/written"); err == nil {
+	if _, err := docker(t, "run", "--rm", "--read-only", "fws/toolbox:1", "put", "/written", "x"); err == nil {
 		t.Fatal("a container wrote to its read-only root")
 	}
-	mustDocker(t, "run", "--rm", "--read-only", "--tmpfs", "/scratch", "fws/toolbox:1", "write", "/scratch/f")
-	mustDocker(t, "run", "--rm", "fws/toolbox:1", "write", "/written")
+	mustDocker(t, "run", "--rm", "--read-only", "--tmpfs", "/scratch", "fws/toolbox:1", "put", "/scratch/f", "x")
+	mustDocker(t, "run", "--rm", "fws/toolbox:1", "put", "/written", "x")
 }
 
 func TestCapabilitiesAndSecurityOptions(t *testing.T) {
