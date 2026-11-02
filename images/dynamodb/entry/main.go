@@ -50,6 +50,9 @@ func main() {
 	argv := []string{"java",
 		"-Djava.library.path=" + filepath.Join(home, "DynamoDBLocal_lib"),
 		"-Djava.io.tmpdir=" + sandboxenv.Path("/tmp"),
+		// Java listens on an IPv6 socket that also takes IPv4 unless told
+		// otherwise; the container may listen on its IPv4 loopback port.
+		"-Djava.net.preferIPv4Stack=true",
 		"-cp", filepath.Join(home, "DynamoDBLocal.jar") + ":" + sandboxenv.Path("/opt/fws"),
 		"Launcher", "-port", port}
 	log.Fatal(syscall.Exec(java, append(argv, args...), os.Environ()))

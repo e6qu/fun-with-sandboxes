@@ -12,8 +12,7 @@
       "LANG=en_US.UTF-8",
       "LAMBDA_TASK_ROOT=/var/task",
       "LAMBDA_RUNTIME_DIR=/var/runtime",
-      "AWS_EXECUTION_ENV=AWS_Lambda_python3.14",
-      "FWS_LAMBDA_RUNTIME=python3 /var/runtime/bootstrap.py"
+      "AWS_EXECUTION_ENV=AWS_Lambda_python3.14"
     ],
     "Entrypoint": [
       "/lambda-entrypoint"

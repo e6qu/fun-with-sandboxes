@@ -58,6 +58,9 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	if err := sandboxenv.Become("mysql", datadir, run); err != nil {
+		log.Fatal(err)
+	}
 	// The server's own paths are Nix store paths a container cannot read;
 	// every one it needs is named from the image.
 	common := []string{
@@ -114,11 +117,9 @@ func initialise(server, base, datadir string, common []string) error {
 	var system bytes.Buffer
 	system.WriteString("use mysql;\nSET @auth_root_socket=NULL;\n")
 	share := filepath.Join(base, "share", "mysql")
-	for _, f := range []string{"mysql_system_tables.sql", "mysql_performance_tables.sql", "mysql_system_tables_data.sql", "fill_help_tables.sql", "mysql_sys_schema.sql"} {
+	// The scripts mariadb-install-db feeds the server, in its order.
+	for _, f := range []string{"mariadb_system_tables.sql", "mariadb_performance_tables.sql", "mariadb_system_tables_data.sql", "fill_help_tables.sql", "mariadb_sys_schema.sql"} {
 		b, err := os.ReadFile(filepath.Join(share, f))
-		if errors.Is(err, os.ErrNotExist) && f != "mysql_system_tables.sql" && f != "mysql_system_tables_data.sql" {
-			continue
-		}
 		if err != nil {
 			return err
 		}

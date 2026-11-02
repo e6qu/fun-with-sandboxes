@@ -101,6 +101,19 @@ func run(check string) string {
 	case "envscript":
 		out, err := exec.Command("/bin/run").Output()
 		return result(string(out), err)
+	case "drop":
+		// As an entrypoint drops root with gosu: the program it executes
+		// runs as the user it switched to.
+		if err := syscall.Setgid(50); err != nil {
+			return result("", err)
+		}
+		if err := syscall.Setuid(1000); err != nil {
+			return result("", err)
+		}
+		cmd := exec.Command("/bin/probe", "ids")
+		cmd.Env = []string{"PATH=/bin"}
+		out, err := cmd.Output()
+		return result(string(out), err)
 	case "exec":
 		out, err := exec.Command("/bin/probe", "read").Output()
 		return result(string(out), err)

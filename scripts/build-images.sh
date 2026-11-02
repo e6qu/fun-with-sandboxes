@@ -45,26 +45,43 @@ dash=$(pkg_with dash dash)
 closure() { nix-store -qR "$@" "$dash" | sort -u; }
 mkimage() { "$build/fws-mkimage" "$@" -pkg "$dash" -link /bin/sh=dash; }
 
+# accounts NAME [USER UID GID HOME]... writes the /etc/passwd and
+# /etc/group of image NAME, which hold root, nobody and the users the
+# official image has, and prints the -file arguments that add them.
+accounts() {
+  local d="$build/etc-$1"
+  shift
+  mkdir -p "$d"
+  printf 'root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/nonexistent:/bin/false\n' > "$d/passwd"
+  printf 'root:x:0:\nnogroup:x:65534:\n' > "$d/group"
+  while [ $# -ge 4 ]; do
+    printf '%s:x:%s:%s::%s:/bin/sh\n' "$1" "$2" "$3" "$4" >> "$d/passwd"
+    printf '%s:x:%s:\n' "$1" "$3" >> "$d/group"
+    shift 4
+  done
+  echo "-file /etc/passwd=$d/passwd -file /etc/group=$d/group"
+}
+
 for v in 16 18; do
   pg=$(pkg_with "postgresql_$v" postgres)
   closure "$pg" > "$build/pg$v.closure"
-  mkimage -spec images/postgres/image.json -tag "fws/postgres:$v" -closure "$build/pg$v.closure" -pkg "$pg" \
+  mkimage $(accounts postgres postgres 999 999 /var/lib/postgresql) -spec images/postgres/image.json -tag "fws/postgres:$v" -closure "$build/pg$v.closure" -pkg "$pg" \
     -file "/entry=$build/postgres-entry" -out "$out/postgres-$v.tar"
 done
 
 redis=$(pkg_with redis redis-server)
 closure "$redis" > "$build/redis.closure"
-mkimage -spec images/redis/image.json -closure "$build/redis.closure" -pkg "$redis" \
+mkimage $(accounts redis redis 999 999 /data) -spec images/redis/image.json -closure "$build/redis.closure" -pkg "$redis" \
   -file "/entry=$build/redis-entry" -out "$out/redis.tar"
 
 nginx=$(pkg_with nginx nginx)
 closure "$nginx" > "$build/nginx.closure"
-mkimage -spec images/nginx/image.json -closure "$build/nginx.closure" -pkg "$nginx" \
+mkimage $(accounts nginx nginx 101 101 /nonexistent) -spec images/nginx/image.json -closure "$build/nginx.closure" -pkg "$nginx" \
   -file "/entry=$build/nginx-entry" -file "/usr/share/nginx/html/index.html=$nginx/html/index.html" -out "$out/nginx.tar"
 
 mariadb=$(pkg_with mariadb mariadbd)
 closure "$mariadb" > "$build/mariadb.closure"
-mkimage -spec images/mariadb/image.json -closure "$build/mariadb.closure" -pkg "$mariadb" \
+mkimage $(accounts mariadb mysql 999 999 /var/lib/mysql) -spec images/mariadb/image.json -closure "$build/mariadb.closure" -pkg "$mariadb" \
   -file "/entry=$build/mariadb-entry" -out "$out/mariadb.tar"
 
 python=$(pkg_with python314 python3.14)
@@ -72,22 +89,22 @@ closure "$python" > "$build/python.closure"
 # nixpkgs marks its Python as managed by Nix, which keeps pip from installing
 # into it; the official image's Python takes packages.
 python_marker=$(cd "$python" && ls lib/python3.14/EXTERNALLY-MANAGED)
-mkimage -spec images/python/image.json -closure "$build/python.closure" -pkg "$python" \
+mkimage $(accounts python) -spec images/python/image.json -closure "$build/python.closure" -pkg "$python" \
   -remove "$python/$python_marker" -out "$out/python.tar"
 
 node=$(pkg_with nodejs_26 node)
 closure "$node" > "$build/node.closure"
-mkimage -spec images/node/image.json -closure "$build/node.closure" -pkg "$node" -out "$out/node.tar"
+mkimage $(accounts node node 1000 1000 /home/node) -spec images/node/image.json -closure "$build/node.closure" -pkg "$node" -out "$out/node.tar"
 
 bun=$(pkg_with bun bun)
 closure "$bun" > "$build/bun.closure"
-mkimage -spec images/bun/image.json -closure "$build/bun.closure" -pkg "$bun" -out "$out/bun.tar"
+mkimage $(accounts bun bun 1000 1000 /home/bun) -spec images/bun/image.json -closure "$build/bun.closure" -pkg "$bun" -out "$out/bun.tar"
 
 gitea=$(pkg_with gitea gitea)
 gitea_data=$(NIXPKGS_ALLOW_UNFREE=1 nix --extra-experimental-features 'nix-command flakes' build --impure --no-link --print-out-paths "$nixpkgs#gitea.data")
 git=$(pkg_with git git)
 closure "$gitea" "$gitea_data" "$git" > "$build/gitea.closure"
-mkimage -spec images/gitea/image.json -closure "$build/gitea.closure" -pkg "$gitea" -pkg "$git" \
+mkimage $(accounts gitea git 1000 1000 /data/git) -spec images/gitea/image.json -closure "$build/gitea.closure" -pkg "$gitea" -pkg "$git" \
   -env "GITEA_DATA=$gitea_data" -file "/entry=$build/gitea-entry" -out "$out/gitea.tar"
 
 dynamodb=$(pkg_with dynamodb-local dynamodb-local)
@@ -101,13 +118,19 @@ jdk=$(pkg_with jdk_headless javac)
 mkdir -p "$build/dynamodb-launcher"
 "$jdk/bin/javac" --release 17 -d "$build/dynamodb-launcher" images/dynamodb/launcher/Launcher.java
 closure "$dynamodb" > "$build/dynamodb.closure"
-mkimage -spec images/dynamodb/image.json -closure "$build/dynamodb.closure" -pkg "$jre" \
+mkimage $(accounts dynamodb dynamodblocal 1000 1000 /home/dynamodblocal) -spec images/dynamodb/image.json -closure "$build/dynamodb.closure" -pkg "$jre" \
   -env "DYNAMODB_HOME=$dynamodb/share/dynamodb-local" -file "/entry=$build/dynamodb-entry" \
   -file "/opt/fws=$build/dynamodb-launcher" -out "$out/dynamodb.tar"
 
 rabbitmq=$(pkg_with rabbitmq-server rabbitmq-server)
-closure "$rabbitmq" > "$build/rabbitmq.closure"
-mkimage -spec images/rabbitmq/image.json -closure "$build/rabbitmq.closure" -pkg "$rabbitmq" \
+# RabbitMQ's scripts run the POSIX tools from PATH.
+coreutils=$(pkg_with coreutils dirname)
+gnused=$(pkg_with gnused sed)
+gnugrep=$(pkg_with gnugrep grep)
+gawk=$(pkg_with gawk awk)
+closure "$rabbitmq" "$coreutils" "$gnused" "$gnugrep" "$gawk" > "$build/rabbitmq.closure"
+mkimage $(accounts rabbitmq rabbitmq 999 999 /var/lib/rabbitmq) -spec images/rabbitmq/image.json -closure "$build/rabbitmq.closure" -pkg "$rabbitmq" \
+  -pkg "$coreutils" -pkg "$gnused" -pkg "$gnugrep" -pkg "$gawk" \
   -file "/entry=$build/rabbitmq-entry" -out "$out/rabbitmq.tar"
 
 # The Lambda images: AWS's Runtime Interface Emulator, an interpreter, and
@@ -115,15 +138,15 @@ mkimage -spec images/rabbitmq/image.json -closure "$build/rabbitmq.closure" -pkg
 rie=$(pkg_with aws-lambda-rie aws-lambda-rie)
 
 closure "$python" "$rie" > "$build/lambda-python.closure"
-mkimage -spec images/lambda/python/image.json -closure "$build/lambda-python.closure" -pkg "$python" -pkg "$rie" \
+mkimage $(accounts lambda-python sbx_user1051 993 990 /home/sbx_user1051) -spec images/lambda/python/image.json -closure "$build/lambda-python.closure" -pkg "$python" -pkg "$rie" \
   -remove "$python/$python_marker" \
-  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" \
+  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" -file "/var/runtime/bootstrap=images/lambda/python/bootstrap" \
   -out "$out/lambda-python.tar"
 
 node24=$(pkg_with nodejs_24 node)
 closure "$node24" "$rie" > "$build/lambda-nodejs.closure"
-mkimage -spec images/lambda/nodejs/image.json -closure "$build/lambda-nodejs.closure" -pkg "$node24" -pkg "$rie" \
-  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.mjs=images/lambda/nodejs/bootstrap.mjs" \
+mkimage $(accounts lambda-nodejs sbx_user1051 993 990 /home/sbx_user1051) -spec images/lambda/nodejs/image.json -closure "$build/lambda-nodejs.closure" -pkg "$node24" -pkg "$rie" \
+  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.mjs=images/lambda/nodejs/bootstrap.mjs" -file "/var/runtime/bootstrap=images/lambda/nodejs/bootstrap" \
   -out "$out/lambda-nodejs.tar"
 
 # The Java runtime's libraries, from Maven Central, checked against their
@@ -144,8 +167,8 @@ mkdir -p "$build/lambda-java/classes"
 "$jdk17/bin/javac" --release 17 -cp "$lib/*" -d "$build/lambda-java/classes" images/lambda/java/src/fws/lambda/Bootstrap.java
 "$jdk17/bin/jar" --create --file "$lib/fws-lambda-runtime.jar" -C "$build/lambda-java/classes" .
 closure "$jdk17" "$rie" > "$build/lambda-java.closure"
-mkimage -spec images/lambda/java/image.json -closure "$build/lambda-java.closure" -pkg "$jdk17" -pkg "$rie" \
-  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/lib=$lib" \
+mkimage $(accounts lambda-java sbx_user1051 993 990 /home/sbx_user1051) -spec images/lambda/java/image.json -closure "$build/lambda-java.closure" -pkg "$jdk17" -pkg "$rie" \
+  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/lib=$lib" -file "/var/runtime/bootstrap=images/lambda/java/bootstrap" \
   -out "$out/lambda-java.tar"
 
 # Playwright on Node.js 24, with the playwright packages of the version
@@ -166,7 +189,7 @@ curl -fsSL --retry 5 -o "$build/playwright/shell.zip" \
 echo "$pw_sum  $build/playwright/shell.zip" | shasum -a 256 -c - >/dev/null
 unzip -q "$build/playwright/shell.zip" -d "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
 closure "$node24" > "$build/playwright.closure"
-mkimage -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" \
+mkimage $(accounts playwright pwuser 1000 1000 /home/pwuser) -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" \
   -file "/entry=$build/playwright-entry" -file "/usr/lib/node_modules=$build/playwright/modules/node_modules" \
   -file "/ms-playwright=$build/playwright/browsers" -out "$out/playwright.tar"
 

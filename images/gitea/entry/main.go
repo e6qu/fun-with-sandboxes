@@ -51,6 +51,9 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	if err := sandboxenv.Become("git", sandboxenv.Path("/data")); err != nil {
+		log.Fatal(err)
+	}
 	ini, err := readINI(conf)
 	if err != nil {
 		log.Fatal(err)

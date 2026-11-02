@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/attr.h>
+#include <sys/clonefile.h>
 #include <sys/sysctl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -107,7 +108,21 @@ static unsigned long env_number(const char *name) {
     return v ? strtoul(v, NULL, 10) : 0;
 }
 
+// The variables that make a process the container's, which a program that
+// clears or rebuilds its environment must not shed for its children, as
+// it cannot leave a chroot by doing so.
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "FWS_MOUNTS", "FWS_HOSTNAME", NULL};
+static char *kept[sizeof kept_names / sizeof kept_names[0]];
+
 __attribute__((constructor)) static void fwsroot_init(void) {
+    for (size_t i = 0; kept_names[i]; i++) {
+        const char *v = getenv(kept_names[i]);
+        if (v) {
+            size_t n = strlen(kept_names[i]) + strlen(v) + 2;
+            kept[i] = malloc(n);
+            if (kept[i]) snprintf(kept[i], n, "%s=%s", kept_names[i], v);
+        }
+    }
     fake_uid = fake_euid = (uid_t)env_number("FWS_UID");
     fake_gid = fake_egid = (gid_t)env_number("FWS_GID");
     const char *h = getenv("FWS_HOSTNAME");
@@ -275,6 +290,34 @@ static int fws_openat(int fd, const char *path, int flags, ...) {
     return r;
 }
 INTERPOSE(fws_openat, openat);
+
+// Bun, among others, opens files through the cancellation-point-free
+// variants.
+extern int openat_nocancel(int, const char *, int, ...) __asm("_openat$NOCANCEL");
+static int fws_openat_nocancel(int fd, const char *path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    const char *p = MAP(path);
+    int fresh = (p[0] == '/' || fd == AT_FDCWD) && creating(p, flags);
+    int r = openat_nocancel(fd, p, flags, mode);
+    if (r >= 0 && fresh) made(NULL, r, 0);
+    return r;
+}
+INTERPOSE(fws_openat_nocancel, openat_nocancel);
+
+static int fws_clonefile(const char *src, const char *dst, uint32_t flags) { return clonefile(MAP(src), MAP(dst), flags); }
+INTERPOSE(fws_clonefile, clonefile);
+static int fws_clonefileat(int sfd, const char *src, int dfd, const char *dst, uint32_t flags) {
+    return clonefileat(sfd, MAP(src), dfd, MAP(dst), flags);
+}
+INTERPOSE(fws_clonefileat, clonefileat);
+static int fws_fclonefileat(int sfd, int dfd, const char *dst, uint32_t flags) { return fclonefileat(sfd, dfd, MAP(dst), flags); }
+INTERPOSE(fws_fclonefileat, fclonefileat);
 
 static int fws_creat(const char *path, mode_t mode) {
     const char *p = MAP(path);
@@ -565,29 +608,63 @@ static char **script_argv(const char *path, char *const argv[], char *interp) {
     return out;
 }
 
+static int has_var(char *const envp[], const char *kv) {
+    size_t n = strcspn(kv, "=") + 1;
+    for (size_t i = 0; envp && envp[i]; i++) {
+        if (strncmp(envp[i], kv, n) == 0) return 1;
+    }
+    return 0;
+}
+
+// child_env is envp for a program the process starts: with the identity
+// the process holds now, which setuid changed without the program's own
+// copy of its environment knowing, and the container's variables.
+// Allocated; the caller frees the array.
+static char **child_env(char *const envp[], char *ids) {
+    size_t n = 0;
+    while (envp && envp[n]) n++;
+    char **out = calloc(n + 8, sizeof *out);
+    if (!out) return NULL;
+    size_t j = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (strncmp(envp[i], "FWS_UID=", 8) == 0 || strncmp(envp[i], "FWS_GID=", 8) == 0) continue;
+        out[j++] = envp[i];
+    }
+    int a = snprintf(ids, 64, "FWS_UID=%u", fake_euid);
+    snprintf(ids + a + 1, 64 - a - 1, "FWS_GID=%u", fake_egid);
+    out[j++] = ids;
+    out[j++] = ids + a + 1;
+    for (size_t i = 0; kept_names[i]; i++) {
+        if (kept[i] && !has_var(envp, kept[i])) out[j++] = kept[i];
+    }
+    return out;
+}
+
 static int fws_execve(const char *path, char *const argv[], char *const envp[]) {
+    char ids[64];
+    char **env = child_env(envp, ids);
+    if (env) envp = env;
     const char *p = MAP(path);
     char interp[PATH_MAX];
     char **sargv = script_argv(p, argv, interp);
-    if (sargv) {
-        int r = execve(interp, sargv, envp);
-        free(sargv);
-        return r;
-    }
-    return execve(p, argv, envp);
+    int r = sargv ? execve(interp, sargv, envp) : execve(p, argv, envp);
+    free(sargv);
+    free(env);
+    return r;
 }
 INTERPOSE(fws_execve, execve);
 static int fws_posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *a,
                            char *const argv[], char *const envp[]) {
+    char ids[64];
+    char **env = child_env(envp, ids);
+    if (env) envp = env;
     const char *p = MAP(path);
     char interp[PATH_MAX];
     char **sargv = script_argv(p, argv, interp);
-    if (sargv) {
-        int r = posix_spawn(pid, interp, fa, a, sargv, envp);
-        free(sargv);
-        return r;
-    }
-    return posix_spawn(pid, p, fa, a, argv, envp);
+    int r = sargv ? posix_spawn(pid, interp, fa, a, sargv, envp) : posix_spawn(pid, p, fa, a, argv, envp);
+    free(sargv);
+    free(env);
+    return r;
 }
 INTERPOSE(fws_posix_spawn, posix_spawn);
 // posix_spawnp searches PATH, whose directories name the host's paths of
@@ -602,7 +679,11 @@ static int fws_posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file
     if (find_on_path(file, full)) {
         return fws_posix_spawn(pid, full, fa, a, argv, envp);
     }
-    return posix_spawnp(pid, file, fa, a, argv, envp);
+    char ids[64];
+    char **env = child_env(envp, ids);
+    int r = posix_spawnp(pid, file, fa, a, argv, env ? env : envp);
+    free(env);
+    return r;
 }
 INTERPOSE(fws_posix_spawnp, posix_spawnp);
 

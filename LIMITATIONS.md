@@ -117,6 +117,11 @@ machine — and from what macOS offers an unprivileged process under them.
   as many UDP clients at once as its block has ports to spare; a flow ends
   after 90 seconds without traffic, as with Docker's userland proxy. SCTP
   ports cannot be published.
+- **IPv4 over an IPv6 socket is refused.** Seatbelt matches loopback as
+  `127.0.0.1` and `::1`, not as the IPv4-mapped `::ffff:127.0.0.1` that a
+  dual-stack socket uses, so a program must listen and connect over IPv4
+  sockets. Java uses dual-stack sockets unless run with
+  `-Djava.net.preferIPv4Stack=true`, as the catalog's Java images are.
 - **Unix socket paths are capped at 104 bytes** on macOS. Keep the state root
   short (the default `~/.fws` is).
 

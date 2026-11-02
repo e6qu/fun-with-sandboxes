@@ -49,6 +49,12 @@ func main() {
 	if err := os.MkdirAll(sockets, 0o755); err != nil {
 		log.Fatal(err)
 	}
+	if err := os.MkdirAll(pgdata, 0o700); err != nil {
+		log.Fatal(err)
+	}
+	if err := sandboxenv.Become("postgres", pgdata, sockets); err != nil {
+		log.Fatal(err)
+	}
 	if err := initialise(pgdata, user); err != nil {
 		log.Fatal(err)
 	}

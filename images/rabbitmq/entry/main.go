@@ -47,6 +47,9 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	if err := sandboxenv.Become("rabbitmq", home, etc); err != nil {
+		log.Fatal(err)
+	}
 	plugins := filepath.Join(etc, "enabled_plugins")
 	if _, err := os.Stat(plugins); os.IsNotExist(err) {
 		if err := os.WriteFile(plugins, []byte("[].\n"), 0o644); err != nil {

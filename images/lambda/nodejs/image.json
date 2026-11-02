@@ -12,8 +12,7 @@
       "LANG=en_US.UTF-8",
       "LAMBDA_TASK_ROOT=/var/task",
       "LAMBDA_RUNTIME_DIR=/var/runtime",
-      "AWS_EXECUTION_ENV=AWS_Lambda_nodejs24.x",
-      "FWS_LAMBDA_RUNTIME=node /var/runtime/bootstrap.mjs"
+      "AWS_EXECUTION_ENV=AWS_Lambda_nodejs24.x"
     ],
     "Entrypoint": [
       "/lambda-entrypoint"
