@@ -268,19 +268,3 @@ func TestSystemDF(t *testing.T) {
 		t.Fatalf("system df for an unknown type: %d", res.StatusCode)
 	}
 }
-
-// The swarm API answers as a daemon outside any swarm.
-func TestSwarmEndpointsAnswerAsANonSwarmDaemon(t *testing.T) {
-	ts := newServer(t)
-	for path, want := range map[string]int{"/swarm": 503, "/nodes": 503, "/services": 503, "/services/x": 503, "/secrets": 503} {
-		if res := call(t, ts, "GET", path, "", nil); res.StatusCode != want {
-			t.Errorf("GET %s: %d, want %d", path, res.StatusCode, want)
-		}
-	}
-	if res := call(t, ts, "POST", "/swarm/init", "{}", nil); res.StatusCode != 501 {
-		t.Errorf("POST /swarm/init: %d", res.StatusCode)
-	}
-	if res := call(t, ts, "POST", "/swarm/leave", "", nil); res.StatusCode != 503 {
-		t.Errorf("POST /swarm/leave: %d", res.StatusCode)
-	}
-}

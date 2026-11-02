@@ -90,7 +90,6 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /events", s.events)
 	m.HandleFunc("GET /system/df", s.systemDF)
 	m.HandleFunc("GET /distribution/{ref...}", s.distribution)
-	s.swarmRoutes(m)
 
 	m.HandleFunc("GET /containers/json", s.containerList)
 	m.HandleFunc("POST /containers/create", s.containerCreate)
@@ -808,28 +807,4 @@ func (s *Server) distribution(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.e.Distribution(r.Context(), ref, auth)
 	respond(w, res, err)
-}
-
-// swarmRoutes answers the swarm API as a daemon that is not part of a
-// swarm: queries get dockerd's 503, and joining or starting one is not
-// supported.
-func (s *Server) swarmRoutes(m *http.ServeMux) {
-	notManager := func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusServiceUnavailable, "This node is not a swarm manager. Use \"docker swarm init\" or \"docker swarm join\" to connect this node to swarm and try again.")
-	}
-	for _, p := range []string{"/swarm", "/swarm/unlockkey", "/nodes", "/services", "/tasks", "/secrets", "/configs"} {
-		m.HandleFunc("GET "+p, notManager)
-		m.HandleFunc("GET "+p+"/{rest...}", notManager)
-	}
-	for _, p := range []string{"/swarm/update", "/swarm/unlock", "/services/create", "/secrets/create", "/configs/create"} {
-		m.HandleFunc("POST "+p, notManager)
-	}
-	m.HandleFunc("POST /swarm/leave", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusServiceUnavailable, "This node is not part of a swarm")
-	})
-	for _, p := range []string{"/swarm/init", "/swarm/join"} {
-		m.HandleFunc("POST "+p, func(w http.ResponseWriter, r *http.Request) {
-			writeError(w, http.StatusNotImplemented, "swarm mode is not supported by this engine: it runs Compose stacks on one Mac")
-		})
-	}
 }

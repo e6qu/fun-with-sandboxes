@@ -320,9 +320,6 @@ with or without the `/v1.xx` prefix:
   (the descriptor and platforms a name resolves to in its registry, with
   `X-Registry-Auth`), `GET /images/search` (`docker search`, against Docker
   Hub's search API or the registry the term names)
-- Swarm: `swarm`, `nodes`, `services`, `tasks`, `secrets` and `configs`
-  answer as a daemon outside any swarm, `503`, and `swarm/init` and
-  `swarm/join` fail with `501`
 - Containers to images: `POST /commit` (with `changes`, pausing by default)
   and `GET /containers/{id}/export`
 - Networks: `json`, `create`, `{id}`, `connect`, `disconnect`, `prune`, `DELETE`

@@ -963,7 +963,7 @@ func TestTestcontainersReaper(t *testing.T) {
 	}
 }
 
-func TestDiffSizeDiskUsageSearchAndSwarm(t *testing.T) {
+func TestDiffSizeDiskUsageAndSearch(t *testing.T) {
 	const changed, fresh = "fws-e2e-diff", "fws-e2e-fresh"
 	mustDocker(t, "run", "--name", changed, "fws/toolbox:1", "put", "/made.txt", "hi")
 	defer docker(t, "rm", "-f", changed)
@@ -986,11 +986,5 @@ func TestDiffSizeDiskUsageSearchAndSwarm(t *testing.T) {
 	}
 	if out := mustDocker(t, "search", "--limit", "5", "--filter", "is-official=true", "postgres"); !strings.Contains(out, "postgres") {
 		t.Fatalf("docker search:\n%s", out)
-	}
-	if _, err := docker(t, "swarm", "init"); err == nil || !strings.Contains(err.Error(), "swarm mode is not supported") {
-		t.Fatalf("docker swarm init: %v", err)
-	}
-	if _, err := docker(t, "service", "ls"); err == nil || !strings.Contains(err.Error(), "not a swarm manager") {
-		t.Fatalf("docker service ls: %v", err)
 	}
 }
