@@ -128,7 +128,7 @@ func TestTestcontainers(t *testing.T) {
 	defer cancel()
 	redis, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "fws/redis:7",
+			Image:        "fws/redis:8",
 			ExposedPorts: []string{"6379/tcp"},
 			WaitingFor:   wait.ForLog("Ready to accept connections"),
 			Files: []testcontainers.ContainerFile{{

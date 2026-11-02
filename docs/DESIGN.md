@@ -318,7 +318,7 @@ Stock Docker Hub images are Linux. The catalog is built from Nixpkgs for
   `#!` scripts: the kernel resolves interpreters on the host.
 - **Catalog.** `fws/postgres:16`, with `initdb`, `POSTGRES_PASSWORD`,
   `POSTGRES_DB` and `docker-entrypoint-initdb.d/*.sql` handled the way the
-  official image handles them; `fws/redis:7`; and `fws/toolbox:1`, a small
+  official image handles them; `fws/redis:8`; and `fws/toolbox:1`, a small
   HTTP app backed by its stack's Redis that doubles as the tests' probe;
   and `fws/ryuk:0.14.0`, Testcontainers' reaper built from its release with
   a patch that makes it listen on loopback, an entrypoint that points it at

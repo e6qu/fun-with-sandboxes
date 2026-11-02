@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"database/sql"
 	"io"
 	"net/http"
@@ -12,6 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -109,5 +114,124 @@ func TestMariaDB(t *testing.T) {
 	}
 	if logs := mustDocker(t, "logs", name); !strings.Contains(logs, "skipping initialization") {
 		t.Errorf("the restarted server initialised again:\n%s", logs)
+	}
+}
+
+// waitedRun starts a detached container from image with args and waits for
+// it to report healthy, returning its name.
+func waitedRun(t *testing.T, name string, args ...string) {
+	t.Helper()
+	since := time.Now()
+	mustDocker(t, append([]string{"run", "-d", "--name", name}, args...)...)
+	t.Cleanup(func() { docker(t, "rm", "-f", "-v", name) })
+	waitHealthy(t, name, since)
+}
+
+func TestPostgres18(t *testing.T) {
+	const name = "fws-e2e-pg18"
+	waitedRun(t, name, "-p", "127.0.0.1::5432", "-e", "POSTGRES_PASSWORD=secret", "-e", "POSTGRES_DB=app", "fws/postgres:18")
+	port := strings.TrimSpace(mustDocker(t, "port", name, "5432"))
+	_, p, _ := strings.Cut(port, ":")
+	if got := query(t, p, "SELECT current_setting('server_version_num')::int / 10000"); len(got) != 1 || got[0] != "18" {
+		t.Fatalf("server major version %v, want 18", got)
+	}
+}
+
+// The language images run scripts by their #! lines, through the
+// interpreter the image carries, and their package managers.
+func TestLanguageImages(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("hello.py", "#!/usr/bin/env python3\nimport sys\nprint('python', sys.version_info[0], sys.version_info[1])\n")
+	write("hello.mjs", "#!/usr/bin/env node\nconsole.log('node', process.versions.node.split('.')[0])\n")
+	write("hello.ts", "const who: string = 'bun';\nconsole.log(who, Bun.version.split('.')[0]);\n")
+	for _, c := range []struct {
+		image string
+		args  []string
+		want  string
+	}{
+		{"fws/python:3.14", []string{"/app/hello.py"}, "python 3 14"},
+		{"fws/python:3.14", []string{"python3", "-m", "ensurepip", "--version"}, "pip"},
+		{"fws/node:26", []string{"/app/hello.mjs"}, "node 26"},
+		{"fws/node:26", []string{"npm", "--version"}, "."},
+		{"fws/bun:1", []string{"bun", "run", "/app/hello.ts"}, "bun 1"},
+	} {
+		out, err := docker(t, append([]string{"run", "--rm", "-v", dir + ":/app", c.image}, c.args...)...)
+		if err != nil || !strings.Contains(out, c.want) {
+			t.Errorf("%s %v: %q, %v; want %q", c.image, c.args, out, err, c.want)
+		}
+	}
+	// pip installs a package from the internet through the stack's proxy
+	// into the container.
+	out, err := docker(t, "run", "--rm", "fws/python:3.14", "python3", "-c", `import importlib, subprocess, sys
+subprocess.check_call([sys.executable, "-m", "ensurepip", "--upgrade"], stdout=subprocess.DEVNULL)
+subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "--no-cache-dir", "six"])
+importlib.invalidate_caches()
+import six
+print("six", six.__version__)`)
+	if err != nil || !strings.Contains(out, "six 1.") {
+		t.Errorf("pip install: %q, %v", out, err)
+	}
+}
+
+func TestGitea(t *testing.T) {
+	const name = "fws-e2e-gitea"
+	waitedRun(t, name, "-p", "127.0.0.1::3000", "-e", "GITEA__security__INSTALL_LOCK=true", "fws/gitea:1")
+	addr := "http://" + strings.TrimSpace(mustDocker(t, "port", name, "3000"))
+	if body := httpGet(t, addr+"/api/v1/version"); !strings.Contains(body, `"version":"1.`) {
+		t.Fatalf("version: %q", body)
+	}
+	mustDocker(t, "exec", name, "/entry", "admin", "user", "create", "--username", "e2e", "--password", "e2e-password-1", "--email", "e2e@example.com", "--admin", "--must-change-password=false")
+	req, _ := http.NewRequest("POST", addr+"/api/v1/user/repos", strings.NewReader(`{"name":"repo","auto_init":true}`))
+	req.SetBasicAuth("e2e", "e2e-password-1")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create a repository: %s %s", res.Status, body)
+	}
+	// auto_init commits through git, which the image carries.
+	if body := httpGet(t, addr+"/api/v1/repos/e2e/repo/contents/README.md"); !strings.Contains(body, `"name":"README.md"`) {
+		t.Fatalf("the initialised repository holds no README: %q", body)
+	}
+}
+
+func TestDynamoDBLocal(t *testing.T) {
+	const name = "fws-e2e-dynamodb"
+	waitedRun(t, name, "-p", "127.0.0.1::8000", "fws/dynamodb-local:2")
+	endpoint := "http://" + strings.TrimSpace(mustDocker(t, "port", name, "8000"))
+	client := dynamodb.New(dynamodb.Options{
+		Region: "us-east-1", BaseEndpoint: aws.String(endpoint),
+		Credentials: credentials.NewStaticCredentialsProvider("local", "local", ""),
+	})
+	ctx := context.Background()
+	_, err := client.CreateTable(ctx, &dynamodb.CreateTableInput{
+		TableName:            aws.String("notes"),
+		AttributeDefinitions: []types.AttributeDefinition{{AttributeName: aws.String("id"), AttributeType: types.ScalarAttributeTypeS}},
+		KeySchema:            []types.KeySchemaElement{{AttributeName: aws.String("id"), KeyType: types.KeyTypeHash}},
+		BillingMode:          types.BillingModePayPerRequest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String("notes"), Item: map[string]types.AttributeValue{
+		"id": &types.AttributeValueMemberS{Value: "1"}, "body": &types.AttributeValueMemberS{Value: "kept"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String("notes"), Key: map[string]types.AttributeValue{"id": &types.AttributeValueMemberS{Value: "1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, ok := got.Item["body"].(*types.AttributeValueMemberS); !ok || b.Value != "kept" {
+		t.Fatalf("item %v", got.Item)
 	}
 }

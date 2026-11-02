@@ -10,6 +10,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"debug/macho"
 	"encoding/json"
 	"flag"
@@ -41,6 +42,8 @@ type Spec struct {
 	// Dirs are empty directories to create.
 	Dirs   []string        `json:"dirs"`
 	Config json.RawMessage `json:"config"`
+	// Env are variables added to the config's, from -env.
+	Env []string `json:"-"`
 }
 
 const storeDir = "/nix/store"
@@ -51,15 +54,18 @@ func main() {
 	var pkgs multi
 	flag.Var(&pkgs, "pkg", "store path whose bin/ entries are linked into /bin (repeatable)")
 	var files multi
-	flag.Var(&files, "file", "image-path=host-path to add (repeatable, overrides the spec)")
+	flag.Var(&files, "file", "image-path=host-path of a file or directory to add (repeatable, overrides the spec)")
 	out := flag.String("out", "", "output archive")
+	tag := flag.String("tag", "", "image tag, overriding the spec's")
+	var env multi
+	flag.Var(&env, "env", "KEY=value to add to the image's environment (repeatable)")
 	arch := flag.String("arch", runtime.GOARCH, "image architecture")
 	flag.Parse()
 	if *specPath == "" || *out == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := build(*specPath, *closure, pkgs, files, *out, *arch); err != nil {
+	if err := build(*specPath, *closure, pkgs, files, *out, *arch, *tag, env); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -69,7 +75,7 @@ type multi []string
 func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
-func build(specPath, closure string, pkgs, files []string, out, arch string) error {
+func build(specPath, closure string, pkgs, files []string, out, arch, tag string, env []string) error {
 	var spec Spec
 	b, err := os.ReadFile(specPath)
 	if err != nil {
@@ -78,6 +84,10 @@ func build(specPath, closure string, pkgs, files []string, out, arch string) err
 	if err := json.Unmarshal(b, &spec); err != nil {
 		return fmt.Errorf("%s: %w", specPath, err)
 	}
+	if tag != "" {
+		spec.Tag = tag
+	}
+	spec.Env = env
 	stage, err := os.MkdirTemp("", "fws-mkimage-")
 	if err != nil {
 		return err
@@ -106,6 +116,11 @@ func build(specPath, closure string, pkgs, files []string, out, arch string) err
 			return err
 		}
 	}
+	if closure != "" {
+		if err := rewriteShebangs(stage); err != nil {
+			return err
+		}
+	}
 	if spec.Files == nil {
 		spec.Files = map[string]string{}
 	}
@@ -117,7 +132,7 @@ func build(specPath, closure string, pkgs, files []string, out, arch string) err
 		spec.Files[dst] = src
 	}
 	for dst, src := range spec.Files {
-		if err := copyFile(src, filepath.Join(stage, dst)); err != nil {
+		if err := copyTree(src, filepath.Join(stage, dst)); err != nil {
 			return err
 		}
 	}
@@ -183,6 +198,42 @@ func copyStorePath(stage, storePath string) error {
 			return copyFile(p, dst)
 		}
 		return nil
+	})
+}
+
+// copyTree copies a file, or a directory and everything in it.
+func copyTree(src, dst string) error {
+	fi, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return copyFile(src, dst)
+	}
+	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(target, 0o755)
+		case d.Type()&fs.ModeSymlink != 0:
+			link, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			if filepath.IsAbs(link) {
+				return fmt.Errorf("%s links to the absolute path %s, which no image holds", p, link)
+			}
+			return os.Symlink(link, target)
+		default:
+			return copyFile(p, target)
+		}
 	})
 }
 
@@ -362,6 +413,55 @@ func linkBin(stage, pkg string) error {
 	return nil
 }
 
+// systemShells are the host shells a container may execute; a script whose
+// interpreter is one of them runs on the host's.
+var systemShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true}
+
+// rewriteShebangs makes the closure's scripts runnable in a container. The
+// kernel resolves a script's interpreter on the host, where the image's
+// store paths do not exist, so an interpreter the image puts on /bin is
+// named through /usr/bin/env, which finds it on the container's PATH, and a
+// shell becomes the host's.
+func rewriteShebangs(stage string) error {
+	bins := map[string]bool{}
+	if entries, err := os.ReadDir(filepath.Join(stage, "bin")); err == nil {
+		for _, e := range entries {
+			bins[e.Name()] = true
+		}
+	}
+	return filepath.WalkDir(filepath.Join(stage, storeDir), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil || !bytes.HasPrefix(b, []byte("#!"+storeDir+"/")) {
+			return err
+		}
+		line, rest, _ := bytes.Cut(b, []byte("\n"))
+		fields := strings.Fields(string(line[2:]))
+		name := filepath.Base(fields[0])
+		var head string
+		switch {
+		case systemShells[name]:
+			head = "#!/bin/" + name
+		case bins[name]:
+			head = "#!/usr/bin/env -S " + name
+		default:
+			// An interpreter the image does not carry on /bin cannot run
+			// the script in any container.
+			return nil
+		}
+		if len(fields) > 1 {
+			head += " " + strings.Join(fields[1:], " ")
+		}
+		fi, err := os.Stat(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(p, append([]byte(head+"\n"), rest...), fi.Mode().Perm())
+	})
+}
+
 // writeArchive writes the stage as an OCI image in the `docker save`
 // layout: a layer per store path, in the closure's sorted order, then one
 // with the rest of the stage.
@@ -416,6 +516,7 @@ func writeArchive(stage string, spec Spec, storePaths []string, out, arch string
 	if err := json.Unmarshal(spec.Config, &cfg); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	cfg.Env = append(cfg.Env, spec.Env...)
 	img, err := mutate.Append(mutate.ConfigMediaType(mutate.MediaType(empty.Image, types.OCIManifestSchema1), types.OCIConfigJSON), adds...)
 	if err != nil {
 		return err

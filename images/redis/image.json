@@ -1,5 +1,5 @@
 {
-  "tag": "fws/redis:7",
+  "tag": "fws/redis:8",
   "files": {},
   "dirs": [
     "/data",

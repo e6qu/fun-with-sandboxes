@@ -1,0 +1,34 @@
+{
+  "tag": "fws/dynamodb-local:2",
+  "files": {},
+  "dirs": [
+    "/home/dynamodblocal/data",
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC"
+    ],
+    "Entrypoint": [
+      "/entry"
+    ],
+    "ExposedPorts": {
+      "8000/tcp": {}
+    },
+    "WorkingDir": "/home/dynamodblocal",
+    "Healthcheck": {
+      "Test": [
+        "CMD",
+        "/entry",
+        "health"
+      ],
+      "Interval": 1000000000,
+      "Timeout": 5000000000,
+      "Retries": 60
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

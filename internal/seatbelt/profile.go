@@ -43,8 +43,11 @@ var DeniedReadRoots = []string{
 
 // SystemShells are the only host executables a container may run: the C
 // library's popen() and system() hard-code /bin/sh, which on macOS hands off
-// to the shell /private/var/select/sh names.
-var SystemShells = []string{"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash"}
+// to the shell /private/var/select/sh names, and a script names its
+// interpreter as /usr/bin/env finds it on the container's PATH, since the
+// kernel resolves a script's interpreter on the host. env runs nothing the
+// profile would not let the container run itself.
+var SystemShells = []string{"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/usr/bin/env"}
 
 // MachServices are the only global Mach services a container may look up:
 // user/group lookup, notifications, logging, and certificate trust

@@ -1,0 +1,22 @@
+{
+  "tag": "fws/node:26",
+  "files": {},
+  "dirs": [
+    "/app",
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC",
+      "NODE_ENV=production"
+    ],
+    "Cmd": [
+      "node"
+    ],
+    "WorkingDir": "/app",
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

@@ -138,6 +138,7 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 		e.denied("signal", strconv.Itoa(os.Getpid()))
 		e.denied("exec", "/bin/ls")
 		e.allowed("exec", "/bin/sh")
+		e.allowed("exec", "/usr/bin/env")
 	})
 }
 
