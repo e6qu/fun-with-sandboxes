@@ -78,7 +78,10 @@ func Build(dir string) (string, error) {
 		return "", err
 	}
 	lib := filepath.Join(work, "fwsroot.dylib")
-	args := append([]string{"clang", "-dynamiclib", "-O2", "-Wall", "-Werror"}, archs()...)
+	// The library binds the IOKit functions it stands in for weakly and
+	// from whichever image provides them: it links no framework.
+	args := append([]string{"clang", "-dynamiclib", "-O2", "-Wall", "-Werror",
+		"-Wl,-U,_IORegisterForSystemPower", "-Wl,-U,_IONotificationPortCreate"}, archs()...)
 	cmd := exec.Command("/usr/bin/xcrun", append(args, "-o", lib, src)...)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build the container library with clang, which the Xcode Command Line Tools provide (xcode-select --install): %v\n%s", err, b)

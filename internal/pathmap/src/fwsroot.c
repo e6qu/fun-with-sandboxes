@@ -26,6 +26,7 @@
 #include <pwd.h>
 #include <sys/utsname.h>
 #include <limits.h>
+#include <mach/mach.h>
 #include <spawn.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -1215,3 +1216,37 @@ static int fws_sysctlbyname(const char *name, void *old, size_t *oldlen, void *n
     return sysctlbyname(name, old, oldlen, new, newlen);
 }
 INTERPOSE(fws_sysctlbyname, sysctlbyname);
+
+// IOKit. The sandbox denies a container IOKit's user clients, and the host's
+// power management above all; a program that registers for power
+// notifications gets a registration that never fires, as a container sees
+// no sleep or wake of its own. The library binds IOKit weakly, so a process
+// that does not load IOKit itself does not load it for the library.
+typedef unsigned int fws_io_object_t;
+typedef struct IONotificationPort *fws_notify_port_t;
+typedef void (*fws_interest_cb)(void *, fws_io_object_t, uint32_t, void *);
+extern fws_io_object_t IORegisterForSystemPower(void *, fws_notify_port_t *, fws_interest_cb, fws_io_object_t *)
+    __attribute__((weak_import));
+extern fws_notify_port_t IONotificationPortCreate(unsigned int) __attribute__((weak_import));
+
+static fws_io_object_t fws_IORegisterForSystemPower(void *refcon, fws_notify_port_t *port, fws_interest_cb cb,
+                                                     fws_io_object_t *notifier) {
+    fws_io_object_t r = IORegisterForSystemPower(refcon, port, cb, notifier);
+    if (r != 0) {
+        return r;
+    }
+    fws_notify_port_t p = IONotificationPortCreate(0);
+    if (!p) {
+        return 0;
+    }
+    // A port of the process's own, which nothing sends to, stands for the
+    // connection.
+    mach_port_t conn = MACH_PORT_NULL;
+    if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &conn) != KERN_SUCCESS) {
+        return 0;
+    }
+    *port = p;
+    if (notifier) *notifier = 0;
+    return conn;
+}
+INTERPOSE(fws_IORegisterForSystemPower, IORegisterForSystemPower);

@@ -90,6 +90,10 @@ func main() {
 // its error.
 func listing(dir string) string {
 	var b strings.Builder
+	// A volume's mount point is a symlink to the volume.
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
 	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			fmt.Fprintf(&b, "%s: %v\n", p, err)

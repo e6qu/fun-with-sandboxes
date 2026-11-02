@@ -166,7 +166,11 @@ same knobs, each enforced by a real mechanism or refused:
   container's variables, whatever environment the process passes: an
   entrypoint drops root as the official images' entrypoints do with `gosu`
   (`sandboxenv.Become`), and a program that clears its environment stays in
-  the container.
+  the container. A program that registers for the host's power
+  notifications, which the sandbox's IOKit denial refuses, gets a
+  registration that never fires, as a container has no sleep or wake of
+  its own; the library binds IOKit weakly, so it loads it into no process
+  that does not.
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would

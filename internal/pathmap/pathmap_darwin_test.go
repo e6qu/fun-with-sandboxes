@@ -116,3 +116,31 @@ func TestMountsAndEnvScripts(t *testing.T) {
 		t.Errorf("a #!/usr/bin/env script ran as %q", got["envscript"])
 	}
 }
+
+func TestPowerNotificationsWithoutIOKit(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "power")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-framework", "IOKit", "-o", bin, "testdata/power/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	run := func(env ...string) string {
+		cmd := exec.Command(bin)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("power: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	// The sandbox refuses the registration itself.
+	if got := run(); got != "0 0" {
+		t.Fatalf("without the library: %q, want no registration", got)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run("DYLD_INSERT_LIBRARIES=" + lib); got != "1 1" {
+		t.Errorf("with the library: %q, want a registration and its run loop source", got)
+	}
+}
