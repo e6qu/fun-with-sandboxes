@@ -1,0 +1,41 @@
+{
+  "tag": "fws/mariadb:11",
+  "files": {},
+  "dirs": [
+    "/var/lib/mysql",
+    "/run/mysqld",
+    "/tmp",
+    "/docker-entrypoint-initdb.d"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC"
+    ],
+    "Entrypoint": [
+      "/entry"
+    ],
+    "Cmd": [
+      "mariadbd"
+    ],
+    "ExposedPorts": {
+      "3306/tcp": {}
+    },
+    "Volumes": {
+      "/var/lib/mysql": {}
+    },
+    "Healthcheck": {
+      "Test": [
+        "CMD",
+        "/entry",
+        "health"
+      ],
+      "Interval": 1000000000,
+      "Timeout": 5000000000,
+      "Retries": 60
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

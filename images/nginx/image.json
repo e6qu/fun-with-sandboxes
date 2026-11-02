@@ -1,0 +1,41 @@
+{
+  "tag": "fws/nginx:1",
+  "files": {},
+  "dirs": [
+    "/usr/share/nginx/html",
+    "/etc/nginx/conf.d",
+    "/etc/nginx/templates",
+    "/var/lib/nginx",
+    "/var/run",
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC"
+    ],
+    "Entrypoint": [
+      "/entry"
+    ],
+    "Cmd": [
+      "nginx"
+    ],
+    "ExposedPorts": {
+      "80/tcp": {}
+    },
+    "StopSignal": "SIGQUIT",
+    "Healthcheck": {
+      "Test": [
+        "CMD",
+        "/entry",
+        "health"
+      ],
+      "Interval": 1000000000,
+      "Timeout": 5000000000,
+      "Retries": 30
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

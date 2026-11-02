@@ -198,7 +198,7 @@ func waitHealthy(t *testing.T, name string, since time.Time) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", "events", "--since", strconv.FormatInt(since.Unix(), 10),
+	cmd := exec.CommandContext(ctx, "docker", "events", "--since", since.Format(time.RFC3339Nano),
 		"--filter", "container="+name, "--filter", "event=health_status", "--format", "{{.Action}}")
 	out, err := cmd.StdoutPipe()
 	if err != nil {

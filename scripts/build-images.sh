@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build the darwin image archives (postgres, redis, toolbox, ryuk) into $1.
+# Build the darwin image archives (postgres, redis, nginx, mariadb, toolbox,
+# ryuk) into $1.
 # Needs macOS (install_name_tool, codesign) and Nix.
 set -euo pipefail
 
@@ -14,6 +15,8 @@ cd "$here"
 go build -o "$build/fws-mkimage" ./cmd/fws-mkimage
 go build -o "$build/postgres-entry" ./images/postgres/entry
 go build -o "$build/redis-entry" ./images/redis/entry
+go build -o "$build/nginx-entry" ./images/nginx/entry
+go build -o "$build/mariadb-entry" ./images/mariadb/entry
 go build -o "$build/toolbox" ./images/toolbox
 
 # pkg_with ATTR BINARY prints the output of ATTR that holds bin/BINARY.
@@ -38,6 +41,16 @@ redis=$(pkg_with redis redis-server)
 nix-store -qR "$redis" > "$build/redis.closure"
 "$build/fws-mkimage" -spec images/redis/image.json -closure "$build/redis.closure" -pkg "$redis" \
   -file "/entry=$build/redis-entry" -out "$out/redis.tar"
+
+nginx=$(pkg_with nginx nginx)
+nix-store -qR "$nginx" > "$build/nginx.closure"
+"$build/fws-mkimage" -spec images/nginx/image.json -closure "$build/nginx.closure" -pkg "$nginx" \
+  -file "/entry=$build/nginx-entry" -file "/usr/share/nginx/html/index.html=$nginx/html/index.html" -out "$out/nginx.tar"
+
+mariadb=$(pkg_with mariadb mariadbd)
+nix-store -qR "$mariadb" > "$build/mariadb.closure"
+"$build/fws-mkimage" -spec images/mariadb/image.json -closure "$build/mariadb.closure" -pkg "$mariadb" \
+  -file "/entry=$build/mariadb-entry" -out "$out/mariadb.tar"
 
 "$build/fws-mkimage" -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"
 

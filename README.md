@@ -41,10 +41,17 @@ stops, for an upgrade say, and the next `fwsd` takes them back.
 ## Images
 
 Images are macOS-native (`darwin/arm64` or `darwin/amd64`). Linux images
-cannot run without a VM. `scripts/build-images.sh` builds the catalog —
-PostgreSQL 16, Redis 7 and a small `toolbox` app — from Nix packages into
-archives for `docker load`, and `scripts/publish-images.sh` pushes them to a
-registry the engine can pull from:
+cannot run without a VM. `scripts/build-images.sh` builds the catalog from
+Nix packages into archives for `docker load`, and `scripts/publish-images.sh`
+pushes them to a registry the engine can pull from:
+
+| Image | Configured like the official image through |
+|---|---|
+| `fws/postgres:16` | `POSTGRES_PASSWORD`, `POSTGRES_USER`, `POSTGRES_DB`, `/docker-entrypoint-initdb.d/*.sql` |
+| `fws/mariadb:11` | `MARIADB_ROOT_PASSWORD` (or the `ALLOW_EMPTY`/`RANDOM` forms), `MARIADB_DATABASE`, `MARIADB_USER`, `MARIADB_PASSWORD`, `MARIADB_ROOT_HOST`, their `MYSQL_` names, `/docker-entrypoint-initdb.d/*.sql` |
+| `fws/redis:7` | arguments to `redis-server` |
+| `fws/nginx:1` | `/usr/share/nginx/html`, and `/etc/nginx/templates/*.template`, rendered into `conf.d` with environment variables substituted: a server listens on `127.0.0.1:${SANDBOX_PORT_80}` |
+| `fws/toolbox:1` | the test suite's small app and probe |
 
 ```bash
 scripts/build-images.sh ./images-out
