@@ -56,7 +56,11 @@ func run(args []string) error {
 		// Start the given number of children, reaping those that end.
 		n, _ := strconv.Atoi(args[1])
 		for i := 0; i < n; i++ {
-			cmd := exec.Command(os.Args[0], "hold")
+			self, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			cmd := exec.Command(self, "hold")
 			if err := cmd.Start(); err != nil {
 				return err
 			}

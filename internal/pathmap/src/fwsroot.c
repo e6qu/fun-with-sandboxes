@@ -85,7 +85,9 @@ static const char *fws_map(const char *p, char *buf) {
         return p;
     }
     for (const char *const *t = host_trees; *t; t++) {
-        if (strncmp(p, *t, strlen(*t)) == 0 || strncmp(p, *t, strlen(*t) - 1) == 0 && p[strlen(*t) - 1] == 0) {
+        size_t n = strlen(*t);
+        // The tree, or its top directory itself.
+        if (strncmp(p, *t, n) == 0 || (strncmp(p, *t, n - 1) == 0 && p[n - 1] == 0)) {
             return p;
         }
     }
