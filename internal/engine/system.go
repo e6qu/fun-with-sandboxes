@@ -13,6 +13,7 @@ import (
 
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/events"
 	imagetypes "github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/system"
@@ -95,6 +96,11 @@ func (e *Engine) imageInUse(id string) bool {
 	for _, c := range e.allContainers() {
 		if c.rec.ImageID == id {
 			return true
+		}
+		for _, m := range c.rec.Mounts {
+			if m.Type == mount.TypeImage && m.Name == id {
+				return true
+			}
 		}
 	}
 	return false

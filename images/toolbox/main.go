@@ -131,6 +131,16 @@ func run(op, arg string) error {
 	case "list":
 		_, err := os.ReadDir(arg)
 		return err
+	case "ls":
+		// Print the names in a directory inside the container, one a line.
+		entries, err := os.ReadDir(sandboxenv.Path(arg))
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			fmt.Println(e.Name())
+		}
+		return nil
 	case "bind":
 		l, err := net.Listen("tcp", "127.0.0.1:"+arg)
 		if err != nil {

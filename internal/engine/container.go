@@ -24,6 +24,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
+	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 	"github.com/e6qu/fun-with-sandboxes/internal/shim"
@@ -38,11 +39,20 @@ const (
 )
 
 type mountRec struct {
-	Type        mount.Type `json:"type"`
-	Name        string     `json:"name,omitempty"`
-	Source      string     `json:"source"`
-	Destination string     `json:"destination"`
-	RW          bool       `json:"rw"`
+	Type mount.Type `json:"type"`
+	// Name is a volume's name, or the ID of the image an image mount shows.
+	Name        string `json:"name,omitempty"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	RW          bool   `json:"rw"`
+	// Subpath is the directory of the volume or image the mount shows.
+	Subpath string `json:"subpath,omitempty"`
+	// NoCopy keeps a new volume empty rather than copying the image's
+	// content at the mount point into it.
+	NoCopy bool `json:"noCopy,omitempty"`
+	// volumeOpts and volumeLabels are the driver options and labels a mount
+	// gives a volume it creates.
+	volumeOpts, volumeLabels map[string]string
 }
 
 type stateRec struct {
@@ -590,8 +600,26 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 			m.Source = mm.Source
 		case mount.TypeVolume:
 			m.Name = mm.Source
-			if mm.VolumeOptions != nil && mm.VolumeOptions.Subpath != "" {
-				return nil, unsupported("volume subpaths are not supported")
+			if o := mm.VolumeOptions; o != nil {
+				m.Subpath, m.NoCopy, m.volumeLabels = o.Subpath, o.NoCopy, o.Labels
+				if d := o.DriverConfig; d != nil {
+					if d.Name != "" && d.Name != "local" {
+						return nil, unsupported("volume driver %q is not supported; only \"local\" is", d.Name)
+					}
+					if err := checkVolumeOptions(d.Options); err != nil {
+						return nil, err
+					}
+					m.volumeOpts = d.Options
+				}
+			}
+		case mount.TypeImage:
+			img, err := e.images.Get(mm.Source)
+			if err != nil {
+				return nil, notFound("No such image: %s", mm.Source)
+			}
+			m.Name, m.RW = img.ID, false
+			if o := mm.ImageOptions; o != nil {
+				m.Subpath = o.Subpath
 			}
 		case mount.TypeTmpfs:
 		default:
@@ -653,21 +681,32 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 			v, ok := e.volumes[m.Name]
 			if !ok {
 				var err error
-				if v, err = e.createVolumeLocked(m.Name, nil, anonymous); err != nil {
+				if v, err = e.createVolumeLocked(m.Name, m.volumeLabels, m.volumeOpts, anonymous); err != nil {
 					return nil, err
 				}
 			}
-			m.Source = e.VolumeDir(m.Name)
-			if v.Fresh {
-				// A new volume starts with the image's content at the mount
-				// point, as Docker's copy-up does.
-				if err := copyTree(filepath.Join(e.images.Root(img.ID), m.Destination), m.Source); err != nil {
+			src, err := e.volumeSource(v)
+			if err != nil {
+				return nil, err
+			}
+			if v.Fresh && m.Subpath == "" && !m.NoCopy && emptyDir(src) {
+				// A new, empty volume starts with the image's content at the
+				// mount point, as Docker's copy-up does.
+				if err := copyTree(filepath.Join(e.images.Root(img.ID), m.Destination), src); err != nil {
 					return nil, err
 				}
 				v.Fresh = false
 				if err := e.saveVolumesLocked(); err != nil {
 					return nil, err
 				}
+			}
+			if m.Source, err = subpath(src, m.Subpath); err != nil {
+				return nil, err
+			}
+		case mount.TypeImage:
+			var err error
+			if m.Source, err = subpath(e.images.Root(m.Name), m.Subpath); err != nil {
+				return nil, err
 			}
 		case mount.TypeTmpfs:
 			m.Source = filepath.Join(filepath.Dir(root), "tmpfs", strings.ReplaceAll(strings.TrimPrefix(m.Destination, "/"), "/", "_"))
@@ -686,6 +725,28 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 		}
 	}
 	return mounts, nil
+}
+
+// subpath is the file or directory sub names inside dir, resolved as inside a
+// root, so a symlink cannot lead out of it; it must exist, as Docker
+// requires.
+func subpath(dir, sub string) (string, error) {
+	if sub == "" {
+		return dir, nil
+	}
+	p, err := rootfs.Join(dir, sub)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(p); err != nil {
+		return "", invalid("cannot access path %s: %v", sub, err)
+	}
+	return filepath.EvalSymlinks(p)
+}
+
+func emptyDir(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	return err == nil && len(entries) == 0
 }
 
 func containsBind(binds []string, src string) bool {
@@ -953,6 +1014,9 @@ func (c *Container) start(e *Engine) error {
 				return err
 			}
 		}
+	}
+	if err := e.emptyTmpfsVolumes(c); err != nil {
+		return err
 	}
 	if e.hasEgress(c) {
 		if _, err := e.ensureEgress(c.rec.Stack); err != nil {

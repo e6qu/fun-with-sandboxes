@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/moby/moby/api/types/events"
@@ -44,8 +45,8 @@ func (e *Engine) VolumeCreate(req volume.CreateRequest) (volume.Volume, error) {
 	if req.Driver != "" && req.Driver != "local" {
 		return volume.Volume{}, unsupported("volume driver %q is not supported; only \"local\" is", req.Driver)
 	}
-	if len(req.DriverOpts) > 0 {
-		return volume.Volume{}, unsupported("local volume options are not supported")
+	if err := checkVolumeOptions(req.DriverOpts); err != nil {
+		return volume.Volume{}, err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -57,21 +58,21 @@ func (e *Engine) VolumeCreate(req volume.CreateRequest) (volume.Volume, error) {
 	if v, ok := e.volumes[name]; ok {
 		return e.volumeView(v), nil
 	}
-	v, err := e.createVolumeLocked(name, req.Labels, anonymous)
+	v, err := e.createVolumeLocked(name, req.Labels, req.DriverOpts, anonymous)
 	if err != nil {
 		return volume.Volume{}, err
 	}
 	return e.volumeView(v), nil
 }
 
-func (e *Engine) createVolumeLocked(name string, labels map[string]string, anonymous bool) (*Volume, error) {
+func (e *Engine) createVolumeLocked(name string, labels, opts map[string]string, anonymous bool) (*Volume, error) {
 	if !validVolumeName.MatchString(name) {
 		return nil, invalid("create %s: %q includes invalid characters for a local volume name", name, name)
 	}
 	if err := os.MkdirAll(e.VolumeDir(name), 0o755); err != nil {
 		return nil, err
 	}
-	v := &Volume{Name: name, CreatedAt: time.Now().UTC(), Labels: labels, Anonymous: anonymous, Fresh: true}
+	v := &Volume{Name: name, CreatedAt: time.Now().UTC(), Labels: labels, Options: opts, Anonymous: anonymous, Fresh: true}
 	e.volumes[name] = v
 	if err := e.saveVolumesLocked(); err != nil {
 		delete(e.volumes, name)
@@ -86,13 +87,17 @@ func (e *Engine) volumeView(v *Volume) volume.Volume {
 	if labels == nil {
 		labels = map[string]string{}
 	}
+	opts := map[string]string{}
+	for k, val := range v.Options {
+		opts[k] = val
+	}
 	return volume.Volume{
 		Name:       v.Name,
 		Driver:     "local",
 		Mountpoint: e.VolumeDir(v.Name),
 		CreatedAt:  v.CreatedAt.Format(time.RFC3339),
 		Labels:     labels,
-		Options:    map[string]string{},
+		Options:    opts,
 		Scope:      "local",
 	}
 }
@@ -189,4 +194,117 @@ func dirSize(dir string) int64 {
 		return nil
 	})
 	return n
+}
+
+// checkVolumeOptions accepts the local driver's options this engine can
+// honour: a bind of a host directory (type none, o bind, device the
+// directory), and tmpfs, a directory emptied as the volume is first
+// mounted. Mounting a filesystem by type needs root.
+func checkVolumeOptions(opts map[string]string) error {
+	if len(opts) == 0 {
+		return nil
+	}
+	for k := range opts {
+		if k != "type" && k != "o" && k != "device" {
+			return invalid("invalid option: %q", k)
+		}
+	}
+	typ, o, dev := opts["type"], opts["o"], opts["device"]
+	switch typ {
+	case "tmpfs":
+		if o != "" {
+			return unsupported("tmpfs volume options %q are not supported: the volume is a directory, which no size or ownership option holds", o)
+		}
+		return nil
+	case "", "none":
+		bind := false
+		for _, x := range strings.Split(o, ",") {
+			switch x {
+			case "bind", "rbind":
+				bind = true
+			case "":
+			default:
+				return unsupported("local volume mount option %q is not supported: only bind mounts of a host directory are", x)
+			}
+		}
+		if !bind {
+			return unsupported("local volume options without o=bind are not supported: only bind mounts of a host directory are")
+		}
+		if !filepath.IsAbs(dev) {
+			return invalid("local volume device %q must be an absolute path", dev)
+		}
+		return nil
+	}
+	return unsupported("local volume type %q is not supported: mounting a filesystem needs root", typ)
+}
+
+// device is the host directory a bind volume binds, or "".
+func (v *Volume) device() string {
+	if t := v.Options["type"]; (t == "" || t == "none") && v.Options["device"] != "" {
+		return v.Options["device"]
+	}
+	return ""
+}
+
+func (v *Volume) isTmpfs() bool { return v.Options["type"] == "tmpfs" }
+
+// volumeSource is the directory holding the volume's data: the bound host
+// directory, which must exist, as the local driver's mount needs it, or
+// the volume's own.
+func (e *Engine) volumeSource(v *Volume) (string, error) {
+	dev := v.device()
+	if dev == "" {
+		return e.VolumeDir(v.Name), nil
+	}
+	resolved, err := filepath.EvalSymlinks(dev)
+	if err != nil {
+		return "", invalid("failed to mount local volume %s: mount %s: %v", v.Name, dev, err)
+	}
+	if fi, err := os.Stat(resolved); err != nil || !fi.IsDir() {
+		return "", invalid("failed to mount local volume %s: %s is not a directory", v.Name, dev)
+	}
+	return resolved, nil
+}
+
+// emptyTmpfsVolumes empties the tmpfs volumes c mounts that no running
+// container has mounted, as a tmpfs volume starts empty when first mounted.
+func (e *Engine) emptyTmpfsVolumes(c *Container) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, m := range c.rec.Mounts {
+		if m.Type != "volume" {
+			continue
+		}
+		v, ok := e.volumes[m.Name]
+		if !ok || !v.isTmpfs() || e.volumeMountedLocked(m.Name, c) {
+			continue
+		}
+		dir := e.VolumeDir(m.Name)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		for _, en := range entries {
+			if err := os.RemoveAll(filepath.Join(dir, en.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// volumeMountedLocked reports whether a running container other than c
+// mounts the volume.
+func (e *Engine) volumeMountedLocked(name string, c *Container) bool {
+	for _, o := range e.containers {
+		if o == c || !o.isRunning() {
+			continue
+		}
+		for _, m := range o.rec.Mounts {
+			if m.Type == "volume" && m.Name == name {
+				return true
+			}
+		}
+	}
+	return false
 }

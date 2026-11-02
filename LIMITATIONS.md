@@ -148,4 +148,9 @@ machine — and from what macOS offers an unprivileged process under them.
   checks a container port through its assigned host port for Testcontainers'
   in-container port check.
 - **tmpfs mounts are directories** under the container's state, emptied at
-  each start, not memory-backed.
+  each start, not memory-backed. A tmpfs volume (`--opt type=tmpfs`) is a
+  directory too, emptied when a container first mounts it; size and
+  ownership options are refused, as nothing would hold them.
+- **Local volumes bind host directories or nothing else.** The local
+  driver's `type=none,o=bind,device=<dir>` binds a host directory, which
+  must exist; other filesystem types need root and are refused.
