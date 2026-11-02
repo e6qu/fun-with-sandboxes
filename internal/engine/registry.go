@@ -243,7 +243,7 @@ func (e *Engine) Import(ctx context.Context, opts ImportOptions, body io.Reader)
 	if comment == "" {
 		comment = "Imported from " + opts.Source
 	}
-	cfg := v1.ConfigFile{Created: now, History: []v1.History{{Created: now, Comment: comment}}}
+	cfg := image.Config{ConfigFile: v1.ConfigFile{Created: now, History: []v1.History{{Created: now, Comment: comment}}}}
 	if cfg, err = e.applyChanges(ctx, cfg, opts.Changes); err != nil {
 		return "", err
 	}

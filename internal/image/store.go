@@ -45,6 +45,9 @@ type Image struct {
 	// Size is the sum of LayerSizes.
 	Size   int64         `json:"size"`
 	Config v1.ConfigFile `json:"config"`
+	// HealthStartInterval is the health check's start interval, which
+	// Config has no field for.
+	HealthStartInterval time.Duration `json:"healthStartInterval,omitempty"`
 	// Manifest is the image manifest's descriptor in the store's layout.
 	Manifest v1.Descriptor `json:"manifest"`
 	// LayerSizes are the uncompressed sizes of the manifest's layers.
@@ -82,6 +85,21 @@ func Open(dir string) (*Store, error) {
 	}
 	if err := s.openLayout(); err != nil {
 		return nil, fmt.Errorf("image: open the OCI layout: %w", err)
+	}
+	// An index an earlier engine wrote lacks the start interval.
+	for id, img := range s.idx {
+		if img.HealthStartInterval != 0 || img.Config.Config.Healthcheck == nil {
+			continue
+		}
+		v, _, err := s.V1Image(id)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := v.RawConfigFile()
+		if err != nil {
+			return nil, err
+		}
+		img.HealthStartInterval = healthStartInterval(raw)
 	}
 	return s, nil
 }
@@ -741,6 +759,9 @@ func (s *Store) add(img v1.Image, refs []string, root string) (Image, error) {
 		return Image{}, err
 	}
 	rec.ID, rec.Created, rec.Config = id, cfg.Created.Time, *cfg
+	if raw, err := img.RawConfigFile(); err == nil {
+		rec.HealthStartInterval = healthStartInterval(raw)
+	}
 
 	if out, ok, err := s.retag(id, refs); ok {
 		// Another add stored the same image meanwhile.

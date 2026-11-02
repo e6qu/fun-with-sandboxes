@@ -60,7 +60,7 @@ type stage struct {
 	// key chains the stage's instructions from its base, keying the build
 	// cache.
 	key     string
-	cfg     v1.ConfigFile
+	cfg     image.Config
 	args    map[string]string
 	shell   []string
 	workdir string
@@ -315,7 +315,7 @@ func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals m
 		if err := image.CloneDir(prev.root, s.root); err != nil {
 			return nil, err
 		}
-		s.cfg = *prev.cfg.DeepCopy()
+		s.cfg = image.Config{ConfigFile: *prev.cfg.DeepCopy(), HealthStartInterval: prev.cfg.HealthStartInterval}
 		s.base, s.layers = prev.base, append([]string(nil), prev.layers...)
 		s.key = prev.key
 		s.shell = append([]string(nil), prev.shell...)
@@ -328,7 +328,7 @@ func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals m
 		if err := b.e.images.Clone(img.ID, s.root); err != nil {
 			return nil, err
 		}
-		s.cfg = *img.Config.DeepCopy()
+		s.cfg = image.Config{ConfigFile: *img.Config.DeepCopy(), HealthStartInterval: img.HealthStartInterval}
 		s.base = img.ID
 		s.key = cacheKey("image", img.ID)
 		s.workdir = s.cfg.Config.WorkingDir
@@ -551,11 +551,12 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		// Docker drops an inherited CMD when a stage sets ENTRYPOINT.
 		cfg.Cmd = nil
 	case "HEALTHCHECK":
-		hc, err := healthcheck(s, in)
+		hc, start, err := healthcheck(s, in)
 		if err != nil {
 			return err
 		}
 		cfg.Healthcheck = hc
+		s.cfg.HealthStartInterval = start
 	case "COPY", "ADD":
 		emptyLayer = false
 		var err error
@@ -594,31 +595,34 @@ func (b *builder) command(s *stage, in dockerfile.Instruction) []string {
 	return append(append([]string(nil), s.shell...), in.Raw)
 }
 
-func healthcheck(s *stage, in dockerfile.Instruction) (*v1.HealthConfig, error) {
+func healthcheck(s *stage, in dockerfile.Instruction) (*v1.HealthConfig, time.Duration, error) {
 	hc := &v1.HealthConfig{}
+	var start time.Duration
 	for k, v := range in.Flags {
 		switch k {
 		case "retries":
 			n, err := strconv.Atoi(v)
 			if err != nil {
-				return nil, invalid("line %d: --retries: %v", in.Line, err)
+				return nil, 0, invalid("line %d: --retries: %v", in.Line, err)
 			}
 			hc.Retries = n
-		case "interval", "timeout", "start-period":
+		case "interval", "timeout", "start-period", "start-interval":
 			d, err := time.ParseDuration(v)
 			if err != nil {
-				return nil, invalid("line %d: --%s: %v", in.Line, k, err)
+				return nil, 0, invalid("line %d: --%s: %v", in.Line, k, err)
 			}
 			switch k {
 			case "interval":
 				hc.Interval = d
 			case "timeout":
 				hc.Timeout = d
+			case "start-interval":
+				start = d
 			default:
 				hc.StartPeriod = d
 			}
 		default:
-			return nil, invalid("line %d: unknown HEALTHCHECK flag --%s", in.Line, k)
+			return nil, 0, invalid("line %d: unknown HEALTHCHECK flag --%s", in.Line, k)
 		}
 	}
 	kind, rest, _ := strings.Cut(in.Raw, " ")
@@ -639,9 +643,9 @@ func healthcheck(s *stage, in dockerfile.Instruction) (*v1.HealthConfig, error) 
 			hc.Test = []string{"CMD-SHELL", rest}
 		}
 	default:
-		return nil, invalid("line %d: HEALTHCHECK must be NONE or CMD", in.Line)
+		return nil, 0, invalid("line %d: HEALTHCHECK must be NONE or CMD", in.Line)
 	}
-	return hc, nil
+	return hc, start, nil
 }
 
 func (b *builder) copy(ctx context.Context, s *stage, in dockerfile.Instruction, expand func(string) (string, error)) error {

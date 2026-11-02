@@ -122,13 +122,13 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 		return "", err
 	}
 
-	cfg := *base.Config.DeepCopy()
+	cfg := image.Config{ConfigFile: *base.Config.DeepCopy(), HealthStartInterval: base.HealthStartInterval}
 	c.mu.Lock()
-	applyContainerConfig(&cfg.Config, c.rec.Config)
+	applyContainerConfig(&cfg, c.rec.Config)
 	argv := strings.Join(append(append([]string{}, c.rec.Config.Entrypoint...), c.rec.Config.Cmd...), " ")
 	c.mu.Unlock()
 	if opts.Config != nil {
-		applyContainerConfig(&cfg.Config, *opts.Config)
+		applyContainerConfig(&cfg, *opts.Config)
 	}
 	if cfg, err = e.applyChanges(ctx, cfg, opts.Changes); err != nil {
 		return "", err
@@ -149,7 +149,7 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 // applyChanges applies `--change` Dockerfile instructions, as docker commit
 // and docker import take them, to an image config. They edit the config
 // alone: the image's files and history stay as they are.
-func (e *Engine) applyChanges(ctx context.Context, cfg v1.ConfigFile, changes []string) (v1.ConfigFile, error) {
+func (e *Engine) applyChanges(ctx context.Context, cfg image.Config, changes []string) (image.Config, error) {
 	if len(changes) == 0 {
 		return cfg, nil
 	}
@@ -176,7 +176,8 @@ func (e *Engine) applyChanges(ctx context.Context, cfg v1.ConfigFile, changes []
 
 // applyContainerConfig carries a container config's set fields into an image
 // config, as docker commit records the container's config.
-func applyContainerConfig(dst *v1.Config, src container.Config) {
+func applyContainerConfig(img *image.Config, src container.Config) {
+	dst := &img.Config
 	if len(src.Env) > 0 {
 		dst.Env = append([]string(nil), src.Env...)
 	}
@@ -217,6 +218,7 @@ func applyContainerConfig(dst *v1.Config, src container.Config) {
 	}
 	if h := src.Healthcheck; h != nil && len(h.Test) > 0 {
 		dst.Healthcheck = &v1.HealthConfig{Test: h.Test, Interval: h.Interval, Timeout: h.Timeout, StartPeriod: h.StartPeriod, Retries: h.Retries}
+		img.HealthStartInterval = h.StartInterval
 	}
 }
 

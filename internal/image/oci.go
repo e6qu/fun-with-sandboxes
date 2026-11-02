@@ -187,7 +187,8 @@ func ociLayerType(mt types.MediaType) types.MediaType {
 // of the image base (none when base is empty, as for scratch) followed by
 // diffs, uncompressed layer tars on disk, under cfg. The store takes root
 // over.
-func (s *Store) Extend(base string, diffs []string, root string, cfg v1.ConfigFile, tags []string) (Image, error) {
+func (s *Store) Extend(base string, diffs []string, root string, config Config, tags []string) (Image, error) {
+	cfg := config.ConfigFile
 	img := mutate.ConfigMediaType(mutate.MediaType(empty.Image, types.OCIManifestSchema1), types.OCIConfigJSON)
 	var adds []mutate.Addendum
 	if base != "" {
@@ -229,6 +230,11 @@ func (s *Store) Extend(base string, diffs []string, root string, cfg v1.ConfigFi
 	}
 	if img, err = mutate.ConfigFile(img, &cfg); err != nil {
 		return Image{}, err
+	}
+	if config.HealthStartInterval > 0 {
+		if img, err = withStartInterval(img, config.HealthStartInterval); err != nil {
+			return Image{}, err
+		}
 	}
 	return s.Add(img, tags, root)
 }

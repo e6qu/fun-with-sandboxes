@@ -35,8 +35,6 @@ machine — and from what macOS offers an unprivileged process under them.
 - **The engine's image store holds no images from an earlier, flattened
   store.** `fwsd` refuses to open such a store; remove its `images`
   directory and load or pull the images again.
-- **Image health checks lose `StartInterval`**: the image config library the
-  engine uses does not carry it. A container's own health check keeps it.
 
 ## Isolation
 

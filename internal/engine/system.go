@@ -162,6 +162,9 @@ func (e *Engine) ImageInspect(ref string) (imagetypes.InspectResponse, error) {
 	var cfg dockerspec.DockerOCIImageConfig
 	b, _ := json.Marshal(img.Config.Config)
 	json.Unmarshal(b, &cfg)
+	if cfg.Healthcheck != nil {
+		cfg.Healthcheck.StartInterval = img.HealthStartInterval
+	}
 	layers := make([]string, 0, len(img.Config.RootFS.DiffIDs))
 	for _, d := range img.Config.RootFS.DiffIDs {
 		layers = append(layers, d.String())

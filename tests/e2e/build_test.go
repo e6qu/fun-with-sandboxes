@@ -64,3 +64,36 @@ RUN --mount=type=ssh ["/toolbox", "sshagent"]
 		t.Fatalf("the build step did not list the agent's key:\n%s", out)
 	}
 }
+
+// A health check's start interval survives both builders, docker commit and
+// container creation.
+func TestHealthStartInterval(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(`FROM fws/toolbox:1
+HEALTHCHECK --interval=1m --start-period=30s --start-interval=2s CMD ["/toolbox", "health"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	classicBuild(t, "-t", "e2e/hc:classic", dir)
+	defer docker(t, "rmi", "e2e/hc:classic")
+	if out, err := exec.Command("docker", "buildx", "build", "--load", "-t", "e2e/hc:buildkit", dir).CombinedOutput(); err != nil {
+		t.Fatalf("docker buildx build: %v\n%s", err, out)
+	}
+	defer docker(t, "rmi", "e2e/hc:buildkit")
+	for _, ref := range []string{"e2e/hc:classic", "e2e/hc:buildkit"} {
+		if s := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Config.Healthcheck.StartInterval}}", ref)); s != "2s" {
+			t.Errorf("%s: image start interval %q, want 2s", ref, s)
+		}
+	}
+	const name = "fws-e2e-hc"
+	mustDocker(t, "create", "--name", name, "e2e/hc:classic")
+	defer docker(t, "rm", "-f", name)
+	if s := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.Config.Healthcheck.StartInterval}}", name)); s != "2s" {
+		t.Errorf("container start interval %q, want 2s", s)
+	}
+	mustDocker(t, "commit", name, "e2e/hc:committed")
+	defer docker(t, "rmi", "e2e/hc:committed")
+	if s := strings.TrimSpace(mustDocker(t, "image", "inspect", "-f", "{{.Config.Healthcheck.StartInterval}}", "e2e/hc:committed")); s != "2s" {
+		t.Errorf("committed image start interval %q, want 2s", s)
+	}
+}
