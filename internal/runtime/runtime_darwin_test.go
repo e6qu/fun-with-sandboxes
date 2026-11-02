@@ -46,7 +46,7 @@ func TestExitWithLingeringChild(t *testing.T) {
 	var out syncBuffer
 	p, err := Start(Spec{
 		Root: root, Argv: []string{"/forker"}, Env: []string{"PATH=" + root},
-		Profile: seatbelt.Spec{Root: root, StateRoot: state}, ProfilePath: filepath.Join(state, "profile.sb"),
+		Profile: seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root), ICMP: true}, ProfilePath: filepath.Join(state, "profile.sb"),
 		Stdout: &out, Stderr: &out,
 	})
 	if err != nil {

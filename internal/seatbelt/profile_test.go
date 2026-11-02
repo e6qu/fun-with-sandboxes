@@ -12,6 +12,7 @@ func spec() Spec {
 		Volumes:      []Volume{{Path: "/Users/u/.fws/stacks/a/volumes/data"}, {Path: "/Users/u/.fws/stacks/a/volumes/conf", ReadOnly: true}},
 		BindPorts:    []int{41000},
 		ConnectPorts: []int{41001, 41000, 41001},
+		IPCPrefix:    IPCPrefixFor("c1"),
 	}
 }
 

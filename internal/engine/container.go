@@ -320,13 +320,10 @@ func checkHostConfig(hc *container.HostConfig) error {
 		{len(r.Devices) > 0 || len(r.DeviceRequests) > 0 || len(r.DeviceCgroupRules) > 0, "devices"},
 		{r.BlkioWeight != 0 || len(r.BlkioWeightDevice) > 0 || len(r.BlkioDeviceReadBps) > 0 || len(r.BlkioDeviceWriteBps) > 0, "block I/O limits"},
 		{hc.Privileged, "privileged mode"},
-		{len(hc.CapAdd) > 0, "added capabilities"},
 		{len(hc.VolumesFrom) > 0, "volumes-from"},
 		{hc.PidMode != "" && hc.PidMode != "private", "PID modes"},
-		{hc.IpcMode != "" && hc.IpcMode != "private" && hc.IpcMode != "shareable", "IPC modes"},
 		{hc.UTSMode != "", "UTS modes"},
 		{hc.UsernsMode != "", "user namespaces"},
-		{hc.ReadonlyRootfs, "read-only root filesystems"},
 		{hc.Runtime != "" && hc.Runtime != "runc", "alternative runtimes"},
 		{hc.LogConfig.Type != "" && hc.LogConfig.Type != "json-file" && hc.LogConfig.Type != "local", "log drivers other than json-file"},
 		{len(hc.Sysctls) > 0, "sysctls"},
@@ -334,6 +331,14 @@ func checkHostConfig(hc *container.HostConfig) error {
 		if k.set {
 			return unsupported("%s are not supported: this engine runs without root or a VM and cannot enforce them", k.name)
 		}
+	}
+	if _, err := containerSecurity(hc); err != nil {
+		return err
+	}
+	switch ipc := string(hc.IpcMode); {
+	case ipc == "", ipc == "private", ipc == "shareable", ipc == "host", ipc == "none", strings.HasPrefix(ipc, "container:"):
+	default:
+		return invalid("invalid IPC mode: %q", ipc)
 	}
 	mode := string(hc.NetworkMode)
 	switch {
@@ -824,7 +829,18 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	if err != nil {
 		return seatbelt.Spec{}, err
 	}
-	spec := seatbelt.Spec{Root: c.root(), StateRoot: e.cfg.Root}
+	sec, err := containerSecurity(&c.rec.HostConfig)
+	if err != nil {
+		return seatbelt.Spec{}, err
+	}
+	ipc, prefix, err := e.ipcMode(c)
+	if err != nil {
+		return seatbelt.Spec{}, err
+	}
+	spec := seatbelt.Spec{
+		Root: c.root(), StateRoot: e.cfg.Root, ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
+		IPC: ipc, IPCPrefix: prefix, ICMP: sec.ICMP,
+	}
 	for _, m := range c.rec.Mounts {
 		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW})
 	}

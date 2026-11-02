@@ -103,6 +103,7 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 	bindNo := freePort(t)
 
 	e := newProbeEnv(t, Spec{
+		IPCPrefix: IPCPrefixFor("enforce"), ICMP: true,
 		Root:         root,
 		StateRoot:    state,
 		Volumes:      []Volume{{Path: vol}, {Path: ro, ReadOnly: true}},
@@ -165,7 +166,7 @@ func TestProbeDenyDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	root, _ = filepath.EvalSymlinks(root)
-	s := Spec{Root: root, StateRoot: filepath.Dir(root)}
+	s := Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root), ICMP: true}
 	e := newProbeEnv(t, s)
 	base := e.profile
 	for name, head := range map[string]string{
@@ -189,7 +190,7 @@ func TestProbeSocketDomains(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	os.MkdirAll(root, 0o755)
 	root, _ = filepath.EvalSymlinks(root)
-	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root)})
+	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root), ICMP: true})
 	for _, k := range []string{"unix", "inet", "inet6", "route", "system", "ndrv", "icmp"} {
 		t.Logf("socket %s: %v", k, e.run("socket", k))
 	}

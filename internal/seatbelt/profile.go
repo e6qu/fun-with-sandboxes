@@ -5,6 +5,8 @@
 package seatbelt
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -77,7 +79,31 @@ type Spec struct {
 	// ConnectPorts are the loopback ports the container may connect to: its
 	// own and its stack peers'.
 	ConnectPorts []int
+	// ReadOnlyRoot denies writes to Root; volumes and tmpfs mounts, which
+	// live outside it, stay as their own entries say.
+	ReadOnlyRoot bool
+	// IPC confines POSIX shared memory and semaphores, and System V IPC.
+	IPC IPCMode
+	// IPCPrefix is the name prefix POSIX IPC objects must carry under
+	// IPCPrivate.
+	IPCPrefix string
+	// ICMP allows ICMP datagram sockets, which Docker's NET_RAW grants.
+	ICMP bool
 }
+
+// IPCMode is a container's IPC confinement.
+type IPCMode int
+
+const (
+	// IPCPrivate confines POSIX IPC names to a prefix, as a private IPC
+	// namespace confines them to a container; System V IPC, which Seatbelt
+	// cannot tell apart by key, stays open.
+	IPCPrivate IPCMode = iota
+	// IPCHost leaves IPC open.
+	IPCHost
+	// IPCNone denies POSIX and System V IPC.
+	IPCNone
+)
 
 var errBadPath = errors.New("seatbelt: path must be absolute and free of quotes, backslashes and control characters")
 
@@ -111,6 +137,9 @@ func Render(s Spec) (string, error) {
 			return "", err
 		}
 	}
+	if s.IPC == IPCPrivate && !ipcPrefixOK(s.IPCPrefix) {
+		return "", fmt.Errorf("seatbelt: IPC prefix %q must be letters, digits and dots", s.IPCPrefix)
+	}
 	for _, p := range append(append([]int{}, s.BindPorts...), s.ConnectPorts...) {
 		if err := checkPort(p); err != nil {
 			return "", err
@@ -127,7 +156,9 @@ func Render(s Spec) (string, error) {
 	// then re-allows what the container owns.
 	w("(deny file-write*)")
 	w("(allow file-write*")
-	w("  (subpath %q)", s.Root)
+	if !s.ReadOnlyRoot {
+		w("  (subpath %q)", s.Root)
+	}
 	for _, v := range s.Volumes {
 		if !v.ReadOnly {
 			w("  (subpath %q)", v.Path)
@@ -206,6 +237,21 @@ func Render(s Spec) (string, error) {
 	}
 	w(")")
 
+	switch s.IPC {
+	case IPCPrivate:
+		w("(deny ipc-posix-shm* ipc-posix-sem*)")
+		// Programs name POSIX IPC objects with or without a leading slash.
+		w("(allow ipc-posix-shm* ipc-posix-sem* (ipc-posix-name-prefix %q) (ipc-posix-name-prefix %q))", s.IPCPrefix, "/"+s.IPCPrefix)
+	case IPCNone:
+		w("(deny ipc-posix-shm* ipc-posix-sem* ipc-sysv*)")
+	}
+	if !s.ICMP {
+		// ICMP datagram sockets, IPv4's and IPv6's: what NET_RAW grants an
+		// unprivileged macOS process.
+		w("(deny system-socket (require-all (socket-domain 2) (socket-protocol 1)))")
+		w("(deny system-socket (require-all (socket-domain 30) (socket-protocol 58)))")
+	}
+
 	w("(deny signal)")
 	w("(allow signal (target same-sandbox))")
 	w("(deny process-info*)")
@@ -235,4 +281,24 @@ func uniq(ps []int) []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+func ipcPrefixOK(p string) bool {
+	if p == "" {
+		return false
+	}
+	for _, r := range p {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// IPCPrefixFor is the prefix of the POSIX shared memory and semaphore names
+// the sandbox keyed by key may use: short, as macOS caps those names at 31
+// bytes.
+func IPCPrefixFor(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return "fws" + hex.EncodeToString(sum[:4]) + "."
 }

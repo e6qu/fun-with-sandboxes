@@ -107,7 +107,8 @@ func TestSpawnDirAndDescriptors(t *testing.T) {
 	defer leak.Close()
 	devnull, _ := os.Open(os.DevNull)
 	defer devnull.Close()
-	pid, err := Spawn("/bin/sh", []string{"sh", "-c", "pwd; ls /dev/fd | wc -l"}, []string{"PATH=/bin:/usr/bin"},
+	check := fmt.Sprintf("pwd; if [ -e /dev/fd/%d ]; then echo leaked; else echo closed; fi", leak.Fd())
+	pid, err := Spawn("/bin/sh", []string{"sh", "-c", check}, []string{"PATH=/bin:/usr/bin"},
 		SpawnAttr{Dir: dir, Files: []uintptr{devnull.Fd(), w.Fd(), w.Fd()}})
 	w.Close()
 	if err != nil {
@@ -121,9 +122,8 @@ func TestSpawnDirAndDescriptors(t *testing.T) {
 	if ws := wait(t, pid); ws.ExitStatus() != 0 {
 		t.Fatalf("sh exited %d", ws.ExitStatus())
 	}
-	// ls holds its own descriptor on /dev/fd as it lists it.
-	if len(lines) != 2 || lines[0] != dir || lines[1] != "4" {
-		t.Fatalf("the child saw %q; want its directory %s and descriptors 0-2 plus ls's own", lines, dir)
+	if len(lines) != 2 || lines[0] != dir || lines[1] != "closed" {
+		t.Fatalf("the child saw %q; want its directory %s and the parent's other descriptor closed", lines, dir)
 	}
 }
 
@@ -182,10 +182,18 @@ func probeLimits() []limitResult {
 		out = append(out, limitResult{"nofile", false, err.Error()})
 	} else {
 		var err error
+		var opened []*os.File
 		for i := 0; i < 32 && err == nil; i++ {
-			_, err = os.Open(os.DevNull)
+			var f *os.File
+			if f, err = os.Open(os.DevNull); err == nil {
+				opened = append(opened, f)
+			}
+		}
+		for _, f := range opened {
+			f.Close()
 		}
 		out = append(out, limitResult{"nofile", errors.Is(err, syscall.EMFILE), fmt.Sprint(err)})
+		set(syscall.RLIMIT_NOFILE, 1024)
 	}
 	// RLIMIT_FSIZE: write past it, with SIGXFSZ ignored so write reports it.
 	signalIgnore(syscall.SIGXFSZ)
@@ -220,8 +228,8 @@ func probeLimits() []limitResult {
 	return out
 }
 
-// The kernel enforces RLIMIT_NOFILE and RLIMIT_FSIZE; the probe also
-// reports the memory limits macOS is known to leave unenforced.
+// The kernel enforces RLIMIT_NOFILE and RLIMIT_FSIZE, and refuses
+// RLIMIT_DATA and RLIMIT_AS outright.
 func TestResourceLimitsEnforced(t *testing.T) {
 	pid, out := spawnHelper(t, "limits", false)
 	var results []limitResult
@@ -239,6 +247,11 @@ func TestResourceLimitsEnforced(t *testing.T) {
 	for _, want := range []string{"nofile", "fsize"} {
 		if !enforced[want] {
 			t.Errorf("RLIMIT_%s is not enforced", strings.ToUpper(want))
+		}
+	}
+	for _, refused := range []string{"data", "as"} {
+		if enforced[refused] {
+			t.Errorf("RLIMIT_%s took effect; the engine refuses it as unenforced", strings.ToUpper(refused))
 		}
 	}
 }
