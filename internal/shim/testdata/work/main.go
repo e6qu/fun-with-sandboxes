@@ -97,6 +97,26 @@ func run(args []string) error {
 			fmt.Println("got", s.Text())
 		}
 		hold()
+	case "diskwrite":
+		// Write and sync the given number of MiB to a file, then hold.
+		n, _ := strconv.Atoi(args[1])
+		f, err := os.Create(os.Getenv("SANDBOX_ROOT") + "/diskwrite")
+		if err != nil {
+			return err
+		}
+		buf := make([]byte, 1<<20)
+		for i := 0; i < n; i++ {
+			buf[0] = byte(i)
+			if _, err := f.Write(buf); err != nil {
+				return err
+			}
+		}
+		if err := f.Sync(); err != nil {
+			return err
+		}
+		f.Close()
+		fmt.Println("wrote", n)
+		hold()
 	case "hold":
 		hold()
 	}

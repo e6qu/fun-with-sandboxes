@@ -54,7 +54,7 @@ func (e *Engine) monitorHealth(c *Container, hc container.HealthConfig, stop, do
 	for {
 		wait := interval
 		c.mu.Lock()
-		starting := c.health != nil && c.health.Status == container.Starting
+		starting := c.rec.State.Health != nil && c.rec.State.Health.Status == container.Starting
 		c.mu.Unlock()
 		if starting && inStartPeriod() {
 			wait = startInterval
@@ -76,11 +76,11 @@ func (e *Engine) monitorHealth(c *Container, hc container.HealthConfig, stop, do
 		res := &container.HealthcheckResult{Start: begin, End: time.Now(), ExitCode: code, Output: output}
 
 		c.mu.Lock()
-		if c.health == nil || c.healthStop == nil {
+		if c.rec.State.Health == nil || c.healthStop == nil {
 			c.mu.Unlock()
 			return
 		}
-		h := c.health
+		h := c.rec.State.Health
 		prev := h.Status
 		h.Log = append(h.Log, res)
 		if len(h.Log) > healthLogEntries {
@@ -97,6 +97,7 @@ func (e *Engine) monitorHealth(c *Container, hc container.HealthConfig, stop, do
 			}
 		}
 		status := h.Status
+		c.save()
 		c.mu.Unlock()
 		if status != prev {
 			e.publishContainer(c, events.Action("health_status: "+string(status)), nil)

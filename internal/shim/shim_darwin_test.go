@@ -358,3 +358,16 @@ func TestPublishedPortInUse(t *testing.T) {
 		t.Fatalf("Launch = %v, want ErrPortInUse", err)
 	}
 }
+
+func TestDiskIOCounted(t *testing.T) {
+	const mib = 16
+	h := launch(t, []string{"diskwrite", strconv.Itoa(mib)}, nil)
+	h.waitLog("wrote")
+	st, err := h.client.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.DiskWritten < mib<<20 {
+		t.Fatalf("the container wrote %d bytes to disk by the shim's count, want at least %d", st.DiskWritten, mib<<20)
+	}
+}

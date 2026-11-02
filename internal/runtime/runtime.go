@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
 
@@ -180,20 +181,19 @@ func (p *Process) KillAll() {
 		p.proc.Kill()
 		return
 	}
-	// macOS has no notification for a process group emptying out, and the
-	// group's other members are not the engine's children to wait for, so
-	// probe it the way kill(1) does. Killed processes leave within
-	// milliseconds; the main process stays until Wait reaps it.
-	deadline := time.Now().Add(groupExitTimeout)
-	for time.Now().Before(deadline) {
-		if err := syscall.Kill(-pgid, 0); errors.Is(err, syscall.ESRCH) {
-			return
-		}
-		time.Sleep(groupExitProbe)
+	// macOS has no notification for a process group emptying out, but it
+	// reports each process's exit: wait on the group's members.
+	es, err := procs.Own()
+	if err != nil {
+		return
 	}
+	var members []int
+	for _, e := range es {
+		if e.PGID == pgid {
+			members = append(members, e.PID)
+		}
+	}
+	procs.WaitExit(members, groupExitTimeout)
 }
 
-const (
-	groupExitTimeout = 10 * time.Second
-	groupExitProbe   = 2 * time.Millisecond
-)
+const groupExitTimeout = 10 * time.Second

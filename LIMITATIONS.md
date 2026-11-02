@@ -131,14 +131,16 @@ machine — and from what macOS offers an unprivileged process under them.
   running container at once, except its block I/O weight.
 - **Live restore keeps containers running across an engine restart** with
   `fwsd -live-restore`. Without it the engine stops its containers when it
-  stops, and ends any a crashed engine left running when it starts. Health
-  checks begin again as `starting` once the engine reconnects.
+  stops, and ends any a crashed engine left running when it starts.
 - **`docker top` and `docker stats` see the container's process groups**: its
   main process's and its running execs'. They read the host's `ps`, as dockerd
   does, so commands show their host paths. Stats report CPU time, CPU
-  throttling, the memory footprint the limit holds, the limits, and process
-  count; there is no per-container network or block-I/O accounting, and
-  without a limit the memory limit shown is the machine's memory.
+  throttling, the memory footprint the limit holds, the limits, process
+  count, and the bytes the container's processes read from and wrote to
+  disk, as the kernel counts them per process. A process that starts and
+  ends between two samples, a second apart while `docker stats` streams,
+  leaves its disk I/O out. There is no per-container network accounting,
+  and without a limit the memory limit shown is the machine's memory.
 - **`docker cp` copies the container's view**, mounts included, but refuses
   paths that resolve outside the container's root and mounts.
 - **Testcontainers' reaper runs from the catalog's darwin build of Ryuk**,

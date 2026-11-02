@@ -56,6 +56,9 @@ type stateRec struct {
 	ManualStop   bool                     `json:"manualStop"`
 	OOMKilled    bool                     `json:"oomKilled,omitempty"`
 	Paused       bool                     `json:"paused,omitempty"`
+	// Health is kept with the state, so an engine that reconnects to a
+	// running container carries its health on.
+	Health *container.Health `json:"health,omitempty"`
 }
 
 type record struct {
@@ -94,7 +97,6 @@ type Container struct {
 	// nextRun closes when the next run starts.
 	nextRun    chan struct{}
 	removed    chan struct{}
-	health     *container.Health
 	healthStop chan struct{}
 	restarting *time.Timer
 	starting   bool
@@ -139,7 +141,7 @@ func (e *Engine) loadContainers() error {
 					// The container ran on while no engine did: follow it
 					// again.
 					c.mu.Lock()
-					done := c.attachTaskLocked(e, task)
+					done := c.attachTaskLocked(e, task, true)
 					c.mu.Unlock()
 					go e.watch(c, task, done)
 					e.containers[c.rec.ID] = c
@@ -997,8 +999,8 @@ func (c *Container) start(e *Engine) error {
 		RestartCount: c.rec.State.RestartCount,
 	}
 	c.rec.Published = published
+	done := c.attachTaskLocked(e, task, false)
 	c.save()
-	done := c.attachTaskLocked(e, task)
 	c.mu.Unlock()
 	e.publishContainer(c, events.ActionStart, nil)
 	go e.watch(c, task, done)
@@ -1006,19 +1008,22 @@ func (c *Container) start(e *Engine) error {
 }
 
 // attachTaskLocked makes task the container's current run and starts what
-// follows a run: its health checks and the delivery of its log's growth.
-func (c *Container) attachTaskLocked(e *Engine, task *shim.Client) chan struct{} {
+// follows a run: its health checks, carried on from the record when the
+// engine reconnects to the run.
+func (c *Container) attachTaskLocked(e *Engine, task *shim.Client, reconnect bool) chan struct{} {
 	done := make(chan struct{})
 	c.task = task
 	c.runDone = done
 	close(c.nextRun)
 	c.nextRun = make(chan struct{})
 	if hc := c.rec.Config.Healthcheck; hc != nil && len(hc.Test) > 0 && hc.Test[0] != "NONE" {
-		c.health = &container.Health{Status: container.Starting}
+		if !reconnect || c.rec.State.Health == nil {
+			c.rec.State.Health = &container.Health{Status: container.Starting}
+		}
 		c.healthStop = make(chan struct{})
 		go e.monitorHealth(c, *hc, c.healthStop, done)
 	} else {
-		c.health = nil
+		c.rec.State.Health = nil
 	}
 	return done
 }
