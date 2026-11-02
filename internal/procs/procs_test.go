@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -120,5 +121,23 @@ func TestKillTaggedEndsProcessesOutsideTheGroup(t *testing.T) {
 	}
 	if err := other.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("KillTagged ended an untagged process: %v", err)
+	}
+}
+
+func TestTopArgsSelectTheContainersProcesses(t *testing.T) {
+	pids := map[int]bool{30: true, 7: true}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-ef"}, "-ef"},
+		{[]string{"aux"}, "aux -p 7,30"},
+		{[]string{"-o", "pid"}, "-o pid -p 7,30"},
+		{[]string{"-o", "pid,user", "-A"}, "-o pid,user -A"},
+		{[]string{"-l"}, "-l -p 7,30"},
+	} {
+		if got := strings.Join(TopArgs(c.args, pids), " "); got != c.want {
+			t.Errorf("TopArgs(%q) = %q, want %q", c.args, got, c.want)
+		}
 	}
 }

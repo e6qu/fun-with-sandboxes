@@ -111,3 +111,16 @@ func TestMountedUnixSockets(t *testing.T) {
 		t.Error("a read-only mount allows making sockets")
 	}
 }
+
+func TestRenderDeniesByDefault(t *testing.T) {
+	p, err := Render(spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(p, "(allow default)") || !strings.Contains(p, "(deny default)\n(import \"system.sb\")") {
+		t.Fatalf("profile does not deny by default on Apple's baseline:\n%s", p)
+	}
+	if !strings.Contains(p, "(deny system-socket (socket-domain 32) (socket-domain 27))") {
+		t.Errorf("profile allows kernel control or link-layer sockets")
+	}
+}

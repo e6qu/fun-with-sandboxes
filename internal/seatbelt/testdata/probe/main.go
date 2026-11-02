@@ -9,6 +9,10 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
 )
 
 func main() {
@@ -58,6 +62,7 @@ func run(op, arg string) error {
 			"system": {syscall.AF_SYSTEM, syscall.SOCK_DGRAM, 2},
 			"ndrv":   {syscall.AF_NDRV, syscall.SOCK_RAW, 0},
 			"icmp":   {syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_ICMP},
+			"icmp6":  {syscall.AF_INET6, syscall.SOCK_DGRAM, syscall.IPPROTO_ICMPV6},
 		}
 		k, ok := kinds[arg]
 		if !ok {
@@ -68,6 +73,26 @@ func run(op, arg string) error {
 			return err
 		}
 		return syscall.Close(fd)
+	case "shm":
+		// Create and remove a POSIX shared memory object named arg.
+		fd, err := libsystem.ShmOpen(arg, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return err
+		}
+		syscall.Close(fd)
+		return libsystem.ShmUnlink(arg)
+	case "sysvshm":
+		// Create and remove a System V shared memory segment keyed arg.
+		key, err := strconv.Atoi(arg)
+		if err != nil {
+			return err
+		}
+		id, err := unix.SysvShmGet(key, 4096, unix.IPC_CREAT|0o600)
+		if err != nil {
+			return err
+		}
+		_, err = unix.SysvShmCtl(id, unix.IPC_RMID, nil)
+		return err
 	case "sh":
 		// Run a shell command, as images' scripts and popen do.
 		return syscall.Exec("/bin/sh", []string{"sh", "-c", arg}, os.Environ())

@@ -150,7 +150,19 @@ func Render(s Spec) (string, error) {
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 
 	w("(version 1)")
-	w("(allow default)")
+	// Deny every operation the profile does not name, on top of Apple's
+	// baseline for any process, which dyld and libSystem need to start one.
+	w("(deny default)")
+	w("(import \"system.sb\")")
+	w("(allow process-fork)")
+	w("(allow sysctl-read)")
+	w("(allow file-ioctl)")
+	w("(allow pseudo-tty)")
+	w("(allow ipc-posix* ipc-sysv*)")
+	w("(allow network-inbound)")
+	w("(allow system-socket)")
+	// Kernel control and event sockets, and raw link-layer ones.
+	w("(deny system-socket (socket-domain 32) (socket-domain 27))")
 
 	// SBPL applies the last matching rule, so each section denies broadly and
 	// then re-allows what the container owns.
@@ -170,6 +182,7 @@ func Render(s Spec) (string, error) {
 	w("  (regex #\"^/dev/fd/\")")
 	w("  (regex #\"^/dev/ttys[0-9]+$\"))")
 
+	w("(allow file-read-data file-read-metadata file-read-xattr)")
 	w("(deny file-read*")
 	for _, d := range append(append([]string{}, DeniedReadRoots...), s.StateRoot) {
 		w("  (subpath %q)", d)

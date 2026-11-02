@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 )
 
@@ -142,58 +141,76 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 	})
 }
 
-// sandboxDenials returns what Seatbelt refused in the last minute, as the
-// unified log records it, so a probe that fails says which operation a
-// profile is missing.
-func sandboxDenials(t *testing.T) string {
+func probeRoot(t *testing.T) string {
 	t.Helper()
-	out, _ := exec.Command("/usr/bin/log", "show", "--last", "1m", "--style", "compact",
-		"--predicate", `sender == "Sandbox" OR eventMessage CONTAINS "Sandbox: "`).CombinedOutput()
-	return string(out)
-}
-
-// The probe for a deny-by-default profile: Apple's system.sb baseline and
-// this engine's rules, with everything else denied, still run a Go program
-// and the system shell.
-func TestProbeDenyDefault(t *testing.T) {
-	if b, err := os.ReadFile("/System/Library/Sandbox/Profiles/system.sb"); err == nil {
-		t.Logf("system.sb (%d bytes) begins:\n%.1500s", len(b), b)
-	} else {
-		t.Logf("no system.sb: %v", err)
-	}
 	root := filepath.Join(t.TempDir(), "root")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	root, _ = filepath.EvalSymlinks(root)
-	s := Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root), ICMP: true}
-	e := newProbeEnv(t, s)
-	base := e.profile
-	for name, head := range map[string]string{
-		"system.sb":         "(deny default)\n(import \"system.sb\")\n(allow process-fork)\n(allow sysctl-read)\n(allow file-read-metadata)",
-		"bare deny default": "(deny default)\n(allow process-fork)\n(allow sysctl-read)\n(allow file-read-metadata)",
-	} {
-		e.profile = strings.Replace(base, "(allow default)", head, 1)
-		for _, c := range [][2]string{{"write", filepath.Join(root, "f")}, {"sh", "echo ok"}, {"socket", "unix"}, {"socket", "inet"}} {
-			err := e.run(c[0], c[1])
-			t.Logf("%s: %s %s: %v", name, c[0], c[1], err)
-			if err != nil {
-				t.Logf("denials:\n%s", sandboxDenials(t))
-			}
-		}
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return root
 }
 
-// The probe for socket domains under the current profile: which a container
-// can create.
-func TestProbeSocketDomains(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "root")
-	os.MkdirAll(root, 0o755)
-	root, _ = filepath.EvalSymlinks(root)
+// The profile denies by default: a container opens the sockets an ordinary
+// program needs, and no kernel control or link-layer ones.
+func TestSocketDomains(t *testing.T) {
+	root := probeRoot(t)
 	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root), ICMP: true})
-	for _, k := range []string{"unix", "inet", "inet6", "route", "system", "ndrv", "icmp"} {
-		t.Logf("socket %s: %v", k, e.run("socket", k))
+	for _, k := range []string{"unix", "inet", "inet6", "route", "icmp", "icmp6"} {
+		e.allowed("socket", k)
 	}
-	e.profile = strings.Replace(e.profile, "(allow default)", "(allow default)\n(deny system-socket (socket-domain AF_ROUTE))", 1)
-	t.Logf("socket route with AF_ROUTE denied: %v", e.run("socket", "route"))
+	for _, k := range []string{"system", "ndrv"} {
+		e.denied("socket", k)
+	}
+	e.allowed("sh", "echo ok")
+}
+
+// Without NET_RAW a container opens no ICMP sockets, IPv4's or IPv6's.
+func TestICMPNeedsNetRaw(t *testing.T) {
+	root := probeRoot(t)
+	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root)})
+	e.denied("socket", "icmp")
+	e.denied("socket", "icmp6")
+	e.allowed("socket", "inet")
+}
+
+func TestReadOnlyRoot(t *testing.T) {
+	root := probeRoot(t)
+	vol := filepath.Join(filepath.Dir(root), "vol")
+	os.MkdirAll(vol, 0o755)
+	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root), ReadOnlyRoot: true, Volumes: []Volume{{Path: vol}}})
+	e.denied("write", filepath.Join(root, "f"))
+	e.allowed("read", filepath.Join(root, "probe"))
+	e.allowed("write", filepath.Join(vol, "f"))
+}
+
+func TestIPCModes(t *testing.T) {
+	root := probeRoot(t)
+	prefix := IPCPrefixFor(root)
+	own, other := prefix+strconv.Itoa(os.Getpid()), "fwsother."+strconv.Itoa(os.Getpid())
+	key := strconv.Itoa(0x46570000 + os.Getpid()%0xffff)
+	spec := Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: prefix}
+	t.Run("private", func(t *testing.T) {
+		e := newProbeEnv(t, spec)
+		e.allowed("shm", own)
+		e.allowed("shm", "/"+own)
+		e.denied("shm", other)
+		e.allowed("sysvshm", key)
+	})
+	t.Run("host", func(t *testing.T) {
+		s := spec
+		s.IPC = IPCHost
+		e := newProbeEnv(t, s)
+		e.allowed("shm", other)
+	})
+	t.Run("none", func(t *testing.T) {
+		s := spec
+		s.IPC = IPCNone
+		e := newProbeEnv(t, s)
+		e.denied("shm", own)
+		e.denied("sysvshm", key)
+	})
 }
