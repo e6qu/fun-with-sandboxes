@@ -20,6 +20,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/snapshot"
 	"github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/pb"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/egress"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
@@ -224,13 +225,11 @@ func env(meta executor.Meta, root string, proxy int) []string {
 	set("SANDBOX_ROOT", root)
 	set("SANDBOX_HOST", "127.0.0.1")
 	if proxy != 0 {
-		p := fmt.Sprintf("http://127.0.0.1:%d", proxy)
-		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
-			if _, ok := vars[k]; !ok {
-				set(k, p)
+		for _, kv := range egress.Variables(proxy) {
+			if _, ok := vars[kv[0]]; !ok {
+				set(kv[0], kv[1])
 			}
 		}
-		set("NO_PROXY", "localhost,127.0.0.1,::1")
 	}
 	out := make([]string, 0, len(order))
 	for _, k := range order {

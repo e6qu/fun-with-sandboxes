@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/proxy"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/sandboxenv"
 )
@@ -93,6 +96,25 @@ func run(op, arg string) error {
 			return fmt.Errorf("%s: %s", arg, res.Status)
 		}
 		fmt.Println(res.Status)
+		return nil
+	case "tcp":
+		// Open a TCP connection to arg through ALL_PROXY, the stack's SOCKS5
+		// egress, and complete a TLS handshake over it when arg is a :443
+		// address, proving the bytes reached the server.
+		d := proxy.FromEnvironment()
+		c, err := d.Dial("tcp", arg)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		if host, port, _ := net.SplitHostPort(arg); port == "443" {
+			tc := tls.Client(c, &tls.Config{ServerName: host})
+			tc.SetDeadline(time.Now().Add(30 * time.Second))
+			if err := tc.Handshake(); err != nil {
+				return err
+			}
+			fmt.Println("TLS with", tc.ConnectionState().PeerCertificates[0].Subject.CommonName)
+		}
 		return nil
 	case "dial":
 		c, err := net.DialTimeout("tcp", arg, 5*time.Second)

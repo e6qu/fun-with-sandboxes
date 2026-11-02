@@ -19,6 +19,7 @@ import (
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/egress"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
@@ -746,15 +747,9 @@ func (e *Engine) environment(c *Container, extra []string) []string {
 	set("SANDBOX_STACK=" + c.rec.Stack)
 	set("SANDBOX_HOST=127.0.0.1")
 	if port := e.egressPort(c.rec.Stack); port != 0 && e.hasEgress(c) {
-		proxy := fmt.Sprintf("http://127.0.0.1:%d", port)
-		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
-			if _, ok := vars[k]; !ok {
-				set(k + "=" + proxy)
-			}
-		}
-		for _, k := range []string{"NO_PROXY", "no_proxy"} {
-			if _, ok := vars[k]; !ok {
-				set(k + "=localhost,127.0.0.1,::1")
+		for _, kv := range egress.Variables(port) {
+			if _, ok := vars[kv[0]]; !ok {
+				set(kv[0] + "=" + kv[1])
 			}
 		}
 	}

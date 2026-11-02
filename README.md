@@ -92,8 +92,8 @@ stack, so a container cannot pretend to own `/var/lib/postgresql/data` or port
 | `SANDBOX_STACK` | the stack (Compose project) name |
 
 `PATH` entries in the image config are mapped into the root. Containers with
-a network also get `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` pointing at
-their stack's egress proxy; `network_mode: none` and `internal: true`
+a network also get `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5, for
+any TCP) and `NO_PROXY` pointing at their stack's egress proxy; `network_mode: none` and `internal: true`
 networks get none, as in Docker. Volumes and bind
 mounts appear at their destination inside the root. An image's entrypoint
 reads these variables and configures its service — see
@@ -104,7 +104,7 @@ reads these variables and configures its service — see
 | | Allowed | Denied |
 |---|---|---|
 | Files | read and write its root and read-write volumes; read the macOS system tree | write anywhere else; read `/Users`, `/Volumes`, `/Library`, `/opt`, `/usr/local`, `/nix`, temp dirs, other stacks |
-| Network | listen on its assigned loopback ports; connect to its stack's ports; reach the internet over HTTP(S) through its stack's egress proxy | listen on any other port or address; connect to anything else; reach the host through the proxy |
+| Network | listen on its assigned loopback ports; connect to its stack's ports; reach the internet over HTTP(S) or SOCKS5 through its stack's egress proxy | listen on any other port or address; connect to anything else; reach the host through the proxy |
 | Processes | exec binaries in its root and the system shell; signal its own processes | exec other host binaries; signal or inspect other sandboxes' processes |
 | Mach services | user lookup, notifications, logging, certificate trust evaluation | keychain, pasteboard, Launch Services, TCC and everything else |
 

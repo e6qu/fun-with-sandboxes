@@ -227,9 +227,12 @@ it; it tells services their assignment through the environment.
   block and nowhere else, so stack A cannot reach stack B even though both
   live on `127.0.0.1`. That includes B's published ports.
 - **Egress.** Seatbelt can allow loopback ports or every destination, nothing
-  in between, so containers reach the internet through an HTTP proxy the
-  engine runs for each stack on a port of the stack's block
-  (`internal/egress`). Containers receive `HTTP_PROXY`, `HTTPS_PROXY` and
+  in between, so containers reach the internet through a proxy the engine
+  runs for each stack on a port of the stack's block (`internal/egress`): an
+  HTTP proxy, and on the same port a SOCKS5 one (RFC 1928, CONNECT only, no
+  authentication) for any TCP, told apart by the first byte a client sends.
+  Containers, classic `RUN` steps and BuildKit steps receive `HTTP_PROXY`,
+  `HTTPS_PROXY`, `ALL_PROXY` (`socks5h://`, so the proxy resolves names) and
   `NO_PROXY`. The proxy resolves each destination once, refuses it if any
   address is loopback, link-local, multicast, unspecified or assigned to one
   of the host's interfaces, and dials an address it checked, so DNS cannot

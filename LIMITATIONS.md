@@ -67,12 +67,13 @@ machine — and from what macOS offers an unprivileged process under them.
 - **A host process that later binds a port inside a stack's block is
   reachable from that stack.** The allocator skips ports in use when it
   assigns them, but cannot stop other host software from binding them later.
-- **Internet access is HTTP and HTTPS through a proxy.** Seatbelt cannot
-  express "any host but this machine", so containers reach the internet only
-  through their stack's egress proxy, which refuses destinations on the host.
-  Software must honour `HTTP_PROXY`/`HTTPS_PROXY`; other protocols (raw TCP,
-  UDP, DNS from the container) do not leave the machine. `fwsd -egress=false`
-  turns the proxy off.
+- **Internet access goes through a proxy.** Seatbelt cannot express "any
+  host but this machine", so containers reach the internet only through
+  their stack's egress proxy, which refuses destinations on the host: HTTP
+  and HTTPS for software that honours `HTTP_PROXY`/`HTTPS_PROXY`, and any TCP
+  through its SOCKS5 side for software that honours `ALL_PROXY` or takes a
+  SOCKS5 proxy. UDP and DNS from the container do not leave the machine; the
+  proxy resolves names. `fwsd -egress=false` turns the proxy off.
 - **A published UDP port's concurrent clients are bounded by the stack's
   block.** Each client's flow sends to the container from a port of the
   stack's block, the only ports a container may send to, so a stack serves
