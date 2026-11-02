@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	_ "github.com/go-sql-driver/mysql"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 func httpGet(t *testing.T, url string) string {
@@ -158,7 +159,9 @@ func TestLanguageImages(t *testing.T) {
 		{"fws/python:3.14", []string{"python3", "-m", "ensurepip", "--version"}, "pip"},
 		{"fws/node:26", []string{"/app/hello.mjs"}, "node 26"},
 		{"fws/node:26", []string{"npm", "--version"}, "."},
-		{"fws/bun:1", []string{"bun", "run", "/app/hello.ts"}, "bun 1"},
+		// Arguments are the program's to read, on the host: a path
+		// relative to the image's working directory, /app, names the file.
+		{"fws/bun:1", []string{"bun", "run", "hello.ts"}, "bun 1"},
 	} {
 		out, err := docker(t, append([]string{"run", "--rm", "-v", dir + ":/app", c.image}, c.args...)...)
 		if err != nil || !strings.Contains(out, c.want) {
@@ -233,5 +236,58 @@ func TestDynamoDBLocal(t *testing.T) {
 	}
 	if b, ok := got.Item["body"].(*types.AttributeValueMemberS); !ok || b.Value != "kept" {
 		t.Fatalf("item %v", got.Item)
+	}
+}
+
+func TestRabbitMQ(t *testing.T) {
+	const name = "fws-e2e-rabbitmq"
+	waitedRun(t, name, "-p", "127.0.0.1::5672", "-e", "RABBITMQ_DEFAULT_USER=e2e", "-e", "RABBITMQ_DEFAULT_PASS=e2e-pass", "fws/rabbitmq:4")
+	conn, err := amqp.Dial("amqp://e2e:e2e-pass@" + strings.TrimSpace(mustDocker(t, "port", name, "5672")) + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ch, err := conn.Channel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := ch.QueueDeclare("e2e", false, true, false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ch.PublishWithContext(context.Background(), "", q.Name, false, false, amqp.Publishing{Body: []byte("through the broker")}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := ch.Consume(q.Name, "", true, false, false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-msgs:
+		if string(m.Body) != "through the broker" {
+			t.Fatalf("consumed %q", m.Body)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("no message arrived")
+	}
+}
+
+// Playwright drives the image's Chromium headless shell.
+func TestPlaywright(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "page.js"), []byte(`const { chromium } = require("playwright");
+(async () => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  await page.setContent("<title>rendered in fws</title><p id=p>painted</p>");
+  console.log("title", await page.title(), "text", await page.textContent("#p"));
+  const shot = await page.screenshot();
+  console.log("screenshot", shot.length > 1000);
+  await browser.close();
+})().catch((e) => { console.error(e); process.exit(1); });
+`), 0o644)
+	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "fws/playwright:1.59", "node", "page.js")
+	if err != nil || !strings.Contains(out, "title rendered in fws text painted") || !strings.Contains(out, "screenshot true") {
+		t.Fatalf("playwright: %q, %v", out, err)
 	}
 }

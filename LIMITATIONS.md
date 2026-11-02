@@ -11,8 +11,14 @@ machine — and from what macOS offers an unprivileged process under them.
   ports from `SANDBOX_*` variables (see the README). Software that hard-codes
   an absolute path outside its root, or a fixed port it cannot be told to
   change, needs an entrypoint that configures it.
-- **No `#!` interpreters inside the image.** The kernel resolves a script's
-  interpreter on the host; only the host's system shells are executable.
+- **Scripts name their interpreter through `/usr/bin/env`.** The kernel
+  resolves a script's interpreter on the host, so a script runs when its
+  `#!` line names a system shell or `/usr/bin/env` with a program on the
+  container's `PATH`. `fws-mkimage` rewrites the catalog's scripts so.
+- **Arguments are paths on the host.** The engine maps a command's program
+  into the container's root, not its arguments, which the program reads on
+  the host: pass a path relative to the working directory, or one under
+  `$SANDBOX_ROOT`.
 - **BuildKit builds darwin images on one worker.** `docker build`,
   `docker buildx build` (docker driver) and `docker compose build` run the
   real BuildKit solver with its cache, secret and SSH mounts included. Not

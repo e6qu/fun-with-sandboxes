@@ -421,7 +421,9 @@ var systemShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash"
 // kernel resolves a script's interpreter on the host, where the image's
 // store paths do not exist, so an interpreter the image puts on /bin is
 // named through /usr/bin/env, which finds it on the container's PATH, and a
-// shell becomes the host's.
+// shell becomes the host's, with the store paths in its script prefixed by
+// the container's root, which every container process finds in
+// SANDBOX_ROOT.
 func rewriteShebangs(stage string) error {
 	bins := map[string]bool{}
 	if entries, err := os.ReadDir(filepath.Join(stage, "bin")); err == nil {
@@ -444,6 +446,9 @@ func rewriteShebangs(stage string) error {
 		switch {
 		case systemShells[name]:
 			head = "#!/bin/" + name
+			// A shell script names programs by store path, which the
+			// container's root holds under SANDBOX_ROOT.
+			rest = bytes.ReplaceAll(rest, []byte(storeDir+"/"), []byte("${SANDBOX_ROOT}"+storeDir+"/"))
 		case bins[name]:
 			head = "#!/usr/bin/env -S " + name
 		default:

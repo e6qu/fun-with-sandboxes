@@ -141,7 +141,7 @@ func TestRewriteShebangs(t *testing.T) {
 	os.MkdirAll(filepath.Join(stage, "bin"), 0o755)
 	os.Symlink("../nix/store/aaa-python/bin/python3.14", filepath.Join(stage, "bin", "python3.14"))
 	pip := write("aaa-python/bin/pip", "#!/nix/store/aaa-python/bin/python3.14 -s\nimport pip\n")
-	wrapper := write("bbb-wrap/bin/tool", "#!/nix/store/ccc-bash-5/bin/bash -e\nexec real \"$@\"\n")
+	wrapper := write("bbb-wrap/bin/tool", "#!/nix/store/ccc-bash-5/bin/bash -e\nexec \"/nix/store/bbb-wrap/bin/.tool-wrapped\" \"$@\"\n")
 	perl := write("ddd/bin/script", "#!/nix/store/eee-perl/bin/perl\nprint 1\n")
 	plain := write("fff/bin/data", "not a script\n")
 	if err := rewriteShebangs(stage); err != nil {
@@ -149,7 +149,7 @@ func TestRewriteShebangs(t *testing.T) {
 	}
 	for p, want := range map[string]string{
 		pip:     "#!/usr/bin/env -S python3.14 -s\nimport pip\n",
-		wrapper: "#!/bin/bash -e\nexec real \"$@\"\n",
+		wrapper: "#!/bin/bash -e\nexec \"${SANDBOX_ROOT}/nix/store/bbb-wrap/bin/.tool-wrapped\" \"$@\"\n",
 		perl:    "#!/nix/store/eee-perl/bin/perl\nprint 1\n",
 		plain:   "not a script\n",
 	} {

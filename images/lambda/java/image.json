@@ -1,0 +1,43 @@
+{
+  "tag": "fws/lambda/java:17",
+  "files": {},
+  "dirs": [
+    "/var/task",
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC",
+      "LANG=en_US.UTF-8",
+      "LAMBDA_TASK_ROOT=/var/task",
+      "LAMBDA_RUNTIME_DIR=/var/runtime",
+      "AWS_EXECUTION_ENV=AWS_Lambda_java17",
+      "FWS_LAMBDA_RUNTIME=java -XX:+TieredCompilation -XX:TieredStopAtLevel=1 -cp /var/runtime/lib/* fws.lambda.Bootstrap"
+    ],
+    "Entrypoint": [
+      "/lambda-entrypoint"
+    ],
+    "Cmd": [
+      "example.App::handleRequest"
+    ],
+    "WorkingDir": "/var/task",
+    "ExposedPorts": {
+      "8080/tcp": {},
+      "9001/tcp": {}
+    },
+    "Healthcheck": {
+      "Test": [
+        "CMD",
+        "/lambda-entrypoint",
+        "health"
+      ],
+      "Interval": 1000000000,
+      "Timeout": 5000000000,
+      "Retries": 30
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

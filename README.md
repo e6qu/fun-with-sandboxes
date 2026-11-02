@@ -47,10 +47,16 @@ pushes them to a registry the engine can pull from:
 
 | Image | Configured like the official image through |
 |---|---|
-| `fws/postgres:16` | `POSTGRES_PASSWORD`, `POSTGRES_USER`, `POSTGRES_DB`, `/docker-entrypoint-initdb.d/*.sql` |
+| `fws/postgres:16`, `fws/postgres:18` | `POSTGRES_PASSWORD`, `POSTGRES_USER`, `POSTGRES_DB`, `/docker-entrypoint-initdb.d/*.sql` |
 | `fws/mariadb:11` | `MARIADB_ROOT_PASSWORD` (or the `ALLOW_EMPTY`/`RANDOM` forms), `MARIADB_DATABASE`, `MARIADB_USER`, `MARIADB_PASSWORD`, `MARIADB_ROOT_HOST`, their `MYSQL_` names, `/docker-entrypoint-initdb.d/*.sql` |
 | `fws/redis:8` | arguments to `redis-server` |
+| `fws/rabbitmq:4` | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`; AMQP on 5672, the Erlang port mapper and distribution on their own assigned ports |
+| `fws/dynamodb-local:2` | arguments to DynamoDB Local (default `-sharedDb -dbPath /home/dynamodblocal/data`); port 8000 |
+| `fws/gitea:1` | `GITEA__section__KEY` variables, written into `/data/gitea/conf/app.ini`; HTTP on 3000, SSH on 22 |
 | `fws/nginx:1` | `/usr/share/nginx/html`, and `/etc/nginx/templates/*.template`, rendered into `conf.d` with environment variables substituted: a server listens on `127.0.0.1:${SANDBOX_PORT_80}` |
+| `fws/python:3.14`, `fws/node:26`, `fws/bun:1` | the language and its package manager (`python3 -m ensurepip` for pip) |
+| `fws/lambda/python:3.14`, `fws/lambda/nodejs:24`, `fws/lambda/java:17` | the handler as the command; functions in `/var/task`, invoked at `POST /2015-03-31/functions/function/invocations` on port 8080 through AWS's Runtime Interface Emulator |
+| `fws/playwright:1.59` | Node.js 24 with `playwright` and its Chromium headless shell |
 | `fws/toolbox:1` | the test suite's small app and probe |
 
 ```bash

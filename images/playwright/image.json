@@ -1,0 +1,25 @@
+{
+  "tag": "fws/playwright:1.59",
+  "files": {},
+  "dirs": [
+    "/app",
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC",
+      "NODE_ENV=production"
+    ],
+    "Entrypoint": [
+      "/entry"
+    ],
+    "Cmd": [
+      "node"
+    ],
+    "WorkingDir": "/app",
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

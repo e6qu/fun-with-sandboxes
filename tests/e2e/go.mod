@@ -9,6 +9,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/google/go-containerregistry v0.22.1
 	github.com/jackc/pgx/v5 v5.12.0
+	github.com/rabbitmq/amqp091-go v1.16.0
 	github.com/testcontainers/testcontainers-go v0.44.0
 )
 

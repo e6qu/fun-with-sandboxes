@@ -19,6 +19,9 @@ go build -o "$build/nginx-entry" ./images/nginx/entry
 go build -o "$build/mariadb-entry" ./images/mariadb/entry
 go build -o "$build/gitea-entry" ./images/gitea/entry
 go build -o "$build/dynamodb-entry" ./images/dynamodb/entry
+go build -o "$build/lambda-entrypoint" ./images/lambda/entry
+go build -o "$build/rabbitmq-entry" ./images/rabbitmq/entry
+go build -o "$build/playwright-entry" ./images/playwright/entry
 go build -o "$build/toolbox" ./images/toolbox
 
 # pkg_with ATTR BINARY prints the output of ATTR that holds bin/BINARY.
@@ -90,6 +93,70 @@ nix-store -qR "$dynamodb" > "$build/dynamodb.closure"
 "$build/fws-mkimage" -spec images/dynamodb/image.json -closure "$build/dynamodb.closure" -pkg "$jre" \
   -env "DYNAMODB_HOME=$dynamodb/share/dynamodb-local" -file "/entry=$build/dynamodb-entry" \
   -file "/opt/fws=$build/dynamodb-launcher" -out "$out/dynamodb.tar"
+
+rabbitmq=$(pkg_with rabbitmq-server rabbitmq-server)
+nix-store -qR "$rabbitmq" > "$build/rabbitmq.closure"
+"$build/fws-mkimage" -spec images/rabbitmq/image.json -closure "$build/rabbitmq.closure" -pkg "$rabbitmq" \
+  -file "/entry=$build/rabbitmq-entry" -out "$out/rabbitmq.tar"
+
+# The Lambda images: AWS's Runtime Interface Emulator, an interpreter, and
+# the image's client of the Lambda Runtime API.
+rie=$(pkg_with aws-lambda-rie aws-lambda-rie)
+
+nix-store -qR "$python" "$rie" | sort -u > "$build/lambda-python.closure"
+"$build/fws-mkimage" -spec images/lambda/python/image.json -closure "$build/lambda-python.closure" -pkg "$python" -pkg "$rie" \
+  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" \
+  -out "$out/lambda-python.tar"
+
+node24=$(pkg_with nodejs_24 node)
+nix-store -qR "$node24" "$rie" | sort -u > "$build/lambda-nodejs.closure"
+"$build/fws-mkimage" -spec images/lambda/nodejs/image.json -closure "$build/lambda-nodejs.closure" -pkg "$node24" -pkg "$rie" \
+  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.mjs=images/lambda/nodejs/bootstrap.mjs" \
+  -out "$out/lambda-nodejs.tar"
+
+# The Java runtime's libraries, from Maven Central, checked against their
+# published digests.
+jdk17=$(pkg_with jdk17_headless javac)
+lib="$build/lambda-java/lib"
+mkdir -p "$lib"
+while read -r sum path; do
+  curl -fsSL --retry 5 -o "$lib/$(basename "$path")" "https://repo1.maven.org/maven2/$path"
+  echo "$sum  $lib/$(basename "$path")" | shasum -a 256 -c - >/dev/null
+done <<'JARS'
+59e36aa26029fbb8f542b023fff86422a5577105764d31839b56d495d73faa5c com/amazonaws/aws-lambda-java-core/1.2.3/aws-lambda-java-core-1.2.3.jar
+c04993f33c0f845342653784f14f38373d005280e6359db5f808701cfae73c0c com/fasterxml/jackson/core/jackson-databind/2.17.2/jackson-databind-2.17.2.jar
+721a189241dab0525d9e858e5cb604d3ecc0ede081e2de77d6f34fa5779a5b46 com/fasterxml/jackson/core/jackson-core/2.17.2/jackson-core-2.17.2.jar
+873a606e23507969f9bbbea939d5e19274a88775ea5a169ba7e2d795aa5156e1 com/fasterxml/jackson/core/jackson-annotations/2.17.2/jackson-annotations-2.17.2.jar
+JARS
+mkdir -p "$build/lambda-java/classes"
+"$jdk17/bin/javac" --release 17 -cp "$lib/*" -d "$build/lambda-java/classes" images/lambda/java/src/fws/lambda/Bootstrap.java
+"$jdk17/bin/jar" --create --file "$lib/fws-lambda-runtime.jar" -C "$build/lambda-java/classes" .
+nix-store -qR "$jdk17" "$rie" | sort -u > "$build/lambda-java.closure"
+"$build/fws-mkimage" -spec images/lambda/java/image.json -closure "$build/lambda-java.closure" -pkg "$jdk17" -pkg "$rie" \
+  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/lib=$lib" \
+  -out "$out/lambda-java.tar"
+
+# Playwright on Node.js 24, with the playwright packages of the version
+# nixpkgs ships and its Chromium headless shell, Chrome for Testing's build,
+# checked against the digest pinned here.
+pw_version=1.59.1
+pw_revision=1217
+pw_chrome=147.0.7727.15
+case "$(uname -m)" in
+  arm64) pw_platform=mac-arm64 pw_sum=92e16fab914827a637607e46468b4360ebd2d30bbad06044d333bb5c0ceb3319 ;;
+  x86_64) pw_platform=mac-x64 pw_sum=ef808c5be0d15913f58d44689e2bd114311c8c6b41718fab695cdc1bbcb0e2aa ;;
+esac
+mkdir -p "$build/playwright/modules" "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
+"$node24/bin/node" "$node24/lib/node_modules/npm/bin/npm-cli.js" install --prefix "$build/playwright/modules" \
+  --no-audit --no-fund --no-package-lock "playwright@$pw_version" "playwright-core@$pw_version"
+curl -fsSL --retry 5 -o "$build/playwright/shell.zip" \
+  "https://storage.googleapis.com/chrome-for-testing-public/$pw_chrome/$pw_platform/chrome-headless-shell-$pw_platform.zip"
+echo "$pw_sum  $build/playwright/shell.zip" | shasum -a 256 -c - >/dev/null
+unzip -q "$build/playwright/shell.zip" -d "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
+nix-store -qR "$node24" > "$build/playwright.closure"
+"$build/fws-mkimage" -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" \
+  -file "/entry=$build/playwright-entry" -file "/usr/lib/node_modules=$build/playwright/modules/node_modules" \
+  -file "/ms-playwright=$build/playwright/browsers" -out "$out/playwright.tar"
 
 "$build/fws-mkimage" -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"
 
