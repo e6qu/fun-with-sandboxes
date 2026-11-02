@@ -15,10 +15,11 @@ machine — and from what macOS offers an unprivileged process under them.
   interpreter on the host; only the host's system shells are executable.
 - **BuildKit builds darwin images on one worker.** `docker build`,
   `docker buildx build` (docker driver) and `docker compose build` run the
-  real BuildKit solver with its cache. Not supported: multi-platform builds,
-  `# syntax=` directives (gateway frontends ship as Linux images), and
-  `RUN --mount=type=ssh`. Build steps run as the engine's user; a Dockerfile
-  `USER` other than root fails.
+  real BuildKit solver with its cache, secret and SSH mounts included. Not
+  supported: multi-platform builds and `# syntax=` directives (gateway
+  frontends ship as Linux images). Build steps run as the engine's user; a
+  Dockerfile `USER` other than root fails, and an SSH mount's socket belongs
+  to the engine's user whatever `uid` it names.
 - **The classic builder (`DOCKER_BUILDKIT=0`) takes no heredocs**, as
   Docker's classic builder takes none; BuildKit builds take them.
 - **Build steps run under Seatbelt** with internet through a build-only

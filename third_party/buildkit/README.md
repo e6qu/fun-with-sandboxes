@@ -11,3 +11,4 @@ Changes from upstream:
 - The patches in `third_party/buildkit-patches` are applied:
   - `localmounter_darwin.patch`
   - `resolvecache_race.patch`
+  - `ssh_socket_owner.patch`

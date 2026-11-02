@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/net/proxy"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/sandboxenv"
@@ -255,6 +256,27 @@ func run(op, arg string) error {
 			name = sandboxenv.IPCName(rest)
 		}
 		return shm(name)
+	case "sshagent":
+		// List the identities of the SSH agent SSH_AUTH_SOCK names, as a
+		// build step with an SSH mount reaches the client's agent.
+		sock := os.Getenv("SSH_AUTH_SOCK")
+		if sock == "" {
+			return fmt.Errorf("SSH_AUTH_SOCK is not set")
+		}
+		c, err := net.Dial("unix", sandboxenv.Path(sock))
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		keys, err := agent.NewClient(c).List()
+		if err != nil {
+			return err
+		}
+		fmt.Println("identities", len(keys))
+		for _, k := range keys {
+			fmt.Println(k.Comment)
+		}
+		return nil
 	case "signal":
 		pid, err := strconv.Atoi(arg)
 		if err != nil {
