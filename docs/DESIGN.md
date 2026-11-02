@@ -153,6 +153,14 @@ same knobs, each enforced by a real mechanism or refused:
   the container's root at `/`, its user, its `/etc/passwd` and `/etc/group`,
   and its hostname: fakechroot and fakeroot in one, presented and not
   enforced, as Seatbelt still decides every access by the engine's user.
+  Mounts sit in the root as symlinks to their resolved sources; the engine
+  lists them in `FWS_MOUNTS`, so the library resolves a mount's destination
+  straight to its source and reports the source's paths as the
+  destination's. The host's paths above the root and the mounts' sources,
+  which a program walks when it resolves a `$SANDBOX_ROOT` path, stay the
+  host's. A script whose `#!` names `/usr/bin/env` runs the program its
+  argument names from the container's `PATH`, as `env` would, because
+  Apple's `env` cannot load the library.
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would

@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 )
 
 //go:embed src/fwsroot.c
@@ -20,6 +22,40 @@ var source []byte
 // HostnameVar names the hostname the library presents; package identity
 // names the user and group.
 const HostnameVar = "FWS_HOSTNAME"
+
+// Mount is a volume or bind mount: Dest in the container, and Source, the
+// host directory or file behind it.
+type Mount struct{ Dest, Source string }
+
+// MountsVar is the variable that presents mounts at their destinations, or
+// "" when there are none. Each source is resolved, as the kernel reports a
+// working directory inside it.
+func MountsVar(ms []Mount) (string, error) {
+	var lines []string
+	for _, m := range ms {
+		src, err := filepath.EvalSymlinks(m.Source)
+		if err != nil {
+			return "", err
+		}
+		if strings.ContainsAny(m.Dest+src, "\t\n") {
+			return "", fmt.Errorf("mount %s at %s: a tab or newline in a path", src, m.Dest)
+		}
+		lines = append(lines, filepath.Clean(m.Dest)+"\t"+src)
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+	return "FWS_MOUNTS=" + strings.Join(lines, "\n"), nil
+}
+
+// archs are the architectures the library is built for: Apple's own
+// programs on Apple silicon are arm64e.
+func archs() []string {
+	if runtime.GOARCH == "arm64" {
+		return []string{"-arch", "arm64", "-arch", "arm64e"}
+	}
+	return []string{"-arch", "x86_64"}
+}
 
 // Build compiles the library into dir unless a build of this source is
 // there already, and returns its path.
@@ -42,7 +78,8 @@ func Build(dir string) (string, error) {
 		return "", err
 	}
 	lib := filepath.Join(work, "fwsroot.dylib")
-	cmd := exec.Command("/usr/bin/xcrun", "clang", "-dynamiclib", "-O2", "-Wall", "-Werror", "-o", lib, src)
+	args := append([]string{"clang", "-dynamiclib", "-O2", "-Wall", "-Werror"}, archs()...)
+	cmd := exec.Command("/usr/bin/xcrun", append(args, "-o", lib, src)...)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build the container library with clang, which the Xcode Command Line Tools provide (xcode-select --install): %v\n%s", err, b)
 	}

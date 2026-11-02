@@ -84,3 +84,31 @@ func TestIdentityAndOwnership(t *testing.T) {
 		t.Errorf("owner: %q", got["owner"])
 	}
 }
+
+func TestMountsAndEnvScripts(t *testing.T) {
+	root := containerRoot(t)
+	src, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(src, "file"), []byte("mounted"), 0o644)
+	// The engine places a mount as a symlink in the root.
+	if err := os.Symlink(src, filepath.Join(root, "data")); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(root, "bin", "run"), []byte("#!/usr/bin/env -S probe read\n"), 0o755)
+	mv, err := MountsVar([]Mount{{Dest: "/data", Source: src}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := probe(t, root, []string{mv, "PATH=" + filepath.Join(root, "bin")}, "mount", "rootpath", "envscript")
+	if want := "mounted,/data/file,/data"; got["mount"] != want {
+		t.Errorf("mount: %q, want %q", got["mount"], want)
+	}
+	if want := filepath.Join(src, "file"); got["rootpath"] != want {
+		t.Errorf("rootpath: %q, want %q", got["rootpath"], want)
+	}
+	if !strings.Contains(got["envscript"], "read=inside") {
+		t.Errorf("a #!/usr/bin/env script ran as %q", got["envscript"])
+	}
+}

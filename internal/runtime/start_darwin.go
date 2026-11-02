@@ -142,7 +142,7 @@ func Start(s Spec) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	exe, argv := scriptCommand(s.Root, exe, s.Argv)
+	exe, argv := scriptCommand(s.Root, exe, s.Argv, s.Env)
 	hs, err := json.Marshal(helperSpec{
 		Path: exe, Argv: argv, Profile: text, Library: s.Library,
 		Limits: s.Limits, TTY: s.TTY != nil,

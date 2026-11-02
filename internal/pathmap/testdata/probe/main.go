@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"syscall"
 )
 
@@ -71,6 +72,35 @@ func run(check string) string {
 	case "hostname":
 		h, err := os.Hostname()
 		return result(h, err)
+	case "mount":
+		fi, err := os.Lstat("/data")
+		if err != nil {
+			return result("", err)
+		}
+		if !fi.IsDir() {
+			return "lstat " + fi.Mode().String()
+		}
+		b, err := os.ReadFile("/data/file")
+		if err != nil {
+			return result("", err)
+		}
+		real, err := filepath.EvalSymlinks("/data/file")
+		if err != nil {
+			return result("", err)
+		}
+		if err := os.Chdir("/data"); err != nil {
+			return result("", err)
+		}
+		wd, err := os.Getwd()
+		return result(string(b)+","+real+","+wd, err)
+	case "rootpath":
+		// A path through $SANDBOX_ROOT resolves on the host, as a program
+		// configuring itself from the container contract resolves it.
+		p, err := filepath.EvalSymlinks(filepath.Join(os.Getenv("SANDBOX_ROOT"), "data", "file"))
+		return result(p, err)
+	case "envscript":
+		out, err := exec.Command("/bin/run").Output()
+		return result(string(out), err)
 	case "exec":
 		out, err := exec.Command("/bin/probe", "read").Output()
 		return result(string(out), err)

@@ -11,7 +11,11 @@
 //     stat reports, and a file a user other than root makes is recorded as
 //     theirs; files the container's processes made report root otherwise;
 //   - the users and groups of the container's /etc/passwd and /etc/group;
-//   - the container's hostname (FWS_HOSTNAME).
+//   - the container's hostname (FWS_HOSTNAME);
+//   - its volumes and bind mounts at their destinations (FWS_MOUNTS: a
+//     destination, a tab and the resolved source, a line each): the engine
+//     places a mount as a symlink in the root, which a path through the
+//     mount point follows, and which presents the source's own path.
 //
 // The host still decides every access, by the engine's user's rights.
 #include <dlfcn.h>
@@ -48,6 +52,56 @@ static uid_t fake_uid, fake_euid;
 static gid_t fake_gid, fake_egid;
 static char hostname[256];
 
+struct mount {
+    char *dest, *src;
+    size_t destlen, srclen;
+};
+static struct mount *mounts;
+static size_t nmounts;
+
+static char *trim_slashes(char *p, size_t *len) {
+    *len = strlen(p);
+    while (*len > 1 && p[*len - 1] == '/') p[--*len] = 0;
+    return p;
+}
+
+// parse_mounts reads FWS_MOUNTS, longest destination first, so a mount
+// inside another mount's destination wins.
+static void parse_mounts(const char *v) {
+    if (!v || !*v) return;
+    char *all = strdup(v);
+    if (!all) return;
+    size_t cap = 1;
+    for (const char *c = all; *c; c++) cap += *c == '\n';
+    mounts = calloc(cap, sizeof *mounts);
+    if (!mounts) return;
+    for (char *line = strtok(all, "\n"); line; line = strtok(NULL, "\n")) {
+        char *tab = strchr(line, '\t');
+        if (!tab || line[0] != '/' || tab[1] != '/') continue;
+        *tab = 0;
+        struct mount m;
+        m.dest = trim_slashes(line, &m.destlen);
+        m.src = trim_slashes(tab + 1, &m.srclen);
+        size_t i = nmounts++;
+        while (i > 0 && mounts[i - 1].destlen < m.destlen) {
+            mounts[i] = mounts[i - 1];
+            i--;
+        }
+        mounts[i] = m;
+    }
+}
+
+static int under(const char *p, const char *dir, size_t n) {
+    return strncmp(p, dir, n) == 0 && (p[n] == '/' || p[n] == 0);
+}
+
+// above reports whether p names a directory that holds dir, other than /.
+static int above(const char *p, const char *dir, size_t n) {
+    size_t pn = strlen(p);
+    while (pn > 1 && p[pn - 1] == '/') pn--;
+    return pn > 1 && pn < n && strncmp(p, dir, pn) == 0 && dir[pn] == '/';
+}
+
 static unsigned long env_number(const char *name) {
     const char *v = getenv(name);
     return v ? strtoul(v, NULL, 10) : 0;
@@ -60,6 +114,7 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     if (h) {
         strlcpy(hostname, h, sizeof hostname);
     }
+    parse_mounts(getenv("FWS_MOUNTS"));
     const char *r = getenv("SANDBOX_ROOT");
     if (r && r[0] == '/' && strlen(r) < sizeof root) {
         strcpy(root, r);
@@ -78,11 +133,34 @@ static int in_root(const char *p) {
     return strncmp(p, root, rootlen) == 0 && (p[rootlen] == '/' || p[rootlen] == 0);
 }
 
-// fws_map returns the path p names in the container: the root's when the
-// root holds it or its parent, else p. buf holds a mapped path.
+// fws_map returns the path p names in the container: a mount's source
+// under a mount's destination, the root's when the root holds it or its
+// parent, else p. buf holds a mapped path.
 static const char *fws_map(const char *p, char *buf) {
     if (!rootlen || !p || p[0] != '/' || in_root(p)) {
         return p;
+    }
+    // The host's own paths to the root and to mounts' sources, which a
+    // program resolving a path through $SANDBOX_ROOT or a mount's symlink
+    // walks, stay the host's.
+    if (above(p, root, rootlen)) {
+        return p;
+    }
+    for (size_t i = 0; i < nmounts; i++) {
+        struct mount *m = &mounts[i];
+        if (under(p, m->src, m->srclen) || above(p, m->src, m->srclen)) {
+            return p;
+        }
+    }
+    for (size_t i = 0; i < nmounts; i++) {
+        struct mount *m = &mounts[i];
+        if (under(p, m->dest, m->destlen)) {
+            const char *rest = p + m->destlen;
+            if (m->srclen + strlen(rest) + 1 > PATH_MAX) return p;
+            memcpy(buf, m->src, m->srclen);
+            strcpy(buf + m->srclen, rest);
+            return buf;
+        }
     }
     for (const char *const *t = host_trees; *t; t++) {
         size_t n = strlen(*t);
@@ -113,9 +191,23 @@ static const char *fws_map(const char *p, char *buf) {
 
 #define MAP(p) fws_map((p), (char[PATH_MAX]){0})
 
-// unmap turns a host path in the root into the container's path, in place.
-static void unmap(char *p) {
-    if (!rootlen || !p || !in_root(p)) {
+// unmap turns a host path in the root or a mount's source into the
+// container's path, in place.
+static void unmap(char *p, size_t size) {
+    if (!rootlen || !p) {
+        return;
+    }
+    for (size_t i = 0; i < nmounts; i++) {
+        struct mount *m = &mounts[i];
+        if (under(p, m->src, m->srclen)) {
+            size_t rest = strlen(p + m->srclen);
+            if (m->destlen + rest + 1 > size) return;
+            memmove(p + m->destlen, p + m->srclen, rest + 1);
+            memcpy(p, m->dest, m->destlen);
+            return;
+        }
+    }
+    if (!in_root(p)) {
         return;
     }
     if (p[rootlen] == 0) {
@@ -367,6 +459,61 @@ INTERPOSE(fws_listxattr, listxattr);
 static int fws_removexattr(const char *path, const char *name, int o) { return removexattr(MAP(path), name, o); }
 INTERPOSE(fws_removexattr, removexattr);
 
+// find_on_path finds the executable file, a name without a slash, in a
+// directory of PATH, whose directories name the host's paths of the
+// container's, and leaves its path in full.
+static int find_on_path(const char *file, char *full) {
+    const char *path = getenv("PATH");
+    char dir[PATH_MAX];
+    while (path && *path) {
+        size_t n = strcspn(path, ":");
+        if (n > 0 && n < sizeof dir) {
+            memcpy(dir, path, n);
+            dir[n] = 0;
+            if (snprintf(full, PATH_MAX, "%s/%s", dir, file) < PATH_MAX && access(fws_map(full, (char[PATH_MAX]){0}), X_OK) == 0) {
+                return 1;
+            }
+        }
+        path += n;
+        if (*path == ':') path++;
+    }
+    return 0;
+}
+
+// env_argv runs a script whose #! line is /usr/bin/env, which the root does
+// not hold, as env would: the program its argument names, found on PATH,
+// with the argument's other words under -S, then the script and its
+// arguments. Apple's env does not run with the container library loaded.
+static char **env_argv(char *arg, const char *path, char *const argv[], char *interp) {
+    char *words[64];
+    size_t nw = 0;
+    if (strncmp(arg, "-S", 2) == 0 && (arg[2] == ' ' || arg[2] == '\t')) {
+        for (char *w = strtok(arg + 3, " \t"); w && nw < 64; w = strtok(NULL, " \t")) words[nw++] = w;
+    } else if (*arg) {
+        words[nw++] = arg;
+    }
+    if (nw == 0 || words[0][0] == '-' || strchr(words[0], '=')) {
+        return NULL;
+    }
+    if (strchr(words[0], '/')) {
+        const char *m = fws_map(words[0], interp);
+        if (m != interp) strlcpy(interp, m, PATH_MAX);
+    } else if (!find_on_path(words[0], interp)) {
+        return NULL;
+    }
+    size_t argc = 0;
+    while (argv && argv[argc]) argc++;
+    char **out = calloc(nw + argc + 2, sizeof *out);
+    if (!out) {
+        return NULL;
+    }
+    size_t i = 0;
+    for (size_t j = 0; j < nw; j++) out[i++] = strdup(words[j]);
+    out[i++] = (char *)path;
+    for (size_t j = 1; j < argc; j++) out[i++] = argv[j];
+    return out;
+}
+
 // The kernel resolves a script's interpreter on the host. A script whose
 // interpreter the root holds runs with the root's, as in a chroot: the
 // interpreter, its #! argument, the script, then the script's arguments.
@@ -397,6 +544,9 @@ static char **script_argv(const char *path, char *const argv[], char *interp) {
         return NULL;
     }
     const char *mapped = fws_map(line, interp);
+    if (mapped != interp && strcmp(line, "/usr/bin/env") == 0) {
+        return env_argv(arg, path, argv, interp);
+    }
     if (mapped != interp) {
         // The host's interpreter: the kernel runs it as the #! line says.
         return NULL;
@@ -448,19 +598,9 @@ static int fws_posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file
     if (strchr(file, '/')) {
         return fws_posix_spawn(pid, file, fa, a, argv, envp);
     }
-    const char *path = getenv("PATH");
-    char dir[PATH_MAX], full[PATH_MAX];
-    while (path && *path) {
-        size_t n = strcspn(path, ":");
-        if (n > 0 && n < sizeof dir) {
-            memcpy(dir, path, n);
-            dir[n] = 0;
-            if (snprintf(full, sizeof full, "%s/%s", dir, file) < (int)sizeof full && access(fws_map(full, (char[PATH_MAX]){0}), X_OK) == 0) {
-                return fws_posix_spawn(pid, full, fa, a, argv, envp);
-            }
-        }
-        path += n;
-        if (*path == ':') path++;
+    char full[PATH_MAX];
+    if (find_on_path(file, full)) {
+        return fws_posix_spawn(pid, full, fa, a, argv, envp);
     }
     return posix_spawnp(pid, file, fa, a, argv, envp);
 }
@@ -471,9 +611,17 @@ INTERPOSE(fws_dlopen, dlopen);
 
 static char *fws_getcwd(char *buf, size_t size) {
     char *r = getcwd(buf, size);
-    unmap(r);
+    // getcwd allocates the buffer when given none, as large as the path.
+    unmap(r, r && !buf ? strlen(r) + 1 : size);
     return r;
 }
+
+static char *fws_realpath(const char *path, char *resolved) {
+    char *r = realpath(MAP(path), resolved);
+    unmap(r, PATH_MAX);
+    return r;
+}
+INTERPOSE(fws_realpath, realpath);
 INTERPOSE(fws_getcwd, getcwd);
 
 // Identity.

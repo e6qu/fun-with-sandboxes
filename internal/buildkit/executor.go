@@ -55,6 +55,7 @@ type seatbeltExecutor struct {
 type run struct {
 	root    string
 	volumes []seatbelt.Volume
+	mounts  []pathmap.Mount
 	proxy   int
 	done    chan struct{}
 }
@@ -74,6 +75,9 @@ type mountMap struct {
 	hidden  map[string]string
 	created []string
 	release []func() error
+	// mounts presents each mount at its destination through the container
+	// library.
+	mounts []pathmap.Mount
 }
 
 func (m *mountMap) undo() error {
@@ -175,17 +179,18 @@ func (x *seatbeltExecutor) prepare(ctx context.Context, root string, mounts []ex
 			}
 			mm.hidden[dest] = aside
 		}
-		if err := os.Symlink(src, dest); err != nil {
-			return fail(err)
-		}
-		mm.links = append(mm.links, dest)
 		// Seatbelt matches resolved paths, and BuildKit makes some sources,
 		// such as an SSH mount's socket, under TMPDIR: /var is a symlink to
-		// /private/var.
+		// /private/var. A program following the link walks the real path.
 		resolved, err := filepath.EvalSymlinks(src)
 		if err != nil {
 			return fail(err)
 		}
+		if err := os.Symlink(resolved, dest); err != nil {
+			return fail(err)
+		}
+		mm.links = append(mm.links, dest)
+		mm.mounts = append(mm.mounts, pathmap.Mount{Dest: m.Dest, Source: resolved})
 		vols = append(vols, seatbelt.Volume{Path: resolved, ReadOnly: m.Readonly})
 	}
 	return mm, vols, nil
@@ -250,7 +255,7 @@ func (x *seatbeltExecutor) Run(ctx context.Context, id string, rootMount executo
 			return nil, err
 		}
 	}
-	r := &run{root: root, volumes: vols, proxy: proxy, done: make(chan struct{})}
+	r := &run{root: root, volumes: vols, mounts: mm.mounts, proxy: proxy, done: make(chan struct{})}
 	if id != "" {
 		x.mu.Lock()
 		x.runs[id] = r
@@ -309,6 +314,13 @@ func (x *seatbeltExecutor) exec(ctx context.Context, r *run, process executor.Pr
 	stepEnv := append(env(meta, r.root, r.proxy), id.Env()...)
 	if meta.Hostname != "" {
 		stepEnv = append(stepEnv, pathmap.HostnameVar+"="+meta.Hostname)
+	}
+	mv, err := pathmap.MountsVar(r.mounts)
+	if err != nil {
+		return err
+	}
+	if mv != "" {
+		stepEnv = append(stepEnv, mv)
 	}
 	rs := runtime.Spec{
 		Root: r.root, Argv: meta.Args, Env: stepEnv, WorkDir: meta.Cwd,

@@ -368,7 +368,19 @@ func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string
 	if host == "" {
 		host = c.rec.ID[:12]
 	}
-	return append(append(env, id.Env()...), pathmap.HostnameVar+"="+host), nil
+	env = append(append(env, id.Env()...), pathmap.HostnameVar+"="+host)
+	var ms []pathmap.Mount
+	for _, m := range c.rec.Mounts {
+		ms = append(ms, pathmap.Mount{Dest: m.Destination, Source: m.Source})
+	}
+	mv, err := pathmap.MountsVar(ms)
+	if err != nil {
+		return nil, err
+	}
+	if mv != "" {
+		env = append(env, mv)
+	}
+	return env, nil
 }
 
 func checkHostConfig(hc *container.HostConfig) error {
@@ -740,7 +752,13 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 		if err := os.RemoveAll(dest); err != nil {
 			return nil, err
 		}
-		if err := os.Symlink(m.Source, dest); err != nil {
+		// The link names the source by its real path, which a program in the
+		// container that follows it walks on the host.
+		real, err := filepath.EvalSymlinks(m.Source)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Symlink(real, dest); err != nil {
 			return nil, err
 		}
 	}
