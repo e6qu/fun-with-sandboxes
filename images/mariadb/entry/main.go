@@ -82,7 +82,7 @@ func main() {
 		args = args[1:]
 	}
 	argv := append([]string{"mariadbd"}, common...)
-	argv = append(argv, "--port="+port, "--bind-address=127.0.0.1", "--skip-name-resolve", "--log-error=")
+	argv = append(argv, "--port="+port, "--bind-address=127.0.0.1", "--skip-name-resolve")
 	log.Fatal(syscall.Exec(server, append(argv, args...), os.Environ()))
 }
 
@@ -173,7 +173,7 @@ func initialise(server, base, datadir string, common []string) error {
 			socket = v
 		}
 	}
-	temp := exec.Command(server, append(common, "--skip-networking", "--log-error=")...)
+	temp := exec.Command(server, append(common, "--skip-networking")...)
 	temp.Args[0] = "mariadbd"
 	temp.Stdout = os.Stdout
 	logs, err := temp.StderrPipe()
