@@ -427,7 +427,7 @@ func mergeConfig(img image.Image, req *container.Config) container.Config {
 	}
 	if cfg.Healthcheck == nil && ic.Healthcheck != nil {
 		h := ic.Healthcheck
-		cfg.Healthcheck = &container.HealthConfig{Test: h.Test, Interval: h.Interval, Timeout: h.Timeout, StartPeriod: h.StartPeriod, Retries: h.Retries}
+		cfg.Healthcheck = &container.HealthConfig{Test: h.Test, Interval: h.Interval, Timeout: h.Timeout, StartPeriod: h.StartPeriod, StartInterval: img.HealthStartInterval, Retries: h.Retries}
 	}
 	labels := map[string]string{}
 	for k, v := range ic.Labels {

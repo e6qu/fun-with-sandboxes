@@ -4,11 +4,13 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -36,7 +38,7 @@ func extendRoot(t *testing.T, s *Store, base, root string, cfg v1.ConfigFile, ta
 	}
 	f.Close()
 	cfg.History = append(cfg.History, v1.History{CreatedBy: "test layer"})
-	return s.Extend(base, []string{f.Name()}, root, cfg, tags)
+	return s.Extend(base, []string{f.Name()}, root, Config{ConfigFile: cfg}, tags)
 }
 
 // darwinImage is a random image of n layers for the engine's platform.
@@ -303,4 +305,69 @@ func copyTree(src, dst string) error {
 		}
 		return os.Chtimes(target, fi.ModTime(), fi.ModTime())
 	})
+}
+
+// The health check's start interval, which go-containerregistry's config
+// type drops, survives storing an image, reopening the store, and saving
+// and loading it.
+func TestHealthStartIntervalKept(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir() + "/root"
+	os.MkdirAll(root, 0o755)
+	var cfg v1.ConfigFile
+	cfg.Config.Healthcheck = &v1.HealthConfig{Test: []string{"CMD", "/probe"}, Interval: time.Minute}
+	img, err := s.Extend("", nil, root, Config{ConfigFile: cfg, HealthStartInterval: 3 * time.Second}, []string{"hc:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.HealthStartInterval != 3*time.Second {
+		t.Fatalf("stored start interval %v", img.HealthStartInterval)
+	}
+	v, _, err := s.V1Image("hc:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := v.RawConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := healthStartInterval(raw); got != 3*time.Second {
+		t.Fatalf("the image's config holds start interval %v", got)
+	}
+	if name, _ := v.ConfigName(); name.String() != img.ID {
+		t.Fatalf("config digest %s, image ID %s", name, img.ID)
+	}
+	if err := validateImage(v); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := reopened.Get("hc:1"); err != nil || got.HealthStartInterval != 3*time.Second {
+		t.Fatalf("after reopening: %v, %v", got.HealthStartInterval, err)
+	}
+}
+
+func validateImage(img v1.Image) error {
+	m, err := img.Manifest()
+	if err != nil {
+		return err
+	}
+	raw, err := img.RawConfigFile()
+	if err != nil {
+		return err
+	}
+	h, size, err := v1.SHA256(bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	if h != m.Config.Digest || size != m.Config.Size {
+		return fmt.Errorf("manifest names config %s (%d bytes), the config is %s (%d bytes)", m.Config.Digest, m.Config.Size, h, size)
+	}
+	return nil
 }

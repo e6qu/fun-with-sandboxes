@@ -1,0 +1,28 @@
+--- a/solver/llbsolver/mounts/mount.go
++++ b/solver/llbsolver/mounts/mount.go
+@@ -3,6 +3,7 @@
+ import (
+ 	"context"
+ 	"fmt"
++	"os"
+ 	"strings"
+ 	"sync"
+ 	"time"
+@@ -211,6 +212,17 @@
+ 			return nil, nil, err
+ 		}
+ 	}
++	// A build step of an unprivileged worker runs as the worker's own user,
++	// which stands for the step's root: the socket is that user's, and no
++	// other owner can be set without root.
++	if os.Geteuid() != 0 {
++		if uid == 0 {
++			uid = os.Getuid()
++		}
++		if gid == 0 {
++			gid = os.Getgid()
++		}
++	}
+ 
+ 	sock, cleanup, err := sshforward.MountSSHSocket(ctx, sm.sm.caller, sshforward.SocketOpt{
+ 		ID:   sm.sm.mount.SSHOpt.ID,

@@ -3,6 +3,7 @@ package mounts
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -209,6 +210,17 @@ func (sm *sshMountInstance) Mount() ([]mount.Mount, func() error, error) {
 		if err != nil {
 			cancel(err)
 			return nil, nil, err
+		}
+	}
+	// A build step of an unprivileged worker runs as the worker's own user,
+	// which stands for the step's root: the socket is that user's, and no
+	// other owner can be set without root.
+	if os.Geteuid() != 0 {
+		if uid == 0 {
+			uid = os.Getuid()
+		}
+		if gid == 0 {
+			gid = os.Getgid()
 		}
 	}
 
