@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -85,6 +86,27 @@ func main() {
 	log.Fatal(syscall.Exec(server, append(argv, args...), os.Environ()))
 }
 
+// listing describes the data directory a failed initialisation left, for
+// its error.
+func listing(dir string) string {
+	var b strings.Builder
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			fmt.Fprintf(&b, "%s: %v\n", p, err)
+			return nil
+		}
+		fi, err := os.Lstat(p)
+		if err != nil {
+			fmt.Fprintf(&b, "%s: %v\n", p, err)
+			return nil
+		}
+		target, _ := os.Readlink(p)
+		fmt.Fprintf(&b, "%s %v %d %s\n", p, fi.Mode(), fi.Size(), target)
+		return nil
+	})
+	return b.String()
+}
+
 func getenv(names ...string) string {
 	for _, n := range names {
 		if v := os.Getenv(n); v != "" {
@@ -119,7 +141,7 @@ func initialise(server, base, datadir string, common []string) error {
 	system.WriteString("CREATE DATABASE IF NOT EXISTS mysql;\nuse mysql;\nSET @auth_root_socket=NULL;\n")
 	share := filepath.Join(base, "share", "mysql")
 	// The scripts mariadb-install-db feeds the server, in its order.
-	for _, f := range []string{"mariadb_system_tables.sql", "mariadb_performance_tables.sql", "mariadb_system_tables_data.sql", "fill_help_tables.sql", "mariadb_sys_schema.sql"} {
+	for _, f := range []string{"mariadb_system_tables.sql", "mariadb_performance_tables.sql", "mariadb_system_tables_data.sql", "fill_help_tables.sql", "maria_add_gis_sp_bootstrap.sql", "mariadb_sys_schema.sql"} {
 		b, err := os.ReadFile(filepath.Join(share, f))
 		if err != nil {
 			return err
@@ -127,7 +149,7 @@ func initialise(server, base, datadir string, common []string) error {
 		system.Write(b)
 		system.WriteString("\n")
 	}
-	boot := exec.Command(server, append(common, "--bootstrap", "--skip-networking", "--log-warnings=0", "--max_allowed_packet=8M", "--net_buffer_length=16K")...)
+	boot := exec.Command(server, append(common, "--bootstrap", "--skip-networking", "--log-warnings=0", "--enforce-storage-engine=", "--max_allowed_packet=8M", "--net_buffer_length=16K")...)
 	boot.Args[0] = "mariadbd"
 	boot.Stdin, boot.Stdout, boot.Stderr = &system, os.Stdout, os.Stderr
 	fail := func(err error) error {
@@ -135,7 +157,7 @@ func initialise(server, base, datadir string, common []string) error {
 		return err
 	}
 	if err := boot.Run(); err != nil {
-		return fail(fmt.Errorf("mariadbd --bootstrap: %w", err))
+		return fail(fmt.Errorf("mariadbd --bootstrap: %w\n%s", err, listing(datadir)))
 	}
 
 	// The rest goes through a server that listens on its socket alone, as

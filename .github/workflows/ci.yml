@@ -97,4 +97,6 @@ jobs:
             head -c 20000 "$f"
             echo
           done
-          log show --last 2h --style compact --predicate 'sender == "Sandbox"' | grep -v "fwsd\|fws-shim" | tail -200
+          # Each distinct denial once, by process.
+          log show --last 2h --style compact --predicate 'sender == "Sandbox"' |
+            sed -n 's/.*Sandbox: \([^(]*\)([0-9]*) \(deny.*\)/\1 \2/p' | sort | uniq -c | sort -rn

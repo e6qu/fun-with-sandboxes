@@ -97,6 +97,13 @@ static int under(const char *p, const char *dir, size_t n) {
     return strncmp(p, dir, n) == 0 && (p[n] == '/' || p[n] == 0);
 }
 
+static int in_mount(const char *p) {
+    for (size_t i = 0; i < nmounts; i++) {
+        if (under(p, mounts[i].src, mounts[i].srclen)) return 1;
+    }
+    return 0;
+}
+
 // above reports whether p names a directory that holds dir, other than /.
 static int above(const char *p, const char *dir, size_t n) {
     size_t pn = strlen(p);
@@ -860,6 +867,13 @@ static void own(struct stat *st, const char *path, int fd, int nofollow) {
     uid_t u;
     gid_t g;
     if (st->st_uid != getuid_real()) {
+        return;
+    }
+    if (path && path[0] == '/' && !in_root(path) && !in_mount(path)) {
+        // The host's directories above the root and the mounts hold no
+        // owner of the container's; the sandbox refuses their attributes.
+        st->st_uid = 0;
+        st->st_gid = 0;
         return;
     }
     if (read_owner(path, fd, nofollow, &u, &g)) {
