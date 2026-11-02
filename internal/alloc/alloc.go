@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"syscall"
 )
 
 // Compose project names follow this pattern; holding stack names to it also
@@ -65,9 +66,6 @@ type Allocator struct {
 	cfg Config
 	mu  sync.Mutex
 	st  state
-	// leased holds the ports of each stack's block lent out for a while,
-	// kept in memory: a lease ends with the engine that made it.
-	leased map[string]map[int]bool
 }
 
 func Open(cfg Config) (*Allocator, error) {
@@ -185,45 +183,46 @@ func (a *Allocator) takenLocked(s *Stack) map[int]bool {
 	for _, p := range s.Ports {
 		taken[p] = true
 	}
-	for p := range a.leased[s.Name] {
-		taken[p] = true
-	}
 	return taken
 }
 
-// Lease lends out a free port of the stack's block until Unlease returns
-// it, for a socket the engine opens on the stack's behalf that the stack's
-// containers must be able to reach, such as the source of a UDP flow its
-// published port forwards.
-func (a *Allocator) Lease(stack string) (int, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	s, ok := a.st.Stacks[stack]
-	if !ok {
-		return 0, fmt.Errorf("alloc: stack %s holds no block", stack)
+// DialFlow opens a UDP socket to raddr from a port of the stack's block
+// that no key holds, reading the block from the state file under root, so
+// a process other than the engine, such as a container's supervisor, can
+// open one: the source of a UDP flow a published port forwards, which the
+// stack's containers must be able to reach. The kernel arbitrates between
+// processes: a port another socket holds fails to bind and the next is
+// tried.
+func DialFlow(root, stack string, raddr *net.UDPAddr) (*net.UDPConn, error) {
+	b, err := os.ReadFile(filepath.Join(root, "alloc.json"))
+	if err != nil {
+		return nil, err
 	}
-	taken := a.takenLocked(s)
+	var st state
+	if err := json.Unmarshal(b, &st); err != nil {
+		return nil, err
+	}
+	s, ok := st.Stacks[stack]
+	if !ok {
+		return nil, fmt.Errorf("alloc: stack %s holds no block", stack)
+	}
+	taken := map[int]bool{}
+	for _, p := range s.Ports {
+		taken[p] = true
+	}
 	for p := s.PortBase; p < s.PortBase+s.BlockSize; p++ {
-		if taken[p] || !hostPortFree(p) {
+		if taken[p] {
 			continue
 		}
-		if a.leased == nil {
-			a.leased = map[string]map[int]bool{}
+		c, err := net.DialUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: p}, raddr)
+		if err == nil {
+			return c, nil
 		}
-		if a.leased[stack] == nil {
-			a.leased[stack] = map[int]bool{}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, err
 		}
-		a.leased[stack][p] = true
-		return p, nil
 	}
-	return 0, fmt.Errorf("%w: %s", ErrBlockFull, stack)
-}
-
-// Unlease returns a leased port to the stack's block.
-func (a *Allocator) Unlease(stack string, port int) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	delete(a.leased[stack], port)
+	return nil, fmt.Errorf("%w: %s", ErrBlockFull, stack)
 }
 
 // Release frees the stack's block and removes its directory tree.
@@ -241,7 +240,6 @@ func (a *Allocator) Release(stack string) error {
 		return err
 	}
 	delete(a.st.Stacks, stack)
-	delete(a.leased, stack)
 	return a.saveLocked()
 }
 

@@ -108,3 +108,10 @@ func parseProcargs(b []byte) ([]string, error) {
 	}
 	return env, nil
 }
+
+// Entry is a process as the kernel's process table lists it. Start, in a
+// platform's own unit, tells a process from a later one reusing its PID.
+type Entry struct {
+	PID, PPID, PGID int
+	Start           int64
+}

@@ -33,6 +33,7 @@ func main() {
 	block := flag.Int("block-size", 100, "host ports reserved for each stack")
 	egress := flag.Bool("egress", true, "give each stack an HTTP proxy to the internet that refuses destinations on this host")
 	withBuildKit := flag.Bool("buildkit", true, "serve BuildKit for docker build, buildx and docker compose build")
+	liveRestore := flag.Bool("live-restore", false, "keep containers running while the engine stops, and reconnect to them when it starts")
 	flag.Parse()
 
 	if os.Geteuid() == 0 {
@@ -41,7 +42,7 @@ func main() {
 	if *socket == "" {
 		*socket = filepath.Join(*root, "docker.sock")
 	}
-	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress}
+	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress, LiveRestore: *liveRestore}
 	if err := run(cfg, *socket, *withBuildKit); err != nil {
 		log.Fatal(err)
 	}
@@ -89,7 +90,11 @@ func run(cfg engine.Config, socket string, withBuildKit bool) error {
 	select {
 	case err = <-served:
 	case sig := <-sigs:
-		log.Printf("%s: stopping containers", sig)
+		if cfg.LiveRestore {
+			log.Printf("%s: leaving containers running", sig)
+		} else {
+			log.Printf("%s: stopping containers", sig)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		srv.Shutdown(ctx)
 		cancel()

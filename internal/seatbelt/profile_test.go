@@ -71,7 +71,7 @@ func TestReadOnlyVolumeIsNotWritable(t *testing.T) {
 func TestStateRootDeniedThenRootReallowed(t *testing.T) {
 	p, _ := Render(spec())
 	deny := strings.Index(p, `(deny file-read*`)
-	allow := strings.Index(p, `(allow file-read*`)
+	allow := deny + strings.Index(p[deny:], `(allow file-read*`)
 	if deny < 0 || allow < deny {
 		t.Fatalf("read allowance must follow the denial so it wins")
 	}

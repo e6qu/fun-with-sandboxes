@@ -14,35 +14,22 @@ var defaultCapabilities = []string{
 	"NET_RAW", "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_CHROOT",
 }
 
-// heldCapabilities are the default capabilities a container here exercises
-// a real power through: NET_RAW, the ICMP datagram sockets an unprivileged
-// macOS process may open. The others grant powers over other users' files
-// and processes, devices, or identity, none of which a container running as
-// the engine's own unprivileged user holds, so dropping them changes
-// nothing that is not already so.
-var heldCapabilities = map[string]bool{"NET_RAW": true}
-
-// security is what a container's capabilities and security options allow.
-type security struct {
-	// ICMP is whether the container may open ICMP datagram sockets.
-	ICMP bool
-	// NoNewPrivileges records the option; it holds for every container, as
-	// none can run a program outside its root but the system shells, and
-	// unpacking strips set-user-ID bits.
-	NoNewPrivileges bool
-}
+// No default capability grants a container here a power to give up: they
+// grant powers over other users' files and processes, devices or identity,
+// which a container running as the engine's unprivileged user does not
+// hold, and NET_RAW's ICMP reaches nothing, as Seatbelt holds a container's
+// traffic to its stack's TCP and UDP ports. Dropping any of them changes
+// nothing that is not already so. no-new-privileges holds for every
+// container: none can run a program outside its root but the system shells,
+// and unpacking strips set-user-ID bits.
 
 func capName(c string) string {
 	return strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(c)), "CAP_")
 }
 
-// containerSecurity resolves capabilities and security options as Docker
-// does, from the default set, refusing what needs root or a Linux kernel.
-func containerSecurity(hc *container.HostConfig) (security, error) {
-	set := map[string]bool{}
-	for _, c := range defaultCapabilities {
-		set[c] = true
-	}
+// checkSecurity accepts capabilities and security options as Docker does,
+// refusing what needs root or a Linux kernel.
+func checkSecurity(hc *container.HostConfig) error {
 	known := map[string]bool{}
 	for _, c := range defaultCapabilities {
 		known[c] = true
@@ -50,41 +37,34 @@ func containerSecurity(hc *container.HostConfig) (security, error) {
 	for _, c := range hc.CapDrop {
 		n := capName(c)
 		switch {
-		case n == "ALL":
-			set = map[string]bool{}
-		case known[n] || isLinuxCapability(n):
-			delete(set, n)
+		case n == "ALL", known[n], isLinuxCapability(n):
 		default:
-			return security{}, invalid("unknown capability to drop: %q", c)
+			return invalid("unknown capability to drop: %q", c)
 		}
 	}
 	for _, c := range hc.CapAdd {
 		n := capName(c)
 		switch {
 		case known[n]:
-			set[n] = true
 		case n == "ALL" || isLinuxCapability(n):
-			return security{}, unsupported("capability %s is not supported: it needs root, which this engine runs without", n)
+			return unsupported("capability %s is not supported: it needs root, which this engine runs without", n)
 		default:
-			return security{}, invalid("unknown capability to add: %q", c)
+			return invalid("unknown capability to add: %q", c)
 		}
 	}
-	s := security{ICMP: set["NET_RAW"]}
 	for _, o := range hc.SecurityOpt {
 		k, v, _ := strings.Cut(strings.Replace(o, ":", "=", 1), "=")
 		switch {
-		case k == "no-new-privileges" && (v == "" || v == "true"):
-			s.NoNewPrivileges = true
-		case k == "no-new-privileges" && v == "false":
+		case k == "no-new-privileges" && (v == "" || v == "true" || v == "false"):
 		case (k == "seccomp" || k == "apparmor") && v == "unconfined", k == "label" && v == "disable":
 			// Linux confinement this engine never applies.
 		case k == "seccomp" || k == "apparmor" || k == "label":
-			return security{}, unsupported("security option %q is not supported: Seatbelt confines containers here", o)
+			return unsupported("security option %q is not supported: Seatbelt confines containers here", o)
 		default:
-			return security{}, invalid("invalid --security-opt: %q", o)
+			return invalid("invalid --security-opt: %q", o)
 		}
 	}
-	return s, nil
+	return nil
 }
 
 // linuxCapabilities are capability names beyond Docker's default set.

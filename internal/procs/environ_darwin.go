@@ -28,3 +28,21 @@ func Environ(pid int) ([]string, error) {
 	}
 	return parseProcargs(b)
 }
+
+// Own lists the user's processes from one kern.proc.uid sysctl, without
+// starting ps.
+func Own() ([]Entry, error) {
+	kps, err := unix.SysctlKinfoProcSlice("kern.proc.uid", os.Getuid())
+	if err != nil {
+		return nil, fmt.Errorf("procs: list processes: %w", err)
+	}
+	out := make([]Entry, 0, len(kps))
+	for _, kp := range kps {
+		st := kp.Proc.P_starttime
+		out = append(out, Entry{
+			PID: int(kp.Proc.P_pid), PPID: int(kp.Eproc.Ppid), PGID: int(kp.Eproc.Pgid),
+			Start: st.Sec*1e6 + int64(st.Usec),
+		})
+	}
+	return out, nil
+}

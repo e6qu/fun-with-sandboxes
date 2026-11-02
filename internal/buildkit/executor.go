@@ -299,7 +299,7 @@ func (x *seatbeltExecutor) exec(ctx context.Context, r *run, process executor.Pr
 	if len(meta.Args) == 0 {
 		return errors.New("no command specified")
 	}
-	spec := seatbelt.Spec{Root: r.root, StateRoot: x.opt.StateRoot, Volumes: r.volumes, IPCPrefix: seatbelt.IPCPrefixFor(r.root), ICMP: true}
+	spec := seatbelt.Spec{Root: r.root, StateRoot: x.opt.StateRoot, Volumes: r.volumes, IPCPrefix: seatbelt.IPCPrefixFor(r.root)}
 	if r.proxy != 0 {
 		spec.ConnectPorts = []int{r.proxy}
 	}

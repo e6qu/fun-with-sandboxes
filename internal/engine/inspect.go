@@ -32,9 +32,9 @@ func (e *Engine) Inspect(ref string) (container.InspectResponse, error) {
 		args = []string{}
 	}
 	st := &container.State{
-		Status: c.stateName(), Running: r.State.Status == container.StateRunning, Paused: c.paused,
+		Status: c.stateName(), Running: r.State.Status == container.StateRunning, Paused: c.rec.State.Paused,
 		Restarting: r.State.Status == container.StateRestarting, Dead: r.State.Status == container.StateDead,
-		Pid: r.State.Pid, ExitCode: r.State.ExitCode, Error: r.State.Error,
+		Pid: r.State.Pid, ExitCode: r.State.ExitCode, Error: r.State.Error, OOMKilled: r.State.OOMKilled,
 		StartedAt: timeString(r.State.StartedAt), FinishedAt: timeString(r.State.FinishedAt),
 	}
 	if c.health != nil {
@@ -125,7 +125,7 @@ func (c *Container) status() string {
 				h = " (" + string(c.health.Status) + ")"
 			}
 		}
-		if c.paused {
+		if c.rec.State.Paused {
 			h = " (Paused)"
 		}
 		return "Up " + humanDuration(time.Since(s.StartedAt)) + h

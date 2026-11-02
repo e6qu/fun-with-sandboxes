@@ -51,7 +51,7 @@ func TestExitWithLingeringChild(t *testing.T) {
 	var out syncBuffer
 	p, err := Start(Spec{
 		Root: root, Argv: []string{"/forker"}, Env: []string{"PATH=" + root},
-		Profile: seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root), ICMP: true}, ProfilePath: filepath.Join(state, "profile.sb"),
+		Profile: seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)}, ProfilePath: filepath.Join(state, "profile.sb"),
 		Stdout: &out, Stderr: &out,
 	})
 	if err != nil {
@@ -127,14 +127,16 @@ func runToEnd(t *testing.T, s Spec) *Process {
 func TestLimitsApply(t *testing.T) {
 	s, out := limitsSpec(t)
 	s.Limits = Limits{
-		Rlimits:  []Rlimit{{Resource: RlimitNofile, Cur: 64, Max: 128}},
+		// Go programs raise their soft descriptor limit to the hard one as
+		// they start, so the probe sees the soft limit only when both match.
+		Rlimits:  []Rlimit{{Resource: RlimitNofile, Cur: 64, Max: 64}},
 		Nice:     7,
 		IOPolicy: libsystem.IOPolicyThrottle,
 	}
 	if p := runToEnd(t, s); p.ExitCode() != 0 {
 		t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
 	}
-	want := fmt.Sprintf("nofile=64/128 nice=7 iopolicy=%d tty=false", libsystem.IOPolicyThrottle)
+	want := fmt.Sprintf("nofile=64/64 nice=7 iopolicy=%d tty=false", libsystem.IOPolicyThrottle)
 	if got := strings.TrimSpace(out.String()); got != want {
 		t.Fatalf("limits %q, want %q", got, want)
 	}

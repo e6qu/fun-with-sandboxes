@@ -107,9 +107,13 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	if wd == "" {
 		wd = c.rec.Config.WorkingDir
 	}
+	limits, _, err := containerLimits(c.rec.HostConfig.Resources)
+	if err != nil {
+		return err
+	}
 	rs := runtime.Spec{
 		Root: c.root(), Argv: x.cfg.Cmd, Env: e.environment(c, x.cfg.Env), WorkDir: wd,
-		Profile: spec, ProfilePath: c.dir + "/exec-" + id[:12] + ".sb",
+		Profile: spec, ProfilePath: c.dir + "/exec-" + id[:12] + ".sb", Limits: limits,
 	}
 	defer os.Remove(rs.ProfilePath)
 	var master, slave *os.File
@@ -150,6 +154,13 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	x.mu.Lock()
 	x.running, x.pid, x.master = true, proc.Pid(), master
 	x.mu.Unlock()
+	// The exec counts against the container's limits from its start.
+	c.mu.Lock()
+	task := c.task
+	c.mu.Unlock()
+	if task != nil {
+		task.Track()
+	}
 	e.publishContainer(c, events.ActionExecStart, map[string]string{"execID": id})
 
 	var copied sync.WaitGroup
@@ -213,11 +224,12 @@ func (e *Engine) Resize(ref string, h, w uint16) error {
 		return err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.ptyMaster == nil {
+	task := c.task
+	c.mu.Unlock()
+	if task == nil || !c.rec.Config.Tty {
 		return conflict("container %s is not running with a TTY", c.rec.ID)
 	}
-	return pty.Setsize(c.ptyMaster, &pty.Winsize{Rows: h, Cols: w})
+	return task.Resize(h, w)
 }
 
 // probe runs a health check command and returns its exit code and output.
@@ -226,10 +238,15 @@ func (e *Engine) probe(c *Container, argv []string, timeout time.Duration) (int,
 	if err != nil {
 		return -1, err.Error()
 	}
+	limits, _, err := containerLimits(c.rec.HostConfig.Resources)
+	if err != nil {
+		return -1, err.Error()
+	}
 	var out limitedBuffer
 	rs := runtime.Spec{
 		Root: c.root(), Argv: argv, Env: e.environment(c, nil), WorkDir: c.rec.Config.WorkingDir,
 		Profile: spec, ProfilePath: c.dir + "/health-" + newID()[:12] + ".sb", Stdout: &out, Stderr: &out,
+		Limits: limits,
 	}
 	defer os.Remove(rs.ProfilePath)
 	proc, err := runtime.Start(rs)

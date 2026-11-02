@@ -87,8 +87,6 @@ type Spec struct {
 	// IPCPrefix is the name prefix POSIX IPC objects must carry under
 	// IPCPrivate.
 	IPCPrefix string
-	// ICMP allows ICMP datagram sockets, which Docker's NET_RAW grants.
-	ICMP bool
 }
 
 // IPCMode is a container's IPC confinement.
@@ -182,7 +180,9 @@ func Render(s Spec) (string, error) {
 	w("  (regex #\"^/dev/fd/\")")
 	w("  (regex #\"^/dev/ttys[0-9]+$\"))")
 
-	w("(allow file-read-data file-read-metadata file-read-xattr)")
+	// A rule without a filter outranks every filtered rule of its
+	// operation, wherever it stands, so the broad allowance names a subpath.
+	w("(allow file-read* (subpath \"/\"))")
 	w("(deny file-read*")
 	for _, d := range append(append([]string{}, DeniedReadRoots...), s.StateRoot) {
 		w("  (subpath %q)", d)
@@ -257,12 +257,6 @@ func Render(s Spec) (string, error) {
 		w("(allow ipc-posix-shm* ipc-posix-sem* (ipc-posix-name-prefix %q) (ipc-posix-name-prefix %q))", s.IPCPrefix, "/"+s.IPCPrefix)
 	case IPCNone:
 		w("(deny ipc-posix-shm* ipc-posix-sem* ipc-sysv*)")
-	}
-	if !s.ICMP {
-		// ICMP datagram sockets, IPv4's and IPv6's: what NET_RAW grants an
-		// unprivileged macOS process.
-		w("(deny system-socket (require-all (socket-domain 2) (socket-protocol 1)))")
-		w("(deny system-socket (require-all (socket-domain 30) (socket-protocol 58)))")
 	}
 
 	w("(deny signal)")

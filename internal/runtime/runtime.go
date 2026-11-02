@@ -31,12 +31,12 @@ type Spec struct {
 	// sandbox-exec, outside the container root.
 	Profile     seatbelt.Spec
 	ProfilePath string
-	Stdin       io.Reader
-	Stdout      io.Writer
-	Stderr      io.Writer
+	Stdin       io.Reader `json:"-"`
+	Stdout      io.Writer `json:"-"`
+	Stderr      io.Writer `json:"-"`
 	// TTY, when set, is the pty slave that becomes the process's controlling
 	// terminal and all three standard streams.
-	TTY *os.File
+	TTY *os.File `json:"-"`
 	// Limits apply to the process and everything it starts.
 	Limits Limits
 }

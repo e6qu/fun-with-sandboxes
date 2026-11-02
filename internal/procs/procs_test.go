@@ -141,3 +141,19 @@ func TestTopArgsSelectTheContainersProcesses(t *testing.T) {
 		}
 	}
 }
+
+func TestOwnListsThisProcess(t *testing.T) {
+	es, err := Own()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range es {
+		if e.PID == os.Getpid() {
+			if e.PPID != os.Getppid() || e.PGID != syscall.Getpgrp() || e.Start == 0 {
+				t.Fatalf("this process listed as %+v; want ppid %d, pgid %d and a start time", e, os.Getppid(), syscall.Getpgrp())
+			}
+			return
+		}
+	}
+	t.Fatal("Own does not list this process")
+}

@@ -46,3 +46,33 @@ func Environ(pid int) ([]string, error) {
 	}
 	return env, nil
 }
+
+// Own lists the user's processes from /proc.
+func Own() ([]Entry, error) {
+	pids, err := ownPIDs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Entry, 0, len(pids))
+	for _, pid := range pids {
+		b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		if err != nil {
+			continue
+		}
+		// The command, in parentheses, may hold spaces; the fields after
+		// it are state, ppid, pgrp and, nineteenth, the start time.
+		i := bytes.LastIndexByte(b, ')')
+		if i < 0 {
+			continue
+		}
+		f := bytes.Fields(b[i+1:])
+		if len(f) < 20 {
+			continue
+		}
+		ppid, _ := strconv.Atoi(string(f[1]))
+		pgid, _ := strconv.Atoi(string(f[2]))
+		start, _ := strconv.ParseInt(string(f[19]), 10, 64)
+		out = append(out, Entry{PID: pid, PPID: ppid, PGID: pgid, Start: start})
+	}
+	return out, nil
+}

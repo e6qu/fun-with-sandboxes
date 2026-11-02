@@ -1,4 +1,4 @@
-package engine
+package portproxy
 
 import (
 	"errors"
@@ -9,8 +9,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/moby/moby/api/types/network"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
 )
@@ -54,7 +52,8 @@ func exchange(t *testing.T, c net.Conn, msg string) string {
 // to the client that sent the request.
 func TestUDPProxyKeepsAFlowPerClient(t *testing.T) {
 	upstream := udpEcho(t, "echo:")
-	a0, err := alloc.Open(alloc.Config{Root: t.TempDir(), PortBase: 43000, PortLimit: 43100, BlockSize: 20})
+	root := t.TempDir()
+	a0, err := alloc.Open(alloc.Config{Root: root, PortBase: 43000, PortLimit: 43100, BlockSize: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,17 +63,17 @@ func TestUDPProxyKeepsAFlowPerClient(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var leased []int
-	lease := func() (int, func(), error) {
-		port, err := a0.Lease("udp")
+	dial := func(raddr *net.UDPAddr) (net.Conn, error) {
+		c, err := alloc.DialFlow(root, "udp", raddr)
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		mu.Lock()
-		leased = append(leased, port)
+		leased = append(leased, c.LocalAddr().(*net.UDPAddr).Port)
 		mu.Unlock()
-		return port, func() { a0.Unlease("udp", port) }, nil
+		return c, nil
 	}
-	cl, port, err := listenRange(network.UDP, netip.MustParseAddr("127.0.0.1"), 0, 0, upstream, lease)
+	cl, port, err := Listen("udp", netip.MustParseAddr("127.0.0.1"), 0, 0, upstream, dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +119,7 @@ func TestListenRangeTakesTheFirstFreePort(t *testing.T) {
 	defer held.Close()
 	lo := held.Addr().(*net.TCPAddr).Port
 	ip := netip.MustParseAddr("127.0.0.1")
-	cl, port, err := listenRange(network.TCP, ip, lo, lo+5, "127.0.0.1:1", nil)
+	cl, port, err := Listen("tcp", ip, lo, lo+5, "127.0.0.1:1", nil)
 	if err != nil {
 		t.Fatalf("binding %d-%d with %d taken: %v", lo, lo+5, lo, err)
 	}
@@ -128,21 +127,21 @@ func TestListenRangeTakesTheFirstFreePort(t *testing.T) {
 	if port <= lo || port > lo+5 {
 		t.Fatalf("bound %d, want a port in %d-%d other than %d", port, lo+1, lo+5, lo)
 	}
-	if _, _, err := listenRange(network.TCP, ip, lo, lo, "127.0.0.1:1", nil); !errors.Is(err, syscall.EADDRINUSE) {
+	if _, _, err := Listen("tcp", ip, lo, lo, "127.0.0.1:1", nil); !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("binding a fully taken range: %v", err)
 	}
 }
 
 func TestHostPortRange(t *testing.T) {
 	for in, want := range map[string][2]int{"": {0, 0}, "8080": {8080, 8080}, "8000-8010": {8000, 8010}} {
-		lo, hi, err := hostPortRange(in)
+		lo, hi, err := HostPortRange(in)
 		if err != nil || lo != want[0] || hi != want[1] {
-			t.Errorf("hostPortRange(%q) = %d, %d, %v", in, lo, hi, err)
+			t.Errorf("HostPortRange(%q) = %d, %d, %v", in, lo, hi, err)
 		}
 	}
 	for _, bad := range []string{"x", "9-1", "70000"} {
-		if _, _, err := hostPortRange(bad); err == nil {
-			t.Errorf("hostPortRange(%q) accepted it", bad)
+		if _, _, err := HostPortRange(bad); err == nil {
+			t.Errorf("HostPortRange(%q) accepted it", bad)
 		}
 	}
 }
