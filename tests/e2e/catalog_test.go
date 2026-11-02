@@ -103,9 +103,8 @@ func TestMariaDB(t *testing.T) {
 	}
 
 	// The data outlives a restart, which skips initialisation.
-	since = time.Now()
 	mustDocker(t, "restart", name)
-	waitHealthy(t, name, since)
+	waitHealthy(t, name, startedAt(t, name))
 	addr = strings.TrimSpace(mustDocker(t, "port", name, "3306"))
 	again := open("app:apppw@tcp(" + addr + ")/app")
 	defer again.Close()

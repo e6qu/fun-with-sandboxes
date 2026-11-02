@@ -198,8 +198,10 @@ func waitHealthy(t *testing.T, name string, since time.Time) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
+	// A container that exits will never become healthy: its die event ends
+	// the wait.
 	cmd := exec.CommandContext(ctx, "docker", "events", "--since", since.Format(time.RFC3339Nano),
-		"--filter", "container="+name, "--filter", "event=health_status", "--format", "{{.Action}}")
+		"--filter", "container="+name, "--filter", "event=health_status", "--filter", "event=die", "--format", "{{.Action}}")
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -212,14 +214,33 @@ func waitHealthy(t *testing.T, name string, since time.Time) {
 		cmd.Wait()
 	}()
 	sc := bufio.NewScanner(out)
+	why := "the wait timed out"
 	for sc.Scan() {
-		if strings.TrimSpace(sc.Text()) == "health_status: healthy" {
+		ev := strings.TrimSpace(sc.Text())
+		if ev == "health_status: healthy" {
 			return
 		}
+		if ev == "die" {
+			why = "the container exited"
+			break
+		}
 	}
-	logs, _ := docker(t, "logs", "--tail", "60", name)
+	// docker logs writes the container's standard error to its own.
+	logs := exec.Command("docker", "logs", "--tail", "80", name)
+	text, _ := logs.CombinedOutput()
 	health, _ := docker(t, "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}} {{json .State.Health}}", name)
-	t.Fatalf("%s never reported healthy: %v\nstate: %s\nlogs:\n%s", name, ctx.Err(), health, logs)
+	t.Fatalf("%s never reported healthy: %s\nstate: %s\nlogs:\n%s", name, why, health, text)
+}
+
+// startedAt is when the container last started, from which its events are
+// those of its current run.
+func startedAt(t *testing.T, name string) time.Time {
+	t.Helper()
+	at, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.StartedAt}}", name)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return at
 }
 
 func TestPauseUnpauseUpdate(t *testing.T) {
