@@ -17,6 +17,10 @@ func TestExecSignalsTheContainersProcesses(t *testing.T) {
 	if out, err := docker(t, "exec", name, "/toolbox", "signal", pid); err != nil {
 		t.Errorf("an exec could not signal its container's process %s: %v\n%s", pid, err, out)
 	}
+	// The main process is the container's pid 1.
+	if out, err := docker(t, "exec", name, "/toolbox", "signal", "1"); err != nil {
+		t.Errorf("an exec could not signal pid 1: %v\n%s", err, out)
+	}
 	if _, err := docker(t, "run", "--rm", "fws/toolbox:1", "signal", pid); err == nil {
 		t.Errorf("another container signalled process %s", pid)
 	}
@@ -39,14 +43,18 @@ func TestPsListsTheContainersProcesses(t *testing.T) {
 		pid, comm, _ := strings.Cut(line, " ")
 		listed[pid] = comm
 	}
-	if _, ok := listed[pidA]; !ok {
-		t.Errorf("the container's main process %s is not listed:\n%s", pidA, out)
+	// The main process is listed as pid 1, not by its host pid.
+	if _, ok := listed["1"]; !ok {
+		t.Errorf("the container's main process is not listed as pid 1:\n%s", out)
+	}
+	if _, ok := listed[pidA]; ok {
+		t.Errorf("the container's main process is listed by its host pid %s:\n%s", pidA, out)
 	}
 	if len(listed) != 2 {
 		t.Errorf("want the main process and the exec alone:\n%s", out)
 	}
 	for pid, comm := range listed {
-		if pid == pidB || pid == "1" || strings.HasPrefix(comm, "fws") {
+		if pid == pidB || (pid == "1" && comm != "toolbox") || strings.HasPrefix(comm, "fws") {
 			t.Errorf("listed %s %s, which is not the container's:\n%s", pid, comm, out)
 		}
 	}

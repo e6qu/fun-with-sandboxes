@@ -67,13 +67,18 @@ machine — and from what macOS offers an unprivileged process under them.
 - **Not a security boundary against hostile code.** Containers run as the
   engine's user. Seatbelt confines them well enough to keep stacks apart and
   the host's data out of reach, but it is a development and test tool.
-- **Process listings are presented, and pids are the host's.** There is no
-  unprivileged PID namespace. Through the container library, a container's
-  process listings (`sysctl`'s process table, libproc's pid lists) hold
-  its own processes alone, its execs among them, and Seatbelt denies
-  signalling or inspecting any other. But its processes keep their host
-  pids, its main process is not pid 1, and a program that loads no
-  library, as Apple's `ps` does not, lists every process of the user.
+- **Processes are presented, with host pids but pid 1's.** There is no
+  unprivileged PID namespace. Through the container library:
+  - a container's process listings (`sysctl`'s process table, libproc's
+    pid lists) hold its own processes alone, its execs among them;
+  - its main process is pid 1, to `getpid`, `getppid`, `kill`, process
+    groups and sessions, `proc_pidinfo` and the process table, so
+    `docker exec x kill -HUP 1` reaches it;
+  - and Seatbelt denies signalling or inspecting any other process.
+
+  Every other process keeps its host pid, and a program that loads no
+  library, as Apple's `ps` does not, sees host pids and lists every
+  process of the user.
 - **System V IPC keys are presented, not confined.** POSIX shared memory
   and semaphore names are confined to a per-container prefix
   (`SANDBOX_IPC_PREFIX`) under the default private IPC mode, and

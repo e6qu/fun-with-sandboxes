@@ -351,3 +351,24 @@ func TestSystemVKeysPerContainer(t *testing.T) {
 		t.Errorf("the first container again: %q, want its own objects found existing", got)
 	}
 }
+
+// The container's main process is its pid 1.
+func TestMainProcessIsPidOne(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "init")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/init/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin)
+	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	if want := "pid=1 ppid=0\nchild-ppid=1 kill1=0\ntable1=1\n"; string(out) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
