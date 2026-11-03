@@ -190,6 +190,16 @@ same knobs, each enforced by a real mechanism or refused:
   dual-stack wildcard, gets an IPv4 socket with its settings in the same
   descriptor, whose addresses read as IPv4-mapped IPv6 ones, because
   Seatbelt matches `127.0.0.1` and `::1` but not `::ffff:127.0.0.1`.
+  Each member of a stack has a member address in `127.88.0.0/16`, assigned
+  as it is created and kept in its record. The engine keeps a network file
+  per stack, rewritten as members come, go, are renamed or change networks,
+  of each member's address, the names it answers to (its container name,
+  service, hostname, DNS names and aliases) and its ports' host ports; the
+  container reads it (`FWS_NETWORK`) and nothing else of the engine's
+  state. The library resolves those names in `getaddrinfo` and
+  `gethostbyname`, connects to a member's address through the host port
+  behind its port, refuses a port the member does not expose, and reports
+  a peer's host port as its member address and port.
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would

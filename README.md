@@ -106,7 +106,7 @@ the engine also tells the container where its things are:
 | `SANDBOX_ROOT` | the container's root directory on the host; image paths live under it |
 | `SANDBOX_PORT_<n>` | the loopback host port to listen on for container port `<n>` |
 | `SANDBOX_<SERVICE>_PORT_<n>` | the host port of stack peer `<service>`'s port `<n>` |
-| `SANDBOX_<SERVICE>_HOST` | the host to reach that peer on (`127.0.0.1`) |
+| `SANDBOX_<SERVICE>_HOST` | the host to reach that peer on (`127.0.0.1`); through the container library a peer is reachable by name too |
 | `SANDBOX_STACK` | the stack (Compose project) name |
 | `SANDBOX_IPC_PREFIX` | the prefix POSIX shared memory and semaphore names start with under private IPC, which the container library adds |
 

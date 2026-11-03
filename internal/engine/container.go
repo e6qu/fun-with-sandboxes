@@ -89,6 +89,9 @@ type record struct {
 	Ports map[string]int `json:"ports"`
 	// Published holds the host ports bound for the current run.
 	Published network.PortMap `json:"published"`
+	// Address is the container's member address in its stack, which the
+	// container library presents its stack peers at.
+	Address string     `json:"address,omitempty"`
 	Mounts    []mountRec      `json:"mounts"`
 	State     stateRec        `json:"state"`
 }
@@ -184,6 +187,27 @@ func (e *Engine) loadContainers() error {
 			return err
 		}
 		e.containers[c.rec.ID] = c
+	}
+	// Containers an engine made before member addresses existed get them.
+	stacks := map[string]bool{}
+	for _, c := range e.containers {
+		stacks[c.rec.Stack] = true
+		if c.rec.Address != "" {
+			continue
+		}
+		a, err := e.assignAddressLocked(c.rec.Stack)
+		if err != nil {
+			return err
+		}
+		c.rec.Address = a
+		if err := c.save(); err != nil {
+			return err
+		}
+	}
+	for s := range stacks {
+		if err := e.writeNetworkLocked(s); err != nil {
+			return err
+		}
 	}
 	for _, c := range restart {
 		if err := c.start(e); err != nil {
@@ -334,11 +358,16 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if hc.RestartPolicy.Name == "" {
 		hc.RestartPolicy.Name = container.RestartPolicyDisabled
 	}
+	address, err := e.assignAddressLocked(stack)
+	if err != nil {
+		return container.CreateResponse{}, err
+	}
 	c.rec = record{
 		ID: id, Name: name, Created: time.Now().UTC(),
 		Image: req.Config.Image, ImageID: img.ID,
 		Config: cfg, HostConfig: hc, Networks: networks,
 		Stack: stack, Service: service, Ports: ports, Mounts: mounts,
+		Address: address,
 		State: stateRec{Status: container.StateCreated},
 	}
 	if err := c.save(); err != nil {
@@ -348,6 +377,10 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		return container.CreateResponse{}, fmt.Errorf("record the initial root: %w", err)
 	}
 	e.containers[id] = c
+	if err := e.writeNetworkLocked(stack); err != nil {
+		delete(e.containers, id)
+		return container.CreateResponse{}, err
+	}
 	ok = true
 	e.publishContainer(c, events.ActionCreate, nil)
 	return container.CreateResponse{ID: id, Warnings: []string{}}, nil
@@ -393,6 +426,13 @@ func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string
 	}
 	if pv != "" {
 		env = append(env, pv)
+	}
+	if onNetwork(c) && c.rec.Address != "" {
+		nf, err := e.networkFile(c.rec.Stack)
+		if err != nil {
+			return nil, err
+		}
+		env = append(env, pathmap.NetworkVar+"="+nf, pathmap.AddressVar+"="+c.rec.Address)
 	}
 	return env, nil
 }
@@ -997,6 +1037,11 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	if c.rec.HostConfig.NetworkMode == "none" {
 		return spec, nil
 	}
+	nf, err := e.networkFile(c.rec.Stack)
+	if err != nil {
+		return seatbelt.Spec{}, err
+	}
+	spec.ReadFiles = []string{nf}
 	for _, p := range sortedKeys(c.rec.Ports) {
 		spec.BindPorts = append(spec.BindPorts, c.rec.Ports[p])
 	}
@@ -1443,6 +1488,9 @@ func (e *Engine) Rename(ref, name string) error {
 	}
 	err = c.save()
 	c.mu.Unlock()
+	if err == nil {
+		err = e.writeNetworkLocked(c.rec.Stack)
+	}
 	e.publishContainer(c, events.ActionRename, map[string]string{"oldName": "/" + old})
 	return err
 }
@@ -1483,6 +1531,9 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 		return nil
 	}
 	delete(e.containers, c.rec.ID)
+	if err := e.writeNetworkLocked(c.rec.Stack); err != nil {
+		return err
+	}
 	for id, x := range e.execs {
 		if x.containerID == c.rec.ID {
 			delete(e.execs, id)

@@ -46,6 +46,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <netdb.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/xattr.h>
@@ -172,10 +173,60 @@ static void parse_ports(const char *v) {
     }
 }
 
+// num parses the decimal number at p into v and returns the end, or NULL.
+// The library parses numbers itself where libSystem may hold the locale's
+// lock.
+static const char *num(const char *p, unsigned long *v) {
+    if (*p < '0' || *p > '9') {
+        return NULL;
+    }
+    unsigned long n = 0;
+    while (*p >= '0' && *p <= '9') {
+        n = n * 10 + (unsigned long)(*p++ - '0');
+        if (n > 0xffffffffUL) return NULL;
+    }
+    *v = n;
+    return p;
+}
+
+static int parse_v4(const char *p, const char **end, in_addr_t *out) {
+    uint32_t v = 0;
+    for (int i = 0; i < 4; i++) {
+        unsigned long n;
+        if (!(p = num(p, &n)) || n > 255) return 0;
+        v = v << 8 | (uint32_t)n;
+        if (i < 3) {
+            if (*p != '.') return 0;
+            p++;
+        }
+    }
+    *end = p;
+    *out = htonl(v);
+    return 1;
+}
+
+// The stack's members (FWS_NETWORK): a file the engine rewrites as members
+// come and go, of a line per member holding its address, the names it
+// answers to, and its ports as FWS_PORTS lists them, tab-separated. Its
+// addresses lie in 127.88.0.0/16, which the kernel never sees: the library
+// reaches a member's ports through their host ports.
+static char network_path[PATH_MAX];
+static in_addr_t own_address;
+
+static void parse_network(const char *path, const char *address) {
+    const char *end;
+    if (path && path[0] == '/' && strlen(path) < sizeof network_path) {
+        strcpy(network_path, path);
+    }
+    if (address && !(parse_v4(address, &end, &own_address) && !*end)) {
+        own_address = 0;
+    }
+}
+
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
 __attribute__((constructor)) static void fwsroot_init(void) {
@@ -195,6 +246,7 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     }
     parse_mounts(getenv("FWS_MOUNTS"));
     parse_ports(getenv("FWS_PORTS"));
+    parse_network(getenv("FWS_NETWORK"), getenv("FWS_ADDRESS"));
     const char *r = getenv("SANDBOX_ROOT");
     if (r && r[0] == '/' && strlen(r) < sizeof root) {
         strcpy(root, r);
@@ -1665,6 +1717,10 @@ INTERPOSE(fws_sem_unlink, sem_unlink);
 //     dual-stack wildcard, becomes an IPv4 socket in the same descriptor,
 //     whose addresses the program sees as IPv4-mapped IPv6 ones.
 
+static int member_block(in_addr_t a);
+static unsigned short member_host_port(in_addr_t addr, int type, unsigned short cport, int *member);
+static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, unsigned short *cport);
+
 static unsigned short host_port(int type, unsigned short cport) {
     for (size_t i = 0; i < nport_maps; i++) {
         if (port_maps[i].type == type && port_maps[i].cport == cport) return port_maps[i].hport;
@@ -1773,12 +1829,14 @@ static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t
     int type = sock_type(fd);
     if (sa->sa_family == AF_INET && *len >= (socklen_t)sizeof(struct sockaddr_in)) {
         const struct sockaddr_in *a = (const void *)sa;
-        if (!v4_local(a->sin_addr.s_addr)) {
+        // The container's own member address is one of loopback's.
+        in_addr_t at = own_address && a->sin_addr.s_addr == own_address ? htonl(INADDR_LOOPBACK) : a->sin_addr.s_addr;
+        if (!v4_local(at)) {
             return sa;
         }
         unsigned short port = ntohs(a->sin_port), h = host_port(type, port);
-        *any = a->sin_addr.s_addr == htonl(INADDR_ANY);
-        struct sockaddr_in b = v4_addr(*any ? htonl(INADDR_LOOPBACK) : a->sin_addr.s_addr, h ? h : port);
+        *any = at == htonl(INADDR_ANY);
+        struct sockaddr_in b = v4_addr(*any ? htonl(INADDR_LOOPBACK) : at, h ? h : port);
         memcpy(out, &b, sizeof b);
         *len = sizeof b;
         return (const struct sockaddr *)out;
@@ -1792,6 +1850,7 @@ static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t
         getsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, &n);
         if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr) || (wild && !v6only)) {
             in_addr_t v4 = wild ? htonl(INADDR_ANY) : mapped_v4(&a->sin6_addr);
+            if (own_address && v4 == own_address) v4 = htonl(INADDR_LOOPBACK);
             if (!v4_local(v4) || to_ipv4(fd, type) == -1) {
                 return sa;
             }
@@ -1816,7 +1875,7 @@ static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t
 
 // remote returns the address a connection or datagram to sa reaches, in
 // out, converting fd first where an IPv4 address goes through an IPv6
-// socket.
+// socket, or NULL with errno set where nothing listens.
 static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out) {
     if (!sa) {
         return sa;
@@ -1854,6 +1913,20 @@ static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_
     } else {
         return sa;
     }
+    if (member_block(v4)) {
+        // A member's port is its host port; one it does not expose is
+        // closed, and an address no member holds is unreachable.
+        int member;
+        unsigned short mh = member_host_port(v4, type, port, &member);
+        if (!mh) {
+            errno = member ? ECONNREFUSED : EHOSTUNREACH;
+            return NULL;
+        }
+        struct sockaddr_in b = v4_addr(htonl(INADDR_LOOPBACK), mh);
+        memcpy(out, &b, sizeof b);
+        *len = sizeof b;
+        return (const struct sockaddr *)out;
+    }
     unsigned short h = v4_local(v4) ? host_port(type, port) : 0;
     struct sockaddr_in b = v4_addr(v4 == htonl(INADDR_ANY) ? htonl(INADDR_LOOPBACK) : v4, h ? h : port);
     memcpy(out, &b, sizeof b);
@@ -1877,7 +1950,14 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
     if (k->ss_family == AF_INET) {
         struct sockaddr_in *a = (struct sockaddr_in *)&v;
         unsigned short c = v4_local(a->sin_addr.s_addr) ? container_port(type, ntohs(a->sin_port)) : 0;
-        if (c) a->sin_port = htons(c);
+        in_addr_t ma;
+        if (c) {
+            a->sin_port = htons(c);
+        } else if (!own && a->sin_addr.s_addr == htonl(INADDR_LOOPBACK) && member_of_host_port(type, ntohs(a->sin_port), &ma, &c)) {
+            // A peer's host port is the member's own port at its address.
+            a->sin_addr.s_addr = ma;
+            a->sin_port = htons(c);
+        }
         if (own && (st & NET_ANY)) a->sin_addr.s_addr = htonl(INADDR_ANY);
         if (st & NET_V6) {
             struct sockaddr_in6 b;
@@ -1924,20 +2004,32 @@ INTERPOSE(fws_bind, bind);
 
 static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
     struct sockaddr_storage b;
-    return connect(fd, remote(fd, sa, &len, &b), len);
+    const struct sockaddr *to = remote(fd, sa, &len, &b);
+    if (sa && !to) {
+        return -1;
+    }
+    return connect(fd, to, len);
 }
 INTERPOSE(fws_connect, connect);
 
 extern int connect_nocancel(int, const struct sockaddr *, socklen_t) __asm("_connect$NOCANCEL") __attribute__((weak_import));
 static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len) {
     struct sockaddr_storage b;
-    return connect_nocancel(fd, remote(fd, sa, &len, &b), len);
+    const struct sockaddr *to = remote(fd, sa, &len, &b);
+    if (sa && !to) {
+        return -1;
+    }
+    return connect_nocancel(fd, to, len);
 }
 INTERPOSE(fws_connect_nocancel, connect_nocancel);
 
 static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
     struct sockaddr_storage b;
-    return sendto(fd, buf, n, flags, remote(fd, sa, &len, &b), len);
+    const struct sockaddr *to = remote(fd, sa, &len, &b);
+    if (sa && !to) {
+        return -1;
+    }
+    return sendto(fd, buf, n, flags, to, len);
 }
 INTERPOSE(fws_sendto, sendto);
 
@@ -1949,6 +2041,9 @@ static ssize_t fws_sendmsg(int fd, const struct msghdr *m, int flags) {
     struct sockaddr_storage b;
     socklen_t len = c.msg_namelen;
     c.msg_name = (void *)remote(fd, m->msg_name, &len, &b);
+    if (!c.msg_name) {
+        return -1;
+    }
     c.msg_namelen = len;
     return sendmsg(fd, &c, flags);
 }
@@ -2088,7 +2183,11 @@ INTERPOSE(fws_dup2, dup2);
 extern ssize_t sendto_nocancel(int, const void *, size_t, int, const struct sockaddr *, socklen_t) __asm("_sendto$NOCANCEL") __attribute__((weak_import));
 static ssize_t fws_sendto_nocancel(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
     struct sockaddr_storage b;
-    return sendto_nocancel(fd, buf, n, flags, remote(fd, sa, &len, &b), len);
+    const struct sockaddr *to = remote(fd, sa, &len, &b);
+    if (sa && !to) {
+        return -1;
+    }
+    return sendto_nocancel(fd, buf, n, flags, to, len);
 }
 INTERPOSE(fws_sendto_nocancel, sendto_nocancel);
 
@@ -2101,6 +2200,9 @@ static ssize_t fws_sendmsg_nocancel(int fd, const struct msghdr *m, int flags) {
     struct sockaddr_storage b;
     socklen_t len = c.msg_namelen;
     c.msg_name = (void *)remote(fd, m->msg_name, &len, &b);
+    if (!c.msg_name) {
+        return -1;
+    }
     c.msg_namelen = len;
     return sendmsg_nocancel(fd, &c, flags);
 }
@@ -2162,3 +2264,269 @@ static int fws_accept_nocancel(int fd, struct sockaddr *sa, socklen_t *len) {
     return c;
 }
 INTERPOSE(fws_accept_nocancel, accept_nocancel);
+
+// Members.
+
+static pthread_mutex_t members_lock = PTHREAD_MUTEX_INITIALIZER;
+static char *members;
+static struct stat members_st;
+
+static int member_block(in_addr_t a) { return (ntohl(a) >> 16) == (127u << 8 | 88u); }
+
+// members_text returns the network file's text, read again when it changed;
+// members_lock is held.
+static const char *members_text(void) {
+    struct stat st;
+    if (!network_path[0] || stat(network_path, &st) != 0) {
+        return NULL;
+    }
+    if (members && st.st_ino == members_st.st_ino && st.st_size == members_st.st_size &&
+        st.st_mtimespec.tv_sec == members_st.st_mtimespec.tv_sec && st.st_mtimespec.tv_nsec == members_st.st_mtimespec.tv_nsec) {
+        return members;
+    }
+    int fd = open(network_path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return NULL;
+    }
+    char *b = malloc((size_t)st.st_size + 1);
+    ssize_t n = b ? read(fd, b, (size_t)st.st_size) : -1;
+    close(fd);
+    if (n < 0) {
+        free(b);
+        return NULL;
+    }
+    b[n] = 0;
+    free(members);
+    members = b;
+    members_st = st;
+    return members;
+}
+
+struct member {
+    in_addr_t addr;
+    const char *names, *names_end, *ports, *ports_end;
+};
+
+static const char *next_member(const char *p, struct member *m) {
+    while (p && *p) {
+        const char *nl = strchr(p, '\n');
+        const char *end = nl ? nl : p + strlen(p);
+        const char *t1 = memchr(p, '\t', (size_t)(end - p));
+        const char *t2 = t1 ? memchr(t1 + 1, '\t', (size_t)(end - t1 - 1)) : NULL;
+        const char *after;
+        if (t2 && parse_v4(p, &after, &m->addr) && after == t1) {
+            m->names = t1 + 1;
+            m->names_end = t2;
+            m->ports = t2 + 1;
+            m->ports_end = end;
+            return nl ? nl + 1 : end;
+        }
+        p = nl ? nl + 1 : end;
+    }
+    return NULL;
+}
+
+static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+// answers reports whether a member's space-separated names hold name, as
+// DNS compares names: in any case, and with or without a final dot.
+static int answers(const struct member *m, const char *name) {
+    size_t n = strlen(name);
+    if (n && name[n - 1] == '.') n--;
+    for (const char *p = m->names; p < m->names_end;) {
+        const char *e = memchr(p, ' ', (size_t)(m->names_end - p));
+        if (!e) e = m->names_end;
+        if ((size_t)(e - p) == n) {
+            size_t i = 0;
+            while (i < n && lower(p[i]) == lower(name[i])) i++;
+            if (i == n) return 1;
+        }
+        p = e + 1;
+    }
+    return 0;
+}
+
+// member_ports finds in a member's ports the host port behind container
+// port port, or with reverse set, the container port behind host port port.
+static unsigned short member_ports(const struct member *m, int type, unsigned short port, int reverse) {
+    for (const char *p = m->ports; p < m->ports_end;) {
+        unsigned long c, h;
+        const char *e = num(p, &c);
+        int t = 0;
+        if (e && strncmp(e, "/tcp=", 5) == 0) t = SOCK_STREAM;
+        if (e && strncmp(e, "/udp=", 5) == 0) t = SOCK_DGRAM;
+        if (!t || !(e = num(e + 5, &h))) return 0;
+        if (t == type && (reverse ? h : c) == port) return (unsigned short)(reverse ? c : h);
+        if (*e != ',') return 0;
+        p = e + 1;
+    }
+    return 0;
+}
+
+static int member_address(const char *name, in_addr_t *out) {
+    int found = 0;
+    pthread_mutex_lock(&members_lock);
+    struct member m;
+    for (const char *p = members_text(); (p = next_member(p, &m));) {
+        if (answers(&m, name)) {
+            *out = m.addr;
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&members_lock);
+    return found;
+}
+
+// member_host_port returns the host port behind a member's container port,
+// and whether addr is a member at all.
+static unsigned short member_host_port(in_addr_t addr, int type, unsigned short cport, int *member) {
+    unsigned short h = 0;
+    *member = 0;
+    pthread_mutex_lock(&members_lock);
+    struct member m;
+    for (const char *p = members_text(); (p = next_member(p, &m));) {
+        if (m.addr == addr) {
+            *member = 1;
+            h = member_ports(&m, type, cport, 0);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&members_lock);
+    return h;
+}
+
+static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, unsigned short *cport) {
+    int found = 0;
+    pthread_mutex_lock(&members_lock);
+    struct member m;
+    for (const char *p = members_text(); (p = next_member(p, &m));) {
+        unsigned short c = member_ports(&m, type, hport, 1);
+        if (c) {
+            *addr = m.addr;
+            *cport = c;
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&members_lock);
+    return found;
+}
+
+static struct addrinfo *member_info(in_addr_t a, int family, int type, unsigned short port) {
+    size_t alen = family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+    // freeaddrinfo frees each entry and its canonical name: the address
+    // shares the entry's allocation, as libSystem's own do.
+    struct addrinfo *ai = calloc(1, sizeof *ai + alen);
+    if (!ai) {
+        return NULL;
+    }
+    ai->ai_family = family;
+    ai->ai_socktype = type;
+    ai->ai_protocol = type == SOCK_DGRAM ? IPPROTO_UDP : IPPROTO_TCP;
+    ai->ai_addrlen = (socklen_t)alen;
+    ai->ai_addr = (struct sockaddr *)(ai + 1);
+    if (family == AF_INET) {
+        struct sockaddr_in s = v4_addr(a, 0);
+        s.sin_port = port;
+        memcpy(ai->ai_addr, &s, sizeof s);
+    } else {
+        struct sockaddr_in6 s;
+        memset(&s, 0, sizeof s);
+        s.sin6_len = sizeof s;
+        s.sin6_family = AF_INET6;
+        s.sin6_port = port;
+        s.sin6_addr.s6_addr[10] = 0xff;
+        s.sin6_addr.s6_addr[11] = 0xff;
+        memcpy(&s.sin6_addr.s6_addr[12], &a, 4);
+        memcpy(ai->ai_addr, &s, sizeof s);
+    }
+    return ai;
+}
+
+// A member's name resolves to its member address, as Docker's DNS resolves
+// a container on the network; any other name to what the host resolves.
+static int fws_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
+    int flags = hints ? hints->ai_flags : 0;
+    in_addr_t a;
+    if (!node || (flags & AI_NUMERICHOST) || !member_address(node, &a)) {
+        return getaddrinfo(node, service, hints, res);
+    }
+    int family = hints ? hints->ai_family : AF_UNSPEC;
+    if (family == AF_UNSPEC) {
+        family = AF_INET;
+    } else if (family == AF_INET6) {
+        // Members have IPv4 addresses alone, which an IPv6 caller takes
+        // mapped only when it asks to.
+        if (!(flags & AI_V4MAPPED)) return EAI_NONAME;
+    } else if (family != AF_INET) {
+        return EAI_FAMILY;
+    }
+    unsigned short port = 0;
+    if (service && *service) {
+        unsigned long v;
+        const char *e = num(service, &v);
+        if (e && !*e && v < 65536) {
+            port = htons((unsigned short)v);
+        } else if (flags & AI_NUMERICSERV) {
+            return EAI_NONAME;
+        } else {
+            struct servent *se = getservbyname(service, NULL);
+            if (!se) return EAI_SERVICE;
+            port = (unsigned short)se->s_port;
+        }
+    }
+    int types[2] = {SOCK_STREAM, SOCK_DGRAM}, ntypes = 2;
+    if (hints && hints->ai_socktype) {
+        types[0] = hints->ai_socktype;
+        ntypes = 1;
+    }
+    struct addrinfo *head = NULL, **tail = &head;
+    for (int i = 0; i < ntypes; i++) {
+        struct addrinfo *ai = member_info(a, family, types[i], port);
+        if (!ai) {
+            freeaddrinfo(head);
+            return EAI_MEMORY;
+        }
+        *tail = ai;
+        tail = &ai->ai_next;
+    }
+    if (flags & AI_CANONNAME) {
+        head->ai_canonname = strdup(node);
+        if (!head->ai_canonname) {
+            freeaddrinfo(head);
+            return EAI_MEMORY;
+        }
+    }
+    *res = head;
+    return 0;
+}
+INTERPOSE(fws_getaddrinfo, getaddrinfo);
+
+static struct hostent member_host;
+static char member_host_name[256];
+static char member_host_addr[4];
+static char *member_host_addrs[2];
+static char *member_host_aliases[1];
+
+static struct hostent *member_hostent(const char *name, in_addr_t a) {
+    strlcpy(member_host_name, name, sizeof member_host_name);
+    memcpy(member_host_addr, &a, 4);
+    member_host_addrs[0] = member_host_addr;
+    member_host_addrs[1] = NULL;
+    member_host_aliases[0] = NULL;
+    member_host = (struct hostent){member_host_name, member_host_aliases, AF_INET, 4, member_host_addrs};
+    return &member_host;
+}
+
+static struct hostent *fws_gethostbyname(const char *name) {
+    in_addr_t a;
+    return name && member_address(name, &a) ? member_hostent(name, a) : gethostbyname(name);
+}
+INTERPOSE(fws_gethostbyname, gethostbyname);
+
+static struct hostent *fws_gethostbyname2(const char *name, int af) {
+    in_addr_t a;
+    return af == AF_INET && name && member_address(name, &a) ? member_hostent(name, a) : gethostbyname2(name, af);
+}
+INTERPOSE(fws_gethostbyname2, gethostbyname2);

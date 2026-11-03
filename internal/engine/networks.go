@@ -234,7 +234,10 @@ func (e *Engine) NetworkConnect(ref string, req network.ConnectRequest) error {
 	s.DNSNames = uniqStrings(append(append([]string{c.rec.Name}, s.Aliases...), c.rec.Service))
 	c.rec.Networks[n.Name] = s
 	e.events.publish(events.NetworkEventType, events.ActionConnect, n.ID, map[string]string{"container": c.rec.ID, "name": n.Name, "type": n.Driver})
-	return c.save()
+	if err := c.save(); err != nil {
+		return err
+	}
+	return e.writeNetworkLocked(c.rec.Stack)
 }
 
 func (e *Engine) NetworkDisconnect(ref, containerRef string, force bool) error {
@@ -258,7 +261,10 @@ func (e *Engine) NetworkDisconnect(ref, containerRef string, force bool) error {
 	}
 	delete(c.rec.Networks, n.Name)
 	e.events.publish(events.NetworkEventType, events.ActionDisconnect, n.ID, map[string]string{"container": c.rec.ID, "name": n.Name, "type": n.Driver})
-	return c.save()
+	if err := c.save(); err != nil {
+		return err
+	}
+	return e.writeNetworkLocked(c.rec.Stack)
 }
 
 // NetworkPrune removes custom networks no container uses.

@@ -143,6 +143,24 @@ func TestLibrariesReadableAndMappable(t *testing.T) {
 	}
 }
 
+func TestReadFilesReadableNotMappable(t *testing.T) {
+	s := spec()
+	s.ReadFiles = []string{"/Users/u/.fws/stacks/a/network"}
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deny := strings.Index(p, `(deny file-read*`)
+	f := strings.Index(p, `(literal "/Users/u/.fws/stacks/a/network")`)
+	if f < deny || strings.Count(p, `(literal "/Users/u/.fws/stacks/a/network")`) != 1 {
+		t.Fatalf("network file not readable after the state root's denial, or mappable:\n%s", p)
+	}
+	s.ReadFiles = []string{"rel"}
+	if _, err := Render(s); err == nil {
+		t.Fatal("a relative path was accepted")
+	}
+}
+
 func TestMachServicesUnderTheIPCPrefix(t *testing.T) {
 	s := spec()
 	p, err := Render(s)

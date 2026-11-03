@@ -101,8 +101,16 @@ machine — and from what macOS offers an unprivileged process under them.
 
 - **ICMP reaches nothing.** A container's traffic is held to its stack's TCP
   and UDP ports; `ping` opens its socket but sends nowhere.
-- **No container IP addresses.** Services talk over loopback on assigned host
-  ports; `db:5432` in a client becomes `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
+- **Container addresses are presented, not routed.** Each member of a stack
+  has an address in `127.88.0.0/16` that the container library resolves its
+  names to and reaches its ports through, so a client connects to `db:5432`
+  as on a Compose network. The kernel never sees those addresses:
+  - A program that loads no library resolves no member name; it uses
+    `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
+  - A server sees its clients connect from `127.0.0.1`, not from their
+    member addresses.
+  - A member's port that it neither exposes nor publishes refuses every
+    connection.
 - **One stack, one reachability domain.** A container can reach every port in
   its stack's block and nothing else. Networks shared across Compose projects
   are refused.

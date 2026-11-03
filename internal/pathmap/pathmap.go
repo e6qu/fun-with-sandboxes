@@ -25,6 +25,14 @@ var source []byte
 // names the user and group.
 const HostnameVar = "FWS_HOSTNAME"
 
+// NetworkVar names the stack's network file, which lists its members'
+// addresses, names and host ports; AddressVar names the container's own
+// member address.
+const (
+	NetworkVar = "FWS_NETWORK"
+	AddressVar = "FWS_ADDRESS"
+)
+
 // Mount is a volume or bind mount: Dest in the container, and Source, the
 // host directory or file behind it.
 type Mount struct{ Dest, Source string }
