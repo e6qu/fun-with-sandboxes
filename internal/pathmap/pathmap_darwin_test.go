@@ -291,3 +291,30 @@ func freePort(t *testing.T, network string) int {
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port
 }
+
+func TestProcessListingsHoldTheSandboxsOwn(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "ps")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/ps/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	run := func(env ...string) string {
+		cmd := exec.Command(bin)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("ps: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	// Each listing reports whether it holds the probe, its child, and launchd.
+	if got := run(); !strings.Contains(got, "sysctl=111") {
+		t.Fatalf("without the library: %q, want launchd listed", got)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run("DYLD_INSERT_LIBRARIES=" + lib); got != "sysctl=110\nlibproc=110" {
+		t.Errorf("with the library: %q, want the probe and its child alone", got)
+	}
+}
