@@ -374,6 +374,41 @@ func TestDiskIOCounted(t *testing.T) {
 	}
 }
 
+// The kernel's counts of the container's sockets reach the shim's state,
+// a connection's after it closed included.
+func TestNetworkIOCounted(t *testing.T) {
+	const mib = 4
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				io.Copy(c, c)
+				c.Close()
+			}()
+		}
+	}()
+	port := l.Addr().(*net.TCPAddr).Port
+	h := launch(t, []string{"netsend", strconv.Itoa(port), strconv.Itoa(mib)}, func(c *Config) {
+		c.Spec.Profile.ConnectPorts = []int{port}
+	})
+	h.waitLog("sent")
+	st, err := h.client.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Net.TxBytes < mib<<20 || st.Net.RxBytes < mib<<20 || st.Net.TxPackets == 0 || st.Net.RxPackets == 0 {
+		t.Fatalf("the container's traffic by the shim's count: %+v, want at least %d bytes each way", st.Net, mib<<20)
+	}
+}
+
 // The supervisor fwsd runs, fws-shim built as it ships, stays small: a
 // container costs one of it.
 func TestSupervisorFootprint(t *testing.T) {

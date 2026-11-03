@@ -173,8 +173,10 @@ func TestTestcontainers(t *testing.T) {
 }
 
 func TestTopAndStats(t *testing.T) {
-	mustDocker(t, "run", "-d", "--name", "toptest", "fws/toolbox:1")
+	since := time.Now()
+	mustDocker(t, "run", "-d", "--name", "toptest", "-p", "127.0.0.1::8080", "fws/toolbox:1")
 	defer docker(t, "rm", "-f", "toptest")
+	waitHealthy(t, "toptest", since)
 
 	out := mustDocker(t, "top", "toptest")
 	lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -189,6 +191,21 @@ func TestTopAndStats(t *testing.T) {
 	f := strings.Split(strings.TrimSpace(out), "|")
 	if len(f) != 4 || f[0] != "toptest" || f[2] != "1" || strings.HasPrefix(f[1], "0B") || !strings.HasSuffix(f[3], "%") {
 		t.Fatalf("docker stats: %q", out)
+	}
+
+	// Health checks reach the server inside the container: like traffic
+	// over a Docker container's loopback, none of it is network I/O.
+	if out := strings.TrimSpace(mustDocker(t, "stats", "--no-stream", "--format", "{{.NetIO}}", "toptest")); out != "0B / 0B" {
+		t.Fatalf("docker stats counts health checks as network I/O: %q", out)
+	}
+	addr := "http://" + strings.TrimSpace(mustDocker(t, "port", "toptest", "8080")) + "/healthz"
+	for range 20 {
+		httpGet(t, addr)
+	}
+	out = strings.TrimSpace(mustDocker(t, "stats", "--no-stream", "--format", "{{.NetIO}}", "toptest"))
+	rx, tx, ok := strings.Cut(out, " / ")
+	if !ok || rx == "0B" || tx == "0B" {
+		t.Fatalf("docker stats network I/O after 20 requests through the published port: %q", out)
 	}
 }
 

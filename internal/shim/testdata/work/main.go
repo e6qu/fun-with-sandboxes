@@ -121,6 +121,26 @@ func run(args []string) error {
 		f.Close()
 		fmt.Println("wrote", n)
 		hold()
+	case "netsend":
+		// Send the given number of MiB to the loopback port, read as many
+		// back, close the connection, then hold.
+		n, _ := strconv.Atoi(args[2])
+		c, err := net.Dial("tcp", "127.0.0.1:"+args[1])
+		if err != nil {
+			return err
+		}
+		go func() {
+			buf := make([]byte, 1<<20)
+			for i := 0; i < n; i++ {
+				c.Write(buf)
+			}
+		}()
+		if _, err := io.CopyN(io.Discard, c, int64(n)<<20); err != nil {
+			return err
+		}
+		c.Close()
+		fmt.Println("sent", n)
+		hold()
 	case "hold":
 		hold()
 	}
