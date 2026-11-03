@@ -220,7 +220,7 @@ operation family and then allows what the container owns:
 | Baseline | `(deny default)` with Apple's `system.sb`, then forks, sysctl reads, ttys and sockets |
 | File writes | the container's root, its writable volumes, and a few devices |
 | File reads | everything under `/` except the engine's state directory, of which the container gets back its root, its volumes, the container library and its stack's network file |
-| Execution | programs in the root and volumes, and the system shells `popen()` and `system()` hard-code |
+| Execution | programs in the root and volumes, the system shells `popen()` and `system()` hard-code, and `fws-shim` once, to start the container's exec anchor |
 | Network | Unix sockets in the root and volumes; binds on the loopback host ports behind the container's ports; connections to its stack's block of ports, the egress proxy included when the container has internet access |
 | Mach services | lookups of a fixed list of Apple services (`MachServices`), and registering and looking up the container's own under its IPC prefix |
 | IPC | POSIX shared memory and semaphores under the container's IPC prefix (`--ipc`) |
@@ -236,6 +236,12 @@ The engine applies the profile without `sandbox-exec`.
 - That matters because macOS strips `DYLD_INSERT_LIBRARIES` from programs
   Apple signs. With nothing in between, the container library (see
   [DESIGN](DESIGN.md)) reaches every container process.
+- A process may signal only processes of its own sandbox, and a process
+  that enters a profile by itself is a sandbox of its own, as step 4 of the
+  tutorial shows from the other side. So the main process's helper starts
+  an anchor inside the sandbox before it executes the program, and
+  `docker exec` and health checks start through the anchor, in the same
+  sandbox as the main process.
 
 Seatbelt decides what a container may do; the library decides only what it
 sees.

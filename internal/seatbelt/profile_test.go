@@ -180,3 +180,21 @@ func TestMachServicesUnderTheIPCPrefix(t *testing.T) {
 		t.Errorf("--ipc none lets a container register Mach services:\n%s", p)
 	}
 }
+
+func TestHelperExecutable(t *testing.T) {
+	s := spec()
+	s.Helper = "/usr/local/bin/fws-shim"
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := p[strings.Index(p, "(allow process-exec*"):]
+	exec = exec[:strings.Index(exec, ")\n(")]
+	if !strings.Contains(exec, `(literal "/usr/local/bin/fws-shim")`) {
+		t.Fatalf("the helper is not executable:\n%s", p)
+	}
+	s.Helper = "fws-shim"
+	if _, err := Render(s); err == nil {
+		t.Fatal("a relative helper path was accepted")
+	}
+}

@@ -96,6 +96,9 @@ type Spec struct {
 	// ReadFiles are files outside the root the container reads, such as its
 	// stack's network file.
 	ReadFiles []string
+	// Helper is the engine's helper binary, which the container's sandbox
+	// executes once, to start the anchor that runs its execs.
+	Helper string
 }
 
 // IPCMode is a container's IPC confinement.
@@ -139,7 +142,11 @@ func Render(s Spec) (string, error) {
 	for _, v := range s.Volumes {
 		paths = append(paths, v.Path)
 	}
-	for _, l := range append(append([]string{}, s.Libraries...), s.ReadFiles...) {
+	extra := append(append([]string{}, s.Libraries...), s.ReadFiles...)
+	if s.Helper != "" {
+		extra = append(extra, s.Helper)
+	}
+	for _, l := range extra {
 		if err := checkPath(l); err != nil {
 			return "", err
 		}
@@ -216,6 +223,9 @@ func Render(s Spec) (string, error) {
 	for _, f := range s.ReadFiles {
 		w("  (literal %q)", f)
 	}
+	if s.Helper != "" {
+		w("  (literal %q)", s.Helper)
+	}
 	w(")")
 	if len(s.Libraries) > 0 {
 		w("(allow file-map-executable")
@@ -249,6 +259,9 @@ func Render(s Spec) (string, error) {
 	}
 	for _, sh := range SystemShells {
 		w("  (literal %q)", sh)
+	}
+	if s.Helper != "" {
+		w("  (literal %q)", s.Helper)
 	}
 	w(")")
 

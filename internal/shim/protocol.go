@@ -27,7 +27,9 @@ type Config struct {
 	OpenStdin bool
 	LogPath   string
 	Socket    string
-	ExitPath  string
+	// Anchor is where the container's exec anchor listens.
+	Anchor   string
+	ExitPath string
 	// Tag is the environment entry every process of the container starts
 	// with.
 	Tag     string

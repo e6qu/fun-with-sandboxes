@@ -1139,7 +1139,7 @@ func (c *Container) start(e *Engine) error {
 			Profile: spec, ProfilePath: filepath.Join(c.dir, "profile.sb"), Limits: limits, Library: spec.Libraries[0],
 		},
 		TTY: c.rec.Config.Tty, Console: c.rec.HostConfig.ConsoleSize, OpenStdin: c.rec.Config.OpenStdin,
-		LogPath: c.logs.path, Socket: e.shimSocket(c), ExitPath: c.exitPath(),
+		LogPath: c.logs.path, Socket: e.shimSocket(c), Anchor: e.anchorSocket(c), ExitPath: c.exitPath(),
 		Tag: c.tag(), AllocRoot: e.cfg.Root, Stack: c.rec.Stack, Resources: res,
 	}
 	for _, p := range plan {
@@ -1203,6 +1203,21 @@ func (c *Container) exitPath() string { return filepath.Join(c.dir, "exit.json")
 // root, kept short, as macOS caps socket paths at 104 bytes.
 func (e *Engine) shimSocket(c *Container) string {
 	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".sock")
+}
+
+func (e *Engine) anchorSocket(c *Container) string {
+	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".anchor")
+}
+
+// anchor is the socket of the running container's exec anchor, which
+// starts execs in its sandbox, or "" for a run an engine without anchors
+// started, whose execs enter the profile by themselves.
+func (e *Engine) anchor(c *Container) string {
+	p := e.anchorSocket(c)
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	return p
 }
 
 // watch follows a run until its shim reports the main process's end, then

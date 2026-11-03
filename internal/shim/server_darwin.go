@@ -138,7 +138,31 @@ func (s *server) run(report func(Ready)) (int, error) {
 			s.stdin = pw
 		}
 	}
+	if cfg.Anchor != "" {
+		os.Remove(cfg.Anchor)
+		al, err := net.Listen("unix", cfg.Anchor)
+		if err != nil {
+			closeProxies()
+			report(Ready{Error: err.Error()})
+			return 1, err
+		}
+		ul := al.(*net.UnixListener)
+		// The anchor, not the shim, accepts on it.
+		ul.SetUnlinkOnClose(false)
+		f, err := ul.File()
+		ul.Close()
+		if err != nil {
+			closeProxies()
+			report(Ready{Error: err.Error()})
+			return 1, err
+		}
+		spec.AnchorListener = f
+		defer os.Remove(cfg.Anchor)
+	}
 	proc, err := runtime.Start(spec)
+	if spec.AnchorListener != nil {
+		spec.AnchorListener.Close()
+	}
 	if slave != nil {
 		slave.Close()
 	}

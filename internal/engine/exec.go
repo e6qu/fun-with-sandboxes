@@ -122,6 +122,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	rs := runtime.Spec{
 		Root: c.root(), Argv: x.cfg.Cmd, Env: env, WorkDir: wd,
 		Profile: spec, ProfilePath: c.dir + "/exec-" + id[:12] + ".sb", Limits: limits, Library: spec.Libraries[0],
+		Anchor: e.anchor(c),
 	}
 	defer os.Remove(rs.ProfilePath)
 	var master, slave *os.File
@@ -258,7 +259,7 @@ func (e *Engine) probe(c *Container, argv []string, timeout time.Duration) (int,
 	rs := runtime.Spec{
 		Root: c.root(), Argv: argv, Env: env, WorkDir: c.rec.Config.WorkingDir,
 		Profile: spec, ProfilePath: c.dir + "/health-" + newID()[:12] + ".sb", Stdout: &out, Stderr: &out,
-		Limits: limits, Library: spec.Libraries[0],
+		Limits: limits, Library: spec.Libraries[0], Anchor: e.anchor(c),
 	}
 	defer os.Remove(rs.ProfilePath)
 	proc, err := runtime.Start(rs)

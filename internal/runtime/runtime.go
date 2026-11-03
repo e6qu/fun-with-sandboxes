@@ -40,6 +40,12 @@ type Spec struct {
 	// Library is the container library (package pathmap) every process
 	// of the container loads; the profile must let it read the library.
 	Library string
+	// AnchorListener, for a container's main process, is the listening
+	// socket of the anchor its sandbox starts, which runs its execs.
+	AnchorListener *os.File `json:"-"`
+	// Anchor, for an exec, is the socket of its container's anchor, which
+	// starts it inside the container's sandbox.
+	Anchor string `json:"-"`
 }
 
 // Limits are what the spawn helper applies to the process before it
@@ -68,6 +74,14 @@ type Process struct {
 	readEnds []*os.File
 	mu       sync.Mutex
 	code     int
+}
+
+// exitCode is a wait status as a shell reports it.
+func exitCode(ws syscall.WaitStatus) int {
+	if ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return ws.ExitStatus()
 }
 
 // Resolve maps argv[0] to the executable's host path inside root, searching the
@@ -137,14 +151,12 @@ func closeAll(fs []*os.File) {
 func (p *Process) wait() {
 	code := 255
 	if st, err := p.proc.Wait(); err == nil {
-		ws := st.Sys().(syscall.WaitStatus)
-		switch {
-		case ws.Signaled():
-			code = 128 + int(ws.Signal())
-		default:
-			code = ws.ExitStatus()
-		}
+		code = exitCode(st.Sys().(syscall.WaitStatus))
 	}
+	p.finish(code)
+}
+
+func (p *Process) finish(code int) {
 	p.mu.Lock()
 	p.code = code
 	p.mu.Unlock()
@@ -169,7 +181,7 @@ func (p *Process) Signal(sig syscall.Signal) error {
 		return nil
 	default:
 	}
-	return p.proc.Signal(sig)
+	return syscall.Kill(p.pid, sig)
 }
 
 // KillAll sends SIGKILL to the whole process group and returns once the
@@ -178,7 +190,7 @@ func (p *Process) KillAll() {
 	pgid := p.pid
 	err := syscall.Kill(-pgid, syscall.SIGKILL)
 	if err != nil && !errors.Is(err, syscall.ESRCH) {
-		p.proc.Kill()
+		syscall.Kill(p.pid, syscall.SIGKILL)
 		return
 	}
 	// macOS has no notification for a process group emptying out, but it
