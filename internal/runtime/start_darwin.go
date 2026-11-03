@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -69,6 +70,10 @@ func runHelper() {
 		fail(err)
 	}
 	env := withLibrary(os.Environ(), h.Library)
+	if h.Anchor {
+		// The main process is the container's pid 1 (package pathmap).
+		env = append(env, initVar+"="+strconv.Itoa(os.Getpid()))
+	}
 	if err := libsystem.SandboxInit(h.Profile); err != nil {
 		fail(err)
 	}
@@ -303,7 +308,7 @@ func (p *Process) copyIO(s Spec, parentEnds []*os.File) {
 // withLibrary is env with the container library loaded, as the spawn helper
 // sets it.
 func withLibrary(env []string, library string) []string {
-	out := withoutVars(env, RoleVar, helperVar, "DYLD_INSERT_LIBRARIES")
+	out := withoutVars(env, RoleVar, helperVar, initVar, "DYLD_INSERT_LIBRARIES")
 	if library != "" {
 		out = append(out, "DYLD_INSERT_LIBRARIES="+library)
 	}

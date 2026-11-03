@@ -27,6 +27,9 @@ const (
 	// anchorFD is the listening socket the anchor accepts requests on, in
 	// the spawn helper and in the anchor.
 	anchorFD = 4
+	// initVar holds the main process's host pid, which the container
+	// library presents as pid 1.
+	initVar = "FWS_INIT"
 )
 
 type anchorRequest struct {
@@ -118,7 +121,7 @@ func serveAnchor() int {
 		if err != nil {
 			return 0
 		}
-		go serveExec(c.(*net.UnixConn))
+		go serveExec(c.(*net.UnixConn), main)
 	}
 }
 
@@ -142,7 +145,7 @@ func awaitExit(pid int) {
 
 // A request is an 8-byte length, sent with the process's standard streams
 // as rights, then that many bytes of JSON.
-func serveExec(c *net.UnixConn) {
+func serveExec(c *net.UnixConn, main int) {
 	defer c.Close()
 	enc := json.NewEncoder(c)
 	hdr := make([]byte, 8)
@@ -176,8 +179,9 @@ func serveExec(c *net.UnixConn) {
 		enc.Encode(anchorReply{Error: "exec anchor: a malformed request"})
 		return
 	}
+	env := append(withoutVars(req.Env, initVar), initVar+"="+strconv.Itoa(main))
 	p, err := os.StartProcess(req.Path, req.Argv, &os.ProcAttr{
-		Dir: req.Dir, Env: req.Env, Files: files,
+		Dir: req.Dir, Env: env, Files: files,
 		// A terminal's process leads a session with the terminal as its
 		// controlling one; any other leads its own process group, as the
 		// spawn helper's processes do.

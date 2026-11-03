@@ -31,6 +31,7 @@
 #include <limits.h>
 #include <mach/mach.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <servers/bootstrap.h>
 #include <spawn.h>
 #include <stdarg.h>
@@ -74,6 +75,8 @@ static size_t rootlen;
 static uid_t fake_uid, fake_euid;
 static gid_t fake_gid, fake_egid;
 static char hostname[256];
+// The host pid of the container's main process (FWS_INIT), its pid 1.
+static pid_t init_pid;
 // The engine's helper binary's name (FWS_HELPER), which the container's
 // exec anchor runs as.
 static char helper_comm[MAXCOMLEN + 1];
@@ -236,7 +239,7 @@ static void parse_network(const char *path, const char *address) {
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
 __attribute__((constructor)) static void fwsroot_init(void) {
@@ -250,6 +253,7 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     }
     fake_uid = fake_euid = (uid_t)env_number("FWS_UID");
     fake_gid = fake_egid = (gid_t)env_number("FWS_GID");
+    init_pid = (pid_t)env_number("FWS_INIT");
     const char *hc = getenv("FWS_HELPER");
     if (hc) {
         strlcpy(helper_comm, hc, sizeof helper_comm);
@@ -1553,6 +1557,76 @@ static int fws_uname(struct utsname *u) {
 }
 INTERPOSE(fws_uname, uname);
 
+// Pid 1. The container's main process (FWS_INIT, its host pid) is pid 1 to
+// the container, as in a PID namespace, so a program that checks it runs
+// as init does, and `kill -HUP 1` reaches it; every other process keeps
+// its host pid, which the container sees as it is.
+
+static pid_t to_host(pid_t p) { return init_pid && p == 1 ? init_pid : p; }
+static pid_t to_container(pid_t p) { return init_pid && p == init_pid ? 1 : p; }
+
+static pid_t fws_getpid(void) { return to_container(getpid()); }
+INTERPOSE(fws_getpid, getpid);
+
+// Init's parent is outside the container: 0, as in a PID namespace.
+static pid_t fws_getppid(void) { return init_pid && getpid() == init_pid ? 0 : to_container(getppid()); }
+INTERPOSE(fws_getppid, getppid);
+
+static int fws_kill(pid_t pid, int sig) {
+    if (pid < -1) {
+        return kill(-to_host(-pid), sig);
+    }
+    return kill(pid == -1 ? pid : to_host(pid), sig);
+}
+INTERPOSE(fws_kill, kill);
+
+static int fws_killpg(pid_t pgrp, int sig) { return killpg(to_host(pgrp), sig); }
+INTERPOSE(fws_killpg, killpg);
+
+static pid_t fws_getpgrp(void) { return to_container(getpgrp()); }
+INTERPOSE(fws_getpgrp, getpgrp);
+
+static pid_t fws_getpgid(pid_t pid) {
+    pid_t r = getpgid(to_host(pid));
+    return r < 0 ? r : to_container(r);
+}
+INTERPOSE(fws_getpgid, getpgid);
+
+static pid_t fws_getsid(pid_t pid) {
+    pid_t r = getsid(to_host(pid));
+    return r < 0 ? r : to_container(r);
+}
+INTERPOSE(fws_getsid, getsid);
+
+static int fws_setpgid(pid_t pid, pid_t pgid) { return setpgid(to_host(pid), to_host(pgid)); }
+INTERPOSE(fws_setpgid, setpgid);
+
+static int fws_proc_pidinfo(int pid, int flavor, uint64_t arg, void *buf, int size) {
+    int r = proc_pidinfo(to_host(pid), flavor, arg, buf, size);
+    if (flavor == PROC_PIDTBSDINFO && r == (int)sizeof(struct proc_bsdinfo)) {
+        struct proc_bsdinfo *b = buf;
+        b->pbi_ppid = (uint32_t)(b->pbi_pid == (uint32_t)init_pid && init_pid ? 0 : to_container((pid_t)b->pbi_ppid));
+        b->pbi_pid = (uint32_t)to_container((pid_t)b->pbi_pid);
+        b->pbi_pgid = (uint32_t)to_container((pid_t)b->pbi_pgid);
+    } else if (flavor == PROC_PIDT_SHORTBSDINFO && r == (int)sizeof(struct proc_bsdshortinfo)) {
+        struct proc_bsdshortinfo *b = buf;
+        b->pbsi_ppid = (uint32_t)(b->pbsi_pid == (uint32_t)init_pid && init_pid ? 0 : to_container((pid_t)b->pbsi_ppid));
+        b->pbsi_pid = (uint32_t)to_container((pid_t)b->pbsi_pid);
+        b->pbsi_pgid = (uint32_t)to_container((pid_t)b->pbsi_pgid);
+    }
+    return r;
+}
+INTERPOSE(fws_proc_pidinfo, proc_pidinfo);
+
+static int fws_proc_pidpath(int pid, void *buf, uint32_t size) { return proc_pidpath(to_host(pid), buf, size); }
+INTERPOSE(fws_proc_pidpath, proc_pidpath);
+
+static int fws_proc_name(int pid, void *buf, uint32_t size) { return proc_name(to_host(pid), buf, size); }
+INTERPOSE(fws_proc_name, proc_name);
+
+static int fws_proc_pid_rusage(int pid, int flavor, rusage_info_t *buf) { return proc_pid_rusage(to_host(pid), flavor, buf); }
+INTERPOSE(fws_proc_pid_rusage, proc_pid_rusage);
+
 // Processes. The container's processes are those of its sandbox, whose
 // information the sandbox lets them read, as a PID namespace holds a
 // container's processes; a listing leaves out the others, and the anchor
@@ -1575,6 +1649,10 @@ static size_t own_procs(struct kinfo_proc *kp, size_t n) {
     for (size_t i = 0; i < count; i++) {
         if (visible(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm)) {
             if (kept != i) memmove(&kp[kept], &kp[i], sizeof *kp);
+            struct kinfo_proc *k = &kp[kept];
+            k->kp_eproc.e_ppid = init_pid && k->kp_proc.p_pid == init_pid ? 0 : to_container(k->kp_eproc.e_ppid);
+            k->kp_eproc.e_pgid = to_container(k->kp_eproc.e_pgid);
+            k->kp_proc.p_pid = to_container(k->kp_proc.p_pid);
             kept++;
         }
     }
@@ -1609,8 +1687,8 @@ static int list_pids(int op, int arg, pid_t ppid, pid_t *buf, int size) {
     }
     int n = 0, cap = size / (int)sizeof(pid_t);
     for (size_t i = 0; i < len / sizeof *kp && n < cap; i++) {
-        if (ppid > 0 && kp[i].kp_eproc.e_ppid != ppid) continue;
-        if (visible(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm)) buf[n++] = kp[i].kp_proc.p_pid;
+        if (ppid > 0 && kp[i].kp_eproc.e_ppid != to_host(ppid)) continue;
+        if (visible(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm)) buf[n++] = to_container(kp[i].kp_proc.p_pid);
     }
     free(kp);
     return n;
@@ -1623,7 +1701,7 @@ static int fws_proc_listpids(uint32_t type, uint32_t typeinfo, void *buf, int si
         n = list_pids(KERN_PROC_ALL, 0, 0, buf, size);
         break;
     case PROC_PGRP_ONLY:
-        n = list_pids(KERN_PROC_PGRP, (int)typeinfo, 0, buf, size);
+        n = list_pids(KERN_PROC_PGRP, to_host((pid_t)typeinfo), 0, buf, size);
         break;
     case PROC_TTY_ONLY:
         n = list_pids(KERN_PROC_TTY, (int)typeinfo, 0, buf, size);
@@ -1647,7 +1725,7 @@ INTERPOSE(fws_proc_listpids, proc_listpids);
 static int fws_proc_listallpids(void *buf, int size) { return list_pids(KERN_PROC_ALL, 0, 0, buf, size); }
 INTERPOSE(fws_proc_listallpids, proc_listallpids);
 
-static int fws_proc_listpgrppids(pid_t pgid, void *buf, int size) { return list_pids(KERN_PROC_PGRP, pgid, 0, buf, size); }
+static int fws_proc_listpgrppids(pid_t pgid, void *buf, int size) { return list_pids(KERN_PROC_PGRP, to_host(pgid), 0, buf, size); }
 INTERPOSE(fws_proc_listpgrppids, proc_listpgrppids);
 
 static int fws_proc_listchildpids(pid_t ppid, void *buf, int size) { return list_pids(KERN_PROC_ALL, 0, ppid, buf, size); }
@@ -1656,8 +1734,20 @@ INTERPOSE(fws_proc_listchildpids, proc_listchildpids);
 // Go and other programs read the hostname, and ps the process table,
 // through sysctl.
 static int fws_sysctl(int *name, u_int namelen, void *old, size_t *oldlen, void *new, size_t newlen) {
+    if (namelen == 3 && name[0] == CTL_KERN && (name[1] == KERN_PROCARGS || name[1] == KERN_PROCARGS2) && init_pid) {
+        int mib[3] = {name[0], name[1], to_host(name[2])};
+        return sysctl(mib, 3, old, oldlen, new, newlen);
+    }
     if (namelen >= 3 && name[0] == CTL_KERN && name[1] == KERN_PROC && old && oldlen && !new) {
-        int r = sysctl(name, namelen, old, oldlen, new, newlen);
+        // A listing of one process, group or session names it as the
+        // container does.
+        int mib[CTL_MAXNAME];
+        u_int n = namelen < CTL_MAXNAME ? namelen : CTL_MAXNAME;
+        memcpy(mib, name, n * sizeof *mib);
+        if (n == 4 && (mib[2] == KERN_PROC_PID || mib[2] == KERN_PROC_PGRP || mib[2] == KERN_PROC_SESSION)) {
+            mib[3] = to_host(mib[3]);
+        }
+        int r = sysctl(mib, n, old, oldlen, new, newlen);
         if (r == 0) *oldlen = own_procs(old, *oldlen);
         return r;
     }

@@ -135,6 +135,9 @@ same knobs, each enforced by a real mechanism or refused:
     reports its pid and exit status.
   - It carries none of the container's environment, so its limits and
     `top` leave it out, and it exits with the main process.
+  - It gives every exec the main process's host pid as `FWS_INIT`, as the
+    helper gives the main process, and the container library presents
+    that process as pid 1.
   - The profile lets the sandbox execute `fws-shim` for it, and nothing
     else beyond the root, its volumes and the system shells.
 - **Supervisor.** Each container runs under a shim, `fws-shim` in its
@@ -647,9 +650,10 @@ every *action* across stacks is denied.
   stops processes, not by a kernel that refuses an allocation or a fork.
 - `user:` and `USER` are presented by the container library; every process
   runs as the invoking user.
-- Pids are the host's, and a program that loads no library lists every
-  process of the user; listings through the library, and every action,
-  stay within the sandbox.
+- Pids are the host's but the main process's, which the container library
+  presents as 1, and a program that loads no library lists every process
+  of the user; listings through the library, and every action, stay
+  within the sandbox.
 - Seatbelt's `sandbox_init` and `sandbox-exec` are Apple-deprecated (since
   2016) but still functional and used by Chrome, Bazel, and the major
   coding-agent sandboxes; there is no supported replacement for this use.
