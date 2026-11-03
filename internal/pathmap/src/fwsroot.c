@@ -41,6 +41,10 @@
 #include <sys/attr.h>
 #include <sys/clonefile.h>
 #include <sys/mman.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
 #include <sys/sysctl.h>
 #include <sys/param.h>
 #include <libproc.h>
@@ -1753,6 +1757,34 @@ static kern_return_t fws_bootstrap_look_up(mach_port_t bp, const name_t name, ma
     return bootstrap_look_up(bp, name, sp);
 }
 INTERPOSE(fws_bootstrap_look_up, bootstrap_look_up);
+
+// System V IPC. Seatbelt cannot tell System V keys apart, so under
+// private IPC the library gives a container a key space of its own, as an
+// IPC namespace does: a key becomes a hash of the container's IPC prefix
+// and the key, so two containers using one key, as two PostgreSQL servers
+// on one port do, get objects of their own. IPC_PRIVATE stays private.
+static key_t sysv_key(key_t key) {
+    const char *prefix = getenv("SANDBOX_IPC_PREFIX");
+    if (key == IPC_PRIVATE || !prefix || !*prefix) {
+        return key;
+    }
+    uint32_t h = 2166136261u;
+    for (const unsigned char *c = (const unsigned char *)prefix; *c; c++) {
+        h = (h ^ *c) * 16777619u;
+    }
+    for (int i = 0; i < 4; i++) {
+        h = (h ^ ((uint32_t)key >> (8 * i) & 0xff)) * 16777619u;
+    }
+    h &= 0x7fffffff;
+    return (key_t)(h ? h : 1);
+}
+
+static int fws_shmget(key_t key, size_t size, int flags) { return shmget(sysv_key(key), size, flags); }
+INTERPOSE(fws_shmget, shmget);
+static int fws_semget(key_t key, int n, int flags) { return semget(sysv_key(key), n, flags); }
+INTERPOSE(fws_semget, semget);
+static int fws_msgget(key_t key, int flags) { return msgget(sysv_key(key), flags); }
+INTERPOSE(fws_msgget, msgget);
 
 // POSIX shared memory and semaphores. Under private IPC a container's names
 // carry its prefix, which the sandbox confines it to; the library gives a

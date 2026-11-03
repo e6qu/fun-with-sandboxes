@@ -318,3 +318,36 @@ func TestProcessListingsHoldTheSandboxsOwn(t *testing.T) {
 		t.Errorf("with the library: %q, want the probe and its child alone", got)
 	}
 }
+
+// Containers under private IPC have System V key spaces of their own: one
+// key names an object of each container's.
+func TestSystemVKeysPerContainer(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "sysv")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/sysv/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(prefix string, args ...string) string {
+		cmd := exec.Command(bin, args...)
+		cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_IPC_PREFIX=" + prefix}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("sysv: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	a, b := fmt.Sprintf("fwsa%d.", os.Getpid()), fmt.Sprintf("fwsb%d.", os.Getpid())
+	t.Cleanup(func() { run(a, "remove"); run(b, "remove") })
+	if got := run(a); got != "111" {
+		t.Fatalf("the first container's objects: %q, want all three made", got)
+	}
+	if got := run(b); got != "111" {
+		t.Errorf("another container's objects under the same key: %q, want all three made", got)
+	}
+	if got := run(a); got != "000" {
+		t.Errorf("the first container again: %q, want its own objects found existing", got)
+	}
+}
