@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
 
 // probe runs the probe under the library, with the container's root and
@@ -369,6 +371,62 @@ func TestMainProcessIsPidOne(t *testing.T) {
 		t.Fatalf("init: %v\n%s", err, out)
 	}
 	if want := "pid=1 ppid=0\nchild-ppid=1 kill1=0\ntable1=1\n"; string(out) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+// A container listens on a port that has no host port, and reaches it,
+// and a member's, through routers.
+func TestPortsWithoutHostPorts(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "unexposed")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/unexposed/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	// A Unix socket's path is capped at 104 bytes.
+	dir, err := os.MkdirTemp("/tmp", "fwsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	dir, _ = filepath.EvalSymlinks(dir)
+	r, err := router.Listen("127.0.0.1:0", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	// The member's listener on its port 7100, which the router reaches as
+	// a member's router would.
+	l, err := net.Listen("unix", router.SocketPath(dir, 7100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Write([]byte("hello"))
+			c.Close()
+		}
+	}()
+	network := filepath.Join(t.TempDir(), "network")
+	rp := r.Addr().Port
+	os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t\t%d\n127.88.0.3\tpeer\t\t%d\n", rp, rp)), 0o644)
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, dir, strconv.Itoa(rp))
+	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, PortDirVar + "=" + dir, RouterVar + "=" + strconv.Itoa(rp),
+		NetworkVar + "=" + network, AddressVar + "=127.88.0.2"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("unexposed: %v\n%s", err, out)
+	}
+	want := "listen=[::]:7000\nlocal=ping 127.0.0.1:7000\npeer=hello 127.88.0.3:7100\nrefused=-1\n"
+	if string(out) != want {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}
 }

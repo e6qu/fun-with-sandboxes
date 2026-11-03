@@ -198,3 +198,23 @@ func TestHelperExecutable(t *testing.T) {
 		t.Fatal("a relative helper path was accepted")
 	}
 }
+
+func TestPortDirForUnixListeners(t *testing.T) {
+	s := spec()
+	s.PortDir = "/Users/u/.fws/run/abc.p"
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range []string{
+		`(allow network-bind (local unix-socket (subpath "/Users/u/.fws/run/abc.p")))`,
+		`(allow network-outbound (remote unix-socket (subpath "/Users/u/.fws/run/abc.p")))`,
+	} {
+		if !strings.Contains(p, rule) {
+			t.Errorf("missing %s:\n%s", rule, p)
+		}
+	}
+	if strings.Count(p, `(subpath "/Users/u/.fws/run/abc.p")`) < 4 {
+		t.Errorf("the port directory is not readable and writable:\n%s", p)
+	}
+}

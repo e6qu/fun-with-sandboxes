@@ -99,6 +99,9 @@ type Spec struct {
 	// Helper is the engine's helper binary, which the container's sandbox
 	// executes once, to start the anchor that runs its execs.
 	Helper string
+	// PortDir is where the container listens, with Unix sockets, on its TCP
+	// ports that have no host port.
+	PortDir string
 }
 
 // IPCMode is a container's IPC confinement.
@@ -139,6 +142,9 @@ func checkPort(p int) error {
 // Render returns the profile text for the spec.
 func Render(s Spec) (string, error) {
 	paths := []string{s.Root, s.StateRoot}
+	if s.PortDir != "" {
+		paths = append(paths, s.PortDir)
+	}
 	for _, v := range s.Volumes {
 		paths = append(paths, v.Path)
 	}
@@ -195,6 +201,9 @@ func Render(s Spec) (string, error) {
 			w("  (subpath %q)", v.Path)
 		}
 	}
+	if s.PortDir != "" {
+		w("  (subpath %q)", s.PortDir)
+	}
 	for _, d := range []string{"/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty"} {
 		w("  (literal %q)", d)
 	}
@@ -211,6 +220,9 @@ func Render(s Spec) (string, error) {
 	w(")")
 	w("(allow file-read*")
 	w("  (subpath %q)", s.Root)
+	if s.PortDir != "" {
+		w("  (subpath %q)", s.PortDir)
+	}
 	for _, v := range s.Volumes {
 		w("  (subpath %q)", v.Path)
 	}
@@ -278,8 +290,14 @@ func Render(s Spec) (string, error) {
 	for _, p := range uniq(s.BindPorts) {
 		w("(allow network-bind (local ip \"localhost:%d\"))", p)
 	}
+	if s.PortDir != "" {
+		w("(allow network-bind (local unix-socket (subpath %q)))", s.PortDir)
+	}
 	w("(deny network-outbound)")
 	w("(allow network-outbound (remote unix-socket (subpath %q)))", s.Root)
+	if s.PortDir != "" {
+		w("(allow network-outbound (remote unix-socket (subpath %q)))", s.PortDir)
+	}
 	for _, v := range s.Volumes {
 		w("(allow network-outbound (remote unix-socket (subpath %q)))", v.Path)
 	}

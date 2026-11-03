@@ -3,6 +3,7 @@ package egress
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
 
 // testPolicy treats 127.0.0.1 as the internet and every other address as the
@@ -136,7 +139,24 @@ func TestReachesStackMembers(t *testing.T) {
 	defer up.Close()
 	_, port, _ := net.SplitHostPort(up.Listener.Addr().String())
 	network := filepath.Join(t.TempDir(), "network")
-	os.WriteFile(network, []byte("127.88.0.2\tweb proj-web-1\t8000/tcp="+port+"\n"), 0o644)
+	// The member's port 9000 has no host port: its router reaches it.
+	dir, err := os.MkdirTemp("/tmp", "fwse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	ul, err := net.Listen("unix", router.SocketPath(dir, 9000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ul.Close()
+	go http.Serve(ul, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "member routed") }))
+	rt, err := router.Listen("127.0.0.1:0", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tweb proj-web-1\t8000/tcp=%s\t%d\n", port, rt.Addr().Port)), 0o644)
 	policy := testPolicy()
 	policy.Deny = func(net.IP) bool { return true }
 	policy.Members = network
@@ -145,7 +165,7 @@ func TestReachesStackMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	for _, url := range []string{"http://web:8000/", "http://PROJ-WEB-1:8000/", "http://127.88.0.2:8000/"} {
+	for _, url := range []string{"http://web:8000/", "http://PROJ-WEB-1:8000/", "http://127.88.0.2:8000/", "http://web:9000/"} {
 		res, err := client(p).Get(url)
 		if err != nil {
 			t.Fatal(err)

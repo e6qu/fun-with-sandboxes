@@ -28,7 +28,11 @@ type Config struct {
 	LogPath   string
 	Socket    string
 	// Anchor is where the container's exec anchor listens.
-	Anchor   string
+	Anchor string
+	// Router is the loopback port of the container's router, which joins
+	// connections to the listeners in PortDir (package router); 0 for none.
+	Router   int
+	PortDir  string
 	ExitPath string
 	// Tag is the environment entry every process of the container starts
 	// with.

@@ -121,8 +121,8 @@ machine — and from what macOS offers an unprivileged process under them.
     `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
   - A server sees its clients connect from `127.0.0.1`, not from their
     member addresses.
-  - A member's port that it neither exposes nor publishes refuses every
-    connection.
+  - A member's TCP port without a host port is reached through its router,
+    whose connections its server sees come from `127.0.0.1`.
 - **One stack, one reachability domain.** A container can reach every port in
   its stack's block and nothing else. Networks shared across Compose projects
   are refused.
@@ -149,9 +149,12 @@ machine — and from what macOS offers an unprivileged process under them.
   container's addresses back; a dual-stack IPv6 socket used for IPv4 becomes
   an IPv4 socket that reads as IPv6, because Seatbelt matches loopback as
   `127.0.0.1` and `::1` and not as `::ffff:127.0.0.1`. Its limits:
-  - Only ports the container exposes or publishes have host ports; a
-    listener on any other port is refused, as is one on an address other
-    than loopback's or the wildcard.
+  - Only ports the container exposes or publishes have host ports. A TCP
+    listener on any other port listens on a Unix socket instead, which the
+    container reaches on `localhost` and its stack's members reach by name,
+    through the container's router; it is published nowhere, as in Docker.
+    A UDP socket on such a port is refused, as is a listener on an address
+    other than loopback's, the wildcard or the container's own.
   - A dual-stack listener takes IPv4 clients alone: a client of `::1`
     falls back to `127.0.0.1`, as clients of `localhost` do.
   - Programs that load no library, as Apple's do not, see the host ports.

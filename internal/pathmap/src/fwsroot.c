@@ -52,6 +52,7 @@
 #include <sys/proc_info.h>
 #include <sys/mount.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <netdb.h>
@@ -226,6 +227,24 @@ static int parse_v4(const char *p, const char **end, in_addr_t *out) {
 static char network_path[PATH_MAX];
 static in_addr_t own_address;
 
+// The container's TCP ports that have no host port: the library listens on
+// one with a Unix socket in the port directory (FWS_PORTDIR), and a
+// client reaches it through the router of the container that listens
+// (FWS_ROUTER for this one's; package router).
+static char port_dir[PATH_MAX];
+static unsigned short router_port;
+
+static void parse_routing(const char *dir, const char *router) {
+    unsigned long v;
+    const char *e;
+    if (dir && dir[0] == '/' && strlen(dir) + 16 < sizeof port_dir) {
+        strcpy(port_dir, dir);
+    }
+    if (router && (e = num(router, &v)) && !*e && v < 65536) {
+        router_port = (unsigned short)v;
+    }
+}
+
 static void parse_network(const char *path, const char *address) {
     const char *end;
     if (path && path[0] == '/' && strlen(path) < sizeof network_path) {
@@ -239,7 +258,7 @@ static void parse_network(const char *path, const char *address) {
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
 __attribute__((constructor)) static void fwsroot_init(void) {
@@ -265,6 +284,7 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     parse_mounts(getenv("FWS_MOUNTS"));
     parse_ports(getenv("FWS_PORTS"));
     parse_network(getenv("FWS_NETWORK"), getenv("FWS_ADDRESS"));
+    parse_routing(getenv("FWS_PORTDIR"), getenv("FWS_ROUTER"));
     const char *r = getenv("SANDBOX_ROOT");
     if (r && r[0] == '/' && strlen(r) < sizeof root) {
         strcpy(root, r);
@@ -1964,6 +1984,7 @@ INTERPOSE(fws_sem_unlink, sem_unlink);
 
 static int member_block(in_addr_t a);
 static unsigned short member_host_port(in_addr_t addr, int type, unsigned short cport, int *member);
+static unsigned short member_route(in_addr_t addr, int type, unsigned short cport, int *member, unsigned short *router);
 static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, unsigned short *cport);
 
 static unsigned short host_port(int type, unsigned short cport) {
@@ -1985,7 +2006,15 @@ static unsigned short container_port(int type, unsigned short hport) {
 #define NET_FDS 65536
 #define NET_V6 1
 #define NET_ANY 2
+// NET_UNIX: a TCP socket on a port without a host port, which the library
+// made a Unix one; NET_ROUTED: a connection through a router.
+#define NET_UNIX 4
+#define NET_ROUTED 8
 static unsigned char net_state[NET_FDS];
+// For NET_UNIX and NET_ROUTED sockets: the container port, and for
+// NET_ROUTED ones the peer's address.
+static unsigned short net_port[NET_FDS];
+static in_addr_t net_peer[NET_FDS];
 
 static unsigned char state_of(int fd) { return fd >= 0 && fd < NET_FDS ? net_state[fd] : 0; }
 
@@ -2183,14 +2212,53 @@ static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_
 // program sees it: an IPv4-mapped IPv6 address on a socket it made for
 // IPv6, a container port for a loopback host port, and, for a socket's own
 // address, the wildcard it bound.
+// present_inet writes address a, port port to the program's buffer, as
+// IPv4 or, on a socket it made for IPv6, IPv4-mapped IPv6, with IPv4's
+// wildcard as IPv6's.
+static void present_inet(unsigned char st, in_addr_t a, unsigned short port, struct sockaddr *out, socklen_t *outlen) {
+    struct sockaddr_storage v;
+    socklen_t vn;
+    memset(&v, 0, sizeof v);
+    if (st & NET_V6) {
+        struct sockaddr_in6 *b = (struct sockaddr_in6 *)&v;
+        b->sin6_len = sizeof *b;
+        b->sin6_family = AF_INET6;
+        b->sin6_port = htons(port);
+        if (a != htonl(INADDR_ANY)) {
+            b->sin6_addr.s6_addr[10] = 0xff;
+            b->sin6_addr.s6_addr[11] = 0xff;
+            memcpy(&b->sin6_addr.s6_addr[12], &a, 4);
+        }
+        vn = sizeof *b;
+    } else {
+        struct sockaddr_in b4 = v4_addr(a, port);
+        memcpy(&v, &b4, sizeof b4);
+        vn = sizeof b4;
+    }
+    socklen_t n = *outlen < vn ? *outlen : vn;
+    memcpy(out, &v, n);
+    *outlen = vn;
+}
+
 static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, struct sockaddr *out, socklen_t *outlen, int own) {
     if (!out || !outlen) {
+        return;
+    }
+    unsigned char st = state_of(fd);
+    if ((st & NET_UNIX) && k->ss_family == AF_UNIX) {
+        // A listener on a port without a host port, or a connection it
+        // accepted, whose clients came through a router from loopback.
+        in_addr_t a = own ? ((st & NET_ANY) ? htonl(INADDR_ANY) : htonl(INADDR_LOOPBACK)) : htonl(INADDR_LOOPBACK);
+        present_inet(st, a, own ? net_port[fd] : 0, out, outlen);
+        return;
+    }
+    if ((st & NET_ROUTED) && !own) {
+        present_inet(st, net_peer[fd], net_port[fd], out, outlen);
         return;
     }
     struct sockaddr_storage v;
     memcpy(&v, k, sizeof v);
     socklen_t vn = kn;
-    unsigned char st = state_of(fd);
     int type = sock_type(fd);
     if (k->ss_family == AF_INET) {
         struct sockaddr_in *a = (struct sockaddr_in *)&v;
@@ -2237,7 +2305,107 @@ static int fws_socket(int domain, int type, int protocol) {
 }
 INTERPOSE(fws_socket, socket);
 
+// port_path writes where the library listens on TCP port port.
+static int port_path(unsigned short port, struct sockaddr_un *u) {
+    char digits[8], *d = digits + sizeof digits;
+    *--d = 0;
+    do {
+        *--d = (char)('0' + port % 10);
+        port /= 10;
+    } while (port);
+    memset(u, 0, sizeof *u);
+    u->sun_family = AF_UNIX;
+    if (!join(u->sun_path, sizeof u->sun_path, port_dir, "/tcp-", d)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    u->sun_len = (unsigned char)SUN_LEN(u);
+    return 0;
+}
+
+// unbacked reports the TCP port sa names, on loopback, the wildcard or the
+// container's own address, when it has no host port and the container can
+// listen on it with a Unix socket; any is whether sa is the wildcard.
+static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len, int *any, int *v6) {
+    if (!port_dir[0] || !sa || sock_type(fd) != SOCK_STREAM) {
+        return 0;
+    }
+    in_addr_t a;
+    unsigned short port;
+    *v6 = sa->sa_family == AF_INET6;
+    if (sa->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *s4 = (const void *)sa;
+        a = s4->sin_addr.s_addr;
+        port = ntohs(s4->sin_port);
+    } else if (*v6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *s6 = (const void *)sa;
+        port = ntohs(s6->sin6_port);
+        if (IN6_IS_ADDR_UNSPECIFIED(&s6->sin6_addr)) {
+            a = htonl(INADDR_ANY);
+        } else if (IN6_IS_ADDR_LOOPBACK(&s6->sin6_addr)) {
+            a = htonl(INADDR_LOOPBACK);
+        } else if (IN6_IS_ADDR_V4MAPPED(&s6->sin6_addr)) {
+            a = mapped_v4(&s6->sin6_addr);
+        } else {
+            return 0;
+        }
+    } else {
+        return 0;
+    }
+    if (own_address && a == own_address) a = htonl(INADDR_LOOPBACK);
+    if (!port || !v4_local(a) || host_port(SOCK_STREAM, port)) {
+        return 0;
+    }
+    *any = a == htonl(INADDR_ANY);
+    return port;
+}
+
+// listen_unix puts a Unix socket in fd's place and binds it where the
+// library listens on port.
+static int listen_unix(int fd, unsigned short port, int any, int v6) {
+    struct sockaddr_un u;
+    if (port_path(port, &u) == -1) {
+        return -1;
+    }
+    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s < 0) {
+        return -1;
+    }
+    int fl = fcntl(fd, F_GETFL), fdfl = fcntl(fd, F_GETFD);
+    if (fl != -1) fcntl(s, F_SETFL, fl);
+    if (dup2(s, fd) == -1) {
+        int e = errno;
+        close(s);
+        errno = e;
+        return -1;
+    }
+    close(s);
+    if (fdfl != -1) fcntl(fd, F_SETFD, fdfl);
+    set_state(fd, NET_UNIX | (v6 ? NET_V6 : 0) | (any ? NET_ANY : 0));
+    if (fd < NET_FDS) net_port[fd] = port;
+    int r = bind(fd, (struct sockaddr *)&u, u.sun_len);
+    if (r == -1 && errno == EADDRINUSE) {
+        // A socket no listener holds is a stale one, which a listener that
+        // ended left behind.
+        int t = socket(AF_UNIX, SOCK_STREAM, 0);
+        int live = t >= 0 && connect(t, (struct sockaddr *)&u, u.sun_len) == 0;
+        if (t >= 0) close(t);
+        if (live) {
+            errno = EADDRINUSE;
+            return -1;
+        }
+        unlink(u.sun_path);
+        r = bind(fd, (struct sockaddr *)&u, u.sun_len);
+    }
+    return r;
+}
+
 static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
+    int uany, uv6;
+    unsigned short uport = unbacked(fd, sa, len, &uany, &uv6);
+    if (uport) {
+        return listen_unix(fd, uport, uany, uv6);
+    }
     struct sockaddr_storage b;
     unsigned char any;
     const struct sockaddr *to = local(fd, sa, &len, &b, &any);
@@ -2247,7 +2415,94 @@ static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
 }
 INTERPOSE(fws_bind, bind);
 
+// route connects fd through the router at loopback port router to the
+// container port port of the member at addr, and reports whether it did:
+// at once, as a connection to loopback is made, whether or not fd blocks.
+static int route(int fd, in_addr_t addr, unsigned short router, unsigned short port, int v6) {
+    if (v6 && !(state_of(fd) & NET_V6) && to_ipv4(fd, SOCK_STREAM) == -1) {
+        return -1;
+    }
+    int fl = fcntl(fd, F_GETFL);
+    if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
+    struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
+    unsigned char req[2] = {(unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
+    int ok = connect(fd, (struct sockaddr *)&r, sizeof r) == 0 && write(fd, req, 2) == 2 && read(fd, &ans, 1) == 1;
+    int e = errno;
+    if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl);
+    if (!ok) {
+        errno = e;
+        return -1;
+    }
+    if (ans != 0) {
+        errno = ECONNREFUSED;
+        return -1;
+    }
+    set_state(fd, (state_of(fd) & NET_V6) | NET_ROUTED);
+    if (fd < NET_FDS) {
+        net_peer[fd] = addr;
+        net_port[fd] = port;
+    }
+    return 0;
+}
+
+// routed connects fd to sa through a router when sa names a container port
+// without a host port: its own container's, which it listens on, or a
+// member's. It reports whether it did, with *r the result.
+static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
+    if (!sa || sock_type(fd) != SOCK_STREAM) {
+        return 0;
+    }
+    in_addr_t a;
+    unsigned short port;
+    int v6 = sa->sa_family == AF_INET6;
+    if (sa->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *s4 = (const void *)sa;
+        a = s4->sin_addr.s_addr;
+        port = ntohs(s4->sin_port);
+    } else if (v6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *s6 = (const void *)sa;
+        port = ntohs(s6->sin6_port);
+        if (IN6_IS_ADDR_V4MAPPED(&s6->sin6_addr)) {
+            a = mapped_v4(&s6->sin6_addr);
+        } else if (IN6_IS_ADDR_LOOPBACK(&s6->sin6_addr)) {
+            a = htonl(INADDR_LOOPBACK);
+        } else {
+            return 0;
+        }
+    } else {
+        return 0;
+    }
+    if (!port) {
+        return 0;
+    }
+    if (member_block(a) && !(own_address && a == own_address)) {
+        int member;
+        unsigned short router = 0;
+        if (member_route(a, SOCK_STREAM, port, &member, &router) || !member || !router) {
+            return 0;
+        }
+        *r = route(fd, a, router, port, v6);
+        return 1;
+    }
+    if ((v4_local(a) || (own_address && a == own_address)) && router_port && !host_port(SOCK_STREAM, port)) {
+        // Loopback reaches the container's own listener when it has one;
+        // any other loopback port is the host's.
+        struct sockaddr_un u;
+        struct stat st;
+        if (port_path(port, &u) == -1 || stat(u.sun_path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
+            return 0;
+        }
+        *r = route(fd, own_address && a == own_address ? a : htonl(INADDR_LOOPBACK), router_port, port, v6);
+        return 1;
+    }
+    return 0;
+}
+
 static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
+    int rr;
+    if (routed(fd, sa, len, &rr)) {
+        return rr;
+    }
     struct sockaddr_storage b;
     const struct sockaddr *to = remote(fd, sa, &len, &b);
     if (sa && !to) {
@@ -2259,6 +2514,10 @@ INTERPOSE(fws_connect, connect);
 
 extern int connect_nocancel(int, const struct sockaddr *, socklen_t) __asm("_connect$NOCANCEL") __attribute__((weak_import));
 static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len) {
+    int rr;
+    if (routed(fd, sa, len, &rr)) {
+        return rr;
+    }
     struct sockaddr_storage b;
     const struct sockaddr *to = remote(fd, sa, &len, &b);
     if (sa && !to) {
@@ -2341,7 +2600,8 @@ static int fws_accept(int fd, struct sockaddr *sa, socklen_t *len) {
     socklen_t kn = sizeof k;
     int c = accept(fd, (struct sockaddr *)&k, &kn);
     if (c >= 0) {
-        set_state(c, state_of(fd) & NET_V6);
+        set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
+        if (c < NET_FDS && fd < NET_FDS) net_port[c] = net_port[fd];
         present(c, &k, kn, sa, len, 0);
     }
     return c;
@@ -2379,6 +2639,11 @@ static int v4_option(int name) {
 }
 
 static int fws_setsockopt(int fd, int level, int name, const void *v, socklen_t n) {
+    // A Unix stream has no IP or TCP options to set: it delays no segment
+    // and has no packets to tune.
+    if ((state_of(fd) & NET_UNIX) && (level == IPPROTO_TCP || level == IPPROTO_IP || level == IPPROTO_IPV6)) {
+        return 0;
+    }
     if (level == IPPROTO_IPV6 && (state_of(fd) & NET_V6)) {
         if (name == IPV6_V6ONLY) {
             int on = n >= (socklen_t)sizeof(int) ? *(const int *)v : 0;
@@ -2396,6 +2661,12 @@ static int fws_setsockopt(int fd, int level, int name, const void *v, socklen_t 
 INTERPOSE(fws_setsockopt, setsockopt);
 
 static int fws_getsockopt(int fd, int level, int name, void *v, socklen_t *n) {
+    if ((state_of(fd) & NET_UNIX) && (level == IPPROTO_TCP || level == IPPROTO_IP || level == IPPROTO_IPV6) && v && n &&
+        *n >= (socklen_t)sizeof(int)) {
+        *(int *)v = level == IPPROTO_TCP && name == TCP_NODELAY;
+        *n = sizeof(int);
+        return 0;
+    }
     if (level == IPPROTO_IPV6 && (state_of(fd) & NET_V6)) {
         if (name == IPV6_V6ONLY && v && n && *n >= (socklen_t)sizeof(int)) {
             *(int *)v = 0;
@@ -2409,16 +2680,24 @@ static int fws_getsockopt(int fd, int level, int name, void *v, socklen_t *n) {
 }
 INTERPOSE(fws_getsockopt, getsockopt);
 
+static void copy_state(int from, int to) {
+    set_state(to, state_of(from));
+    if (from >= 0 && from < NET_FDS && to >= 0 && to < NET_FDS) {
+        net_port[to] = net_port[from];
+        net_peer[to] = net_peer[from];
+    }
+}
+
 static int fws_dup(int fd) {
     int c = dup(fd);
-    set_state(c, state_of(fd));
+    copy_state(fd, c);
     return c;
 }
 INTERPOSE(fws_dup, dup);
 
 static int fws_dup2(int fd, int to) {
     int c = dup2(fd, to);
-    if (c >= 0) set_state(c, state_of(fd));
+    if (c >= 0) copy_state(fd, c);
     return c;
 }
 INTERPOSE(fws_dup2, dup2);
@@ -2503,7 +2782,8 @@ static int fws_accept_nocancel(int fd, struct sockaddr *sa, socklen_t *len) {
     socklen_t kn = sizeof k;
     int c = accept_nocancel(fd, (struct sockaddr *)&k, &kn);
     if (c >= 0) {
-        set_state(c, state_of(fd) & NET_V6);
+        set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
+        if (c < NET_FDS && fd < NET_FDS) net_port[c] = net_port[fd];
         present(c, &k, kn, sa, len, 0);
     }
     return c;
@@ -2550,6 +2830,7 @@ static const char *members_text(void) {
 struct member {
     in_addr_t addr;
     const char *names, *names_end, *ports, *ports_end;
+    unsigned short router;
 };
 
 static const char *next_member(const char *p, struct member *m) {
@@ -2560,10 +2841,13 @@ static const char *next_member(const char *p, struct member *m) {
         const char *t2 = t1 ? memchr(t1 + 1, '\t', (size_t)(end - t1 - 1)) : NULL;
         const char *after;
         if (t2 && parse_v4(p, &after, &m->addr) && after == t1) {
+            const char *t3 = memchr(t2 + 1, '\t', (size_t)(end - t2 - 1));
+            unsigned long r = 0;
             m->names = t1 + 1;
             m->names_end = t2;
             m->ports = t2 + 1;
-            m->ports_end = end;
+            m->ports_end = t3 ? t3 : end;
+            m->router = t3 && num(t3 + 1, &r) && r < 65536 ? (unsigned short)r : 0;
             return nl ? nl + 1 : end;
         }
         p = nl ? nl + 1 : end;
@@ -2626,6 +2910,12 @@ static int member_address(const char *name, in_addr_t *out) {
 // member_host_port returns the host port behind a member's container port,
 // and whether addr is a member at all.
 static unsigned short member_host_port(in_addr_t addr, int type, unsigned short cport, int *member) {
+    return member_route(addr, type, cport, member, NULL);
+}
+
+// member_route returns the host port behind a member's container port, and
+// whether addr is a member, and its router's port.
+static unsigned short member_route(in_addr_t addr, int type, unsigned short cport, int *member, unsigned short *router) {
     unsigned short h = 0;
     *member = 0;
     pthread_mutex_lock(&members_lock);
@@ -2634,6 +2924,7 @@ static unsigned short member_host_port(in_addr_t addr, int type, unsigned short 
         if (m.addr == addr) {
             *member = 1;
             h = member_ports(&m, type, cport, 0);
+            if (router) *router = m.router;
             break;
         }
     }

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/members"
+	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
 
 // Policy decides which addresses the proxy may dial.
@@ -170,12 +171,8 @@ func (p *Proxy) dial(ctx context.Context, network, addr string) (net.Conn, error
 		return nil, err
 	}
 	if p.policy.Members != "" {
-		if hp, ok, err := p.member(host, port); ok {
-			if err != nil {
-				return nil, err
-			}
-			var d net.Dialer
-			return d.DialContext(ctx, "tcp", hp)
+		if c, ok, err := p.member(ctx, host, port); ok {
+			return c, err
 		}
 	}
 	var ips []net.IP
@@ -204,22 +201,31 @@ func (p *Proxy) dial(ctx context.Context, network, addr string) (net.Conn, error
 	return nil, last
 }
 
-// member returns the loopback address behind a stack member's port, and
-// whether host is a member at all.
-func (p *Proxy) member(host, port string) (string, bool, error) {
+// member connects to a stack member's port, at the host port behind it or
+// through the member's router, and reports whether host is a member at all.
+func (p *Proxy) member(ctx context.Context, host, port string) (net.Conn, bool, error) {
 	b, err := os.ReadFile(p.policy.Members)
 	if err != nil {
-		return "", false, nil
+		return nil, false, nil
 	}
 	m, ok := members.Find(members.Parse(b), strings.Trim(host, "[]"))
 	if !ok {
-		return "", false, nil
+		return nil, false, nil
 	}
-	hp, ok := m.Ports[port+"/tcp"]
-	if !ok {
-		return "", true, fmt.Errorf("egress: %s does not listen on port %s", host, port)
+	if hp, ok := m.Ports[port+"/tcp"]; ok {
+		var d net.Dialer
+		c, err := d.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
+		return c, true, err
 	}
-	return net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)), true, nil
+	n, err := strconv.Atoi(port)
+	if err != nil || m.Router == 0 {
+		return nil, true, fmt.Errorf("egress: %s does not listen on port %s", host, port)
+	}
+	c, err := router.Dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(m.Router)), n)
+	if err != nil {
+		return nil, true, fmt.Errorf("egress: %s does not listen on port %s", host, port)
+	}
+	return c, true, nil
 }
 
 func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {

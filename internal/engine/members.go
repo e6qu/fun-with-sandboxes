@@ -90,7 +90,7 @@ func (e *Engine) writeNetworkLocked(stack string) error {
 				ports[k] = v
 			}
 		}
-		ms = append(ms, stackmembers.Member{Address: m.rec.Address, Names: memberNames(m), Ports: ports})
+		ms = append(ms, stackmembers.Member{Address: m.rec.Address, Names: memberNames(m), Ports: ports, Router: m.rec.RouterPort})
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

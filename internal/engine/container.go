@@ -92,9 +92,12 @@ type record struct {
 	Published network.PortMap `json:"published"`
 	// Address is the container's member address in its stack, which the
 	// container library presents its stack peers at.
-	Address string     `json:"address,omitempty"`
-	Mounts  []mountRec `json:"mounts"`
-	State   stateRec   `json:"state"`
+	Address string `json:"address,omitempty"`
+	// RouterPort is where the container's shim routes connections to its
+	// TCP ports that have no host port (package router).
+	RouterPort int        `json:"routerPort,omitempty"`
+	Mounts     []mountRec `json:"mounts"`
+	State      stateRec   `json:"state"`
 }
 
 type Container struct {
@@ -201,6 +204,24 @@ func (e *Engine) loadContainers() error {
 			return err
 		}
 		c.rec.Address = a
+		if err := c.save(); err != nil {
+			return err
+		}
+	}
+	// And routers.
+	for _, c := range e.containers {
+		if c.rec.RouterPort != 0 || !onNetwork(c) {
+			continue
+		}
+		key := c.rec.Service
+		if n := c.rec.Config.Labels[LabelContainerNumber]; n != "" {
+			key += "#" + n
+		}
+		p, err := e.alloc.Port(c.rec.Stack, key+"/router")
+		if err != nil {
+			return err
+		}
+		c.rec.RouterPort = p
 		if err := c.save(); err != nil {
 			return err
 		}
@@ -333,6 +354,12 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			ports[p.String()] = hp
 		}
 	}
+	routerPort := 0
+	if string(req.HostConfig.NetworkMode) != "none" {
+		if routerPort, err = e.alloc.Port(stack, portKey+"/router"); err != nil {
+			return container.CreateResponse{}, err
+		}
+	}
 
 	mounts, err := e.prepareMountsLocked(c.root(), img, cfg, req.HostConfig)
 	if err != nil {
@@ -368,8 +395,8 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		Image: req.Config.Image, ImageID: img.ID,
 		Config: cfg, HostConfig: hc, Networks: networks,
 		Stack: stack, Service: service, Ports: ports, Mounts: mounts,
-		Address: address,
-		State:   stateRec{Status: container.StateCreated},
+		Address: address, RouterPort: routerPort,
+		State: stateRec{Status: container.StateCreated},
 	}
 	if err := c.save(); err != nil {
 		return container.CreateResponse{}, err
@@ -437,6 +464,9 @@ func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string
 			return nil, err
 		}
 		env = append(env, pathmap.NetworkVar+"="+nf, pathmap.AddressVar+"="+c.rec.Address)
+		if c.rec.RouterPort != 0 {
+			env = append(env, pathmap.PortDirVar+"="+e.portDir(c), pathmap.RouterVar+"="+strconv.Itoa(c.rec.RouterPort))
+		}
 	}
 	return env, nil
 }
@@ -1046,6 +1076,9 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 		return seatbelt.Spec{}, err
 	}
 	spec.ReadFiles = []string{nf}
+	if c.rec.RouterPort != 0 {
+		spec.PortDir = e.portDir(c)
+	}
 	for _, p := range sortedKeys(c.rec.Ports) {
 		spec.BindPorts = append(spec.BindPorts, c.rec.Ports[p])
 	}
@@ -1144,6 +1177,7 @@ func (c *Container) start(e *Engine) error {
 		},
 		TTY: c.rec.Config.Tty, Console: c.rec.HostConfig.ConsoleSize, OpenStdin: c.rec.Config.OpenStdin,
 		LogPath: c.logs.path, Socket: e.shimSocket(c), Anchor: e.anchorSocket(c), ExitPath: c.exitPath(),
+		Router: c.rec.RouterPort, PortDir: e.portDir(c),
 		Tag: c.tag(), AllocRoot: e.cfg.Root, Stack: c.rec.Stack, Resources: res,
 	}
 	for _, p := range plan {
@@ -1207,6 +1241,13 @@ func (c *Container) exitPath() string { return filepath.Join(c.dir, "exit.json")
 // root, kept short, as macOS caps socket paths at 104 bytes.
 func (e *Engine) shimSocket(c *Container) string {
 	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".sock")
+}
+
+// portDir holds the Unix sockets the container library listens on for the
+// container's TCP ports that have no host port: outside the root, where
+// only the container and its shim reach them.
+func (e *Engine) portDir(c *Container) string {
+	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".p")
 }
 
 func (e *Engine) anchorSocket(c *Container) string {
