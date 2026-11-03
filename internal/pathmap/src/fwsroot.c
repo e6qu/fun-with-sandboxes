@@ -421,7 +421,8 @@ static void unmap(char *p, size_t size);
 // path, where the kernel would resolve it otherwise: onto a mount, through
 // a symbolic link, or above the root.
 static const char *at_map(int fd, const char *path, char *buf, int follow) {
-    if (!rootlen || !path) {
+    // An empty path names nothing, whatever the directory.
+    if (!rootlen || !path || !*path) {
         return path;
     }
     if (path[0] == '/') {

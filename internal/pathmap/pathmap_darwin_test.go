@@ -105,7 +105,7 @@ func TestMountsAndEnvScripts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := probe(t, root, []string{mv, "PATH=" + filepath.Join(root, "bin")}, "mount", "mountat", "rootpath", "envscript")
+	got := probe(t, root, []string{mv, "PATH=" + filepath.Join(root, "bin")}, "mount", "mountat", "rootpath", "envscript", "empty")
 	if want := "mounted,/data/file,/data"; got["mount"] != want {
 		t.Errorf("mount: %q, want %q", got["mount"], want)
 	}
@@ -114,6 +114,9 @@ func TestMountsAndEnvScripts(t *testing.T) {
 	}
 	if want := filepath.Join(src, "file"); got["rootpath"] != want {
 		t.Errorf("rootpath: %q, want %q", got["rootpath"], want)
+	}
+	if !strings.HasPrefix(got["empty"], "error: ") {
+		t.Errorf("stat of an empty path: %q, want an error", got["empty"])
 	}
 	if !strings.Contains(got["envscript"], "read=inside") {
 		t.Errorf("a #!/usr/bin/env script ran as %q", got["envscript"])

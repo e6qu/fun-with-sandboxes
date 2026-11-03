@@ -168,6 +168,10 @@ func run(check string) string {
 			parts = append(parts, result(string(b), err))
 		}
 		return strings.Join(parts, ",")
+	case "empty":
+		// An empty path names nothing, wherever the process runs.
+		_, err := os.Stat("")
+		return result("found", err)
 	case "exec":
 		out, err := exec.Command("/bin/probe", "read").Output()
 		return result(string(out), err)
