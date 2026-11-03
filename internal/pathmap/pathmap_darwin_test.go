@@ -1,9 +1,11 @@
 package pathmap
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -217,4 +219,69 @@ func TestPOSIXIPCUnderTheIPCPrefix(t *testing.T) {
 	if got := run("DYLD_INSERT_LIBRARIES="+lib, "SANDBOX_IPC_PREFIX=fwstest."); got != "1 1 1" {
 		t.Errorf("with the library: %q, want shared memory, a semaphore and a long name under the prefix", got)
 	}
+}
+
+func TestContainerPortsAndDualStack(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "net")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/net/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	tcp1, tcp2, udp := freePort(t, "tcp"), freePort(t, "tcp"), freePort(t, "udp")
+	ports, err := PortsVar(map[string]int{"8080/tcp": tcp1, "8081/tcp": tcp2, "9090/udp": udp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(env ...string) map[string]string {
+		cmd := exec.Command(bin, strconv.Itoa(tcp1), strconv.Itoa(tcp2), strconv.Itoa(udp))
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("net: %v\n%s", err, out)
+		}
+		got := map[string]string{}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			k, v, _ := strings.Cut(line, "=")
+			got[k] = v
+		}
+		return got
+	}
+	if got := run(); got["listen6"] != "error" {
+		t.Fatalf("without the library: %v, want the container port's bind refused", got)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := run("DYLD_INSERT_LIBRARIES="+lib, ports)
+	for k, want := range map[string]string{
+		"listen6":  "[::]:8080",
+		"client4":  "127.0.0.1:8080",
+		"accepted": "v6",
+		"client6":  "[::ffff:127.0.0.1]:8080",
+		"listen4":  "0.0.0.0:8081",
+		"udp":      "[::ffff:127.0.0.1]",
+	} {
+		if got[k] != want {
+			t.Errorf("%s: %q, want %q (all: %v)", k, got[k], want, got)
+		}
+	}
+}
+
+// freePort returns a loopback port nothing listens on.
+func freePort(t *testing.T, network string) int {
+	t.Helper()
+	if network == "udp" {
+		c, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		return c.LocalAddr().(*net.UDPAddr).Port
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
 }

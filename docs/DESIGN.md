@@ -180,7 +180,16 @@ same knobs, each enforced by a real mechanism or refused:
   alone Seatbelt lets it register and look up services of its own; a lookup
   finds the container's service first, then the host's. POSIX shared
   memory and semaphore names get the prefix the same way, so a program
-  names them as it would on a host of its own.
+  names them as it would on a host of its own. The engine lists the
+  container's ports and their host ports in `FWS_PORTS`: a bind to the
+  wildcard or loopback address on a container port binds the host port on
+  `127.0.0.1`, a `localhost` connection or datagram to a container port
+  reaches its host port, and `getsockname`, `getpeername`, `accept` and
+  `recvfrom` report container ports and the wildcard the program bound. An
+  IPv6 socket bound or connected to an IPv4 address, or bound to the
+  dual-stack wildcard, gets an IPv4 socket with its settings in the same
+  descriptor, whose addresses read as IPv4-mapped IPv6 ones, because
+  Seatbelt matches `127.0.0.1` and `::1` but not `::ffff:127.0.0.1`.
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would
@@ -600,8 +609,8 @@ every *action* across stacks is denied.
 ## 12. Known limitations (stated, not hidden)
 
 - macOS-native images only; no Linux images, ever, without a VM.
-- Images must be built for the `$SANDBOX_ROOT` + configurable-port contract;
-  stock images don't run.
+- Images must be macOS builds; programs the container library cannot load
+  into must follow the `$SANDBOX_ROOT` + configurable-port contract.
 - Memory, CPU and pids limits are enforced by a supervisor that kills or
   stops processes, not by a kernel that refuses an allocation or a fork.
 - `user:` and `USER` are presented by the container library; every process

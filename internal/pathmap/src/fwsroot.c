@@ -43,6 +43,9 @@
 #include <sys/mman.h>
 #include <sys/sysctl.h>
 #include <sys/mount.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/xattr.h>
@@ -140,10 +143,39 @@ static unsigned long env_number(const char *name) {
     return v ? strtoul(v, NULL, 10) : 0;
 }
 
+// The container's ports (FWS_PORTS: "80/tcp=30001,53/udp=30002"): the host
+// port behind each container port, which the sandbox lets the container
+// bind on loopback, its only interface.
+struct port_map {
+    int type;
+    unsigned short cport, hport;
+};
+static struct port_map port_maps[512];
+static size_t nport_maps;
+
+static void parse_ports(const char *v) {
+    while (v && *v && nport_maps < sizeof port_maps / sizeof port_maps[0]) {
+        char *end;
+        unsigned long c = strtoul(v, &end, 10);
+        int type = strncmp(end, "/tcp=", 5) == 0 ? SOCK_STREAM : strncmp(end, "/udp=", 5) == 0 ? SOCK_DGRAM : 0;
+        if (!type) {
+            return;
+        }
+        unsigned long h = strtoul(end + 5, &end, 10);
+        if (c && c < 65536 && h && h < 65536) {
+            port_maps[nport_maps++] = (struct port_map){type, (unsigned short)c, (unsigned short)h};
+        }
+        if (*end != ',') {
+            return;
+        }
+        v = end + 1;
+    }
+}
+
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
 __attribute__((constructor)) static void fwsroot_init(void) {
@@ -162,6 +194,7 @@ __attribute__((constructor)) static void fwsroot_init(void) {
         strlcpy(hostname, h, sizeof hostname);
     }
     parse_mounts(getenv("FWS_MOUNTS"));
+    parse_ports(getenv("FWS_PORTS"));
     const char *r = getenv("SANDBOX_ROOT");
     if (r && r[0] == '/' && strlen(r) < sizeof root) {
         strcpy(root, r);
@@ -1618,3 +1651,513 @@ static int fws_sem_unlink(const char *name) {
     return sem_unlink(posix_ipc_name(name, own));
 }
 INTERPOSE(fws_sem_unlink, sem_unlink);
+
+// Networking. The container's one interface is the host's loopback, where
+// the sandbox lets it bind its ports' host ports alone, and Seatbelt matches
+// loopback as 127.0.0.1 and ::1 but not as the IPv4-mapped ::ffff:127.0.0.1
+// a dual-stack socket uses. So, as the container's network namespace would:
+//
+//   - a bind to the wildcard or loopback address on a container port binds
+//     loopback on its host port, and getsockname reports what was bound;
+//   - a connection to a loopback container port reaches its host port, and
+//     getpeername reports the container port;
+//   - an IPv6 socket bound or connected to an IPv4 address, or bound to the
+//     dual-stack wildcard, becomes an IPv4 socket in the same descriptor,
+//     whose addresses the program sees as IPv4-mapped IPv6 ones.
+
+static unsigned short host_port(int type, unsigned short cport) {
+    for (size_t i = 0; i < nport_maps; i++) {
+        if (port_maps[i].type == type && port_maps[i].cport == cport) return port_maps[i].hport;
+    }
+    return 0;
+}
+
+static unsigned short container_port(int type, unsigned short hport) {
+    for (size_t i = 0; i < nport_maps; i++) {
+        if (port_maps[i].type == type && port_maps[i].hport == hport) return port_maps[i].cport;
+    }
+    return 0;
+}
+
+// What the library did to each descriptor: NET_V6 for an IPv6 socket it
+// replaced with an IPv4 one, NET_ANY for one bound to the wildcard address.
+#define NET_FDS 65536
+#define NET_V6 1
+#define NET_ANY 2
+static unsigned char net_state[NET_FDS];
+
+static unsigned char state_of(int fd) { return fd >= 0 && fd < NET_FDS ? net_state[fd] : 0; }
+
+static void set_state(int fd, unsigned char st) {
+    if (fd >= 0 && fd < NET_FDS) net_state[fd] = st;
+}
+
+static int sock_type(int fd) {
+    int t = 0;
+    socklen_t n = sizeof t;
+    return getsockopt(fd, SOL_SOCKET, SO_TYPE, &t, &n) == 0 ? t : 0;
+}
+
+static int v4_local(in_addr_t a) {
+    uint32_t h = ntohl(a);
+    return h == INADDR_ANY || (h >> 24) == 127;
+}
+
+static in_addr_t mapped_v4(const struct in6_addr *a) {
+    in_addr_t v;
+    memcpy(&v, &a->s6_addr[12], sizeof v);
+    return v;
+}
+
+static struct sockaddr_in v4_addr(in_addr_t a, unsigned short port) {
+    struct sockaddr_in s;
+    memset(&s, 0, sizeof s);
+    s.sin_len = sizeof s;
+    s.sin_family = AF_INET;
+    s.sin_port = htons(port);
+    s.sin_addr.s_addr = a;
+    return s;
+}
+
+// to_ipv4 puts an IPv4 socket of fd's type, with its settings, in its place.
+static int to_ipv4(int fd, int type) {
+    int s = socket(AF_INET, type, 0);
+    if (s < 0) {
+        return -1;
+    }
+    static const int ints[] = {SO_REUSEADDR, SO_REUSEPORT, SO_KEEPALIVE, SO_RCVBUF, SO_SNDBUF, SO_BROADCAST, SO_NOSIGPIPE, SO_OOBINLINE, SO_RCVLOWAT, SO_SNDLOWAT};
+    for (size_t i = 0; i < sizeof ints / sizeof ints[0]; i++) {
+        int v;
+        socklen_t n = sizeof v;
+        if (getsockopt(fd, SOL_SOCKET, ints[i], &v, &n) == 0) setsockopt(s, SOL_SOCKET, ints[i], &v, n);
+    }
+    struct linger l;
+    socklen_t ln = sizeof l;
+    if (getsockopt(fd, SOL_SOCKET, SO_LINGER, &l, &ln) == 0) setsockopt(s, SOL_SOCKET, SO_LINGER, &l, ln);
+    static const int times[] = {SO_RCVTIMEO, SO_SNDTIMEO};
+    for (size_t i = 0; i < 2; i++) {
+        struct timeval tv;
+        socklen_t n = sizeof tv;
+        if (getsockopt(fd, SOL_SOCKET, times[i], &tv, &n) == 0) setsockopt(s, SOL_SOCKET, times[i], &tv, n);
+    }
+    if (type == SOCK_STREAM) {
+        static const int tcp[] = {TCP_NODELAY, TCP_KEEPALIVE, TCP_KEEPINTVL, TCP_KEEPCNT};
+        for (size_t i = 0; i < sizeof tcp / sizeof tcp[0]; i++) {
+            int v;
+            socklen_t n = sizeof v;
+            if (getsockopt(fd, IPPROTO_TCP, tcp[i], &v, &n) == 0) setsockopt(s, IPPROTO_TCP, tcp[i], &v, n);
+        }
+    }
+    int fl = fcntl(fd, F_GETFL);
+    int fdfl = fcntl(fd, F_GETFD);
+    if (fl != -1) fcntl(s, F_SETFL, fl);
+    if (dup2(s, fd) == -1) {
+        int e = errno;
+        close(s);
+        errno = e;
+        return -1;
+    }
+    close(s);
+    if (fdfl != -1) fcntl(fd, F_SETFD, fdfl);
+    set_state(fd, NET_V6);
+    return 0;
+}
+
+// local returns the address a bind to sa binds, in out, converting fd first
+// where an IPv4 address goes through an IPv6 socket.
+static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out, unsigned char *any) {
+    *any = 0;
+    if (!sa) {
+        return sa;
+    }
+    int type = sock_type(fd);
+    if (sa->sa_family == AF_INET && *len >= (socklen_t)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *a = (const void *)sa;
+        if (!v4_local(a->sin_addr.s_addr)) {
+            return sa;
+        }
+        unsigned short port = ntohs(a->sin_port), h = host_port(type, port);
+        *any = a->sin_addr.s_addr == htonl(INADDR_ANY);
+        struct sockaddr_in b = v4_addr(*any ? htonl(INADDR_LOOPBACK) : a->sin_addr.s_addr, h ? h : port);
+        memcpy(out, &b, sizeof b);
+        *len = sizeof b;
+        return (const struct sockaddr *)out;
+    }
+    if (sa->sa_family == AF_INET6 && *len >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *a = (const void *)sa;
+        unsigned short port = ntohs(a->sin6_port), h = host_port(type, port);
+        int wild = IN6_IS_ADDR_UNSPECIFIED(&a->sin6_addr);
+        int v6only = 0;
+        socklen_t n = sizeof v6only;
+        getsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, &n);
+        if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr) || (wild && !v6only)) {
+            in_addr_t v4 = wild ? htonl(INADDR_ANY) : mapped_v4(&a->sin6_addr);
+            if (!v4_local(v4) || to_ipv4(fd, type) == -1) {
+                return sa;
+            }
+            *any = v4 == htonl(INADDR_ANY);
+            struct sockaddr_in b = v4_addr(*any ? htonl(INADDR_LOOPBACK) : v4, h ? h : port);
+            memcpy(out, &b, sizeof b);
+            *len = sizeof b;
+            return (const struct sockaddr *)out;
+        }
+        if (wild || IN6_IS_ADDR_LOOPBACK(&a->sin6_addr)) {
+            *any = wild;
+            struct sockaddr_in6 b = *a;
+            b.sin6_addr = in6addr_loopback;
+            b.sin6_port = htons(h ? h : port);
+            memcpy(out, &b, sizeof b);
+            *len = sizeof b;
+            return (const struct sockaddr *)out;
+        }
+    }
+    return sa;
+}
+
+// remote returns the address a connection or datagram to sa reaches, in
+// out, converting fd first where an IPv4 address goes through an IPv6
+// socket.
+static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out) {
+    if (!sa) {
+        return sa;
+    }
+    int type = sock_type(fd);
+    in_addr_t v4;
+    unsigned short port;
+    if (sa->sa_family == AF_INET && *len >= (socklen_t)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *a = (const void *)sa;
+        v4 = a->sin_addr.s_addr;
+        port = ntohs(a->sin_port);
+    } else if (sa->sa_family == AF_INET6 && *len >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *a = (const void *)sa;
+        port = ntohs(a->sin6_port);
+        if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr) || (state_of(fd) & NET_V6)) {
+            // The IPv4 socket in an IPv6 one's place reaches ::1 as 127.0.0.1.
+            v4 = IN6_IS_ADDR_V4MAPPED(&a->sin6_addr) ? mapped_v4(&a->sin6_addr)
+                 : IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) ? htonl(INADDR_LOOPBACK)
+                                                       : 0;
+            if (!v4 || (!(state_of(fd) & NET_V6) && to_ipv4(fd, type) == -1)) {
+                return sa;
+            }
+        } else {
+            unsigned short h = host_port(type, port);
+            if (!h || !(IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) || IN6_IS_ADDR_UNSPECIFIED(&a->sin6_addr))) {
+                return sa;
+            }
+            struct sockaddr_in6 b = *a;
+            b.sin6_addr = in6addr_loopback;
+            b.sin6_port = htons(h);
+            memcpy(out, &b, sizeof b);
+            *len = sizeof b;
+            return (const struct sockaddr *)out;
+        }
+    } else {
+        return sa;
+    }
+    unsigned short h = v4_local(v4) ? host_port(type, port) : 0;
+    struct sockaddr_in b = v4_addr(v4 == htonl(INADDR_ANY) ? htonl(INADDR_LOOPBACK) : v4, h ? h : port);
+    memcpy(out, &b, sizeof b);
+    *len = sizeof b;
+    return (const struct sockaddr *)out;
+}
+
+// present writes the kernel's address k to the program's buffer as the
+// program sees it: an IPv4-mapped IPv6 address on a socket it made for
+// IPv6, a container port for a loopback host port, and, for a socket's own
+// address, the wildcard it bound.
+static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, struct sockaddr *out, socklen_t *outlen, int own) {
+    if (!out || !outlen) {
+        return;
+    }
+    struct sockaddr_storage v;
+    memcpy(&v, k, sizeof v);
+    socklen_t vn = kn;
+    unsigned char st = state_of(fd);
+    int type = sock_type(fd);
+    if (k->ss_family == AF_INET) {
+        struct sockaddr_in *a = (struct sockaddr_in *)&v;
+        unsigned short c = v4_local(a->sin_addr.s_addr) ? container_port(type, ntohs(a->sin_port)) : 0;
+        if (c) a->sin_port = htons(c);
+        if (own && (st & NET_ANY)) a->sin_addr.s_addr = htonl(INADDR_ANY);
+        if (st & NET_V6) {
+            struct sockaddr_in6 b;
+            memset(&b, 0, sizeof b);
+            b.sin6_len = sizeof b;
+            b.sin6_family = AF_INET6;
+            b.sin6_port = a->sin_port;
+            if (!(own && (st & NET_ANY))) {
+                b.sin6_addr.s6_addr[10] = 0xff;
+                b.sin6_addr.s6_addr[11] = 0xff;
+                memcpy(&b.sin6_addr.s6_addr[12], &a->sin_addr.s_addr, 4);
+            }
+            memcpy(&v, &b, sizeof b);
+            vn = sizeof b;
+        }
+    } else if (k->ss_family == AF_INET6) {
+        struct sockaddr_in6 *a = (struct sockaddr_in6 *)&v;
+        unsigned short c = IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) ? container_port(type, ntohs(a->sin6_port)) : 0;
+        if (c) a->sin6_port = htons(c);
+        if (own && (st & NET_ANY)) a->sin6_addr = in6addr_any;
+    }
+    socklen_t n = *outlen < vn ? *outlen : vn;
+    memcpy(out, &v, n);
+    *outlen = vn;
+}
+
+static int fws_socket(int domain, int type, int protocol) {
+    int fd = socket(domain, type, protocol);
+    set_state(fd, 0);
+    return fd;
+}
+INTERPOSE(fws_socket, socket);
+
+static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
+    struct sockaddr_storage b;
+    unsigned char any;
+    const struct sockaddr *to = local(fd, sa, &len, &b, &any);
+    int r = bind(fd, to, len);
+    if (r == 0 && any) set_state(fd, state_of(fd) | NET_ANY);
+    return r;
+}
+INTERPOSE(fws_bind, bind);
+
+static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
+    struct sockaddr_storage b;
+    return connect(fd, remote(fd, sa, &len, &b), len);
+}
+INTERPOSE(fws_connect, connect);
+
+extern int connect_nocancel(int, const struct sockaddr *, socklen_t) __asm("_connect$NOCANCEL") __attribute__((weak_import));
+static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len) {
+    struct sockaddr_storage b;
+    return connect_nocancel(fd, remote(fd, sa, &len, &b), len);
+}
+INTERPOSE(fws_connect_nocancel, connect_nocancel);
+
+static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
+    struct sockaddr_storage b;
+    return sendto(fd, buf, n, flags, remote(fd, sa, &len, &b), len);
+}
+INTERPOSE(fws_sendto, sendto);
+
+static ssize_t fws_sendmsg(int fd, const struct msghdr *m, int flags) {
+    if (!m || !m->msg_name) {
+        return sendmsg(fd, m, flags);
+    }
+    struct msghdr c = *m;
+    struct sockaddr_storage b;
+    socklen_t len = c.msg_namelen;
+    c.msg_name = (void *)remote(fd, m->msg_name, &len, &b);
+    c.msg_namelen = len;
+    return sendmsg(fd, &c, flags);
+}
+INTERPOSE(fws_sendmsg, sendmsg);
+
+static ssize_t fws_recvfrom(int fd, void *buf, size_t n, int flags, struct sockaddr *sa, socklen_t *len) {
+    if (!sa || !len) {
+        return recvfrom(fd, buf, n, flags, sa, len);
+    }
+    struct sockaddr_storage k;
+    socklen_t kn = sizeof k;
+    ssize_t r = recvfrom(fd, buf, n, flags, (struct sockaddr *)&k, &kn);
+    if (r >= 0) {
+        if (kn) {
+            present(fd, &k, kn, sa, len, 0);
+        } else {
+            *len = 0;
+        }
+    }
+    return r;
+}
+INTERPOSE(fws_recvfrom, recvfrom);
+
+static ssize_t fws_recvmsg(int fd, struct msghdr *m, int flags) {
+    if (!m || !m->msg_name) {
+        return recvmsg(fd, m, flags);
+    }
+    void *name = m->msg_name;
+    socklen_t cap = m->msg_namelen;
+    struct sockaddr_storage k;
+    m->msg_name = &k;
+    m->msg_namelen = sizeof k;
+    ssize_t r = recvmsg(fd, m, flags);
+    socklen_t kn = m->msg_namelen;
+    m->msg_name = name;
+    m->msg_namelen = cap;
+    if (r >= 0) {
+        if (kn) {
+            present(fd, &k, kn, name, &m->msg_namelen, 0);
+        } else {
+            m->msg_namelen = 0;
+        }
+    }
+    return r;
+}
+INTERPOSE(fws_recvmsg, recvmsg);
+
+static int fws_accept(int fd, struct sockaddr *sa, socklen_t *len) {
+    struct sockaddr_storage k;
+    socklen_t kn = sizeof k;
+    int c = accept(fd, (struct sockaddr *)&k, &kn);
+    if (c >= 0) {
+        set_state(c, state_of(fd) & NET_V6);
+        present(c, &k, kn, sa, len, 0);
+    }
+    return c;
+}
+INTERPOSE(fws_accept, accept);
+
+static int fws_getsockname(int fd, struct sockaddr *sa, socklen_t *len) {
+    struct sockaddr_storage k;
+    socklen_t kn = sizeof k;
+    int r = getsockname(fd, (struct sockaddr *)&k, &kn);
+    if (r == 0) present(fd, &k, kn, sa, len, 1);
+    return r;
+}
+INTERPOSE(fws_getsockname, getsockname);
+
+static int fws_getpeername(int fd, struct sockaddr *sa, socklen_t *len) {
+    struct sockaddr_storage k;
+    socklen_t kn = sizeof k;
+    int r = getpeername(fd, (struct sockaddr *)&k, &kn);
+    if (r == 0) present(fd, &k, kn, sa, len, 0);
+    return r;
+}
+INTERPOSE(fws_getpeername, getpeername);
+
+// The IPv6 options of a socket the library made IPv4 are its IPv4 ones,
+// and it stays dual-stack.
+static int v4_option(int name) {
+    switch (name) {
+    case IPV6_TCLASS:
+        return IP_TOS;
+    case IPV6_UNICAST_HOPS:
+        return IP_TTL;
+    }
+    return -1;
+}
+
+static int fws_setsockopt(int fd, int level, int name, const void *v, socklen_t n) {
+    if (level == IPPROTO_IPV6 && (state_of(fd) & NET_V6)) {
+        if (name == IPV6_V6ONLY) {
+            int on = n >= (socklen_t)sizeof(int) ? *(const int *)v : 0;
+            if (on) {
+                errno = EINVAL;
+                return -1;
+            }
+            return 0;
+        }
+        int o = v4_option(name);
+        if (o != -1) return setsockopt(fd, IPPROTO_IP, o, v, n);
+    }
+    return setsockopt(fd, level, name, v, n);
+}
+INTERPOSE(fws_setsockopt, setsockopt);
+
+static int fws_getsockopt(int fd, int level, int name, void *v, socklen_t *n) {
+    if (level == IPPROTO_IPV6 && (state_of(fd) & NET_V6)) {
+        if (name == IPV6_V6ONLY && v && n && *n >= (socklen_t)sizeof(int)) {
+            *(int *)v = 0;
+            *n = sizeof(int);
+            return 0;
+        }
+        int o = v4_option(name);
+        if (o != -1) return getsockopt(fd, IPPROTO_IP, o, v, n);
+    }
+    return getsockopt(fd, level, name, v, n);
+}
+INTERPOSE(fws_getsockopt, getsockopt);
+
+static int fws_dup(int fd) {
+    int c = dup(fd);
+    set_state(c, state_of(fd));
+    return c;
+}
+INTERPOSE(fws_dup, dup);
+
+static int fws_dup2(int fd, int to) {
+    int c = dup2(fd, to);
+    if (c >= 0) set_state(c, state_of(fd));
+    return c;
+}
+INTERPOSE(fws_dup2, dup2);
+
+// The cancellation-point-free variants, which libSystem's own wrappers and
+// some runtimes call.
+extern ssize_t sendto_nocancel(int, const void *, size_t, int, const struct sockaddr *, socklen_t) __asm("_sendto$NOCANCEL") __attribute__((weak_import));
+static ssize_t fws_sendto_nocancel(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
+    struct sockaddr_storage b;
+    return sendto_nocancel(fd, buf, n, flags, remote(fd, sa, &len, &b), len);
+}
+INTERPOSE(fws_sendto_nocancel, sendto_nocancel);
+
+extern ssize_t sendmsg_nocancel(int, const struct msghdr *, int) __asm("_sendmsg$NOCANCEL") __attribute__((weak_import));
+static ssize_t fws_sendmsg_nocancel(int fd, const struct msghdr *m, int flags) {
+    if (!m || !m->msg_name) {
+        return sendmsg_nocancel(fd, m, flags);
+    }
+    struct msghdr c = *m;
+    struct sockaddr_storage b;
+    socklen_t len = c.msg_namelen;
+    c.msg_name = (void *)remote(fd, m->msg_name, &len, &b);
+    c.msg_namelen = len;
+    return sendmsg_nocancel(fd, &c, flags);
+}
+INTERPOSE(fws_sendmsg_nocancel, sendmsg_nocancel);
+
+extern ssize_t recvfrom_nocancel(int, void *, size_t, int, struct sockaddr *, socklen_t *) __asm("_recvfrom$NOCANCEL") __attribute__((weak_import));
+static ssize_t fws_recvfrom_nocancel(int fd, void *buf, size_t n, int flags, struct sockaddr *sa, socklen_t *len) {
+    if (!sa || !len) {
+        return recvfrom_nocancel(fd, buf, n, flags, sa, len);
+    }
+    struct sockaddr_storage k;
+    socklen_t kn = sizeof k;
+    ssize_t r = recvfrom_nocancel(fd, buf, n, flags, (struct sockaddr *)&k, &kn);
+    if (r >= 0) {
+        if (kn) {
+            present(fd, &k, kn, sa, len, 0);
+        } else {
+            *len = 0;
+        }
+    }
+    return r;
+}
+INTERPOSE(fws_recvfrom_nocancel, recvfrom_nocancel);
+
+extern ssize_t recvmsg_nocancel(int, struct msghdr *, int) __asm("_recvmsg$NOCANCEL") __attribute__((weak_import));
+static ssize_t fws_recvmsg_nocancel(int fd, struct msghdr *m, int flags) {
+    if (!m || !m->msg_name) {
+        return recvmsg_nocancel(fd, m, flags);
+    }
+    void *name = m->msg_name;
+    socklen_t cap = m->msg_namelen;
+    struct sockaddr_storage k;
+    m->msg_name = &k;
+    m->msg_namelen = sizeof k;
+    ssize_t r = recvmsg_nocancel(fd, m, flags);
+    socklen_t kn = m->msg_namelen;
+    m->msg_name = name;
+    m->msg_namelen = cap;
+    if (r >= 0) {
+        if (kn) {
+            present(fd, &k, kn, name, &m->msg_namelen, 0);
+        } else {
+            m->msg_namelen = 0;
+        }
+    }
+    return r;
+}
+INTERPOSE(fws_recvmsg_nocancel, recvmsg_nocancel);
+
+extern int accept_nocancel(int, struct sockaddr *, socklen_t *) __asm("_accept$NOCANCEL") __attribute__((weak_import));
+static int fws_accept_nocancel(int fd, struct sockaddr *sa, socklen_t *len) {
+    struct sockaddr_storage k;
+    socklen_t kn = sizeof k;
+    int c = accept_nocancel(fd, (struct sockaddr *)&k, &kn);
+    if (c >= 0) {
+        set_state(c, state_of(fd) & NET_V6);
+        present(c, &k, kn, sa, len, 0);
+    }
+    return c;
+}
+INTERPOSE(fws_accept_nocancel, accept_nocancel);
