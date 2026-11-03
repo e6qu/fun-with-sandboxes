@@ -6,13 +6,15 @@ Engine API, so the stock `docker` CLI, `docker compose` and the Docker Go
 client drive it unchanged.
 
 Each container is a process tree on the host, confined by a generated
-**Seatbelt** profile and rooted in an **APFS copy-on-write clone** of its
+**[Seatbelt](docs/SEATBELT.md)** profile (the macOS sandbox) and rooted in an **APFS copy-on-write clone** of its
 image. Each Compose project — a *stack* — gets its own block of host ports and
 its own directory tree, so two stacks never clash and never see each other.
 
 - [`PLAN.md`](PLAN.md) — constraints, isolation model, milestone
 - [`docs/DESIGN.md`](docs/DESIGN.md) — the full mechanism
+- [`docs/SEATBELT.md`](docs/SEATBELT.md) — the macOS sandbox, a tutorial, and how each container's profile confines it
 - [`LIMITATIONS.md`](LIMITATIONS.md) — what it cannot do, and why
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — setting up, testing, and changing things
 
 ## Run it
 
@@ -161,9 +163,10 @@ name other Ryuk versions.
 go test ./...
 ```
 
-On macOS the Seatbelt package also runs a probe under the real
-`sandbox-exec`. The end-to-end suite needs the image archives, the Docker CLI
-and Docker Compose:
+On macOS the Seatbelt package also runs a probe under the real sandbox. The
+end-to-end suite needs the image archives, the Docker CLI and Docker
+Compose; [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the setup and every
+check CI runs:
 
 ```bash
 cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e ./...
