@@ -199,7 +199,11 @@ same knobs, each enforced by a real mechanism or refused:
   state. The library resolves those names in `getaddrinfo` and
   `gethostbyname`, connects to a member's address through the host port
   behind its port, refuses a port the member does not expose, and reports
-  a peer's host port as its member address and port.
+  a peer's host port as its member address and port. The stack's egress
+  proxy reads the same file and reaches a member as the library does, so a
+  client that sends even its stack's traffic through `HTTP_PROXY`, as
+  Python's `urllib` does for a name `NO_PROXY` leaves out, reaches the
+  member too.
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would

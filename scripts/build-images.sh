@@ -190,8 +190,16 @@ case "$(uname -m)" in
   x86_64) pw_platform=mac-x64 pw_sum=ef808c5be0d15913f58d44689e2bd114311c8c6b41718fab695cdc1bbcb0e2aa ;;
 esac
 mkdir -p "$build/playwright/modules" "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
-"$node24/bin/node" "$node24/lib/node_modules/npm/bin/npm-cli.js" install --prefix "$build/playwright/modules" \
-  --no-audit --no-fund --no-package-lock "playwright@$pw_version" "playwright-core@$pw_version"
+# The install is retried as curl retries below: a runner's resolver drops a
+# lookup now and then, and npm retries no failed lookup itself.
+for attempt in 1 2 3 4 5; do
+  if "$node24/bin/node" "$node24/lib/node_modules/npm/bin/npm-cli.js" install --prefix "$build/playwright/modules" \
+    --no-audit --no-fund --no-package-lock "playwright@$pw_version" "playwright-core@$pw_version"; then
+    break
+  fi
+  [ "$attempt" -lt 5 ] || exit 1
+  sleep $((attempt * 2))
+done
 curl -fsSL --retry 5 -o "$build/playwright/shell.zip" \
   "https://storage.googleapis.com/chrome-for-testing-public/$pw_chrome/$pw_platform/chrome-headless-shell-$pw_platform.zip"
 echo "$pw_sum  $build/playwright/shell.zip" | shasum -a 256 -c - >/dev/null
