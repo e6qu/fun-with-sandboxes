@@ -7,10 +7,11 @@ machine — and from what macOS offers an unprivileged process under them.
 
 - **macOS-native images only.** Nothing on macOS runs Linux ELF binaries
   without a VM. Stock Docker Hub images do not run.
-- **Images follow the container contract.** A service reads its root and
-  ports from `SANDBOX_*` variables (see the README). Software that hard-codes
-  an absolute path outside its root, or a fixed port it cannot be told to
-  change, needs an entrypoint that configures it.
+- **Images follow the container contract.** A service finds its root and
+  ports at their container paths and port numbers through the container
+  library, or reads them from `SANDBOX_*` variables (see the README).
+  Software the library cannot load into needs an entrypoint that configures
+  it from the variables.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
@@ -121,11 +122,19 @@ machine — and from what macOS offers an unprivileged process under them.
   as many UDP clients at once as its block has ports to spare; a flow ends
   after 90 seconds without traffic, as with Docker's userland proxy. SCTP
   ports cannot be published.
-- **IPv4 over an IPv6 socket is refused.** Seatbelt matches loopback as
-  `127.0.0.1` and `::1`, not as the IPv4-mapped `::ffff:127.0.0.1` that a
-  dual-stack socket uses, so a program must listen and connect over IPv4
-  sockets. Java uses dual-stack sockets unless run with
-  `-Djava.net.preferIPv4Stack=true`, as the catalog's Java images are.
+- **A container's ports are its loopback host ports, presented.** The
+  container library binds a program's wildcard or loopback listener on a
+  container port to that port's host port on `127.0.0.1`, connects a
+  `localhost` client of a container port to its host port, and reports the
+  container's addresses back; a dual-stack IPv6 socket used for IPv4 becomes
+  an IPv4 socket that reads as IPv6, because Seatbelt matches loopback as
+  `127.0.0.1` and `::1` and not as `::ffff:127.0.0.1`. Its limits:
+  - Only ports the container exposes or publishes have host ports; a
+    listener on any other port is refused, as is one on an address other
+    than loopback's or the wildcard.
+  - A dual-stack listener takes IPv4 clients alone: a client of `::1`
+    falls back to `127.0.0.1`, as clients of `localhost` do.
+  - Programs that load no library, as Apple's do not, see the host ports.
 - **Unix socket paths are capped at 104 bytes** on macOS. Keep the state root
   short (the default `~/.fws` is).
 

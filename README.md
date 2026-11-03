@@ -96,8 +96,10 @@ and a pull.
 ## The container contract
 
 macOS gives an unprivileged process no private `/` and no private network
-stack, so a container cannot pretend to own `/var/lib/postgresql/data` or port
-5432. Instead the engine tells it where its things are:
+stack, so a container cannot own `/var/lib/postgresql/data` or port 5432.
+The container library presents both, mapping the container's paths into its
+root and its exposed and published ports onto host ports on loopback, and
+the engine also tells the container where its things are:
 
 | Variable | Meaning |
 |---|---|

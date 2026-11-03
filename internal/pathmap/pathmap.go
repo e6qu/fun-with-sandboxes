@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -48,6 +50,32 @@ func MountsVar(ms []Mount) (string, error) {
 	return "FWS_MOUNTS=" + strings.Join(lines, "\n"), nil
 }
 
+// PortsVar is the variable that maps the container's ports, keyed as
+// "80/tcp", onto the host ports behind them, or "" when there are none: the
+// library binds and reaches a container port through its host port.
+func PortsVar(ports map[string]int) (string, error) {
+	keys := make([]string, 0, len(ports))
+	for k := range ports {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var entries []string
+	for _, k := range keys {
+		num, proto, _ := strings.Cut(k, "/")
+		if proto != "tcp" && proto != "udp" {
+			continue
+		}
+		if _, err := strconv.ParseUint(num, 10, 16); err != nil {
+			return "", fmt.Errorf("port %q: %w", k, err)
+		}
+		entries = append(entries, fmt.Sprintf("%s/%s=%d", num, proto, ports[k]))
+	}
+	if len(entries) == 0 {
+		return "", nil
+	}
+	return "FWS_PORTS=" + strings.Join(entries, ","), nil
+}
+
 // archs are the architectures the library is built for: Apple's own
 // programs on Apple silicon are arm64e.
 func archs() []string {
@@ -79,9 +107,13 @@ func Build(dir string) (string, error) {
 	}
 	lib := filepath.Join(work, "fwsroot.dylib")
 	// The library binds the IOKit functions it stands in for weakly and
-	// from whichever image provides them: it links no framework.
+	// from whichever image provides them: it links no framework. It binds
+	// the socket calls' cancellation-free variants weakly too, as no header
+	// declares them.
 	args := append([]string{"clang", "-dynamiclib", "-O2", "-Wall", "-Werror",
-		"-Wl,-U,_IORegisterForSystemPower", "-Wl,-U,_IONotificationPortCreate"}, archs()...)
+		"-Wl,-U,_IORegisterForSystemPower", "-Wl,-U,_IONotificationPortCreate",
+		"-Wl,-U,_connect$NOCANCEL", "-Wl,-U,_sendto$NOCANCEL", "-Wl,-U,_sendmsg$NOCANCEL",
+		"-Wl,-U,_recvfrom$NOCANCEL", "-Wl,-U,_recvmsg$NOCANCEL", "-Wl,-U,_accept$NOCANCEL"}, archs()...)
 	cmd := exec.Command("/usr/bin/xcrun", append(args, "-o", lib, src)...)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build the container library with clang, which the Xcode Command Line Tools provide (xcode-select --install): %v\n%s", err, b)

@@ -387,6 +387,13 @@ func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string
 	if mv != "" {
 		env = append(env, mv)
 	}
+	pv, err := pathmap.PortsVar(c.rec.Ports)
+	if err != nil {
+		return nil, err
+	}
+	if pv != "" {
+		env = append(env, pv)
+	}
 	return env, nil
 }
 
