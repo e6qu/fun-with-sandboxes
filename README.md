@@ -6,13 +6,15 @@ Engine API, so the stock `docker` CLI, `docker compose` and the Docker Go
 client drive it unchanged.
 
 Each container is a process tree on the host, confined by a generated
-**Seatbelt** profile and rooted in an **APFS copy-on-write clone** of its
+**[Seatbelt](docs/SEATBELT.md)** profile (the macOS sandbox) and rooted in an **APFS copy-on-write clone** of its
 image. Each Compose project — a *stack* — gets its own block of host ports and
 its own directory tree, so two stacks never clash and never see each other.
 
 - [`PLAN.md`](PLAN.md) — constraints, isolation model, milestone
 - [`docs/DESIGN.md`](docs/DESIGN.md) — the full mechanism
+- [`docs/SEATBELT.md`](docs/SEATBELT.md) — the macOS sandbox, a tutorial, and how each container's profile confines it
 - [`LIMITATIONS.md`](LIMITATIONS.md) — what it cannot do, and why
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — setting up, testing, and changing things
 
 ## Run it
 
@@ -106,7 +108,7 @@ the engine also tells the container where its things are:
 | `SANDBOX_ROOT` | the container's root directory on the host; image paths live under it |
 | `SANDBOX_PORT_<n>` | the loopback host port to listen on for container port `<n>` |
 | `SANDBOX_<SERVICE>_PORT_<n>` | the host port of stack peer `<service>`'s port `<n>` |
-| `SANDBOX_<SERVICE>_HOST` | the host to reach that peer on (`127.0.0.1`) |
+| `SANDBOX_<SERVICE>_HOST` | the host to reach that peer on (`127.0.0.1`); through the container library a peer is reachable by name too |
 | `SANDBOX_STACK` | the stack (Compose project) name |
 | `SANDBOX_IPC_PREFIX` | the prefix POSIX shared memory and semaphore names start with under private IPC, which the container library adds |
 
@@ -161,9 +163,10 @@ name other Ryuk versions.
 go test ./...
 ```
 
-On macOS the Seatbelt package also runs a probe under the real
-`sandbox-exec`. The end-to-end suite needs the image archives, the Docker CLI
-and Docker Compose:
+On macOS the Seatbelt package also runs a probe under the real sandbox. The
+end-to-end suite needs the image archives, the Docker CLI and Docker
+Compose; [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the setup and every
+check CI runs:
 
 ```bash
 cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e ./...

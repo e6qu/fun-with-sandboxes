@@ -1,5 +1,6 @@
 # Build output
 /bin/
+/images-out/
 /dist/
 *.test
 *.out

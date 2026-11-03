@@ -1,8 +1,10 @@
 // net listens and connects as a stock server and client do, on container
 // ports 8080 and 8081 (TCP) and 9090 (UDP), with dual-stack IPv6 sockets
-// and IPv4 ones, in a sandbox that lets it bind and reach the host ports
-// behind them alone, as a container's does. It reports each step.
+// and IPv4 ones, and reaches a stack member by name, in a sandbox that lets
+// it bind and reach the host ports behind them alone, as a container's
+// does. It reports each step.
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,9 +58,9 @@ int main(int argc, char **argv) {
     char profile[1024];
     snprintf(profile, sizeof profile,
              "(version 1)(allow default)(deny network-bind)(deny network-outbound)"
-             "(allow network-bind (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\"))"
-             "(allow network-outbound (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
-             argv[1], argv[2], argv[3], argv[1], argv[2], argv[3]);
+             "(allow network-bind (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\"))"
+             "(allow network-outbound (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
+             argv[1], argv[2], argv[3], argv[4], argv[1], argv[2], argv[3], argv[4]);
     char *err = NULL;
     if (sandbox_init(profile, 0, &err) != 0) {
         fprintf(stderr, "sandbox_init: %s\n", err);
@@ -103,6 +105,22 @@ int main(int argc, char **argv) {
     n = sizeof s;
     getsockname(l4, (void *)&s, &n);
     printf("listen4=%s\n", addr(&s));
+
+    // A stack member by name: the network file puts db's port 5432 on a
+    // host port of its own, where a listener stands in for db.
+    int peer = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in peeraddr = v4("127.0.0.1", (unsigned short)atoi(argv[4]));
+    if (bind(peer, (void *)&peeraddr, sizeof peeraddr) || listen(peer, 4)) fail("member");
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo("db", "5432", &hints, &res)) fail("member");
+    int cm = socket(res->ai_family, SOCK_STREAM, 0);
+    if (connect(cm, res->ai_addr, res->ai_addrlen)) fail("member");
+    freeaddrinfo(res);
+    n = sizeof s;
+    getpeername(cm, (void *)&s, &n);
+    printf("member=%s\n", addr(&s));
 
     // UDP: an IPv4 server, an IPv6 client to its IPv4 address.
     int u = socket(AF_INET, SOCK_DGRAM, 0);

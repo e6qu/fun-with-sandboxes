@@ -93,6 +93,9 @@ type Spec struct {
 	// Libraries are files outside the root every process of the container
 	// loads, such as the container library.
 	Libraries []string
+	// ReadFiles are files outside the root the container reads, such as its
+	// stack's network file.
+	ReadFiles []string
 }
 
 // IPCMode is a container's IPC confinement.
@@ -136,7 +139,7 @@ func Render(s Spec) (string, error) {
 	for _, v := range s.Volumes {
 		paths = append(paths, v.Path)
 	}
-	for _, l := range s.Libraries {
+	for _, l := range append(append([]string{}, s.Libraries...), s.ReadFiles...) {
 		if err := checkPath(l); err != nil {
 			return "", err
 		}
@@ -209,6 +212,9 @@ func Render(s Spec) (string, error) {
 	}
 	for _, l := range s.Libraries {
 		w("  (literal %q)", l)
+	}
+	for _, f := range s.ReadFiles {
+		w("  (literal %q)", f)
 	}
 	w(")")
 	if len(s.Libraries) > 0 {
