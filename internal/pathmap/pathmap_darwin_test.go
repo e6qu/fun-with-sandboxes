@@ -259,7 +259,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		"accepted": "v6",
 		"client6":  "[::ffff:127.0.0.1]:8080",
 		"listen4":  "0.0.0.0:8081",
-		"udp":      "[::ffff:127.0.0.1]",
+		"udp":      "[::]",
 	} {
 		if got[k] != want {
 			t.Errorf("%s: %q, want %q (all: %v)", k, got[k], want, got)

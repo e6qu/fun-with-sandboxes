@@ -114,7 +114,8 @@ int main(int argc, char **argv) {
     char buf[8];
     n = sizeof s;
     if (recvfrom(u, buf, sizeof buf, 0, (void *)&s, &n) != 4) fail("udp");
-    // The client's socket still reads as IPv6, on loopback's mapped address.
+    // The client's socket still reads as IPv6: an unconnected one's own
+    // address is the wildcard.
     n = sizeof s;
     getsockname(u6, (void *)&s, &n);
     char host[80];

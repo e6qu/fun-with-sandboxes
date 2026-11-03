@@ -1885,7 +1885,8 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
             b.sin6_len = sizeof b;
             b.sin6_family = AF_INET6;
             b.sin6_port = a->sin_port;
-            if (!(own && (st & NET_ANY))) {
+            // IPv4's wildcard reads as IPv6's, not as ::ffff:0.0.0.0.
+            if (!(own && (st & NET_ANY)) && a->sin_addr.s_addr != htonl(INADDR_ANY)) {
                 b.sin6_addr.s6_addr[10] = 0xff;
                 b.sin6_addr.s6_addr[11] = 0xff;
                 memcpy(&b.sin6_addr.s6_addr[12], &a->sin_addr.s_addr, 4);
