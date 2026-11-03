@@ -227,13 +227,13 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/net/main.c").CombinedOutput(); err != nil {
 		t.Fatalf("build the probe: %v\n%s", err, out)
 	}
-	tcp1, tcp2, udp := freePort(t, "tcp"), freePort(t, "tcp"), freePort(t, "udp")
+	tcp1, tcp2, udp, peer := freePort(t, "tcp"), freePort(t, "tcp"), freePort(t, "udp"), freePort(t, "tcp")
 	ports, err := PortsVar(map[string]int{"8080/tcp": tcp1, "8081/tcp": tcp2, "9090/udp": udp})
 	if err != nil {
 		t.Fatal(err)
 	}
 	run := func(env ...string) map[string]string {
-		cmd := exec.Command(bin, strconv.Itoa(tcp1), strconv.Itoa(tcp2), strconv.Itoa(udp))
+		cmd := exec.Command(bin, strconv.Itoa(tcp1), strconv.Itoa(tcp2), strconv.Itoa(udp), strconv.Itoa(peer))
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -254,7 +254,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	network := filepath.Join(t.TempDir(), "network")
-	if err := os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t8080/tcp=%d\n127.88.0.3\tdb proj-db-1\t5432/tcp=%d\n", tcp1, tcp2)), 0o644); err != nil {
+	if err := os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t8080/tcp=%d\n127.88.0.3\tdb proj-db-1\t5432/tcp=%d\n", tcp1, peer)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got := run("DYLD_INSERT_LIBRARIES="+lib, ports, NetworkVar+"="+network, AddressVar+"=127.88.0.2")
