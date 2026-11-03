@@ -25,6 +25,10 @@ var source []byte
 // names the user and group.
 const HostnameVar = "FWS_HOSTNAME"
 
+// HelperVar names the engine's helper binary, as a process listing shows
+// it: the library leaves the container's exec anchor out of listings.
+const HelperVar = "FWS_HELPER"
+
 // NetworkVar names the stack's network file, which lists its members'
 // addresses, names and host ports; AddressVar names the container's own
 // member address.

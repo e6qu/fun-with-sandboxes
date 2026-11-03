@@ -93,7 +93,7 @@ container using anything it was not handed.
 | Filesystem read of host | Seatbelt `(deny file-read*)` + allow system frameworks and the container root | No read of `$HOME`, other stacks' roots, or user data | System libs/frameworks readable (needed) |
 | Cross-stack visibility | Per-stack directory tree + per-stack Seatbelt path allowances | Stack A's profile names only A's paths; A cannot read or write B | — |
 | Ports | Engine allocates a disjoint range per stack; Seatbelt `(deny network-bind)` except the assigned ports | Two stacks never clash; a container binds only its grants | Host sees all listening sockets globally |
-| Process signalling | Seatbelt `(deny signal)` except same-sandbox; `(deny process-info*)` except self | A cannot `kill` or inspect B's processes | `ps` lists them (no PID namespace) |
+| Process signalling | Seatbelt `(deny signal)` and `(deny process-info*)` except same-sandbox; execs start in the container's sandbox; the container library lists the sandbox's processes alone | A cannot `kill`, inspect or list B's processes | pids are the host's (no PID namespace) |
 | Default deny | Seatbelt `(deny default)` on Apple's `system.sb` baseline, each operation class re-allowed by name | A container gets no IOKit, Mach registration, preferences, AppleEvents, kernel control sockets or anything else the profile does not name | — |
 | IPC | Seatbelt `ipc-posix-name-prefix` filters | POSIX shared memory and semaphores confined to a per-container name prefix (`--ipc` private); `none` denies all IPC | System V keys are machine-wide under private IPC |
 | Resource limits | Per-container supervisor (§3a); `setrlimit` through a spawn helper | Memory, CPU, pids caps, `--ulimit`, priority and disk I/O tiers | Enforced by ending, stopping or killing processes, not by refusing allocations or forks |
@@ -647,7 +647,9 @@ every *action* across stacks is denied.
   stops processes, not by a kernel that refuses an allocation or a fork.
 - `user:` and `USER` are presented by the container library; every process
   runs as the invoking user.
-- Process listing (`ps`/`pstree`) crosses sandboxes; every action does not.
+- Pids are the host's, and a program that loads no library lists every
+  process of the user; listings through the library, and every action,
+  stay within the sandbox.
 - Seatbelt's `sandbox_init` and `sandbox-exec` are Apple-deprecated (since
   2016) but still functional and used by Chrome, Bazel, and the major
   coding-agent sandboxes; there is no supported replacement for this use.

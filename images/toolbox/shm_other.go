@@ -12,3 +12,5 @@ func shm(name string) error { return errNoShm }
 func shmMake(name string) error { return errNoShm }
 
 func shmOpen(name string) error { return errNoShm }
+
+func ps() error { return errors.New("ps: macOS only") }

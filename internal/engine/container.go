@@ -26,6 +26,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
+	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
@@ -426,6 +427,9 @@ func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string
 	}
 	if pv != "" {
 		env = append(env, pv)
+	}
+	if helper, err := roles.Binary(); err == nil {
+		env = append(env, pathmap.HelperVar+"="+filepath.Base(helper))
 	}
 	if onNetwork(c) && c.rec.Address != "" {
 		nf, err := e.networkFile(c.rec.Stack)

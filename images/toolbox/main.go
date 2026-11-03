@@ -267,6 +267,9 @@ func run(op, arg string) error {
 			name = sandboxenv.IPCName(rest)
 		}
 		return shm(name)
+	case "ps":
+		// List the processes the container sees.
+		return ps()
 	case "shmmake":
 		// Create the POSIX shared memory object arg and leave it.
 		return shmMake(arg)
