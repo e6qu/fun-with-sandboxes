@@ -2353,7 +2353,9 @@ static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len,
         return 0;
     }
     if (own_address && a == own_address) a = htonl(INADDR_LOOPBACK);
-    if (!port || !v4_local(a) || host_port(SOCK_STREAM, port)) {
+    // A container port with a host port binds it, and so does a program
+    // that binds the host port itself, as the container contract has it.
+    if (!port || !v4_local(a) || host_port(SOCK_STREAM, port) || container_port(SOCK_STREAM, port)) {
         return 0;
     }
     *any = a == htonl(INADDR_ANY);
