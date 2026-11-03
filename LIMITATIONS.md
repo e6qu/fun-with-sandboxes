@@ -74,12 +74,15 @@ machine — and from what macOS offers an unprivileged process under them.
   signalling or inspecting any other. But its processes keep their host
   pids, its main process is not pid 1, and a program that loads no
   library, as Apple's `ps` does not, lists every process of the user.
-- **System V IPC keys are machine-wide.** POSIX shared memory and semaphore
-  names are confined to a per-container prefix (`SANDBOX_IPC_PREFIX`) under
-  the default private IPC mode, and `--ipc none` denies all IPC, but Seatbelt
-  cannot tell System V keys apart, so a container that guesses another's
-  key could reach it. PostgreSQL derives its keys from its port, which
-  differs per stack.
+- **System V IPC keys are presented, not confined.** POSIX shared memory
+  and semaphore names are confined to a per-container prefix
+  (`SANDBOX_IPC_PREFIX`) under the default private IPC mode, and
+  `--ipc none` denies all IPC. Seatbelt cannot tell System V keys apart, so
+  the container library gives each container a key space of its own: it
+  hashes each key with the container's prefix, and two containers using
+  one key, as two PostgreSQL servers on port 5432 do, get objects of their
+  own. A program that loads no library, or one that guesses another
+  container's hashed key, can still reach that container's objects.
 - **POSIX shared memory and semaphore names carry the prefix.** Under
   private IPC the container library gives every name the program uses
   `SANDBOX_IPC_PREFIX`, and a name too long to carry it within macOS's
