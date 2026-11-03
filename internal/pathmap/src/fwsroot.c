@@ -256,6 +256,17 @@ static const char *place(const char *p, char *buf) {
     return parent ? buf : p;
 }
 
+// meets_link reports whether the kernel, resolving path relative to fd,
+// would meet a symbolic link: AT_SYMLINK_NOFOLLOW_ANY refuses one on the
+// way, and reports one the final component names as lstat does.
+static int meets_link(int fd, const char *path) {
+    struct stat st;
+    if (fstatat(fd, path, &st, AT_SYMLINK_NOFOLLOW_ANY) == -1) {
+        return errno == ELOOP;
+    }
+    return S_ISLNK(st.st_mode);
+}
+
 // linked reports whether the kernel, resolving container path p in the
 // root, would meet a symbolic link, which it would resolve on the host.
 static int linked(const char *p) {
@@ -269,8 +280,7 @@ static int linked(const char *p) {
     if (in_root(q) && snprintf(c, sizeof c, "%s%s", croot, q + rootlen) < (int)sizeof c) {
         q = c;
     }
-    struct stat st;
-    return fstatat(AT_FDCWD, q, &st, AT_SYMLINK_NOFOLLOW_ANY) == -1 && errno == ELOOP;
+    return meets_link(AT_FDCWD, q);
 }
 
 #define MAXLINKS 32
@@ -347,11 +357,16 @@ static int resolve(const char *p, int follow, char *out) {
 
 static const char *at_map(int fd, const char *path, char *buf, int follow);
 
+// host_calls counts the libSystem calls in progress on this thread that walk
+// the host's paths through calls this library interposes, as getcwd and
+// realpath walk .. and resolve links: those paths are the host's already.
+static __thread int host_calls;
+
 // fws_map returns the host path that p names in the container. A link the
 // final component names is followed if follow is set, as the call it maps
 // follows one. buf holds a mapped path.
 static const char *fws_map(const char *p, char *buf, int follow) {
-    if (!rootlen || !p) {
+    if (!rootlen || !p || host_calls) {
         return p;
     }
     if (p[0] != '/') {
@@ -384,18 +399,20 @@ static void unmap(char *p, size_t size);
 // path, where the kernel would resolve it otherwise: onto a mount, through
 // a symbolic link, or above the root.
 static const char *at_map(int fd, const char *path, char *buf, int follow) {
-    if (!rootlen || !path) {
+    if (!rootlen || !path || host_calls) {
         return path;
     }
     if (path[0] == '/') {
         return fws_map(path, buf, follow);
     }
-    struct stat st;
-    if (!nmounts && !strstr(path, "..") && !(fstatat(fd, path, &st, AT_SYMLINK_NOFOLLOW_ANY) == -1 && errno == ELOOP)) {
+    if (!nmounts && !strstr(path, "..") && !meets_link(fd, path)) {
         return path;
     }
     char dir[PATH_MAX];
-    if (fd == AT_FDCWD ? getcwd(dir, sizeof dir) == NULL : fcntl(fd, F_GETPATH, dir) == -1) {
+    host_calls++;
+    int found = fd == AT_FDCWD ? getcwd(dir, sizeof dir) != NULL : fcntl(fd, F_GETPATH, dir) != -1;
+    host_calls--;
+    if (!found) {
         return path;
     }
     if (!in_root(dir) && !in_mount(dir)) {
@@ -907,14 +924,19 @@ static void *fws_dlopen(const char *path, int mode) { return dlopen(MAP(path), m
 INTERPOSE(fws_dlopen, dlopen);
 
 static char *fws_getcwd(char *buf, size_t size) {
+    host_calls++;
     char *r = getcwd(buf, size);
+    host_calls--;
     // getcwd allocates the buffer when given none, as large as the path.
     unmap(r, r && !buf ? strlen(r) + 1 : size);
     return r;
 }
 
 static char *fws_realpath(const char *path, char *resolved) {
-    char *r = realpath(MAP(path), resolved);
+    const char *p = MAP(path);
+    host_calls++;
+    char *r = realpath(p, resolved);
+    host_calls--;
     unmap(r, PATH_MAX);
     return r;
 }
