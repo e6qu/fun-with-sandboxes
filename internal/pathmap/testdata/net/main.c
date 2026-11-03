@@ -58,9 +58,9 @@ int main(int argc, char **argv) {
     char profile[1024];
     snprintf(profile, sizeof profile,
              "(version 1)(allow default)(deny network-bind)(deny network-outbound)"
-             "(allow network-bind (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\"))"
+             "(allow network-bind (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\"))"
              "(allow network-outbound (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
-             argv[1], argv[2], argv[3], argv[4], argv[5], argv[1], argv[2], argv[3], argv[4]);
+             argv[1], argv[2], argv[3], argv[5], argv[1], argv[2], argv[3], argv[4]);
     char *err = NULL;
     if (sandbox_init(profile, 0, &err) != 0) {
         fprintf(stderr, "sandbox_init: %s\n", err);
@@ -116,10 +116,7 @@ int main(int argc, char **argv) {
     printf("direct=%s\n", addr(&s));
 
     // A stack member by name: the network file puts db's port 5432 on a
-    // host port of its own, where a listener stands in for db.
-    int peer = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in peeraddr = v4("127.0.0.1", (unsigned short)atoi(argv[4]));
-    if (bind(peer, (void *)&peeraddr, sizeof peeraddr) || listen(peer, 4)) fail("member");
+    // host port of its own, where the test's listener stands in for db.
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof hints);
     hints.ai_socktype = SOCK_STREAM;

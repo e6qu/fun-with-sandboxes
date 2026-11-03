@@ -229,7 +229,23 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/net/main.c").CombinedOutput(); err != nil {
 		t.Fatalf("build the probe: %v\n%s", err, out)
 	}
-	tcp1, tcp2, udp, peer, tcp3 := freePort(t, "tcp"), freePort(t, "tcp"), freePort(t, "udp"), freePort(t, "tcp"), freePort(t, "tcp")
+	tcp1, tcp2, udp, tcp3 := freePort(t, "tcp"), freePort(t, "tcp"), freePort(t, "udp"), freePort(t, "tcp")
+	// db listens outside the probe's container, as another member does.
+	db, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	go func() {
+		for {
+			c, err := db.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	peer := db.Addr().(*net.TCPAddr).Port
 	ports, err := PortsVar(map[string]int{"8080/tcp": tcp1, "8081/tcp": tcp2, "8082/tcp": tcp3, "9090/udp": udp})
 	if err != nil {
 		t.Fatal(err)
