@@ -240,5 +240,5 @@ func TestSignalsStayInOneSandbox(t *testing.T) {
 	t.Cleanup(func() { hold.Process.Kill(); hold.Wait() })
 	e.denied("signal", strconv.Itoa(hold.Process.Pid))
 	// A child of the sandbox signals its sibling.
-	e.allowed("sh", root+"/probe hold & "+root+"/probe signal $! && kill $!")
+	e.allowed("sh", root+"/probe hold - & "+root+"/probe signal $! && kill $!")
 }
