@@ -267,6 +267,12 @@ func run(op, arg string) error {
 			name = sandboxenv.IPCName(rest)
 		}
 		return shm(name)
+	case "shmmake":
+		// Create the POSIX shared memory object arg and leave it.
+		return shmMake(arg)
+	case "shmopen":
+		// Open the existing POSIX shared memory object arg, and remove it.
+		return shmOpen(arg)
 	case "sshagent":
 		// List the identities of the SSH agent SSH_AUTH_SOCK names, as a
 		// build step with an SSH mount reaches the client's agent.

@@ -6,6 +6,7 @@
 //   - the container's root at /: a path the root holds, or whose parent it
 //     holds, so a file can be made there, names the root's; any other, such
 //     as the system frameworks and devices, stays the host's (SANDBOX_ROOT);
+//     symbolic links resolve in the container, as under chroot;
 //   - the container's user and group (FWS_UID, FWS_GID), root by default:
 //     chown succeeds and records the owner in an extended attribute, which
 //     stat reports, and a file a user other than root makes is recorded as
@@ -15,7 +16,9 @@
 //   - its volumes and bind mounts at their destinations (FWS_MOUNTS: a
 //     destination, a tab and the resolved source, a line each): the engine
 //     places a mount as a symlink in the root, which a path through the
-//     mount point follows, and which presents the source's own path.
+//     mount point follows, and which presents the source's own path;
+//   - its private IPC namespace (SANDBOX_IPC_PREFIX): POSIX IPC and Mach
+//     bootstrap names carry the container's prefix.
 //
 // The host still decides every access, by the engine's user's rights.
 #include <dlfcn.h>
@@ -27,14 +30,17 @@
 #include <sys/utsname.h>
 #include <limits.h>
 #include <mach/mach.h>
+#include <semaphore.h>
 #include <servers/bootstrap.h>
 #include <spawn.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/attr.h>
 #include <sys/clonefile.h>
+#include <sys/mman.h>
 #include <sys/sysctl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -50,6 +56,8 @@
         (const void *)(unsigned long)&replacement, (const void *)(unsigned long)&replacee}
 
 static char root[PATH_MAX];
+// root, resolved.
+static char croot[PATH_MAX];
 static size_t rootlen;
 
 static uid_t fake_uid, fake_euid;
@@ -93,6 +101,20 @@ static void parse_mounts(const char *v) {
         }
         mounts[i] = m;
     }
+}
+
+// join writes a, b and c to out, a buffer of size bytes, and reports
+// whether they fit. Path mapping formats nothing: libSystem calls it from
+// setlocale, which holds the lock snprintf takes to read the locale.
+static int join(char *out, size_t size, const char *a, const char *b, const char *c) {
+    size_t na = strlen(a), nb = strlen(b), nc = strlen(c);
+    if (na + nb + nc + 1 > size) {
+        return 0;
+    }
+    memmove(out, a, na);
+    memmove(out + na, b, nb);
+    memmove(out + na + nb, c, nc + 1);
+    return 1;
 }
 
 static int under(const char *p, const char *dir, size_t n) {
@@ -147,6 +169,9 @@ __attribute__((constructor)) static void fwsroot_init(void) {
         while (rootlen > 1 && root[rootlen - 1] == '/') {
             root[--rootlen] = 0;
         }
+        if (!realpath(root, croot)) {
+            strcpy(croot, root);
+        }
     }
 }
 
@@ -158,41 +183,72 @@ static int in_root(const char *p) {
     return strncmp(p, root, rootlen) == 0 && (p[rootlen] == '/' || p[rootlen] == 0);
 }
 
-// fws_map returns the path p names in the container: a mount's source
-// under a mount's destination, the root's when the root holds it or its
-// parent, else p. buf holds a mapped path.
-static const char *fws_map(const char *p, char *buf) {
-    if (!rootlen || !p || p[0] != '/' || in_root(p)) {
-        return p;
+static int in_host_tree(const char *p) {
+    for (const char *const *t = host_trees; *t; t++) {
+        size_t n = strlen(*t);
+        // The tree, or its top directory itself.
+        if (strncmp(p, *t, n) == 0 || (strncmp(p, *t, n - 1) == 0 && p[n - 1] == 0)) {
+            return 1;
+        }
     }
-    // The host's own paths to the root and to mounts' sources, which a
-    // program resolving a path through $SANDBOX_ROOT or a mount's symlink
-    // walks, stay the host's.
-    if (above(p, root, rootlen)) {
-        return p;
+    return 0;
+}
+
+// host_side reports whether p is the host's own path to the root or to a
+// mount's source, which a program resolving a path through $SANDBOX_ROOT or
+// a mount's symlink walks.
+static int host_side(const char *p) {
+    if (in_root(p) || above(p, root, rootlen)) {
+        return 1;
     }
     for (size_t i = 0; i < nmounts; i++) {
         struct mount *m = &mounts[i];
         if (under(p, m->src, m->srclen) || above(p, m->src, m->srclen)) {
-            return p;
+            return 1;
         }
     }
+    return 0;
+}
+
+static const char *mount_source(const char *p, char *buf) {
     for (size_t i = 0; i < nmounts; i++) {
         struct mount *m = &mounts[i];
         if (under(p, m->dest, m->destlen)) {
             const char *rest = p + m->destlen;
-            if (m->srclen + strlen(rest) + 1 > PATH_MAX) return p;
+            if (m->srclen + strlen(rest) + 1 > PATH_MAX) return NULL;
             memcpy(buf, m->src, m->srclen);
             strcpy(buf + m->srclen, rest);
             return buf;
         }
     }
-    for (const char *const *t = host_trees; *t; t++) {
-        size_t n = strlen(*t);
-        // The tree, or its top directory itself.
-        if (strncmp(p, *t, n) == 0 || (strncmp(p, *t, n - 1) == 0 && p[n - 1] == 0)) {
-            return p;
-        }
+    return NULL;
+}
+
+// host_of returns the host path that container path p names, whether or not
+// it exists, or NULL for a path of the host's trees.
+static const char *host_of(const char *p, char *buf) {
+    const char *m = mount_source(p, buf);
+    if (m) {
+        return m;
+    }
+    if (in_host_tree(p) || rootlen + strlen(p) + 1 > PATH_MAX) {
+        return NULL;
+    }
+    memcpy(buf, root, rootlen);
+    strcpy(buf + rootlen, p);
+    return buf;
+}
+
+// place returns the path container path p names, its symbolic links
+// resolved: a mount's source under a mount's destination, the root's when
+// the root holds it or its parent, else p.
+static const char *place(const char *p, char *buf) {
+    const char *m = mount_source(p, buf);
+    if (m) {
+        return m;
+    }
+    if (in_host_tree(p)) {
+        return p;
     }
     size_t n = strlen(p);
     if (rootlen + n + 1 > PATH_MAX) {
@@ -214,40 +270,188 @@ static const char *fws_map(const char *p, char *buf) {
     return parent ? buf : p;
 }
 
-#define MAP(p) fws_map((p), (char[PATH_MAX]){0})
+// meets_link reports whether the kernel, resolving path relative to fd,
+// would meet a symbolic link: AT_SYMLINK_NOFOLLOW_ANY refuses one on the
+// way, and reports one the final component names as lstat does.
+static int meets_link(int fd, const char *path) {
+    struct stat st;
+    if (fstatat(fd, path, &st, AT_SYMLINK_NOFOLLOW_ANY) == -1) {
+        return errno == ELOOP;
+    }
+    return S_ISLNK(st.st_mode);
+}
 
-// at_map maps path relative to directory fd as fws_map maps an absolute
-// path: where it leads from a directory of the root onto a mount's
-// destination, as a program that opens a path a component at a time without
-// following symlinks does, it names the mount's source.
-static const char *at_map(int fd, const char *path, char *buf) {
-    if (!nmounts || !rootlen || !path || path[0] == '/' || strstr(path, "..")) {
-        return fws_map(path, buf);
+// linked reports whether the kernel, resolving container path p in the
+// root, would meet a symbolic link, which it would resolve on the host.
+static int linked(const char *p) {
+    char h[PATH_MAX], c[PATH_MAX];
+    const char *q = host_of(p, h);
+    if (!q) {
+        return 0;
     }
-    char dir[PATH_MAX];
-    if (fd == AT_FDCWD ? getcwd(dir, sizeof dir) == NULL : fcntl(fd, F_GETPATH, dir) == -1) {
-        return path;
+    // The root's own path may pass through links, as /var does; its
+    // resolved form names the same files without them.
+    if (in_root(q) && join(c, sizeof c, croot, q + rootlen, "")) {
+        q = c;
     }
-    if (!in_root(dir)) {
-        return path;
+    return meets_link(AT_FDCWD, q);
+}
+
+#define MAXLINKS 32
+
+// resolve writes to out container path p with its symbolic links resolved
+// in the container, as the kernel resolves them under chroot: an absolute
+// target starts again at the container's /, and .. stops there. A link the
+// final component names is followed if follow is set. Resolution stops at
+// a component that does not exist, or that the host's trees hold.
+static int resolve(const char *p, int follow, char *out) {
+    char rest[PATH_MAX], next[PATH_MAX], cur[PATH_MAX], h[PATH_MAX], target[PATH_MAX];
+    size_t curlen = 0;
+    int links = 0;
+    cur[0] = 0;
+    if (strlcpy(rest, p, sizeof rest) >= sizeof rest) {
+        return 0;
     }
-    char full[PATH_MAX];
-    if (snprintf(full, sizeof full, "%s/%s", dir[rootlen] ? dir + rootlen : "", path) >= (int)sizeof full) {
-        return path;
+    const char *r = rest;
+    for (;;) {
+        const char *slashes = r;
+        while (*r == '/') r++;
+        if (!*r) {
+            // A trailing slash stays, so a file it follows is not a directory.
+            r = slashes;
+            break;
+        }
+        size_t n = strcspn(r, "/");
+        if (n == 1 && r[0] == '.') {
+            r += n;
+            continue;
+        }
+        if (n == 2 && r[0] == '.' && r[1] == '.') {
+            char *s = strrchr(cur, '/');
+            if (s) {
+                *s = 0;
+                curlen = (size_t)(s - cur);
+            }
+            r += n;
+            continue;
+        }
+        size_t before = curlen;
+        if (curlen + n + 2 > sizeof cur) {
+            return 0;
+        }
+        cur[curlen++] = '/';
+        memcpy(cur + curlen, r, n);
+        curlen += n;
+        cur[curlen] = 0;
+        r += n;
+        // A trailing slash follows the final component's link.
+        if (!*r && !follow) break;
+        const char *q = host_of(cur, h);
+        if (!q) break;
+        ssize_t tn = readlink(q, target, sizeof target - 1);
+        if (tn < 0) {
+            if (errno == EINVAL) continue;
+            break;
+        }
+        if (++links > MAXLINKS) {
+            return 0;
+        }
+        target[tn] = 0;
+        // r is empty or starts with a slash.
+        if (!join(next, sizeof next, target, r, "")) {
+            return 0;
+        }
+        memcpy(rest, next, strlen(next) + 1);
+        r = rest;
+        curlen = target[0] == '/' ? 0 : before;
+        cur[curlen] = 0;
     }
-    for (size_t i = 0; i < nmounts; i++) {
-        struct mount *m = &mounts[i];
-        if (under(full, m->dest, m->destlen)) {
-            const char *rest = full + m->destlen;
-            if (m->srclen + strlen(rest) + 1 > PATH_MAX) return path;
-            memcpy(buf, m->src, m->srclen);
-            strcpy(buf + m->srclen, rest);
-            return buf;
+    return join(out, PATH_MAX, curlen || *r ? cur : "/", r, "");
+}
+
+static const char *at_map(int fd, const char *path, char *buf, int follow);
+
+// cwd writes the working directory's host path to dir. libSystem's getcwd
+// walks .. through calls this library interposes; the library's own calls
+// stay the host's, and O_EVTONLY needs no right to read the directory.
+static int cwd(char *dir) {
+    int fd = open(".", O_EVTONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+        return 0;
+    }
+    int ok = fcntl(fd, F_GETPATH, dir) != -1;
+    close(fd);
+    return ok;
+}
+
+// fws_map returns the host path that p names in the container. A link the
+// final component names is followed if follow is set, as the call it maps
+// follows one. buf holds a mapped path.
+static const char *fws_map(const char *p, char *buf, int follow) {
+    if (!rootlen || !p) {
+        return p;
+    }
+    if (p[0] != '/') {
+        return at_map(AT_FDCWD, p, buf, follow);
+    }
+    if (host_side(p)) {
+        return p;
+    }
+    if (strstr(p, "/..") || linked(p)) {
+        char c[PATH_MAX];
+        if (resolve(p, follow, c)) {
+            const char *q = place(c, buf);
+            if (q == c) {
+                strcpy(buf, c);
+                return buf;
+            }
+            return q;
         }
     }
-    return path;
+    return place(p, buf);
 }
-#define AT_MAP(fd, p) at_map((fd), (p), (char[PATH_MAX]){0})
+
+#define MAP(p) fws_map((p), (char[PATH_MAX]){0}, 1)
+#define LMAP(p) fws_map((p), (char[PATH_MAX]){0}, 0)
+#define MAPF(p, follow) fws_map((p), (char[PATH_MAX]){0}, (follow))
+
+static void unmap(char *p, size_t size);
+
+// at_map maps path relative to directory fd as fws_map maps an absolute
+// path, where the kernel would resolve it otherwise: onto a mount, through
+// a symbolic link, or above the root.
+static const char *at_map(int fd, const char *path, char *buf, int follow) {
+    // An empty path names nothing, whatever the directory.
+    if (!rootlen || !path || !*path) {
+        return path;
+    }
+    if (path[0] == '/') {
+        return fws_map(path, buf, follow);
+    }
+    if (!nmounts && !strstr(path, "..") && !meets_link(fd, path)) {
+        return path;
+    }
+    char dir[PATH_MAX];
+    if (!(fd == AT_FDCWD ? cwd(dir) : fcntl(fd, F_GETPATH, dir) != -1)) {
+        return path;
+    }
+    if (!in_root(dir) && !in_mount(dir)) {
+        return path;
+    }
+    unmap(dir, sizeof dir);
+    char full[PATH_MAX];
+    if (!join(full, sizeof full, strcmp(dir, "/") ? dir : "", "/", path)) {
+        return path;
+    }
+    const char *q = fws_map(full, buf, follow);
+    if (q == full) {
+        strcpy(buf, full);
+        return buf;
+    }
+    return q;
+}
+#define AT_MAP(fd, p) at_map((fd), (p), (char[PATH_MAX]){0}, 1)
+#define AT_MAPF(fd, p, follow) at_map((fd), (p), (char[PATH_MAX]){0}, (follow))
 
 // unmap turns a host path in the root or a mount's source into the
 // container's path, in place.
@@ -285,6 +489,12 @@ static int creating(const char *p, int flags) {
     return fake_user() && (flags & O_CREAT) && lstat(p, &st) != 0;
 }
 
+// follows reports whether an open with flags follows a link its path's
+// final component names: O_EXCL with O_CREAT makes the file, not its target.
+static int follows(int flags) {
+    return !(flags & (O_NOFOLLOW | O_SYMLINK)) && (flags & (O_CREAT | O_EXCL)) != (O_CREAT | O_EXCL);
+}
+
 static int fws_open(const char *path, int flags, ...) {
     mode_t mode = 0;
     if (flags & O_CREAT) {
@@ -293,7 +503,7 @@ static int fws_open(const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    const char *p = MAP(path);
+    const char *p = MAPF(path, follows(flags));
     int fresh = creating(p, flags);
     int fd = open(p, flags, mode);
     if (fd >= 0 && fresh) made(NULL, fd, 0);
@@ -310,7 +520,7 @@ static int fws_open_nocancel(const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    const char *p = MAP(path);
+    const char *p = MAPF(path, follows(flags));
     int fresh = creating(p, flags);
     int fd = open_nocancel(p, flags, mode);
     if (fd >= 0 && fresh) made(NULL, fd, 0);
@@ -326,7 +536,7 @@ static int fws_openat(int fd, const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    const char *p = AT_MAP(fd, path);
+    const char *p = AT_MAPF(fd, path, follows(flags));
     int fresh = (p[0] == '/' || fd == AT_FDCWD) && creating(p, flags);
     int r = openat(fd, p, flags, mode);
     if (r >= 0 && fresh) made(NULL, r, 0);
@@ -345,7 +555,7 @@ static int fws_openat_nocancel(int fd, const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    const char *p = AT_MAP(fd, path);
+    const char *p = AT_MAPF(fd, path, follows(flags));
     int fresh = (p[0] == '/' || fd == AT_FDCWD) && creating(p, flags);
     int r = openat_nocancel(fd, p, flags, mode);
     if (r >= 0 && fresh) made(NULL, r, 0);
@@ -353,13 +563,13 @@ static int fws_openat_nocancel(int fd, const char *path, int flags, ...) {
 }
 INTERPOSE(fws_openat_nocancel, openat_nocancel);
 
-static int fws_clonefile(const char *src, const char *dst, uint32_t flags) { return clonefile(MAP(src), MAP(dst), flags); }
+static int fws_clonefile(const char *src, const char *dst, uint32_t flags) { return clonefile(MAPF(src, !(flags & CLONE_NOFOLLOW)), LMAP(dst), flags); }
 INTERPOSE(fws_clonefile, clonefile);
 static int fws_clonefileat(int sfd, const char *src, int dfd, const char *dst, uint32_t flags) {
-    return clonefileat(sfd, MAP(src), dfd, MAP(dst), flags);
+    return clonefileat(sfd, AT_MAPF(sfd, src, !(flags & CLONE_NOFOLLOW)), dfd, AT_MAPF(dfd, dst, 0), flags);
 }
 INTERPOSE(fws_clonefileat, clonefileat);
-static int fws_fclonefileat(int sfd, int dfd, const char *dst, uint32_t flags) { return fclonefileat(sfd, dfd, MAP(dst), flags); }
+static int fws_fclonefileat(int sfd, int dfd, const char *dst, uint32_t flags) { return fclonefileat(sfd, dfd, AT_MAPF(dfd, dst, 0), flags); }
 INTERPOSE(fws_fclonefileat, fclonefileat);
 
 static int fws_creat(const char *path, mode_t mode) {
@@ -373,7 +583,7 @@ INTERPOSE(fws_creat, creat);
 
 static int fws_access(const char *path, int mode) { return access(MAP(path), mode); }
 INTERPOSE(fws_access, access);
-static int fws_faccessat(int fd, const char *path, int mode, int flag) { return faccessat(fd, AT_MAP(fd, path), mode, flag); }
+static int fws_faccessat(int fd, const char *path, int mode, int flag) { return faccessat(fd, AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW)), mode, flag); }
 INTERPOSE(fws_faccessat, faccessat);
 
 static uid_t real_uid;
@@ -393,7 +603,7 @@ static int fws_stat(const char *path, struct stat *st) {
 }
 INTERPOSE(fws_stat, stat);
 static int fws_lstat(const char *path, struct stat *st) {
-    const char *p = MAP(path);
+    const char *p = LMAP(path);
     int r = lstat(p, st);
     if (r == 0) own(st, p, -1, 1);
     return r;
@@ -406,7 +616,7 @@ static int fws_fstat(int fd, struct stat *st) {
 }
 INTERPOSE(fws_fstat, fstat);
 static int fws_fstatat(int fd, const char *path, struct stat *st, int flag) {
-    const char *p = AT_MAP(fd, path);
+    const char *p = AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW));
     int r = fstatat(fd, p, st, flag);
     if (r == 0) {
         if (p[0] == '/' || fd == AT_FDCWD) {
@@ -437,7 +647,7 @@ static int fws_stat64(const char *path, void *st) {
 }
 INTERPOSE(fws_stat64, stat64);
 static int fws_lstat64(const char *path, void *st) {
-    const char *p = MAP(path);
+    const char *p = LMAP(path);
     int r = lstat64(p, st);
     if (r == 0) own(st, p, -1, 1);
     return r;
@@ -450,7 +660,7 @@ static int fws_fstat64(int fd, void *st) {
 }
 INTERPOSE(fws_fstat64, fstat64);
 static int fws_fstatat64(int fd, const char *path, void *st, int flag) {
-    const char *p = AT_MAP(fd, path);
+    const char *p = AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW));
     int r = fstatat64(fd, p, st, flag);
     if (r == 0 && (p[0] == '/' || fd == AT_FDCWD)) own(st, p, -1, flag & AT_SYMLINK_NOFOLLOW);
     return r;
@@ -460,11 +670,11 @@ INTERPOSE(fws_fstatat64, fstatat64);
 static int fws_statfs(const char *path, struct statfs *st) { return statfs(MAP(path), st); }
 INTERPOSE(fws_statfs, statfs);
 static int fws_getattrlist(const char *path, void *attrs, void *buf, size_t size, unsigned int opts) {
-    return getattrlist(MAP(path), attrs, buf, size, opts);
+    return getattrlist(MAPF(path, !(opts & FSOPT_NOFOLLOW)), attrs, buf, size, opts);
 }
 INTERPOSE(fws_getattrlist, getattrlist);
 static int fws_setattrlist(const char *path, void *attrs, void *buf, size_t size, unsigned int opts) {
-    return setattrlist(MAP(path), attrs, buf, size, opts);
+    return setattrlist(MAPF(path, !(opts & FSOPT_NOFOLLOW)), attrs, buf, size, opts);
 }
 INTERPOSE(fws_setattrlist, setattrlist);
 static long fws_pathconf(const char *path, int name) { return pathconf(MAP(path), name); }
@@ -473,62 +683,62 @@ INTERPOSE(fws_pathconf, pathconf);
 static int fws_chdir(const char *path) { return chdir(MAP(path)); }
 INTERPOSE(fws_chdir, chdir);
 static int fws_mkdir(const char *path, mode_t mode) {
-    const char *p = MAP(path);
+    const char *p = LMAP(path);
     int r = mkdir(p, mode);
     if (r == 0 && fake_user()) made(p, -1, 0);
     return r;
 }
 INTERPOSE(fws_mkdir, mkdir);
-static int fws_mkdirat(int fd, const char *path, mode_t mode) { return mkdirat(fd, AT_MAP(fd, path), mode); }
+static int fws_mkdirat(int fd, const char *path, mode_t mode) { return mkdirat(fd, AT_MAPF(fd, path, 0), mode); }
 INTERPOSE(fws_mkdirat, mkdirat);
-static int fws_rmdir(const char *path) { return rmdir(MAP(path)); }
+static int fws_rmdir(const char *path) { return rmdir(LMAP(path)); }
 INTERPOSE(fws_rmdir, rmdir);
-static int fws_unlink(const char *path) { return unlink(MAP(path)); }
+static int fws_unlink(const char *path) { return unlink(LMAP(path)); }
 INTERPOSE(fws_unlink, unlink);
-static int fws_unlinkat(int fd, const char *path, int flag) { return unlinkat(fd, AT_MAP(fd, path), flag); }
+static int fws_unlinkat(int fd, const char *path, int flag) { return unlinkat(fd, AT_MAPF(fd, path, 0), flag); }
 INTERPOSE(fws_unlinkat, unlinkat);
-static int fws_rename(const char *from, const char *to) { return rename(MAP(from), MAP(to)); }
+static int fws_rename(const char *from, const char *to) { return rename(LMAP(from), LMAP(to)); }
 INTERPOSE(fws_rename, rename);
-static int fws_renameat(int fd1, const char *from, int fd2, const char *to) { return renameat(fd1, MAP(from), fd2, MAP(to)); }
+static int fws_renameat(int fd1, const char *from, int fd2, const char *to) { return renameat(fd1, AT_MAPF(fd1, from, 0), fd2, AT_MAPF(fd2, to, 0)); }
 INTERPOSE(fws_renameat, renameat);
-static int fws_renamex_np(const char *from, const char *to, unsigned int flags) { return renamex_np(MAP(from), MAP(to), flags); }
+static int fws_renamex_np(const char *from, const char *to, unsigned int flags) { return renamex_np(LMAP(from), LMAP(to), flags); }
 INTERPOSE(fws_renamex_np, renamex_np);
 static int fws_renameatx_np(int fd1, const char *from, int fd2, const char *to, unsigned int flags) {
-    return renameatx_np(fd1, MAP(from), fd2, MAP(to), flags);
+    return renameatx_np(fd1, AT_MAPF(fd1, from, 0), fd2, AT_MAPF(fd2, to, 0), flags);
 }
 INTERPOSE(fws_renameatx_np, renameatx_np);
-static int fws_link(const char *from, const char *to) { return link(MAP(from), MAP(to)); }
+static int fws_link(const char *from, const char *to) { return link(LMAP(from), LMAP(to)); }
 INTERPOSE(fws_link, link);
-static int fws_linkat(int fd1, const char *from, int fd2, const char *to, int flag) { return linkat(fd1, MAP(from), fd2, MAP(to), flag); }
+static int fws_linkat(int fd1, const char *from, int fd2, const char *to, int flag) { return linkat(fd1, AT_MAPF(fd1, from, flag & AT_SYMLINK_FOLLOW), fd2, AT_MAPF(fd2, to, 0), flag); }
 INTERPOSE(fws_linkat, linkat);
 // A link's target is the link's to keep; only where the link goes maps.
 static int fws_symlink(const char *target, const char *path) {
-    const char *p = MAP(path);
+    const char *p = LMAP(path);
     int r = symlink(target, p);
     if (r == 0 && fake_user()) made(p, -1, 1);
     return r;
 }
 INTERPOSE(fws_symlink, symlink);
-static int fws_symlinkat(const char *target, int fd, const char *path) { return symlinkat(target, fd, MAP(path)); }
+static int fws_symlinkat(const char *target, int fd, const char *path) { return symlinkat(target, fd, AT_MAPF(fd, path, 0)); }
 INTERPOSE(fws_symlinkat, symlinkat);
-static ssize_t fws_readlink(const char *path, char *buf, size_t size) { return readlink(MAP(path), buf, size); }
+static ssize_t fws_readlink(const char *path, char *buf, size_t size) { return readlink(LMAP(path), buf, size); }
 INTERPOSE(fws_readlink, readlink);
-static ssize_t fws_readlinkat(int fd, const char *path, char *buf, size_t size) { return readlinkat(fd, AT_MAP(fd, path), buf, size); }
+static ssize_t fws_readlinkat(int fd, const char *path, char *buf, size_t size) { return readlinkat(fd, AT_MAPF(fd, path, 0), buf, size); }
 INTERPOSE(fws_readlinkat, readlinkat);
 static int fws_chmod(const char *path, mode_t mode) { return chmod(MAP(path), mode); }
 INTERPOSE(fws_chmod, chmod);
-static int fws_fchmodat(int fd, const char *path, mode_t mode, int flag) { return fchmodat(fd, AT_MAP(fd, path), mode, flag); }
+static int fws_fchmodat(int fd, const char *path, mode_t mode, int flag) { return fchmodat(fd, AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW)), mode, flag); }
 INTERPOSE(fws_fchmodat, fchmodat);
 static int fws_utimes(const char *path, const struct timeval t[2]) { return utimes(MAP(path), t); }
 INTERPOSE(fws_utimes, utimes);
-static int fws_lutimes(const char *path, const struct timeval t[2]) { return lutimes(MAP(path), t); }
+static int fws_lutimes(const char *path, const struct timeval t[2]) { return lutimes(LMAP(path), t); }
 INTERPOSE(fws_lutimes, lutimes);
-static int fws_utimensat(int fd, const char *path, const struct timespec t[2], int flag) { return utimensat(fd, AT_MAP(fd, path), t, flag); }
+static int fws_utimensat(int fd, const char *path, const struct timespec t[2], int flag) { return utimensat(fd, AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW)), t, flag); }
 INTERPOSE(fws_utimensat, utimensat);
 static int fws_truncate(const char *path, off_t len) { return truncate(MAP(path), len); }
 INTERPOSE(fws_truncate, truncate);
 static int fws_mkfifo(const char *path, mode_t mode) {
-    const char *p = MAP(path);
+    const char *p = LMAP(path);
     int r = mkfifo(p, mode);
     if (r == 0 && fake_user()) made(p, -1, 0);
     return r;
@@ -536,13 +746,13 @@ static int fws_mkfifo(const char *path, mode_t mode) {
 INTERPOSE(fws_mkfifo, mkfifo);
 static int fws_chflags(const char *path, unsigned int flags) { return chflags(MAP(path), flags); }
 INTERPOSE(fws_chflags, chflags);
-static ssize_t fws_getxattr(const char *path, const char *name, void *v, size_t n, uint32_t pos, int o) { return getxattr(MAP(path), name, v, n, pos, o); }
+static ssize_t fws_getxattr(const char *path, const char *name, void *v, size_t n, uint32_t pos, int o) { return getxattr(MAPF(path, !(o & XATTR_NOFOLLOW)), name, v, n, pos, o); }
 INTERPOSE(fws_getxattr, getxattr);
-static int fws_setxattr(const char *path, const char *name, const void *v, size_t n, uint32_t pos, int o) { return setxattr(MAP(path), name, v, n, pos, o); }
+static int fws_setxattr(const char *path, const char *name, const void *v, size_t n, uint32_t pos, int o) { return setxattr(MAPF(path, !(o & XATTR_NOFOLLOW)), name, v, n, pos, o); }
 INTERPOSE(fws_setxattr, setxattr);
-static ssize_t fws_listxattr(const char *path, char *buf, size_t n, int o) { return listxattr(MAP(path), buf, n, o); }
+static ssize_t fws_listxattr(const char *path, char *buf, size_t n, int o) { return listxattr(MAPF(path, !(o & XATTR_NOFOLLOW)), buf, n, o); }
 INTERPOSE(fws_listxattr, listxattr);
-static int fws_removexattr(const char *path, const char *name, int o) { return removexattr(MAP(path), name, o); }
+static int fws_removexattr(const char *path, const char *name, int o) { return removexattr(MAPF(path, !(o & XATTR_NOFOLLOW)), name, o); }
 INTERPOSE(fws_removexattr, removexattr);
 
 // find_on_path finds the executable file, a name without a slash, in a
@@ -556,7 +766,7 @@ static int find_on_path(const char *file, char *full) {
         if (n > 0 && n < sizeof dir) {
             memcpy(dir, path, n);
             dir[n] = 0;
-            if (snprintf(full, PATH_MAX, "%s/%s", dir, file) < PATH_MAX && access(fws_map(full, (char[PATH_MAX]){0}), X_OK) == 0) {
+            if (join(full, PATH_MAX, dir, "/", file) && access(MAP(full), X_OK) == 0) {
                 return 1;
             }
         }
@@ -582,7 +792,7 @@ static char **env_argv(char *arg, const char *path, char *const argv[], char *in
         return NULL;
     }
     if (strchr(words[0], '/')) {
-        const char *m = fws_map(words[0], interp);
+        const char *m = fws_map(words[0], interp, 1);
         if (m != interp) strlcpy(interp, m, PATH_MAX);
     } else if (!find_on_path(words[0], interp)) {
         return NULL;
@@ -629,7 +839,7 @@ static char **script_argv(const char *path, char *const argv[], char *interp) {
     if (line[0] != '/') {
         return NULL;
     }
-    const char *mapped = fws_map(line, interp);
+    const char *mapped = fws_map(line, interp, 1);
     if (mapped != interp && strcmp(line, "/usr/bin/env") == 0) {
         return env_argv(arg, path, argv, interp);
     }
@@ -734,10 +944,31 @@ static void *fws_dlopen(const char *path, int mode) { return dlopen(MAP(path), m
 INTERPOSE(fws_dlopen, dlopen);
 
 static char *fws_getcwd(char *buf, size_t size) {
-    char *r = getcwd(buf, size);
-    // getcwd allocates the buffer when given none, as large as the path.
-    unmap(r, r && !buf ? strlen(r) + 1 : size);
-    return r;
+    if (buf && size == 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    char dir[PATH_MAX];
+    if (!cwd(dir)) {
+        return NULL;
+    }
+    unmap(dir, sizeof dir);
+    size_t n = strlen(dir) + 1;
+    // getcwd allocates the buffer when given none: size bytes, or as many
+    // as the path takes.
+    if (!buf) {
+        buf = malloc(size > n ? size : n);
+        if (!buf) {
+            return NULL;
+        }
+        size = size > n ? size : n;
+    }
+    if (n > size) {
+        errno = ERANGE;
+        return NULL;
+    }
+    memcpy(buf, dir, n);
+    return buf;
 }
 
 static char *fws_realpath(const char *path, char *resolved) {
@@ -946,7 +1177,7 @@ static int fws_chown(const char *path, uid_t uid, gid_t gid) {
 }
 INTERPOSE(fws_chown, chown);
 static int fws_lchown(const char *path, uid_t uid, gid_t gid) {
-    const char *p = MAP(path);
+    const char *p = LMAP(path);
     struct stat st;
     if (lstat(p, &st) != 0) {
         return -1;
@@ -1285,7 +1516,7 @@ static fws_io_object_t fws_IORegisterForSystemPower(void *refcon, fws_notify_por
 }
 INTERPOSE(fws_IORegisterForSystemPower, IORegisterForSystemPower);
 
-// Mach services. As POSIX IPC names, the bootstrap names a container
+// Mach services. As POSIX IPC names are, the bootstrap names a container
 // registers carry its IPC prefix (SANDBOX_IPC_PREFIX), which the sandbox
 // lets it register and look up and no other container sees; a lookup finds
 // the container's own service first, then the host's.
@@ -1314,3 +1545,76 @@ static kern_return_t fws_bootstrap_look_up(mach_port_t bp, const name_t name, ma
     return bootstrap_look_up(bp, name, sp);
 }
 INTERPOSE(fws_bootstrap_look_up, bootstrap_look_up);
+
+// POSIX shared memory and semaphores. Under private IPC a container's names
+// carry its prefix, which the sandbox confines it to; the library gives a
+// name the prefix, so a program names its objects as it would on its own
+// host. macOS caps the names at 31 bytes: a name too long to carry the
+// prefix becomes the prefix and a hash of the name.
+#define POSIX_IPC_NAME_MAX 31
+
+static const char *posix_ipc_name(const char *name, char *out) {
+    const char *prefix = getenv("SANDBOX_IPC_PREFIX");
+    if (!prefix || !*prefix || !name) {
+        return name;
+    }
+    const char *slash = name[0] == '/' ? "/" : "";
+    const char *n = name + strlen(slash);
+    if (strncmp(n, prefix, strlen(prefix)) == 0) {
+        return name;
+    }
+    if (join(out, POSIX_IPC_NAME_MAX + 1, slash, prefix, n)) {
+        return out;
+    }
+    uint64_t h = 14695981039346656037ULL;
+    for (const unsigned char *c = (const unsigned char *)n; *c; c++) {
+        h = (h ^ *c) * 1099511628211ULL;
+    }
+    char hex[17];
+    for (int i = 15; i >= 0; i--, h >>= 4) {
+        hex[i] = "0123456789abcdef"[h & 15];
+    }
+    hex[16] = 0;
+    join(out, POSIX_IPC_NAME_MAX + 1, slash, prefix, hex);
+    return out;
+}
+
+static int fws_shm_open(const char *name, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    char own[POSIX_IPC_NAME_MAX + 1];
+    return shm_open(posix_ipc_name(name, own), flags, mode);
+}
+INTERPOSE(fws_shm_open, shm_open);
+
+static int fws_shm_unlink(const char *name) {
+    char own[POSIX_IPC_NAME_MAX + 1];
+    return shm_unlink(posix_ipc_name(name, own));
+}
+INTERPOSE(fws_shm_unlink, shm_unlink);
+
+static sem_t *fws_sem_open(const char *name, int flags, ...) {
+    char own[POSIX_IPC_NAME_MAX + 1];
+    const char *n = posix_ipc_name(name, own);
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode_t mode = (mode_t)va_arg(ap, int);
+        unsigned value = va_arg(ap, unsigned);
+        va_end(ap);
+        return sem_open(n, flags, mode, value);
+    }
+    return sem_open(n, flags);
+}
+INTERPOSE(fws_sem_open, sem_open);
+
+static int fws_sem_unlink(const char *name) {
+    char own[POSIX_IPC_NAME_MAX + 1];
+    return sem_unlink(posix_ipc_name(name, own));
+}
+INTERPOSE(fws_sem_unlink, sem_unlink);

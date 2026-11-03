@@ -20,8 +20,9 @@ machine — and from what macOS offers an unprivileged process under them.
   and `-w` behave as in Docker. Its limits:
   - A path names the root's file when the root holds it, or its parent, so
     a file can be made there; any other path, such as `/dev` or the system
-    frameworks, names the host's. An absolute symbolic link inside the
-    image resolves on the host, as the kernel follows it.
+    frameworks, names the host's. Symbolic links resolve inside the
+    container, as under chroot: an absolute target starts at the
+    container's `/`, and `..` stops there.
   - Programs Apple signs, and programs with the hardened runtime, load no
     library: the host's `/bin/sh`, `/usr/bin/env` and Chrome see host paths.
     Catalog images carry their own `/bin/sh`, so `system()`, `popen()` and
@@ -41,9 +42,9 @@ machine — and from what macOS offers an unprivileged process under them.
   `docker buildx build` (docker driver) and `docker compose build` run the
   real BuildKit solver with its cache, secret and SSH mounts included. Not
   supported: multi-platform builds and `# syntax=` directives (gateway
-  frontends ship as Linux images). Build steps run as the engine's user; a
-  Dockerfile `USER` other than root fails, and an SSH mount's socket belongs
-  to the engine's user whatever `uid` it names.
+  frontends ship as Linux images). A step runs as the Dockerfile's `USER`
+  through the container library, but an SSH mount's socket belongs to the
+  engine's user whatever `uid` it names.
 - **The classic builder (`DOCKER_BUILDKIT=0`) takes no heredocs**, as
   Docker's classic builder takes none; BuildKit builds take them.
 - **Build steps run under Seatbelt** with internet through a build-only
@@ -74,9 +75,12 @@ machine — and from what macOS offers an unprivileged process under them.
   cannot tell System V keys apart, so a container that guesses another's
   key could reach it. PostgreSQL derives its keys from its port, which
   differs per stack.
-- **POSIX shared memory needs the prefix.** Under private IPC a program must
-  name its objects with `SANDBOX_IPC_PREFIX`; `--ipc host` lifts the
-  confinement. The catalog's PostgreSQL uses `mmap` dynamic shared memory.
+- **POSIX shared memory and semaphore names carry the prefix.** Under
+  private IPC the container library gives every name the program uses
+  `SANDBOX_IPC_PREFIX`, and a name too long to carry it within macOS's
+  31 bytes becomes the prefix and a hash of the name. A program that loads
+  no library, as Apple's do not, must add the prefix itself;
+  `--ipc host` lifts the confinement.
 - **Capabilities grant nothing to drop.** Containers run as the engine's
   unprivileged user, so `--cap-drop` changes nothing; `--cap-add` beyond
   Docker's default set needs root and is refused. AppArmor, SELinux and

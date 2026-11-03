@@ -105,7 +105,7 @@ func TestMountsAndEnvScripts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := probe(t, root, []string{mv, "PATH=" + filepath.Join(root, "bin")}, "mount", "mountat", "rootpath", "envscript")
+	got := probe(t, root, []string{mv, "PATH=" + filepath.Join(root, "bin")}, "mount", "mountat", "rootpath", "envscript", "empty")
 	if want := "mounted,/data/file,/data"; got["mount"] != want {
 		t.Errorf("mount: %q, want %q", got["mount"], want)
 	}
@@ -114,6 +114,9 @@ func TestMountsAndEnvScripts(t *testing.T) {
 	}
 	if want := filepath.Join(src, "file"); got["rootpath"] != want {
 		t.Errorf("rootpath: %q, want %q", got["rootpath"], want)
+	}
+	if !strings.HasPrefix(got["empty"], "error: ") {
+		t.Errorf("stat of an empty path: %q, want an error", got["empty"])
 	}
 	if !strings.Contains(got["envscript"], "read=inside") {
 		t.Errorf("a #!/usr/bin/env script ran as %q", got["envscript"])
@@ -171,5 +174,47 @@ func TestMachServicesUnderTheIPCPrefix(t *testing.T) {
 	}
 	if got := run("DYLD_INSERT_LIBRARIES="+lib, "SANDBOX_IPC_PREFIX=fwstest."); got != "1 1" {
 		t.Errorf("with the library: %q, want the service registered and found under the prefix", got)
+	}
+}
+
+func TestAbsoluteLinksResolveInTheRoot(t *testing.T) {
+	root := containerRoot(t)
+	os.MkdirAll(filepath.Join(root, "usr", "local", "bin"), 0o755)
+	os.MkdirAll(filepath.Join(root, "usr", "bin"), 0o755)
+	os.WriteFile(filepath.Join(root, "usr", "local", "bin", "real"), []byte("abs"), 0o644)
+	for link, target := range map[string]string{"usr/bin/link": "/usr/local/bin/real", "lib": "/usr/local", "etc/up": "../../.."} {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := probe(t, root, nil, "abslink")
+	if want := "abs,abs,/usr/local/bin/real,/usr/local/bin/real,symlink,abs,inside,inside"; got["abslink"] != want {
+		t.Errorf("abslink: %q, want %q", got["abslink"], want)
+	}
+}
+
+func TestPOSIXIPCUnderTheIPCPrefix(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "ipc")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/ipc/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	run := func(env ...string) string {
+		cmd := exec.Command(bin)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("ipc: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if got := run(); got != "0 0 0" {
+		t.Fatalf("without the library: %q, want every name refused", got)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run("DYLD_INSERT_LIBRARIES="+lib, "SANDBOX_IPC_PREFIX=fwstest."); got != "1 1 1" {
+		t.Errorf("with the library: %q, want shared memory, a semaphore and a long name under the prefix", got)
 	}
 }
