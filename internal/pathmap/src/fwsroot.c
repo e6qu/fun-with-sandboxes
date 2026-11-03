@@ -31,6 +31,7 @@
 #include <limits.h>
 #include <mach/mach.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <servers/bootstrap.h>
 #include <spawn.h>
 #include <stdarg.h>
