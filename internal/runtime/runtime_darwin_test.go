@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -185,5 +186,66 @@ func TestTTYIsTheControllingTerminal(t *testing.T) {
 	<-copied
 	if p.ExitCode() != 0 || !strings.Contains(out.String(), "tty=true") {
 		t.Fatalf("exit %d, output %q: want a controlling terminal", p.ExitCode(), out.String())
+	}
+}
+
+// An exec the container's anchor starts runs in the main process's
+// sandbox, where it may signal the main process; one that enters the same
+// profile by itself is a sandbox of its own, and may not.
+func TestExecsRunInTheMainProcesssSandbox(t *testing.T) {
+	state, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(state, "root")
+	if out, err := exec.Command("go", "build", "-o", filepath.Join(root, "signal"), "./testdata/signal").CombinedOutput(); err != nil {
+		t.Fatalf("build signal: %v\n%s", err, out)
+	}
+	// A Unix socket's path is capped at 104 bytes.
+	dir, err := os.MkdirTemp("/tmp", "fws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "anchor")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ul := l.(*net.UnixListener)
+	ul.SetUnlinkOnClose(false)
+	lf, err := ul.File()
+	ul.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := func(argv ...string) Spec {
+		return Spec{
+			Root: root, Argv: argv, Env: []string{"PATH=/"},
+			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)},
+			ProfilePath: filepath.Join(state, "profile-"+argv[0][1:]+".sb"),
+		}
+	}
+	ms := spec("/signal")
+	ms.AnchorListener = lf
+	main, err := Start(ms)
+	lf.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { main.KillAll() })
+	pid := fmt.Sprint(main.Pid())
+	run := func(s Spec) (int, string) {
+		var out syncBuffer
+		s.Stdout, s.Stderr = &out, &out
+		return runToEnd(t, s).ExitCode(), out.String()
+	}
+	in := spec("/signal", "signal", pid)
+	in.Anchor = sock
+	if code, out := run(in); code != 0 || !strings.Contains(out, "signalled") {
+		t.Errorf("an exec through the anchor: exit %d, %q", code, out)
+	}
+	if code, out := run(spec("/signal", "signal", pid)); code == 0 {
+		t.Errorf("a process sandboxed apart signalled the main process: %q", out)
 	}
 }

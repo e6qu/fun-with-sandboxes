@@ -52,6 +52,10 @@ func run(op, arg string) error {
 		return syscall.Kill(pid, 0)
 	case "exec":
 		return syscall.Exec(arg, []string{arg}, nil)
+	case "hold":
+		// Run on, as a container's long-running process does, until killed.
+		time.Sleep(time.Hour)
+		return nil
 	case "socket":
 		// arg names a socket domain and type.
 		kinds := map[string][3]int{

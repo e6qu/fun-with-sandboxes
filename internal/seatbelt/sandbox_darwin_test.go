@@ -225,3 +225,20 @@ func TestIPCModes(t *testing.T) {
 		e.denied("sysvshm", key)
 	})
 }
+
+// Seatbelt lets a process signal only processes of its own sandbox: those
+// that inherited it. Two processes sandboxed apart under one profile are two
+// sandboxes, as a container's main process and a docker exec would be if
+// each entered the container's profile on its own.
+func TestSignalsStayInOneSandbox(t *testing.T) {
+	root := probeRoot(t)
+	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root)})
+	hold := exec.Command("/usr/bin/sandbox-exec", "-p", e.profile, filepath.Join(root, "probe"), "hold", "")
+	if err := hold.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { hold.Process.Kill(); hold.Wait() })
+	e.denied("signal", strconv.Itoa(hold.Process.Pid))
+	// A child of the sandbox signals its sibling.
+	e.allowed("sh", root+"/probe hold & "+root+"/probe signal $! && kill $!")
+}

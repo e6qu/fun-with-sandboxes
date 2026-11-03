@@ -110,8 +110,8 @@ capability sets. What it does give — `posix_spawn` attributes, `setrlimit`,
 `SIGSTOP`/`SIGCONT`, and Seatbelt's filters — the engine composes into the
 same knobs, each enforced by a real mechanism or refused:
 
-- **Spawn helper.** Every container process (main, exec, health check, build
-  step) starts as `fws-shim`, a small binary beside `fwsd` that holds
+- **Spawn helper.** Every container's main process and every build step
+  starts as `fws-shim`, a small binary beside `fwsd` that holds
   only the engine's helper roles, in its spawn-helper role, through
   `posix_spawn` with responsibility disclaimed, so the process inherits no
   privacy (TCC) grant of whatever launched the engine. The helper applies
@@ -120,6 +120,23 @@ same knobs, each enforced by a real mechanism or refused:
   controlling terminal, applies the Seatbelt profile, and executes the
   command with the container library loaded. A limit the user cannot
   set fails the start, reported on a close-on-exec status pipe.
+- **Exec anchor.** Seatbelt lets a process signal and inspect only the
+  processes of its own sandbox, the ones that inherited it, and a process
+  that enters the container's profile by itself is a sandbox of its own. So
+  a main process's spawn helper, once sandboxed, starts the container's
+  anchor before it executes the command:
+  - The anchor is a process of `fws-shim` that a launcher starts and leaves
+    at once, so it is no child of the main process, whose `wait` would
+    otherwise wait for it.
+  - It accepts on a socket the shim binds in the engine's state, which no
+    container can reach.
+  - It starts each `docker exec` and health check the engine asks for,
+    with the streams the engine passes it, in the container's sandbox, and
+    reports its pid and exit status.
+  - It carries none of the container's environment, so its limits and
+    `top` leave it out, and it exits with the main process.
+  - The profile lets the sandbox execute `fws-shim` for it, and nothing
+    else beyond the root, its volumes and the system shells.
 - **Supervisor.** Each container runs under a shim, `fws-shim` in its
   supervisor role and a session of its own; each stack's egress proxy is
   `fws-shim` too. The shim owns the container's
@@ -554,8 +571,9 @@ mounts, and record the container. On start:
    drains the output, records the exit, and tells the engine, which applies
    the restart policy.
 
-`exec` and health checks start further processes under the same profile,
-root and environment, with pipes or a pty (`creack/pty`).
+`exec` and health checks start further processes in the container's
+sandbox, through its anchor, with its root and environment, and with pipes
+or a pty (`creack/pty`).
 
 ---
 

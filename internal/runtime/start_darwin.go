@@ -39,6 +39,9 @@ type helperSpec struct {
 	Library string
 	Limits  Limits
 	TTY     bool
+	// Anchor starts the container's exec anchor from the sandbox, on the
+	// listening socket at descriptor 4.
+	Anchor bool
 }
 
 func init() {
@@ -65,14 +68,19 @@ func runHelper() {
 	if err := applyLimits(h); err != nil {
 		fail(err)
 	}
-	env := withoutVars(os.Environ(), RoleVar, helperVar, "DYLD_INSERT_LIBRARIES")
-	if h.Library != "" {
-		env = append(env, "DYLD_INSERT_LIBRARIES="+h.Library)
-	}
+	env := withLibrary(os.Environ(), h.Library)
 	if err := libsystem.SandboxInit(h.Profile); err != nil {
 		fail(err)
 	}
 	syscall.CloseOnExec(statusFD)
+	if h.Anchor {
+		// The anchor must not hold the status pipe, which the engine reads
+		// to its end.
+		syscall.CloseOnExec(anchorFD)
+		if err := startAnchor(); err != nil {
+			fail(err)
+		}
+	}
 	err := syscall.Exec(h.Path, h.Argv, env)
 	fail(fmt.Errorf("exec %s: %w", h.Argv[0], err))
 }
@@ -127,6 +135,14 @@ func Start(s Spec) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
+	self, err := roles.Binary()
+	if err != nil {
+		return nil, err
+	}
+	// Seatbelt matches resolved paths.
+	if s.Profile.Helper, err = filepath.EvalSymlinks(self); err != nil {
+		return nil, err
+	}
 	text, err := seatbelt.Render(s.Profile)
 	if err != nil {
 		return nil, err
@@ -138,14 +154,10 @@ func Start(s Spec) (*Process, error) {
 	if err := os.MkdirAll(wd, 0o755); err != nil {
 		return nil, err
 	}
-	self, err := roles.Binary()
-	if err != nil {
-		return nil, err
-	}
 	exe, argv := scriptCommand(s.Root, exe, s.Argv, s.Env)
 	hs, err := json.Marshal(helperSpec{
 		Path: exe, Argv: argv, Profile: text, Library: s.Library,
-		Limits: s.Limits, TTY: s.TTY != nil,
+		Limits: s.Limits, TTY: s.TTY != nil, Anchor: s.AnchorListener != nil,
 	})
 	if err != nil {
 		return nil, err
@@ -197,15 +209,40 @@ func Start(s Spec) (*Process, error) {
 			childEnds, parentEnds = append(childEnds, r), append(parentEnds, w)
 		}
 	}
+	if s.Anchor != "" {
+		req := anchorRequest{Path: exe, Argv: argv, Env: withLibrary(s.Env, s.Library), Dir: wd, TTY: s.TTY != nil}
+		pid, dec, conn, err := startInAnchor(s.Anchor, req, stdio)
+		closeAll(childEnds)
+		if err != nil {
+			closeAll(parentEnds)
+			return nil, err
+		}
+		p.pid = pid
+		p.copyIO(s, parentEnds)
+		go func() {
+			defer conn.Close()
+			code := 255
+			var r anchorReply
+			if dec.Decode(&r) == nil && r.Code != nil {
+				code = *r.Code
+			}
+			p.finish(code)
+		}()
+		return p, nil
+	}
 	statusR, statusW, err := os.Pipe()
 	if err != nil {
 		cleanup()
 		return nil, err
 	}
 	defer statusR.Close()
+	files := []uintptr{stdio[0].Fd(), stdio[1].Fd(), stdio[2].Fd(), statusW.Fd()}
+	if s.AnchorListener != nil {
+		files = append(files, s.AnchorListener.Fd())
+	}
 	pid, err := libsystem.Spawn(self, []string{helperArgv}, env, libsystem.SpawnAttr{
 		Dir:   wd,
-		Files: []uintptr{stdio[0].Fd(), stdio[1].Fd(), stdio[2].Fd(), statusW.Fd()},
+		Files: files,
 		// A session leader also leads its process group, so KillAll still
 		// reaches every descendant.
 		SetSID:   s.TTY != nil,
@@ -229,6 +266,14 @@ func Start(s Spec) (*Process, error) {
 		return nil, errors.New(string(failure))
 	}
 	p.pid, p.proc = pid, proc
+	p.copyIO(s, parentEnds)
+	go p.wait()
+	return p, nil
+}
+
+// copyIO copies the process's output pipes to their writers, and its stdin
+// source to its stdin pipe.
+func (p *Process) copyIO(s Spec, parentEnds []*os.File) {
 	if s.TTY == nil {
 		k := 0
 		for _, dst := range []io.Writer{s.Stdout, s.Stderr} {
@@ -253,6 +298,14 @@ func Start(s Spec) (*Process, error) {
 			}()
 		}
 	}
-	go p.wait()
-	return p, nil
+}
+
+// withLibrary is env with the container library loaded, as the spawn helper
+// sets it.
+func withLibrary(env []string, library string) []string {
+	out := withoutVars(env, RoleVar, helperVar, "DYLD_INSERT_LIBRARIES")
+	if library != "" {
+		out = append(out, "DYLD_INSERT_LIBRARIES="+library)
+	}
+	return out
 }
