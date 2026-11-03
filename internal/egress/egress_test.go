@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -122,5 +125,43 @@ func TestIsHostAddress(t *testing.T) {
 		if got := IsHostAddress(net.ParseIP(ip), own); got != want {
 			t.Errorf("IsHostAddress(%s) = %v, want %v", ip, got, want)
 		}
+	}
+}
+
+// A stack's members are reached at the host ports behind their ports, by
+// name or member address, though the policy denies loopback: a client that
+// sends the stack's own traffic through the proxy reaches the stack.
+func TestReachesStackMembers(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "member "+r.Host) }))
+	defer up.Close()
+	_, port, _ := net.SplitHostPort(up.Listener.Addr().String())
+	network := filepath.Join(t.TempDir(), "network")
+	os.WriteFile(network, []byte("127.88.0.2\tweb proj-web-1\t8000/tcp="+port+"\n"), 0o644)
+	policy := testPolicy()
+	policy.Deny = func(net.IP) bool { return true }
+	policy.Members = network
+	p, err := Listen("127.0.0.1:0", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	for _, url := range []string{"http://web:8000/", "http://PROJ-WEB-1:8000/", "http://127.88.0.2:8000/"} {
+		res, err := client(p).Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if res.StatusCode != 200 || !strings.HasPrefix(string(b), "member ") {
+			t.Errorf("GET %s: %d %q", url, res.StatusCode, b)
+		}
+	}
+	res, err := client(p).Get("http://web:9999/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Errorf("a port the member does not expose: %d, want 502", res.StatusCode)
 	}
 }

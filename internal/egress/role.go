@@ -21,16 +21,18 @@ const Role = "egress"
 const roleVar = roles.Var
 
 func init() {
-	if os.Getenv(roleVar) == Role && len(os.Args) > 1 {
-		os.Exit(serveRole(os.Args[len(os.Args)-1]))
+	if os.Getenv(roleVar) == Role && len(os.Args) > 2 {
+		os.Exit(serveRole(os.Args[len(os.Args)-1], os.Args[len(os.Args)-2]))
 	}
 }
 
-// serveRole runs the proxy on addr until SIGTERM, after reporting on
-// descriptor 3 that it listens.
-func serveRole(addr string) int {
+// serveRole runs the proxy on addr for the stack whose network file is
+// network until SIGTERM, after reporting on descriptor 3 that it listens.
+func serveRole(addr, network string) int {
 	ready := os.NewFile(3, "ready")
-	p, err := Listen(addr, HostPolicy())
+	policy := HostPolicy()
+	policy.Members = network
+	p, err := Listen(addr, policy)
 	if err != nil {
 		json.NewEncoder(ready).Encode(map[string]string{"error": err.Error()})
 		return 1
@@ -44,9 +46,9 @@ func serveRole(addr string) int {
 	return 0
 }
 
-// Start runs a proxy process on addr, logging to log, and returns its pid
-// once it listens.
-func Start(addr string, log *os.File) (*os.Process, error) {
+// Start runs a proxy process on addr for the stack whose network file is
+// network, logging to log, and returns its pid once it listens.
+func Start(addr, network string, log *os.File) (*os.Process, error) {
 	self, err := roles.Binary()
 	if err != nil {
 		return nil, err
@@ -56,7 +58,7 @@ func Start(addr string, log *os.File) (*os.Process, error) {
 		return nil, err
 	}
 	defer r.Close()
-	cmd := exec.Command(self, "egress", addr)
+	cmd := exec.Command(self, "egress", network, addr)
 	env := []string{roleVar + "=" + Role}
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, roleVar+"=") {

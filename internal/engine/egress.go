@@ -38,6 +38,8 @@ type egressProc struct {
 	Pid   int   `json:"pid"`
 	Start int64 `json:"start"`
 	Port  int   `json:"port"`
+	// Members is the network file the proxy reaches the stack's members by.
+	Members string `json:"members"`
 }
 
 func (e *Engine) egressFile(stack string) string {
@@ -71,25 +73,34 @@ func (e *Engine) ensureEgress(stack string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if p, ok := e.egress[stack]; ok && p.Port == port && p.alive() {
+	nf, err := e.networkFile(stack)
+	if err != nil {
+		return 0, err
+	}
+	if p, ok := e.egress[stack]; ok && p.Port == port && p.Members == nf && p.alive() {
 		return port, nil
 	}
+	// A proxy an earlier engine left running keeps serving unless it
+	// predates the network file, which it would not know.
 	var left egressProc
 	if ok, _ := readJSON(e.egressFile(stack), &left); ok && left.Port == port && left.alive() {
-		e.egress[stack] = &left
-		return port, nil
+		if left.Members == nf {
+			e.egress[stack] = &left
+			return port, nil
+		}
+		stopProcess(&left)
 	}
 	logf, err := os.OpenFile(filepath.Join(e.cfg.Root, "run", "egress-"+stack+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return 0, err
 	}
 	defer logf.Close()
-	proc, err := egress.Start(net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), logf)
+	proc, err := egress.Start(net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nf, logf)
 	if err != nil {
 		return 0, err
 	}
 	start, _ := processStart(proc.Pid)
-	p := &egressProc{Pid: proc.Pid, Start: start, Port: port}
+	p := &egressProc{Pid: proc.Pid, Start: start, Port: port, Members: nf}
 	if err := writeJSON(e.egressFile(stack), p); err != nil {
 		stopProcess(p)
 		return 0, err

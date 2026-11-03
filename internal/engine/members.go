@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
+	stackmembers "github.com/e6qu/fun-with-sandboxes/internal/members"
 )
 
 // A stack's members reach one another by name, as containers on a Docker
@@ -82,19 +82,21 @@ func (e *Engine) writeNetworkLocked(stack string) error {
 		}
 	}
 	sort.Slice(members, func(i, j int) bool { return members[i].rec.Address < members[j].rec.Address })
-	var b strings.Builder
+	var ms []stackmembers.Member
 	for _, m := range members {
-		ports, err := pathmap.PortsVar(m.rec.Ports)
-		if err != nil {
-			return err
+		ports := map[string]int{}
+		for k, v := range m.rec.Ports {
+			if _, proto, _ := strings.Cut(k, "/"); proto == "tcp" || proto == "udp" {
+				ports[k] = v
+			}
 		}
-		fmt.Fprintf(&b, "%s\t%s\t%s\n", m.rec.Address, strings.Join(memberNames(m), " "), strings.TrimPrefix(ports, "FWS_PORTS="))
+		ms = append(ms, stackmembers.Member{Address: m.rec.Address, Names: memberNames(m), Ports: ports})
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(tmp, stackmembers.Format(ms), 0o644); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

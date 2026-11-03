@@ -13,9 +13,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/members"
 )
 
 // Policy decides which addresses the proxy may dial.
@@ -24,6 +28,11 @@ type Policy struct {
 	Deny func(ip net.IP) bool
 	// Resolve looks up a host name; it defaults to the system resolver.
 	Resolve func(ctx context.Context, host string) ([]net.IP, error)
+	// Members names the stack's network file. The proxy reaches a member,
+	// by name or member address, at the host port behind its port, as the
+	// container library does, for clients that send even the stack's own
+	// traffic through the proxy.
+	Members string
 }
 
 // HostPolicy refuses loopback, link-local, unspecified and multicast
@@ -160,6 +169,15 @@ func (p *Proxy) dial(ctx context.Context, network, addr string) (net.Conn, error
 	if err != nil {
 		return nil, err
 	}
+	if p.policy.Members != "" {
+		if hp, ok, err := p.member(host, port); ok {
+			if err != nil {
+				return nil, err
+			}
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", hp)
+		}
+	}
 	var ips []net.IP
 	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
 		ips = []net.IP{ip}
@@ -184,6 +202,24 @@ func (p *Proxy) dial(ctx context.Context, network, addr string) (net.Conn, error
 		last = err
 	}
 	return nil, last
+}
+
+// member returns the loopback address behind a stack member's port, and
+// whether host is a member at all.
+func (p *Proxy) member(host, port string) (string, bool, error) {
+	b, err := os.ReadFile(p.policy.Members)
+	if err != nil {
+		return "", false, nil
+	}
+	m, ok := members.Find(members.Parse(b), strings.Trim(host, "[]"))
+	if !ok {
+		return "", false, nil
+	}
+	hp, ok := m.Ports[port+"/tcp"]
+	if !ok {
+		return "", true, fmt.Errorf("egress: %s does not listen on port %s", host, port)
+	}
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)), true, nil
 }
 
 func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
