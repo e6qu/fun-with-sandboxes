@@ -357,16 +357,24 @@ static int resolve(const char *p, int follow, char *out) {
 
 static const char *at_map(int fd, const char *path, char *buf, int follow);
 
-// host_calls counts the libSystem calls in progress on this thread that walk
-// the host's paths through calls this library interposes, as getcwd and
-// realpath walk .. and resolve links: those paths are the host's already.
-static __thread int host_calls;
+// cwd writes the working directory's host path to dir. libSystem's getcwd
+// walks .. through calls this library interposes; the library's own calls
+// stay the host's, and O_EVTONLY needs no right to read the directory.
+static int cwd(char *dir) {
+    int fd = open(".", O_EVTONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+        return 0;
+    }
+    int ok = fcntl(fd, F_GETPATH, dir) != -1;
+    close(fd);
+    return ok;
+}
 
 // fws_map returns the host path that p names in the container. A link the
 // final component names is followed if follow is set, as the call it maps
 // follows one. buf holds a mapped path.
 static const char *fws_map(const char *p, char *buf, int follow) {
-    if (!rootlen || !p || host_calls) {
+    if (!rootlen || !p) {
         return p;
     }
     if (p[0] != '/') {
@@ -399,7 +407,7 @@ static void unmap(char *p, size_t size);
 // path, where the kernel would resolve it otherwise: onto a mount, through
 // a symbolic link, or above the root.
 static const char *at_map(int fd, const char *path, char *buf, int follow) {
-    if (!rootlen || !path || host_calls) {
+    if (!rootlen || !path) {
         return path;
     }
     if (path[0] == '/') {
@@ -409,10 +417,7 @@ static const char *at_map(int fd, const char *path, char *buf, int follow) {
         return path;
     }
     char dir[PATH_MAX];
-    host_calls++;
-    int found = fd == AT_FDCWD ? getcwd(dir, sizeof dir) != NULL : fcntl(fd, F_GETPATH, dir) != -1;
-    host_calls--;
-    if (!found) {
+    if (!(fd == AT_FDCWD ? cwd(dir) : fcntl(fd, F_GETPATH, dir) != -1)) {
         return path;
     }
     if (!in_root(dir) && !in_mount(dir)) {
@@ -924,19 +929,35 @@ static void *fws_dlopen(const char *path, int mode) { return dlopen(MAP(path), m
 INTERPOSE(fws_dlopen, dlopen);
 
 static char *fws_getcwd(char *buf, size_t size) {
-    host_calls++;
-    char *r = getcwd(buf, size);
-    host_calls--;
-    // getcwd allocates the buffer when given none, as large as the path.
-    unmap(r, r && !buf ? strlen(r) + 1 : size);
-    return r;
+    if (buf && size == 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    char dir[PATH_MAX];
+    if (!cwd(dir)) {
+        return NULL;
+    }
+    unmap(dir, sizeof dir);
+    size_t n = strlen(dir) + 1;
+    // getcwd allocates the buffer when given none: size bytes, or as many
+    // as the path takes.
+    if (!buf) {
+        buf = malloc(size > n ? size : n);
+        if (!buf) {
+            return NULL;
+        }
+        size = size > n ? size : n;
+    }
+    if (n > size) {
+        errno = ERANGE;
+        return NULL;
+    }
+    memcpy(buf, dir, n);
+    return buf;
 }
 
 static char *fws_realpath(const char *path, char *resolved) {
-    const char *p = MAP(path);
-    host_calls++;
-    char *r = realpath(p, resolved);
-    host_calls--;
+    char *r = realpath(MAP(path), resolved);
     unmap(r, PATH_MAX);
     return r;
 }

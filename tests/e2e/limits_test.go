@@ -118,13 +118,11 @@ func TestCapabilitiesAndSecurityOptions(t *testing.T) {
 	}
 }
 
-// Private IPC confines POSIX shared memory to the container's names;
+// Private IPC gives each container POSIX shared memory names of its own;
 // container:<name> shares another's; none denies IPC.
 func TestIPCModes(t *testing.T) {
 	mustDocker(t, "run", "--rm", "fws/toolbox:1", "shm", "+own")
-	if _, err := docker(t, "run", "--rm", "fws/toolbox:1", "shm", "fwsnotmine.x"); err == nil {
-		t.Fatal("a container opened shared memory outside its prefix")
-	}
+	mustDocker(t, "run", "--rm", "fws/toolbox:1", "shm", "/plain")
 	mustDocker(t, "run", "--rm", "--ipc", "host", "fws/toolbox:1", "shm", "fwshost.e2e")
 	if _, err := docker(t, "run", "--rm", "--ipc", "none", "fws/toolbox:1", "shm", "+own"); err == nil {
 		t.Fatal("a container without IPC opened shared memory")
@@ -132,16 +130,11 @@ func TestIPCModes(t *testing.T) {
 	const owner = "fws-e2e-ipc-owner"
 	mustDocker(t, "run", "-d", "--name", owner, "--ipc", "shareable", "fws/toolbox:1", "hold")
 	defer docker(t, "rm", "-f", owner)
-	prefix := ""
-	for _, kv := range strings.Fields(mustDocker(t, "exec", owner, "/toolbox", "env")) {
-		if v, ok := strings.CutPrefix(kv, "SANDBOX_IPC_PREFIX="); ok {
-			prefix = v
-		}
+	mustDocker(t, "exec", owner, "/toolbox", "shmmake", "/e2e.shared")
+	if _, err := docker(t, "run", "--rm", "fws/toolbox:1", "shmopen", "/e2e.shared"); err == nil {
+		t.Fatal("a container with private IPC opened another's shared memory")
 	}
-	if prefix == "" {
-		t.Fatal("the container's environment names no IPC prefix")
-	}
-	mustDocker(t, "run", "--rm", "--ipc", "container:"+owner, "fws/toolbox:1", "shm", prefix+"shared")
+	mustDocker(t, "run", "--rm", "--ipc", "container:"+owner, "fws/toolbox:1", "shmopen", "/e2e.shared")
 }
 
 // liveDaemon is an engine of the test's own.
