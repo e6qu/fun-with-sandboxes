@@ -103,6 +103,20 @@ static void parse_mounts(const char *v) {
     }
 }
 
+// join writes a, b and c to out, a buffer of size bytes, and reports
+// whether they fit. Path mapping formats nothing: libSystem calls it from
+// setlocale, which holds the lock snprintf takes to read the locale.
+static int join(char *out, size_t size, const char *a, const char *b, const char *c) {
+    size_t na = strlen(a), nb = strlen(b), nc = strlen(c);
+    if (na + nb + nc + 1 > size) {
+        return 0;
+    }
+    memmove(out, a, na);
+    memmove(out + na, b, nb);
+    memmove(out + na + nb, c, nc + 1);
+    return 1;
+}
+
 static int under(const char *p, const char *dir, size_t n) {
     return strncmp(p, dir, n) == 0 && (p[n] == '/' || p[n] == 0);
 }
@@ -277,7 +291,7 @@ static int linked(const char *p) {
     }
     // The root's own path may pass through links, as /var does; its
     // resolved form names the same files without them.
-    if (in_root(q) && snprintf(c, sizeof c, "%s%s", croot, q + rootlen) < (int)sizeof c) {
+    if (in_root(q) && join(c, sizeof c, croot, q + rootlen, "")) {
         q = c;
     }
     return meets_link(AT_FDCWD, q);
@@ -344,7 +358,7 @@ static int resolve(const char *p, int follow, char *out) {
         }
         target[tn] = 0;
         // r is empty or starts with a slash.
-        if (snprintf(next, sizeof next, "%s%s", target, r) >= (int)sizeof next) {
+        if (!join(next, sizeof next, target, r, "")) {
             return 0;
         }
         memcpy(rest, next, strlen(next) + 1);
@@ -352,7 +366,7 @@ static int resolve(const char *p, int follow, char *out) {
         curlen = target[0] == '/' ? 0 : before;
         cur[curlen] = 0;
     }
-    return snprintf(out, PATH_MAX, "%s%s", curlen || *r ? cur : "/", r) < PATH_MAX;
+    return join(out, PATH_MAX, curlen || *r ? cur : "/", r, "");
 }
 
 static const char *at_map(int fd, const char *path, char *buf, int follow);
@@ -425,7 +439,7 @@ static const char *at_map(int fd, const char *path, char *buf, int follow) {
     }
     unmap(dir, sizeof dir);
     char full[PATH_MAX];
-    if (snprintf(full, sizeof full, "%s/%s", strcmp(dir, "/") ? dir : "", path) >= (int)sizeof full) {
+    if (!join(full, sizeof full, strcmp(dir, "/") ? dir : "", "/", path)) {
         return path;
     }
     const char *q = fws_map(full, buf, follow);
@@ -751,7 +765,7 @@ static int find_on_path(const char *file, char *full) {
         if (n > 0 && n < sizeof dir) {
             memcpy(dir, path, n);
             dir[n] = 0;
-            if (snprintf(full, PATH_MAX, "%s/%s", dir, file) < PATH_MAX && access(MAP(full), X_OK) == 0) {
+            if (join(full, PATH_MAX, dir, "/", file) && access(MAP(full), X_OK) == 0) {
                 return 1;
             }
         }
@@ -1548,14 +1562,19 @@ static const char *posix_ipc_name(const char *name, char *out) {
     if (strncmp(n, prefix, strlen(prefix)) == 0) {
         return name;
     }
-    if (snprintf(out, POSIX_IPC_NAME_MAX + 1, "%s%s%s", slash, prefix, n) <= POSIX_IPC_NAME_MAX) {
+    if (join(out, POSIX_IPC_NAME_MAX + 1, slash, prefix, n)) {
         return out;
     }
     uint64_t h = 14695981039346656037ULL;
     for (const unsigned char *c = (const unsigned char *)n; *c; c++) {
         h = (h ^ *c) * 1099511628211ULL;
     }
-    snprintf(out, POSIX_IPC_NAME_MAX + 1, "%s%s%016llx", slash, prefix, (unsigned long long)h);
+    char hex[17];
+    for (int i = 15; i >= 0; i--, h >>= 4) {
+        hex[i] = "0123456789abcdef"[h & 15];
+    }
+    hex[16] = 0;
+    join(out, POSIX_IPC_NAME_MAX + 1, slash, prefix, hex);
     return out;
 }
 
