@@ -92,8 +92,8 @@ type record struct {
 	// Address is the container's member address in its stack, which the
 	// container library presents its stack peers at.
 	Address string     `json:"address,omitempty"`
-	Mounts    []mountRec      `json:"mounts"`
-	State     stateRec        `json:"state"`
+	Mounts  []mountRec `json:"mounts"`
+	State   stateRec   `json:"state"`
 }
 
 type Container struct {
@@ -368,7 +368,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		Config: cfg, HostConfig: hc, Networks: networks,
 		Stack: stack, Service: service, Ports: ports, Mounts: mounts,
 		Address: address,
-		State: stateRec{Status: container.StateCreated},
+		State:   stateRec{Status: container.StateCreated},
 	}
 	if err := c.save(); err != nil {
 		return container.CreateResponse{}, err

@@ -2415,17 +2415,19 @@ static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, 
 
 static struct addrinfo *member_info(in_addr_t a, int family, int type, unsigned short port) {
     size_t alen = family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
-    // freeaddrinfo frees each entry and its canonical name: the address
-    // shares the entry's allocation, as libSystem's own do.
-    struct addrinfo *ai = calloc(1, sizeof *ai + alen);
-    if (!ai) {
+    // freeaddrinfo frees each entry, its address and its canonical name.
+    struct addrinfo *ai = calloc(1, sizeof *ai);
+    struct sockaddr *sa = calloc(1, alen);
+    if (!ai || !sa) {
+        free(ai);
+        free(sa);
         return NULL;
     }
     ai->ai_family = family;
     ai->ai_socktype = type;
     ai->ai_protocol = type == SOCK_DGRAM ? IPPROTO_UDP : IPPROTO_TCP;
     ai->ai_addrlen = (socklen_t)alen;
-    ai->ai_addr = (struct sockaddr *)(ai + 1);
+    ai->ai_addr = sa;
     if (family == AF_INET) {
         struct sockaddr_in s = v4_addr(a, 0);
         s.sin_port = port;
