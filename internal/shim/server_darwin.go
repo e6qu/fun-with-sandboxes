@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/logfile"
 	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
+	"github.com/e6qu/fun-with-sandboxes/internal/router"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 )
 
@@ -110,6 +112,25 @@ func (s *server) run(report func(Ready)) (int, error) {
 		}
 		proxies = append(proxies, cl)
 		ports = append(ports, port)
+	}
+
+	if cfg.Router != 0 {
+		// The container's listeners on ports without host ports, and the
+		// router that carries connections to them.
+		os.RemoveAll(cfg.PortDir)
+		if err := os.MkdirAll(cfg.PortDir, 0o700); err != nil {
+			closeProxies()
+			report(Ready{Error: err.Error()})
+			return 1, err
+		}
+		defer os.RemoveAll(cfg.PortDir)
+		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir)
+		if err != nil {
+			closeProxies()
+			report(Ready{Error: err.Error()})
+			return 1, err
+		}
+		proxies = append(proxies, r)
 	}
 
 	spec := cfg.Spec

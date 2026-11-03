@@ -25,6 +25,15 @@ var source []byte
 // names the user and group.
 const HostnameVar = "FWS_HOSTNAME"
 
+// PortDirVar names the directory where the library listens, with Unix
+// sockets, on the container's TCP ports that have no host port; RouterVar
+// names the port of the container's router (package router), through which
+// its own processes reach them.
+const (
+	PortDirVar = "FWS_PORTDIR"
+	RouterVar  = "FWS_ROUTER"
+)
+
 // HelperVar names the engine's helper binary, as a process listing shows
 // it: the library leaves the container's exec anchor out of listings.
 const HelperVar = "FWS_HELPER"

@@ -7,11 +7,11 @@ import (
 
 func TestFormatParseFind(t *testing.T) {
 	ms := []Member{
-		{Address: "127.88.0.2", Names: []string{"proj-db-1", "db"}, Ports: map[string]int{"5432/tcp": 30010}},
-		{Address: "127.88.0.3", Names: []string{"web"}, Ports: map[string]int{"80/tcp": 30011, "53/udp": 30012}},
+		{Address: "127.88.0.2", Names: []string{"proj-db-1", "db"}, Ports: map[string]int{"5432/tcp": 30010}, Router: 30013},
+		{Address: "127.88.0.3", Names: []string{"web"}, Ports: map[string]int{"80/tcp": 30011, "53/udp": 30012}, Router: 30014},
 	}
 	b := Format(ms)
-	if want := "127.88.0.2\tproj-db-1 db\t5432/tcp=30010\n127.88.0.3\tweb\t53/udp=30012,80/tcp=30011\n"; string(b) != want {
+	if want := "127.88.0.2\tproj-db-1 db\t5432/tcp=30010\t30013\n127.88.0.3\tweb\t53/udp=30012,80/tcp=30011\t30014\n"; string(b) != want {
 		t.Fatalf("Format:\n%s\nwant:\n%s", b, want)
 	}
 	if got := Parse(append(b, "garbage\n"...)); !reflect.DeepEqual(got, ms) {

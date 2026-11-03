@@ -21,7 +21,8 @@ func TestMembersAndTheirNetworkFile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c := &Container{rec: record{ID: id, Name: name, Service: service, Stack: "proj", Ports: ports, HostConfig: hc, Address: addr,
+		router := 30020 + len(e.containers)
+		c := &Container{rec: record{ID: id, Name: name, Service: service, Stack: "proj", Ports: ports, HostConfig: hc, Address: addr, RouterPort: router,
 			Config:   container.Config{Hostname: id[:4]},
 			Networks: map[string]*network.EndpointSettings{"proj_default": {Aliases: []string{"database"}, DNSNames: []string{name, service}}}}}
 		e.containers[id] = c
@@ -41,8 +42,8 @@ func TestMembersAndTheirNetworkFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "127.88.0.2\tproj-db-1 db aaaa database\t5432/tcp=30010\n" +
-		"127.88.0.3\tproj-web-1 web bbbb database\t53/udp=30012,80/tcp=30011\n"
+	want := "127.88.0.2\tproj-db-1 db aaaa database\t5432/tcp=30010\t30020\n" +
+		"127.88.0.3\tproj-web-1 web bbbb database\t53/udp=30012,80/tcp=30011\t30021\n"
 	if string(b) != want {
 		t.Errorf("network file:\n%s\nwant:\n%s", b, want)
 	}

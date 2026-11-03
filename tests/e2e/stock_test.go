@@ -77,3 +77,33 @@ except ConnectionRefusedError:
 		t.Errorf("a container outside the stack resolved web: %s", out)
 	}
 }
+
+// A container listens on a port it neither exposes nor publishes, as any
+// container may, and reaches it on localhost; a member of its stack
+// reaches it by name.
+func TestPortsNobodyExposes(t *testing.T) {
+	const project = "e2eunexposed"
+	labels := func(service string) []string {
+		return []string{"--label", "com.docker.compose.project=" + project, "--label", "com.docker.compose.service=" + service}
+	}
+	waitedRun(t, "fws-e2e-unexposed-web", append(append(labels("web"),
+		"--health-cmd", `python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8002')"`,
+		"--health-interval", "1s", "--health-start-interval", "200ms", "--health-start-period", "30s",
+		"fws/python:3.14"), "python3", "-m", "http.server", "8002")...)
+	client := `import socket, urllib.request
+print(urllib.request.urlopen("http://web:8002").status)
+s = socket.create_connection(("web", 8002), timeout=5)
+print(s.getpeername())
+try:
+    socket.create_connection(("web", 8003), timeout=5)
+    print("closed port open")
+except ConnectionRefusedError:
+    print("closed port refused")
+`
+	out := mustDocker(t, append(append([]string{"run", "--rm"}, labels("client")...), "fws/python:3.14", "python3", "-c", client)...)
+	for _, want := range []string{"200\n", "('127.88.", ", 8002)", "closed port refused"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the client printed %q, want %q in it", out, want)
+		}
+	}
+}

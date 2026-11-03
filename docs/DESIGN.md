@@ -219,7 +219,18 @@ same knobs, each enforced by a real mechanism or refused:
   state. The library resolves those names in `getaddrinfo` and
   `gethostbyname`, connects to a member's address through the host port
   behind its port, refuses a port the member does not expose, and reports
-  a peer's host port as its member address and port. The stack's egress
+  a peer's host port as its member address and port. A TCP listener on a
+  container port that has no host port becomes a Unix socket, in the same
+  descriptor, in the container's port directory under the engine's state,
+  which the container's profile lets it bind and reach and no other
+  container's does; it reads as the TCP socket the program made. Each
+  container's shim runs its router, on a port of the stack's block that
+  the network file names: a client sends the container port it wants, two
+  bytes, and the router joins the connection to that port's socket or
+  refuses it. The library connects a client of a member's port without a
+  host port through the member's router, and one of its own container's
+  through its own, at once, whether or not the socket blocks, and reports
+  the peer as the member's address and port. The stack's egress
   proxy reads the same file and reaches a member as the library does, so a
   client that sends even its stack's traffic through `HTTP_PROXY`, as
   Python's `urllib` does for a name `NO_PROXY` leaves out, reaches the
