@@ -275,6 +275,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err := checkHostConfig(req.HostConfig); err != nil {
 		return container.CreateResponse{}, err
 	}
+	if req.HostConfig.UTSMode == "host" && req.Config.Hostname != "" {
+		return container.CreateResponse{}, invalid("conflicting options: hostname and the UTS mode")
+	}
 	if err := e.checkUser(req.Config.User); err != nil {
 		return container.CreateResponse{}, err
 	}
@@ -436,7 +439,12 @@ func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string
 	if host == "" {
 		host = c.rec.ID[:12]
 	}
-	env = append(append(env, id.Env()...), pathmap.HostnameVar+"="+host)
+	env = append(env, id.Env()...)
+	// On the host's UTS namespace the library presents no hostname, so the
+	// container reads the host's, as it changes.
+	if c.rec.HostConfig.UTSMode != "host" {
+		env = append(env, pathmap.HostnameVar+"="+host)
+	}
 	var ms []pathmap.Mount
 	for _, m := range c.rec.Mounts {
 		ms = append(ms, pathmap.Mount{Dest: m.Destination, Source: m.Source})
@@ -482,9 +490,7 @@ func checkHostConfig(hc *container.HostConfig) error {
 	}
 	for _, k := range []knob{
 		{hc.Privileged, "privileged mode"},
-		{len(hc.VolumesFrom) > 0, "volumes-from"},
 		{hc.PidMode != "" && hc.PidMode != "private", "PID modes"},
-		{hc.UTSMode != "", "UTS modes"},
 		{hc.UsernsMode != "", "user namespaces"},
 		{hc.Runtime != "" && hc.Runtime != "runc", "alternative runtimes"},
 		{hc.LogConfig.Type != "" && hc.LogConfig.Type != "json-file" && hc.LogConfig.Type != "local", "log drivers other than json-file"},
@@ -496,6 +502,9 @@ func checkHostConfig(hc *container.HostConfig) error {
 	}
 	if err := checkSecurity(hc); err != nil {
 		return err
+	}
+	if hc.UTSMode != "" && hc.UTSMode != "host" {
+		return invalid("invalid UTS mode: %q", hc.UTSMode)
 	}
 	switch ipc := string(hc.IpcMode); {
 	case ipc == "", ipc == "private", ipc == "shareable", ipc == "host", ipc == "none", strings.HasPrefix(ipc, "container:"):
@@ -752,6 +761,40 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 	for dest := range hc.Tmpfs {
 		if err := add(mountRec{Type: mount.TypeTmpfs, Destination: dest, RW: true}); err != nil {
 			return nil, err
+		}
+	}
+	// --volumes-from mounts another container's volumes and binds where it
+	// mounts them, read-only with :ro, read-write with :rw, and else as it
+	// does; a mount of the container's own at the same place wins, as in
+	// Docker. Its tmpfs mounts are its own.
+	for _, spec := range hc.VolumesFrom {
+		ref, mode, _ := strings.Cut(spec, ":")
+		var force *bool
+		for _, o := range strings.Split(mode, ",") {
+			switch o {
+			case "":
+			case "ro", "rw":
+				rw := o == "rw"
+				force = &rw
+			case "z", "Z":
+			default:
+				return nil, invalid("invalid mode for volumes-from: %s", mode)
+			}
+		}
+		src, err := e.containerLocked(ref)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range src.rec.Mounts {
+			if m.Type == mount.TypeTmpfs || taken[m.Destination] {
+				continue
+			}
+			if force != nil {
+				m.RW = *force
+			}
+			if err := add(m); err != nil {
+				return nil, err
+			}
 		}
 	}
 	vols := make([]string, 0, len(cfg.Volumes))

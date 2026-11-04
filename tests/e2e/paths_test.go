@@ -91,3 +91,55 @@ RUN ["/toolbox", "whoami"]
 		t.Fatalf("build as USER 1000: %v\n%s", err, out)
 	}
 }
+
+// On the host's UTS namespace the container reads the host's hostname, and
+// may not name one of its own, as in Docker.
+func TestHostUTSNamespace(t *testing.T) {
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustDocker(t, "run", "--rm", "--uts", "host", "fws/toolbox:1", "whoami"); !strings.Contains(got, " host="+host+" ") {
+		t.Errorf("--uts host: %q, want the host's hostname %q", got, host)
+	}
+	if _, err := docker(t, "run", "--rm", "--uts", "host", "--hostname", "box", "fws/toolbox:1", "whoami"); err == nil || !strings.Contains(err.Error(), "conflicting options: hostname and the UTS mode") {
+		t.Errorf("--uts host with --hostname: %v", err)
+	}
+}
+
+// --volumes-from mounts another container's volumes and binds where it
+// mounts them: read-write as it has them, read-only with :ro, and under a
+// mount of the container's own at the same place.
+func TestVolumesFrom(t *testing.T) {
+	const src, vol = "fws-e2e-vfsrc", "fws-e2e-vf"
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "from-host"), []byte("bound\n"), 0o644)
+	mustDocker(t, "create", "--name", src, "-v", vol+":/data", "-v", dir+":/bind", "fws/toolbox:1")
+	defer func() {
+		docker(t, "rm", "-f", src)
+		docker(t, "volume", "rm", "-f", vol)
+	}()
+	run := func(args ...string) (string, error) {
+		return docker(t, append([]string{"run", "--rm"}, args...)...)
+	}
+	if _, err := run("--volumes-from", src, "fws/toolbox:1", "put", "/data/shared", "through volumes-from"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := run("-v", vol+":/v", "fws/toolbox:1", "cat", "/v/shared"); err != nil || got != "through volumes-from\n" {
+		t.Errorf("the source's volume holds %q (%v), want what the other container wrote", got, err)
+	}
+	if got, err := run("--volumes-from", src, "fws/toolbox:1", "cat", "/bind/from-host"); err != nil || got != "bound\n" {
+		t.Errorf("the source's bind reads %q (%v)", got, err)
+	}
+	if _, err := run("--volumes-from", src+":ro", "fws/toolbox:1", "put", "/data/denied", "x"); err == nil {
+		t.Error("a container wrote to a volume it mounts read-only from another")
+	}
+	mine := t.TempDir()
+	os.WriteFile(filepath.Join(mine, "from-host"), []byte("mine\n"), 0o644)
+	if got, err := run("--volumes-from", src, "-v", mine+":/bind", "fws/toolbox:1", "cat", "/bind/from-host"); err != nil || got != "mine\n" {
+		t.Errorf("under the container's own bind: %q (%v), want its own", got, err)
+	}
+	if _, err := run("--volumes-from", "fws-e2e-no-such", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "No such container") {
+		t.Errorf("volumes from a missing container: %v", err)
+	}
+}

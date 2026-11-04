@@ -94,6 +94,11 @@ machine — and from what macOS offers an unprivileged process under them.
   31 bytes becomes the prefix and a hash of the name. A program that loads
   no library, as Apple's do not, must add the prefix itself;
   `--ipc host` lifts the confinement.
+- **Namespace modes are presented where the library can present them.**
+  `--uts host` leaves the hostname unpresented, so the container reads the
+  host's. `--ipc` modes confine IPC names (above). `--pid` and `--userns`
+  need kernel namespaces and are refused, and so is `--network
+  container:`, as containers here share no ports.
 - **Capabilities grant nothing to drop.** Containers run as the engine's
   unprivileged user, so `--cap-drop` changes nothing; `--cap-add` beyond
   Docker's default set needs root and is refused. AppArmor, SELinux and
