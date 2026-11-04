@@ -220,7 +220,11 @@ same knobs, each enforced by a real mechanism or refused:
   IPv6 socket bound or connected to an IPv4 address, or bound to the
   dual-stack wildcard, gets an IPv4 socket with its settings in the same
   descriptor, whose addresses read as IPv4-mapped IPv6 ones, because
-  Seatbelt matches `127.0.0.1` and `::1` but not `::ffff:127.0.0.1`.
+  Seatbelt matches `127.0.0.1` and `::1` but not `::ffff:127.0.0.1`. An
+  IPv6 socket connecting to `::1` first tries to bind the host port on IPv6
+  loopback, a probe no listener sees: where nothing holds it, the socket
+  becomes an IPv4 one too and reaches the dual-stack listener on
+  `127.0.0.1`, its loopback addresses reading as `::1`.
   Each member of a stack has a member address in `127.88.0.0/16`, assigned
   as it is created and kept in its record. The engine keeps a network file
   per stack, rewritten as members come, go, are renamed or change networks,

@@ -1,5 +1,5 @@
 // net listens and connects as a stock server and client do, on container
-// ports 8080 and 8081 (TCP) and 9090 (UDP), with dual-stack IPv6 sockets
+// ports 8080, 8081 and 8083 (TCP) and 9090 (UDP), with dual-stack IPv6 sockets
 // and IPv4 ones, and reaches a stack member by name, in a sandbox that lets
 // it bind and reach the host ports behind them alone, as a container's
 // does. It reports each step.
@@ -58,9 +58,9 @@ int main(int argc, char **argv) {
     char profile[1024];
     snprintf(profile, sizeof profile,
              "(version 1)(allow default)(deny network-bind)(deny network-outbound)"
-             "(allow network-bind (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\"))"
-             "(allow network-outbound (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
-             argv[1], argv[2], argv[3], argv[5], argv[1], argv[2], argv[3], argv[4]);
+             "(allow network-bind (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\"))"
+             "(allow network-outbound (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
+             argv[1], argv[2], argv[3], argv[5], argv[6], argv[1], argv[2], argv[3], argv[4], argv[6]);
     char *err = NULL;
     if (sandbox_init(profile, 0, &err) != 0) {
         fprintf(stderr, "sandbox_init: %s\n", err);
@@ -97,6 +97,30 @@ int main(int argc, char **argv) {
     n = sizeof s;
     getpeername(c6, (void *)&s, &n);
     printf("client6=%s\n", addr(&s));
+
+    // An IPv6 client of ::1 reaches the dual-stack listener, and both its
+    // ends read as ::1.
+    int c6lo = socket(AF_INET6, SOCK_STREAM, 0);
+    struct sockaddr_in6 lo6 = v6("::1", 8080);
+    if (connect(c6lo, (void *)&lo6, sizeof lo6)) fail("lo6");
+    n = sizeof s;
+    getpeername(c6lo, (void *)&s, &n);
+    char peer6[80];
+    strlcpy(peer6, addr(&s), sizeof peer6);
+    n = sizeof s;
+    getsockname(c6lo, (void *)&s, &n);
+    printf("lo6=%s %s\n", peer6, strncmp(addr(&s), "[::1]:", 6) == 0 ? "own-v6" : addr(&s));
+
+    // An IPv6-only listener on ::1 takes its clients on IPv6.
+    int l6 = socket(AF_INET6, SOCK_STREAM, 0), on = 1;
+    setsockopt(l6, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof on);
+    struct sockaddr_in6 lo6only = v6("::1", 8083);
+    if (bind(l6, (void *)&lo6only, sizeof lo6only) || listen(l6, 4)) fail("only6");
+    int c6only = socket(AF_INET6, SOCK_STREAM, 0);
+    if (connect(c6only, (void *)&lo6only, sizeof lo6only)) fail("only6");
+    n = sizeof s;
+    getpeername(c6only, (void *)&s, &n);
+    printf("only6=%s\n", addr(&s));
 
     // An IPv4 listener on the wildcard.
     int l4 = socket(AF_INET, SOCK_STREAM, 0);
