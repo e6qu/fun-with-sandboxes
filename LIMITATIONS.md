@@ -96,9 +96,12 @@ machine — and from what macOS offers an unprivileged process under them.
   `--ipc host` lifts the confinement.
 - **Namespace modes are presented where the library can present them.**
   `--uts host` leaves the hostname unpresented, so the container reads the
-  host's. `--ipc` modes confine IPC names (above). `--pid` and `--userns`
-  need kernel namespaces and are refused, and so is `--network
-  container:`, as containers here share no ports.
+  host's. `--ipc` modes confine IPC names (above). `--network container:`
+  (Compose's `network_mode: service:`) gives a container the other's ports,
+  address, hostname and stack, so its listeners answer on the other's
+  ports. When that container stops, so does the router behind its ports
+  without host ports, and the joining container's listeners there go with
+  it. `--pid` and `--userns` need kernel namespaces and are refused.
 - **Capabilities grant nothing to drop.** Containers run as the engine's
   unprivileged user, so `--cap-drop` changes nothing; `--cap-add` beyond
   Docker's default set needs root and is refused. AppArmor, SELinux and

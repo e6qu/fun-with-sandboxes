@@ -252,7 +252,12 @@ same knobs, each enforced by a real mechanism or refused:
   destination on the Unix side alone. A client asks the router for the flow
   port once (a request for port 0, then the UDP port) and the library
   caches it, sends the client's datagrams to it as to a host port, and
-  reports datagrams from it as the member's address and port. The stack's egress
+  reports datagrams from it as the member's address and port. A container
+  with network mode `container:<id>` joins that container's stack and takes
+  its network wholesale: its ports and host ports, member address, network
+  file, port directory and router, and its stack's egress proxy, in the
+  container library's variables and the Seatbelt profile alike, so its
+  processes bind and reach what that container's do. The stack's egress
   proxy reads the same file and reaches a member as the library does, so a
   client that sends even its stack's traffic through `HTTP_PROXY`, as
   Python's `urllib` does for a name `NO_PROXY` leaves out, reaches the

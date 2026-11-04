@@ -18,6 +18,11 @@ const egressKey = "_egress/tcp"
 // hasEgress reports whether the container reaches the internet: it has a
 // network, and not every one of its networks is internal, as in Docker.
 func (e *Engine) hasEgress(c *Container) bool {
+	// A container on another's network reaches the internet as that one does.
+	c, err := e.netOwner(c)
+	if err != nil {
+		return false
+	}
 	if !e.cfg.Egress || c.rec.HostConfig.NetworkMode == "none" {
 		return false
 	}

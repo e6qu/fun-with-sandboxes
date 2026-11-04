@@ -218,6 +218,9 @@ func (e *Engine) NetworkConnect(ref string, req network.ConnectRequest) error {
 	if err != nil {
 		return err
 	}
+	if strings.HasPrefix(string(c.rec.HostConfig.NetworkMode), "container:") {
+		return forbidden("container sharing network namespace with another container or host cannot be connected to any other network")
+	}
 	if _, err := e.checkNetworkLocked(n.Name, c.rec.Stack); err != nil {
 		return err
 	}

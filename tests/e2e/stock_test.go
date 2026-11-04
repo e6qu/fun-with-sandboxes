@@ -141,3 +141,51 @@ print(u.recvfrom(2048))
 		t.Errorf("the container's own client printed %q", out)
 	}
 }
+
+// A container on another's network listens on that one's ports, as a
+// process of the same network namespace: the other's published port and its
+// own clients of localhost reach the sidecar's server.
+func TestContainerNetworkMode(t *testing.T) {
+	const web, side = "fws-e2e-netns-web", "fws-e2e-netns-side"
+	waitedRun(t, web, "-p", "127.0.0.1::8000", "fws/toolbox:1")
+	waitedRun(t, side, "--network", "container:"+web,
+		"--health-cmd", `python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000')"`,
+		"--health-interval", "1s", "--health-start-interval", "200ms", "--health-start-period", "30s",
+		"fws/python:3.14", "python3", "-m", "http.server", "8000")
+	addr := strings.TrimSpace(mustDocker(t, "port", web, "8000"))
+	if body := httpGet(t, "http://"+addr+"/"); !strings.Contains(body, "Directory listing") {
+		t.Errorf("web's published port reached %q, want the sidecar's server", body)
+	}
+	if out := strings.TrimSpace(mustDocker(t, "exec", web, "/toolbox", "fetch", "http://127.0.0.1:8000/")); out != "200 OK" {
+		t.Errorf("web's client of localhost:8000 got %q, want the sidecar's server", out)
+	}
+	id := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.Id}}", web))
+	if mode := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.NetworkMode}}", side)); mode != "container:"+id {
+		t.Errorf("the sidecar's network mode is %q, want container:%s", mode, id)
+	}
+	if host := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.Config.Hostname}}", side)); host != id[:12] {
+		t.Errorf("the sidecar's hostname is %q, want web's %q", host, id[:12])
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-p", "8001"}, "conflicting options: port publishing and the container type network mode"},
+		{[]string{"--hostname", "box"}, "conflicting options: hostname and the network mode"},
+		{[]string{"--add-host", "db:127.0.0.1"}, "conflicting options: custom host-to-IP mapping and the network mode"},
+	} {
+		args := append(append([]string{"run", "--rm", "--network", "container:" + web}, c.args...), "fws/toolbox:1", "echo")
+		if _, err := docker(t, args...); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%v: %v, want %q", c.args, err, c.want)
+		}
+	}
+	// A container whose network's container is not running cannot start.
+	const late = "fws-e2e-netns-late"
+	mustDocker(t, "create", "--name", late, "--network", "container:"+web, "fws/toolbox:1", "echo")
+	defer docker(t, "rm", "-f", late)
+	mustDocker(t, "stop", side)
+	mustDocker(t, "stop", web)
+	if _, err := docker(t, "start", late); err == nil || !strings.Contains(err.Error(), "cannot join network namespace of a non running container") {
+		t.Errorf("start on a stopped container's network: %v", err)
+	}
+}

@@ -196,7 +196,7 @@ func (e *Engine) loadContainers() error {
 	stacks := map[string]bool{}
 	for _, c := range e.containers {
 		stacks[c.rec.Stack] = true
-		if c.rec.Address != "" {
+		if c.rec.Address != "" || strings.HasPrefix(string(c.rec.HostConfig.NetworkMode), "container:") {
 			continue
 		}
 		a, err := e.assignAddressLocked(c.rec.Stack)
@@ -278,6 +278,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if req.HostConfig.UTSMode == "host" && req.Config.Hostname != "" {
 		return container.CreateResponse{}, invalid("conflicting options: hostname and the UTS mode")
 	}
+	if err := checkContainerNetwork(req); err != nil {
+		return container.CreateResponse{}, err
+	}
 	if err := e.checkUser(req.Config.User); err != nil {
 		return container.CreateResponse{}, err
 	}
@@ -318,9 +321,28 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			return container.CreateResponse{}, conflict("Conflict. The container name \"/%s\" is already in use by container \"%s\". You have to remove (or rename) that container to be able to reuse that name.", name, other.rec.ID)
 		}
 	}
-	networks, err := e.resolveNetworksLocked(stack, name, service, req)
-	if err != nil {
-		return container.CreateResponse{}, err
+	// net is the container whose network this one is on, with network mode
+	// container:<id>; it joins that one's stack, and one on a container that
+	// is on another's is on that other's.
+	var net *Container
+	if ref, ok := strings.CutPrefix(string(req.HostConfig.NetworkMode), "container:"); ok {
+		o, err := e.containerLocked(ref)
+		if err != nil {
+			return container.CreateResponse{}, err
+		}
+		if id, ok := strings.CutPrefix(string(o.rec.HostConfig.NetworkMode), "container:"); ok {
+			if o, err = e.containerLocked(id); err != nil {
+				return container.CreateResponse{}, err
+			}
+		}
+		net, stack = o, o.rec.Stack
+	}
+	networks := map[string]*network.EndpointSettings{}
+	if net == nil {
+		var err error
+		if networks, err = e.resolveNetworksLocked(stack, name, service, req); err != nil {
+			return container.CreateResponse{}, err
+		}
 	}
 
 	if _, err := e.alloc.Stack(stack); err != nil {
@@ -346,7 +368,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	}
 
 	ports := map[string]int{}
-	if string(req.HostConfig.NetworkMode) != "none" {
+	if string(req.HostConfig.NetworkMode) != "none" && net == nil {
 		for _, p := range exposedPorts(cfg, req.HostConfig) {
 			// One host port serves a container port's TCP and UDP alike, so
 			// SANDBOX_PORT_<n> names it whatever the protocol.
@@ -358,7 +380,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		}
 	}
 	routerPort := 0
-	if string(req.HostConfig.NetworkMode) != "none" {
+	if string(req.HostConfig.NetworkMode) != "none" && net == nil {
 		if routerPort, err = e.alloc.Port(stack, portKey+"/router"); err != nil {
 			return container.CreateResponse{}, err
 		}
@@ -368,11 +390,20 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err != nil {
 		return container.CreateResponse{}, err
 	}
-	hostname := cfg.Hostname
+	hostname, extraHosts := cfg.Hostname, req.HostConfig.ExtraHosts
+	if net != nil {
+		// A container on another's network has its hostname and hosts, as
+		// it would its UTS namespace's files in Docker.
+		hostname, extraHosts = net.rec.Config.Hostname, net.rec.HostConfig.ExtraHosts
+		if hostname == "" {
+			hostname = net.rec.ID[:12]
+		}
+		cfg.Hostname = hostname
+	}
 	if hostname == "" {
 		hostname = id[:12]
 	}
-	if err := writeHostsFiles(c.root(), hostname, req.HostConfig.ExtraHosts, mounts); err != nil {
+	if err := writeHostsFiles(c.root(), hostname, extraHosts, mounts); err != nil {
 		return container.CreateResponse{}, err
 	}
 
@@ -383,15 +414,20 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if hc.NetworkMode == "" || hc.NetworkMode == "default" {
 		hc.NetworkMode = "bridge"
 	}
+	if net != nil {
+		hc.NetworkMode = container.NetworkMode("container:" + net.rec.ID)
+	}
 	if hc.LogConfig.Type == "" {
 		hc.LogConfig.Type = "json-file"
 	}
 	if hc.RestartPolicy.Name == "" {
 		hc.RestartPolicy.Name = container.RestartPolicyDisabled
 	}
-	address, err := e.assignAddressLocked(stack)
-	if err != nil {
-		return container.CreateResponse{}, err
+	address := ""
+	if net == nil {
+		if address, err = e.assignAddressLocked(stack); err != nil {
+			return container.CreateResponse{}, err
+		}
 	}
 	c.rec = record{
 		ID: id, Name: name, Created: time.Now().UTC(),
@@ -434,7 +470,11 @@ func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string
 	if err != nil {
 		return nil, err
 	}
-	env := e.environment(c, extra)
+	net, err := e.netOwner(c)
+	if err != nil {
+		return nil, err
+	}
+	env := e.environment(c, net, extra)
 	host := c.rec.Config.Hostname
 	if host == "" {
 		host = c.rec.ID[:12]
@@ -456,7 +496,7 @@ func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string
 	if mv != "" {
 		env = append(env, mv)
 	}
-	pv, err := pathmap.PortsVar(c.rec.Ports)
+	pv, err := pathmap.PortsVar(net.rec.Ports)
 	if err != nil {
 		return nil, err
 	}
@@ -466,17 +506,41 @@ func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string
 	if helper, err := roles.Binary(); err == nil {
 		env = append(env, pathmap.HelperVar+"="+filepath.Base(helper))
 	}
-	if onNetwork(c) && c.rec.Address != "" {
-		nf, err := e.networkFile(c.rec.Stack)
+	if onNetwork(net) && net.rec.Address != "" {
+		nf, err := e.networkFile(net.rec.Stack)
 		if err != nil {
 			return nil, err
 		}
-		env = append(env, pathmap.NetworkVar+"="+nf, pathmap.AddressVar+"="+c.rec.Address)
-		if c.rec.RouterPort != 0 {
-			env = append(env, pathmap.PortDirVar+"="+e.portDir(c), pathmap.RouterVar+"="+strconv.Itoa(c.rec.RouterPort))
+		env = append(env, pathmap.NetworkVar+"="+nf, pathmap.AddressVar+"="+net.rec.Address)
+		if net.rec.RouterPort != 0 {
+			env = append(env, pathmap.PortDirVar+"="+e.portDir(net), pathmap.RouterVar+"="+strconv.Itoa(net.rec.RouterPort))
 		}
 	}
 	return env, nil
+}
+
+// checkContainerNetwork refuses what a container on another's network cannot
+// have of its own, with Docker's errors.
+func checkContainerNetwork(req container.CreateRequest) error {
+	hc, cfg := req.HostConfig, req.Config
+	if !strings.HasPrefix(string(hc.NetworkMode), "container:") {
+		return nil
+	}
+	switch {
+	case cfg.Hostname != "":
+		return invalid("conflicting options: hostname and the network mode")
+	case len(hc.PortBindings) > 0 || hc.PublishAllPorts:
+		return invalid("conflicting options: port publishing and the container type network mode")
+	case len(cfg.ExposedPorts) > 0:
+		return invalid("conflicting options: port exposing and the container type network mode")
+	case len(hc.DNS) > 0 || len(hc.DNSOptions) > 0 || len(hc.DNSSearch) > 0:
+		return invalid("conflicting options: dns and the network mode")
+	case len(hc.ExtraHosts) > 0:
+		return invalid("conflicting options: custom host-to-IP mapping and the network mode")
+	case len(hc.Links) > 0:
+		return invalid("conflicting options: container type network can't be used with links. This would result in undefined behavior")
+	}
+	return nil
 }
 
 func checkHostConfig(hc *container.HostConfig) error {
@@ -515,8 +579,6 @@ func checkHostConfig(hc *container.HostConfig) error {
 	switch {
 	case mode == "host":
 		return unsupported("network mode \"host\" is not supported: every container is confined to its own stack's ports")
-	case strings.HasPrefix(mode, "container:"):
-		return unsupported("network mode %q is not supported: containers do not share network stacks", mode)
 	}
 	for p, bs := range hc.PortBindings {
 		if p.Proto() != network.TCP && p.Proto() != network.UDP {
@@ -986,8 +1048,9 @@ func envName(s string) string {
 
 // environment is the process environment: the image and container variables
 // with PATH mapped into the root, plus the variables through which the
-// service learns its root, its own ports and its peers' ports.
-func (e *Engine) environment(c *Container, extra []string) []string {
+// service learns its root, its own ports and its peers' ports; net is the
+// container whose network it is on.
+func (e *Engine) environment(c, net *Container, extra []string) []string {
 	root := c.root()
 	vars := map[string]string{}
 	var order []string
@@ -1033,9 +1096,9 @@ func (e *Engine) environment(c *Container, extra []string) []string {
 			}
 		}
 	}
-	for _, p := range sortedKeys(c.rec.Ports) {
+	for _, p := range sortedKeys(net.rec.Ports) {
 		num, _, _ := strings.Cut(p, "/")
-		set(fmt.Sprintf("SANDBOX_PORT_%s=%d", num, c.rec.Ports[p]))
+		set(fmt.Sprintf("SANDBOX_PORT_%s=%d", num, net.rec.Ports[p]))
 	}
 	for _, peer := range e.peers(c) {
 		for _, p := range sortedKeys(peer.ports) {
@@ -1111,19 +1174,25 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	for _, m := range c.rec.Mounts {
 		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW})
 	}
-	if c.rec.HostConfig.NetworkMode == "none" {
+	// A container on another's network binds that one's ports and listens
+	// in its port directory, as processes of one network namespace do.
+	net, err := e.netOwner(c)
+	if err != nil {
+		return seatbelt.Spec{}, err
+	}
+	if net.rec.HostConfig.NetworkMode == "none" {
 		return spec, nil
 	}
-	nf, err := e.networkFile(c.rec.Stack)
+	nf, err := e.networkFile(net.rec.Stack)
 	if err != nil {
 		return seatbelt.Spec{}, err
 	}
 	spec.ReadFiles = []string{nf}
-	if c.rec.RouterPort != 0 {
-		spec.PortDir = e.portDir(c)
+	if net.rec.RouterPort != 0 {
+		spec.PortDir = e.portDir(net)
 	}
-	for _, p := range sortedKeys(c.rec.Ports) {
-		spec.BindPorts = append(spec.BindPorts, c.rec.Ports[p])
+	for _, p := range sortedKeys(net.rec.Ports) {
+		spec.BindPorts = append(spec.BindPorts, net.rec.Ports[p])
 	}
 	// Every port of the stack's block is reachable except the egress proxy,
 	// which only containers with internet access may use.
@@ -1179,6 +1248,11 @@ func (c *Container) start(e *Engine) error {
 	argv := c.argv()
 	if len(argv) == 0 {
 		return invalid("no command specified")
+	}
+	if net, err := e.netOwner(c); err != nil {
+		return err
+	} else if net != c && !net.isRunning() {
+		return conflict("cannot join network namespace of a non running container: %s", net.rec.ID)
 	}
 	spec, err := e.profile(c)
 	if err != nil {
