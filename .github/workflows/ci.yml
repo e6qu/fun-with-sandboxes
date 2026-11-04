@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Runs CI on a branch by hand when GitHub drops a pull request's event.
+  workflow_dispatch:
 
 permissions:
   contents: read
