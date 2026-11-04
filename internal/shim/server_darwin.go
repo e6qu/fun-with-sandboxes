@@ -134,7 +134,15 @@ func (s *server) run(report func(Ready)) (int, error) {
 			return 1, err
 		}
 		defer os.RemoveAll(cfg.PortDir)
-		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir)
+		flow := func() (*net.UDPConn, error) {
+			c, err := alloc.ListenFlow(cfg.AllocRoot, cfg.Stack)
+			if err == nil {
+				// A UDP port's flow port carries the container's traffic.
+				traffic.AddEndpoint(os.Getpid(), uint16(c.LocalAddr().(*net.UDPAddr).Port))
+			}
+			return c, err
+		}
+		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir, flow)
 		if err != nil {
 			closeProxies()
 			report(Ready{Error: err.Error()})

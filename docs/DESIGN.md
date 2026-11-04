@@ -245,7 +245,14 @@ same knobs, each enforced by a real mechanism or refused:
   refuses it. The library connects a client of a member's port without a
   host port through the member's router, and one of its own container's
   through its own, at once, whether or not the socket blocks, and reports
-  the peer as the member's address and port. The stack's egress
+  the peer as the member's address and port. A UDP socket on such a port
+  becomes a Unix datagram socket there too. For each such port the router
+  binds a flow port, a UDP port of the stack's block, and relays datagrams
+  between it and the socket, with a six-byte header of the IPv4 source or
+  destination on the Unix side alone. A client asks the router for the flow
+  port once (a request for port 0, then the UDP port) and the library
+  caches it, sends the client's datagrams to it as to a host port, and
+  reports datagrams from it as the member's address and port. The stack's egress
   proxy reads the same file and reaches a member as the library does, so a
   client that sends even its stack's traffic through `HTTP_PROXY`, as
   Python's `urllib` does for a name `NO_PROXY` leaves out, reaches the

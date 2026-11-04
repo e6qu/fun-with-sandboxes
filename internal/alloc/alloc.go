@@ -194,6 +194,16 @@ func (a *Allocator) takenLocked(s *Stack) map[int]bool {
 // processes: a port another socket holds fails to bind and the next is
 // tried.
 func DialFlow(root, stack string, raddr *net.UDPAddr) (*net.UDPConn, error) {
+	return flow(root, stack, func(laddr *net.UDPAddr) (*net.UDPConn, error) { return net.DialUDP("udp", laddr, raddr) })
+}
+
+// ListenFlow binds a UDP socket on a loopback port of the stack's block
+// that no member's port holds, for any of the stack's members to send to.
+func ListenFlow(root, stack string) (*net.UDPConn, error) {
+	return flow(root, stack, func(laddr *net.UDPAddr) (*net.UDPConn, error) { return net.ListenUDP("udp", laddr) })
+}
+
+func flow(root, stack string, bind func(*net.UDPAddr) (*net.UDPConn, error)) (*net.UDPConn, error) {
 	b, err := os.ReadFile(filepath.Join(root, "alloc.json"))
 	if err != nil {
 		return nil, err
@@ -214,7 +224,7 @@ func DialFlow(root, stack string, raddr *net.UDPAddr) (*net.UDPConn, error) {
 		if taken[p] {
 			continue
 		}
-		c, err := net.DialUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: p}, raddr)
+		c, err := bind(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: p})
 		if err == nil {
 			return c, nil
 		}

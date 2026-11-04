@@ -94,10 +94,22 @@ func TestPortsNobodyExposes(t *testing.T) {
 	labels := func(service string) []string {
 		return []string{"--label", "com.docker.compose.project=" + project, "--label", "com.docker.compose.service=" + service}
 	}
+	// web serves HTTP on TCP port 8002 and echoes datagrams, upper-cased, on
+	// UDP port 8004; it exposes neither.
+	web := `import http.server, socket, threading
+u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+u.bind(("0.0.0.0", 8004))
+def echo():
+    while True:
+        d, a = u.recvfrom(2048)
+        u.sendto(d.upper(), a)
+threading.Thread(target=echo, daemon=True).start()
+http.server.ThreadingHTTPServer(("", 8002), http.server.SimpleHTTPRequestHandler).serve_forever()
+`
 	waitedRun(t, "fws-e2e-unexposed-web", append(append(labels("web"),
 		"--health-cmd", `python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8002')"`,
 		"--health-interval", "1s", "--health-start-interval", "200ms", "--health-start-period", "30s",
-		"fws/python:3.14"), "python3", "-m", "http.server", "8002")...)
+		"fws/python:3.14"), "python3", "-c", web)...)
 	client := `import socket, urllib.request
 print(urllib.request.urlopen("http://web:8002").status)
 s = socket.create_connection(("web", 8002), timeout=5)
@@ -107,11 +119,25 @@ try:
     print("closed port open")
 except ConnectionRefusedError:
     print("closed port refused")
+u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+u.settimeout(5)
+u.sendto(b"from a peer", ("web", 8004))
+print(u.recvfrom(2048))
 `
 	out := mustDocker(t, append(append([]string{"run", "--rm"}, labels("client")...), "fws/python:3.14", "python3", "-c", client)...)
-	for _, want := range []string{"200\n", "('127.88.", ", 8002)", "closed port refused"} {
+	for _, want := range []string{"200\n", "('127.88.", ", 8002)", "closed port refused", "(b'FROM A PEER', ('127.88.", ", 8004))"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the client printed %q, want %q in it", out, want)
 		}
+	}
+	// The container reaches its own UDP port on loopback.
+	local := `import socket
+u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+u.settimeout(5)
+u.sendto(b"from inside", ("127.0.0.1", 8004))
+print(u.recvfrom(2048))
+`
+	if out := strings.TrimSpace(mustDocker(t, "exec", "fws-e2e-unexposed-web", "python3", "-c", local)); out != "(b'FROM INSIDE', ('127.0.0.1', 8004))" {
+		t.Errorf("the container's own client printed %q", out)
 	}
 }
