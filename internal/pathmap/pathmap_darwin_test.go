@@ -229,7 +229,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/net/main.c").CombinedOutput(); err != nil {
 		t.Fatalf("build the probe: %v\n%s", err, out)
 	}
-	tcp1, tcp2, udp, tcp3 := freePort(t, "tcp"), freePort(t, "tcp"), freePort(t, "udp"), freePort(t, "tcp")
+	tcp1, tcp2, udp, tcp3, tcp4 := freePort(t, "tcp"), freePort(t, "tcp"), freePort(t, "udp"), freePort(t, "tcp"), freePort(t, "tcp")
 	// db listens outside the probe's container, as another member does.
 	db, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -246,12 +246,12 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		}
 	}()
 	peer := db.Addr().(*net.TCPAddr).Port
-	ports, err := PortsVar(map[string]int{"8080/tcp": tcp1, "8081/tcp": tcp2, "8082/tcp": tcp3, "9090/udp": udp})
+	ports, err := PortsVar(map[string]int{"8080/tcp": tcp1, "8081/tcp": tcp2, "8082/tcp": tcp3, "8083/tcp": tcp4, "9090/udp": udp})
 	if err != nil {
 		t.Fatal(err)
 	}
 	run := func(env ...string) map[string]string {
-		cmd := exec.Command(bin, strconv.Itoa(tcp1), strconv.Itoa(tcp2), strconv.Itoa(udp), strconv.Itoa(peer), strconv.Itoa(tcp3))
+		cmd := exec.Command(bin, strconv.Itoa(tcp1), strconv.Itoa(tcp2), strconv.Itoa(udp), strconv.Itoa(peer), strconv.Itoa(tcp3), strconv.Itoa(tcp4))
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -286,6 +286,8 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		"client4":  "127.0.0.1:8080",
 		"accepted": "v6",
 		"client6":  "[::ffff:127.0.0.1]:8080",
+		"lo6":      "[::1]:8080 own-v6",
+		"only6":    "[::1]:8083",
 		"listen4":  "0.0.0.0:8081",
 		"udp":      "[::]",
 		"member":   "127.88.0.3:5432",

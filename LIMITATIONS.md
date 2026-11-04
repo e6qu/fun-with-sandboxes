@@ -155,8 +155,11 @@ machine — and from what macOS offers an unprivileged process under them.
     through the container's router; it is published nowhere, as in Docker.
     A UDP socket on such a port is refused, as is a listener on an address
     other than loopback's, the wildcard or the container's own.
-  - A dual-stack listener takes IPv4 clients alone: a client of `::1`
-    falls back to `127.0.0.1`, as clients of `localhost` do.
+  - A dual-stack listener listens on `127.0.0.1` alone. An IPv6 client of
+    `::1` reaches it when nothing holds the port on IPv6 loopback, and reads
+    both its ends as `::1`, but the server sees that client as
+    `::ffff:127.0.0.1`. An IPv4-only listener takes a client of `::1` too,
+    where Docker would refuse it.
   - Programs that load no library, as Apple's do not, see the host ports.
 - **Unix socket paths are capped at 104 bytes** on macOS. Keep the state root
   short (the default `~/.fws` is).

@@ -16,16 +16,20 @@ func TestStockServersOnTheirOwnPorts(t *testing.T) {
 	for _, tc := range []struct {
 		name, image, port, health, body string
 		cmd                             []string
+		// lo6 connects to ::1 and prints the peer's address.
+		lo6 []string
 	}{
 		{
 			name: "python", image: "fws/python:3.14", port: "8000", body: "Directory listing",
 			health: `python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000')"`,
 			cmd:    []string{"python3", "-m", "http.server", "8000"},
+			lo6:    []string{"python3", "-c", "import socket; print(socket.create_connection(('::1', 8000)).getpeername()[0])"},
 		},
 		{
 			name: "node", image: "fws/node:26", port: "3000", body: "from node",
 			health: `node -e "fetch('http://localhost:3000').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"`,
 			cmd:    []string{"node", "-e", "require('http').createServer((q, r) => r.end('from node')).listen(3000)"},
+			lo6:    []string{"node", "-e", "const c = require('net').connect({host: '::1', port: 3000}, () => { console.log(c.remoteAddress); c.end() })"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -40,6 +44,10 @@ func TestStockServersOnTheirOwnPorts(t *testing.T) {
 			b, err := io.ReadAll(resp.Body)
 			if err != nil || !strings.Contains(string(b), tc.body) {
 				t.Fatalf("GET through the published port: %q, %v", b, err)
+			}
+			// The dual-stack listener takes a client of IPv6 loopback.
+			if out := strings.TrimSpace(mustDocker(t, append([]string{"exec", name}, tc.lo6...)...)); out != "::1" {
+				t.Fatalf("a client of ::1 saw its peer as %q, want ::1", out)
 			}
 		})
 	}

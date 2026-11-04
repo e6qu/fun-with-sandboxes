@@ -1980,7 +1980,10 @@ INTERPOSE(fws_sem_unlink, sem_unlink);
 //     getpeername reports the container port;
 //   - an IPv6 socket bound or connected to an IPv4 address, or bound to the
 //     dual-stack wildcard, becomes an IPv4 socket in the same descriptor,
-//     whose addresses the program sees as IPv4-mapped IPv6 ones.
+//     whose addresses the program sees as IPv4-mapped IPv6 ones;
+//   - an IPv6 socket connected to ::1 where nothing holds the port on IPv6
+//     loopback reaches the dual-stack listener the library bound on IPv4,
+//     as one IPv4 socket whose loopback addresses the program sees as ::1.
 
 static int member_block(in_addr_t a);
 static unsigned short member_host_port(in_addr_t addr, int type, unsigned short cport, int *member);
@@ -2007,9 +2010,11 @@ static unsigned short container_port(int type, unsigned short hport) {
 #define NET_V6 1
 #define NET_ANY 2
 // NET_UNIX: a TCP socket on a port without a host port, which the library
-// made a Unix one; NET_ROUTED: a connection through a router.
+// made a Unix one; NET_ROUTED: a connection through a router; NET_LO6: an
+// IPv6 socket connected to ::1, whose IPv4 loopback reads as ::1.
 #define NET_UNIX 4
 #define NET_ROUTED 8
+#define NET_LO6 16
 static unsigned char net_state[NET_FDS];
 // For NET_UNIX and NET_ROUTED sockets: the container port, and for
 // NET_ROUTED ones the peer's address.
@@ -2147,6 +2152,26 @@ static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t
     return sa;
 }
 
+// bound_v6 reports whether a socket of type holds port on IPv6 loopback, by
+// trying to bind it, which, unlike a connection, no listener sees.
+static int bound_v6(int type, unsigned short port) {
+    int s = socket(AF_INET6, type, 0);
+    if (s < 0) {
+        return 1;
+    }
+    int on = 1;
+    setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof on);
+    struct sockaddr_in6 b;
+    memset(&b, 0, sizeof b);
+    b.sin6_len = sizeof b;
+    b.sin6_family = AF_INET6;
+    b.sin6_port = htons(port);
+    b.sin6_addr = in6addr_loopback;
+    int r = bind(s, (struct sockaddr *)&b, sizeof b), e = errno;
+    close(s);
+    return r == -1 && e == EADDRINUSE;
+}
+
 // remote returns the address a connection or datagram to sa reaches, in
 // out, converting fd first where an IPv4 address goes through an IPv6
 // socket, or NULL with errno set where nothing listens.
@@ -2177,12 +2202,19 @@ static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_
             if (!h || !(IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) || IN6_IS_ADDR_UNSPECIFIED(&a->sin6_addr))) {
                 return sa;
             }
-            struct sockaddr_in6 b = *a;
-            b.sin6_addr = in6addr_loopback;
-            b.sin6_port = htons(h);
-            memcpy(out, &b, sizeof b);
-            *len = sizeof b;
-            return (const struct sockaddr *)out;
+            if (bound_v6(type, h)) {
+                struct sockaddr_in6 b = *a;
+                b.sin6_addr = in6addr_loopback;
+                b.sin6_port = htons(h);
+                memcpy(out, &b, sizeof b);
+                *len = sizeof b;
+                return (const struct sockaddr *)out;
+            }
+            if (to_ipv4(fd, type) == -1) {
+                return sa;
+            }
+            set_state(fd, state_of(fd) | NET_LO6);
+            v4 = htonl(INADDR_LOOPBACK);
         }
     } else {
         return sa;
@@ -2224,7 +2256,9 @@ static void present_inet(unsigned char st, in_addr_t a, unsigned short port, str
         b->sin6_len = sizeof *b;
         b->sin6_family = AF_INET6;
         b->sin6_port = htons(port);
-        if (a != htonl(INADDR_ANY)) {
+        if ((st & NET_LO6) && a == htonl(INADDR_LOOPBACK)) {
+            b->sin6_addr = in6addr_loopback;
+        } else if (a != htonl(INADDR_ANY)) {
             b->sin6_addr.s6_addr[10] = 0xff;
             b->sin6_addr.s6_addr[11] = 0xff;
             memcpy(&b->sin6_addr.s6_addr[12], &a, 4);
@@ -2279,7 +2313,9 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
             b.sin6_family = AF_INET6;
             b.sin6_port = a->sin_port;
             // IPv4's wildcard reads as IPv6's, not as ::ffff:0.0.0.0.
-            if (!(own && (st & NET_ANY)) && a->sin_addr.s_addr != htonl(INADDR_ANY)) {
+            if ((st & NET_LO6) && a->sin_addr.s_addr == htonl(INADDR_LOOPBACK)) {
+                b.sin6_addr = in6addr_loopback;
+            } else if (!(own && (st & NET_ANY)) && a->sin_addr.s_addr != htonl(INADDR_ANY)) {
                 b.sin6_addr.s6_addr[10] = 0xff;
                 b.sin6_addr.s6_addr[11] = 0xff;
                 memcpy(&b.sin6_addr.s6_addr[12], &a->sin_addr.s_addr, 4);
@@ -2495,6 +2531,9 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
             return 0;
         }
         *r = route(fd, own_address && a == own_address ? a : htonl(INADDR_LOOPBACK), router_port, port, v6);
+        if (*r == 0 && v6 && IN6_IS_ADDR_LOOPBACK(&((const struct sockaddr_in6 *)sa)->sin6_addr)) {
+            set_state(fd, state_of(fd) | NET_LO6);
+        }
         return 1;
     }
     return 0;
