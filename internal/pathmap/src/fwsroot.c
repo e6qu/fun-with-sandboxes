@@ -1986,7 +1986,6 @@ INTERPOSE(fws_sem_unlink, sem_unlink);
 //     as one IPv4 socket whose loopback addresses the program sees as ::1.
 
 static int member_block(in_addr_t a);
-static unsigned short member_host_port(in_addr_t addr, int type, unsigned short cport, int *member);
 static unsigned short member_route(in_addr_t addr, int type, unsigned short cport, int *member, unsigned short *router);
 static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, unsigned short *cport);
 
@@ -3237,12 +3236,6 @@ static int member_address(const char *name, in_addr_t *out) {
     }
     pthread_mutex_unlock(&members_lock);
     return found;
-}
-
-// member_host_port returns the host port behind a member's container port,
-// and whether addr is a member at all.
-static unsigned short member_host_port(in_addr_t addr, int type, unsigned short cport, int *member) {
-    return member_route(addr, type, cport, member, NULL);
 }
 
 // member_route returns the host port behind a member's container port, and
