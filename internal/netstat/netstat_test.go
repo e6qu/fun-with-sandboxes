@@ -39,7 +39,9 @@ func updateMsg(provider uint32, ref uint64, pid int, local, remote string, c Cou
 	le.PutUint32(b[updateProv:], provider)
 	d := b[updateData:]
 	le.PutUint32(d[l.pid:], uint32(pid))
-	sockaddrBytes(d[l.local:], netip.MustParseAddrPort(local))
+	if local != "" {
+		sockaddrBytes(d[l.local:], netip.MustParseAddrPort(local))
+	}
 	if remote != "" {
 		sockaddrBytes(d[l.remote:], netip.MustParseAddrPort(remote))
 	}
@@ -185,5 +187,32 @@ func TestAccountCountsTaggedProcesses(t *testing.T) {
 	)
 	if got := a.total(); got != (Counts{1, 100, 1, 100}) {
 		t.Fatalf("total %+v, want the tagged process's socket alone", got)
+	}
+}
+
+// The kernel announces a client's socket before it connects, so its first
+// report has no addresses. An internal connection whose server end closes
+// before a poll brings the client's addresses up to date still counts for
+// neither end.
+func TestAccountPairsAClientAnnouncedBeforeItConnected(t *testing.T) {
+	a := NewAccount("")
+	a.SetMembers([]int{10, 11})
+	feed(t, a,
+		updateMsg(providerTCP, 1, 11, "", "", Counts{}, 0),
+		updateMsg(providerTCP, 2, 10, "127.0.0.1:8000", "127.0.0.1:50001", Counts{1, 100, 1, 300}, 0),
+		updateMsg(providerTCP, 2, 10, "127.0.0.1:8000", "127.0.0.1:50001", Counts{1, 100, 1, 300}, flagClosing),
+		removedMsg(2),
+		// The poll before the total reports the client's addresses.
+		updateMsg(providerTCP, 1, 11, "127.0.0.1:50001", "127.0.0.1:8000", Counts{1, 300, 1, 100}, 0),
+	)
+	if got := a.total(); got != (Counts{}) {
+		t.Fatalf("total %+v, want nothing for an internal connection", got)
+	}
+	feed(t, a,
+		updateMsg(providerTCP, 1, 11, "127.0.0.1:50001", "127.0.0.1:8000", Counts{1, 300, 1, 100}, flagClosing),
+		removedMsg(1),
+	)
+	if got := a.total(); got != (Counts{}) {
+		t.Fatalf("total %+v after the client closed, want nothing", got)
 	}
 }

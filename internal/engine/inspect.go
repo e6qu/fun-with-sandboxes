@@ -43,7 +43,9 @@ func (e *Engine) Inspect(ref string) (container.InspectResponse, error) {
 	}
 	cfg := r.Config
 	cfg.Image = r.Image
-	cfg.Hostname = r.ID[:12]
+	if cfg.Hostname == "" {
+		cfg.Hostname = r.ID[:12]
+	}
 	hc := r.HostConfig
 	var execIDs []string
 	for id := range e.execsFor(r.ID) {

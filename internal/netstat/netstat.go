@@ -188,6 +188,12 @@ type Account struct {
 	endpoints map[endpoint]bool
 	live      map[uint64]*tracked
 	byPair    map[pair]*tracked
+	// closing are the container's sockets that closed with no peer found,
+	// by their final addresses: the kernel announces a client's socket
+	// before it connects, so its peer's addresses may be the ones it had
+	// then until the next poll. total settles them once a poll has brought
+	// every socket's addresses up to date.
+	closing map[pair]*tracked
 	// gone is the traffic of the container's sockets that closed.
 	gone Counts
 }
@@ -197,7 +203,7 @@ type Account struct {
 func NewAccount(tag string) *Account {
 	return &Account{
 		tag: tag, members: map[int]bool{}, tagged: map[int]bool{}, endpoints: map[endpoint]bool{},
-		live: map[uint64]*tracked{}, byPair: map[pair]*tracked{},
+		live: map[uint64]*tracked{}, byPair: map[pair]*tracked{}, closing: map[pair]*tracked{},
 	}
 }
 
@@ -281,6 +287,10 @@ func (a *Account) remove(ref uint64) {
 	}
 }
 
+// maxClosing bounds the sockets awaiting a poll, which nothing makes while
+// no one asks for the container's stats.
+const maxClosing = 4096
+
 func (a *Account) closeLocked(t *tracked) {
 	delete(a.live, t.ref)
 	if a.byPair[pair{t.local, t.remote}] == t {
@@ -290,15 +300,44 @@ func (a *Account) closeLocked(t *tracked) {
 		p.internal = true
 		return
 	}
-	if !t.internal {
+	if p := a.closing[pair{t.remote, t.local}]; p != nil {
+		delete(a.closing, pair{t.remote, t.local})
+		return
+	}
+	if t.internal {
+		return
+	}
+	if !t.remote.IsValid() || t.remote.Port() == 0 {
+		// A socket with no peer, as an unconnected UDP one has.
 		a.gone.add(t.counts)
+		return
+	}
+	if len(a.closing) >= maxClosing {
+		a.settleLocked()
+	}
+	a.closing[pair{t.local, t.remote}] = t
+}
+
+// settleLocked counts the closed sockets whose peer is none of the
+// container's live ones, and leaves out the rest, whose peer it marks.
+func (a *Account) settleLocked() {
+	for k, t := range a.closing {
+		if p := a.peerLocked(t); p != nil {
+			p.internal = true
+		} else {
+			a.gone.add(t.counts)
+		}
+		delete(a.closing, k)
 	}
 }
 
 // total is the container's traffic as of the latest reports.
+// total is the container's traffic as of the latest reports, which a poll
+// of every socket must precede.
 func (a *Account) total() Counts {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.settleLocked()
 	c := a.gone
 	for _, t := range a.live {
 		if !t.internal && a.peerLocked(t) == nil {
