@@ -139,7 +139,9 @@ func TestVolumesFrom(t *testing.T) {
 	if got, err := run("--volumes-from", src, "-v", mine+":/bind", "fws/toolbox:1", "cat", "/bind/from-host"); err != nil || got != "mine\n" {
 		t.Errorf("under the container's own bind: %q (%v), want its own", got, err)
 	}
-	if _, err := run("--volumes-from", "fws-e2e-no-such", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "No such container") {
+	// The CLI takes any 404 from create for a missing image and pulls it,
+	// unless told not to.
+	if _, err := run("--pull", "never", "--volumes-from", "fws-e2e-no-such", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "No such container") {
 		t.Errorf("volumes from a missing container: %v", err)
 	}
 }
