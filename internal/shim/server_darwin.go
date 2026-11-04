@@ -18,6 +18,7 @@ import (
 
 	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
 	"github.com/e6qu/fun-with-sandboxes/internal/logfile"
+	"github.com/e6qu/fun-with-sandboxes/internal/netstat"
 	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
@@ -91,6 +92,15 @@ func (s *server) run(report func(Ready)) (int, error) {
 	defer logs.Close()
 	logs.Notify = s.notifyLogs
 
+	// Watch the kernel's socket counts before the container's first process
+	// opens a socket.
+	traffic, err := netstat.Watch(netstat.NewAccount(cfg.Tag))
+	if err != nil {
+		report(Ready{Error: err.Error()})
+		return 1, err
+	}
+	defer traffic.Close()
+
 	var proxies []io.Closer
 	closeProxies := func() {
 		for _, p := range proxies {
@@ -131,6 +141,8 @@ func (s *server) run(report func(Ready)) (int, error) {
 			return 1, err
 		}
 		proxies = append(proxies, r)
+		// The router's connections carry the container's traffic.
+		traffic.AddEndpoint(os.Getpid(), uint16(cfg.Router))
 	}
 
 	spec := cfg.Spec
@@ -202,7 +214,7 @@ func (s *server) run(report func(Ready)) (int, error) {
 			close(copied)
 		}()
 	}
-	s.enf = newEnforcer(cfg.Tag, proc.Pid(), cfg.Resources)
+	s.enf = newEnforcer(cfg.Tag, proc.Pid(), cfg.Resources, traffic)
 	report(Ready{Pid: proc.Pid(), Ports: ports})
 	go s.accept(l)
 
@@ -334,7 +346,11 @@ func (s *server) handle(c net.Conn) {
 		s.mu.Unlock()
 		respond(c, Response{Exit: &e})
 	case "state":
-		st := s.enf.state()
+		st, err := s.enf.state()
+		if err != nil {
+			fail(c, err)
+			return
+		}
 		respond(c, Response{State: &st})
 	case "signal":
 		fail(c, s.proc.Signal(syscall.Signal(req.Signal)))

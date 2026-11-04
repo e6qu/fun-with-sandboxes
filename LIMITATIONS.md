@@ -202,8 +202,19 @@ machine — and from what macOS offers an unprivileged process under them.
   count, and the bytes the container's processes read from and wrote to
   disk, as the kernel counts them per process. A process that starts and
   ends between two samples, a second apart while `docker stats` streams,
-  leaves its disk I/O out. There is no per-container network accounting,
-  and without a limit the memory limit shown is the machine's memory.
+  leaves its disk I/O out. Without a limit the memory limit shown is the
+  machine's memory.
+- **Network I/O is the kernel's per-socket count** of the container's TCP and
+  UDP sockets and its router's, read from macOS's network statistics, the
+  counters `nettop` shows. It reports one interface, `eth0`, and leaves out
+  connections between two of the container's own sockets, as Docker's
+  `eth0` leaves out its loopback. Its limits:
+  - The bytes are payload bytes; Docker's count adds packet headers.
+  - The kernel counts a socket against the process that last used it, and
+    the shim tells a new socket's process apart as the kernel announces the
+    socket. A process that ends before that leaves its socket out.
+  - A UDP datagram between two of the container's own sockets counts, as
+    UDP sockets have no peer the kernel names.
 - **`docker cp` copies the container's view**, mounts included, but refuses
   paths that resolve outside the container's root and mounts.
 - **Testcontainers' reaper runs from the catalog's darwin build of Ryuk**,

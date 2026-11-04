@@ -159,6 +159,17 @@ same knobs, each enforced by a real mechanism or refused:
   - `--pids-limit`: processes past the limit are killed as they appear.
   `docker update` changes these live; `docker pause` stops the processes
   through the shim so throttling never continues them.
+- **Network I/O.** The shim connects to macOS's network statistics control
+  socket (`com.apple.network.statistics`, `internal/netstat`), which needs
+  no privilege on macOS. The kernel announces every TCP and UDP socket as it
+  opens; the shim asks for its report at once and reads the pid that last
+  used it from the descriptor, while that process most likely still runs.
+  A socket of a member, of a process carrying the container's
+  `SANDBOX_ROOT` tag, or of the router's port is the container's; the shim
+  stops watching every other. It keeps the final counts the kernel reports
+  as each socket closes, and `docker stats` polls the rest. A connection
+  between two of the container's sockets crosses no boundary and counts for
+  neither.
 - **Live restore.** The shim and each stack's egress proxy are processes of
   their own, so with `-live-restore` the engine stops without stopping its
   containers, and the next engine reconnects to the shims through their

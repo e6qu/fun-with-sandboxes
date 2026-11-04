@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/netstat"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 )
 
@@ -119,9 +120,12 @@ type State struct {
 	// DiskRead and DiskWritten count the bytes the container's processes
 	// read from and wrote to disk, those that ended included.
 	DiskRead, DiskWritten uint64
-	Periods               uint64
-	ThrottledPeriods      uint64
-	ThrottledTime         time.Duration
-	OOMKills              uint64
-	Resources             Resources
+	// Net counts the packets and bytes its processes' sockets, and its
+	// router's, received and sent, those closed included.
+	Net              netstat.Counts
+	Periods          uint64
+	ThrottledPeriods uint64
+	ThrottledTime    time.Duration
+	OOMKills         uint64
+	Resources        Resources
 }

@@ -116,6 +116,7 @@ func (e *Engine) sample(c *Container) (container.StatsResponse, error) {
 	}
 	var throttling container.ThrottlingData
 	var blkio container.BlkioStats
+	var networks map[string]container.NetworkStats
 	if task != nil {
 		if st, err := task.State(); err == nil {
 			throttling = container.ThrottlingData{
@@ -124,6 +125,14 @@ func (e *Engine) sample(c *Container) (container.StatsResponse, error) {
 			// Report the measure the memory limit holds.
 			rss = st.Footprint
 			blkio = blkioStats(c.root(), st.DiskRead, st.DiskWritten)
+			// A container on no network has no interface to report, as
+			// in Docker; the rest have one, as a Docker container's eth0.
+			if c.rec.HostConfig.NetworkMode != "none" {
+				networks = map[string]container.NetworkStats{"eth0": {
+					RxBytes: st.Net.RxBytes, RxPackets: st.Net.RxPackets,
+					TxBytes: st.Net.TxBytes, TxPackets: st.Net.TxPackets,
+				}}
+			}
 		}
 	}
 	return container.StatsResponse{
@@ -139,6 +148,7 @@ func (e *Engine) sample(c *Container) (container.StatsResponse, error) {
 		MemoryStats: container.MemoryStats{Usage: rss, Limit: memLimit},
 		PidsStats:   container.PidsStats{Current: uint64(len(members)), Limit: pidsLimit},
 		BlkioStats:  blkio,
+		Networks:    networks,
 	}, nil
 }
 

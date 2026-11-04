@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
+	"github.com/e6qu/fun-with-sandboxes/internal/netstat"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 )
 
@@ -46,6 +47,8 @@ type enforcer struct {
 
 	// goneRead and goneWritten are the disk I/O of members that ended.
 	goneRead, goneWritten uint64
+	// net counts the members' network traffic.
+	net *netstat.Watcher
 
 	periods, throttledPeriods, oomKills uint64
 	throttledTime                       time.Duration
@@ -65,9 +68,9 @@ type member struct {
 	read, written uint64
 }
 
-func newEnforcer(tag string, main int, r Resources) *enforcer {
+func newEnforcer(tag string, main int, r Resources, net *netstat.Watcher) *enforcer {
 	e := &enforcer{
-		tag: tag, main: main, res: r, kq: -1,
+		tag: tag, main: main, res: r, kq: -1, net: net,
 		members: map[int]*member{}, others: map[int]int64{},
 		wake: make(chan struct{}, 1), quit: make(chan struct{}), done: make(chan struct{}),
 	}
@@ -210,6 +213,11 @@ func (e *enforcer) scanLocked() {
 		}
 	}
 	e.limitPidsLocked()
+	pids := make([]int, 0, len(e.members))
+	for pid := range e.members {
+		pids = append(pids, pid)
+	}
+	e.net.SetMembers(pids)
 }
 
 func (e *enforcer) tagged(pid int) bool {
@@ -370,7 +378,17 @@ func (e *enforcer) track() {
 	e.scanLocked()
 }
 
-func (e *enforcer) state() State {
+func (e *enforcer) state() (State, error) {
+	st := e.usage()
+	net, err := e.net.Total()
+	if err != nil {
+		return State{}, err
+	}
+	st.Net = net
+	return st, nil
+}
+
+func (e *enforcer) usage() State {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if !e.running {
