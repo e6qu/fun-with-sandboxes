@@ -121,8 +121,8 @@ machine — and from what macOS offers an unprivileged process under them.
     `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
   - A server sees its clients connect from `127.0.0.1`, not from their
     member addresses.
-  - A member's TCP port without a host port is reached through its router,
-    whose connections its server sees come from `127.0.0.1`.
+  - A member's port without a host port is reached through its router,
+    whose connections and datagrams its server sees come from `127.0.0.1`.
 - **One stack, one reachability domain.** A container can reach every port in
   its stack's block and nothing else. Networks shared across Compose projects
   are refused.
@@ -150,11 +150,17 @@ machine — and from what macOS offers an unprivileged process under them.
   an IPv4 socket that reads as IPv6, because Seatbelt matches loopback as
   `127.0.0.1` and `::1` and not as `::ffff:127.0.0.1`. Its limits:
   - Only ports the container exposes or publishes have host ports. A TCP
-    listener on any other port listens on a Unix socket instead, which the
-    container reaches on `localhost` and its stack's members reach by name,
-    through the container's router; it is published nowhere, as in Docker.
-    A UDP socket on such a port is refused, as is a listener on an address
-    other than loopback's, the wildcard or the container's own.
+    listener or UDP socket on any other port listens on a Unix socket
+    instead, which the container reaches on `localhost` and its stack's
+    members reach by name, through the container's router; it is published
+    nowhere, as in Docker. A listener on an address other than loopback's,
+    the wildcard or the container's own is refused.
+  - A UDP socket on such a port sends and receives with `sendto`,
+    `sendmsg`, `recvfrom`, `recvmsg`, `recv` and `read`; `connect` on it
+    fails with `EOPNOTSUPP`, and it takes no IP-level control messages.
+    The router gives each such port a flow port of the stack's block for as
+    long as the container runs, so a stack holds as many of them as its
+    block has ports to spare.
   - A dual-stack listener listens on `127.0.0.1` alone. An IPv6 client of
     `::1` reaches it when nothing holds the port on IPv6 loopback, and reads
     both its ends as `::1`, but the server sees that client as

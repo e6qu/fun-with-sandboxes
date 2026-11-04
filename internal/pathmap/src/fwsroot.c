@@ -1986,7 +1986,6 @@ INTERPOSE(fws_sem_unlink, sem_unlink);
 //     as one IPv4 socket whose loopback addresses the program sees as ::1.
 
 static int member_block(in_addr_t a);
-static unsigned short member_host_port(in_addr_t addr, int type, unsigned short cport, int *member);
 static unsigned short member_route(in_addr_t addr, int type, unsigned short cport, int *member, unsigned short *router);
 static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, unsigned short *cport);
 
@@ -2015,6 +2014,12 @@ static unsigned short container_port(int type, unsigned short hport) {
 #define NET_UNIX 4
 #define NET_ROUTED 8
 #define NET_LO6 16
+// What the router puts before a datagram on a Unix one: the IPv4 address
+// and port it came from, or goes to.
+#define DGRAM_HEADER 6
+// The most iovecs a datagram takes, one fewer than the kernel's UIO_MAXIOV
+// for the header's.
+#define DGRAM_IOV 1023
 static unsigned char net_state[NET_FDS];
 // For NET_UNIX and NET_ROUTED sockets: the container port, and for
 // NET_ROUTED ones the peer's address.
@@ -2152,6 +2157,107 @@ static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t
     return sa;
 }
 
+// A UDP port without a host port has a flow port, a loopback port of the
+// stack's block where its container's router relays its datagrams. flows
+// caches what routers answered, for the life of the process, as a router
+// keeps each flow port while it runs; addr is the member the flow port
+// presents as, loopback for the container's own.
+#define MAX_FLOWS 256
+static struct flow {
+    unsigned short router, port, flow;
+    in_addr_t addr;
+    int ready;
+} flows[MAX_FLOWS];
+static int nflows;
+
+// ask_router asks the router at loopback port router for UDP port port's
+// flow port.
+static unsigned short ask_router(unsigned short router, unsigned short port) {
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) {
+        return 0;
+    }
+    struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
+    unsigned char req[4] = {0, 0, (unsigned char)(port >> 8), (unsigned char)port}, ans[3] = {1, 0, 0};
+    int ok = connect(s, (struct sockaddr *)&r, sizeof r) == 0 && write(s, req, 4) == 4 && read(s, ans, 1) == 1 && ans[0] == 0 &&
+             read(s, ans + 1, 2) == 2;
+    close(s);
+    return ok ? (unsigned short)(ans[1] << 8 | ans[2]) : 0;
+}
+
+static int port_path(int type, unsigned short port, struct sockaddr_un *u);
+
+static unsigned short flow_port(unsigned short router, unsigned short port, in_addr_t addr) {
+    int n = __atomic_load_n(&nflows, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n && i < MAX_FLOWS; i++) {
+        if (__atomic_load_n(&flows[i].ready, __ATOMIC_ACQUIRE) && flows[i].router == router && flows[i].port == port) {
+            return flows[i].flow;
+        }
+    }
+    unsigned short f = ask_router(router, port);
+    if (!f) {
+        return 0;
+    }
+    int i = __atomic_fetch_add(&nflows, 1, __ATOMIC_ACQ_REL);
+    if (i < MAX_FLOWS) {
+        flows[i].router = router;
+        flows[i].port = port;
+        flows[i].flow = f;
+        flows[i].addr = addr;
+        __atomic_store_n(&flows[i].ready, 1, __ATOMIC_RELEASE);
+    }
+    return f;
+}
+
+// flow_of reports the member address and port loopback port flow presents.
+static int flow_of(unsigned short flow, in_addr_t *addr, unsigned short *port) {
+    int n = __atomic_load_n(&nflows, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n && i < MAX_FLOWS; i++) {
+        if (__atomic_load_n(&flows[i].ready, __ATOMIC_ACQUIRE) && flows[i].flow == flow) {
+            *addr = flows[i].addr;
+            *port = flows[i].port;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// own_listener reports whether the container listens on port of type, a
+// port without a host port, with a Unix socket.
+static int own_listener(int type, unsigned short port) {
+    struct sockaddr_un u;
+    struct stat st;
+    return port_dir[0] && port_path(type, port, &u) == 0 && stat(u.sun_path, &st) == 0 && S_ISSOCK(st.st_mode);
+}
+
+// reach finds where a connection or datagram of type to IPv4 address v4,
+// port port, goes: a member's or the container's port reaches its host
+// port, or a UDP port without one its flow port. It fails with errno set
+// where nothing listens.
+static int reach(int type, in_addr_t v4, unsigned short port, in_addr_t *a, unsigned short *p) {
+    if (member_block(v4)) {
+        // A member's port is its host port; one it does not expose is
+        // closed, and an address no member holds is unreachable.
+        int member;
+        unsigned short router = 0, mh = member_route(v4, type, port, &member, &router);
+        if (!mh && member && type == SOCK_DGRAM && router) mh = flow_port(router, port, v4);
+        if (!mh) {
+            errno = member ? ECONNREFUSED : EHOSTUNREACH;
+            return -1;
+        }
+        *a = htonl(INADDR_LOOPBACK);
+        *p = mh;
+        return 0;
+    }
+    unsigned short h = v4_local(v4) ? host_port(type, port) : 0;
+    if (!h && v4_local(v4) && type == SOCK_DGRAM && router_port && own_listener(SOCK_DGRAM, port)) {
+        h = flow_port(router_port, port, htonl(INADDR_LOOPBACK));
+    }
+    *a = v4 == htonl(INADDR_ANY) ? htonl(INADDR_LOOPBACK) : v4;
+    *p = h ? h : port;
+    return 0;
+}
+
 // bound_v6 reports whether a socket of type holds port on IPv6 loopback, by
 // trying to bind it, which, unlike a connection, no listener sees.
 static int bound_v6(int type, unsigned short port) {
@@ -2219,22 +2325,12 @@ static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_
     } else {
         return sa;
     }
-    if (member_block(v4)) {
-        // A member's port is its host port; one it does not expose is
-        // closed, and an address no member holds is unreachable.
-        int member;
-        unsigned short mh = member_host_port(v4, type, port, &member);
-        if (!mh) {
-            errno = member ? ECONNREFUSED : EHOSTUNREACH;
-            return NULL;
-        }
-        struct sockaddr_in b = v4_addr(htonl(INADDR_LOOPBACK), mh);
-        memcpy(out, &b, sizeof b);
-        *len = sizeof b;
-        return (const struct sockaddr *)out;
+    in_addr_t ra;
+    unsigned short rp;
+    if (reach(type, v4, port, &ra, &rp) == -1) {
+        return NULL;
     }
-    unsigned short h = v4_local(v4) ? host_port(type, port) : 0;
-    struct sockaddr_in b = v4_addr(v4 == htonl(INADDR_ANY) ? htonl(INADDR_LOOPBACK) : v4, h ? h : port);
+    struct sockaddr_in b = v4_addr(ra, rp);
     memcpy(out, &b, sizeof b);
     *len = sizeof b;
     return (const struct sockaddr *)out;
@@ -2300,6 +2396,10 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
         in_addr_t ma;
         if (c) {
             a->sin_port = htons(c);
+        } else if (!own && type == SOCK_DGRAM && a->sin_addr.s_addr == htonl(INADDR_LOOPBACK) && flow_of(ntohs(a->sin_port), &ma, &c)) {
+            // A flow port is the UDP port of the member it relays for.
+            a->sin_addr.s_addr = ma;
+            a->sin_port = htons(c);
         } else if (!own && a->sin_addr.s_addr == htonl(INADDR_LOOPBACK) && member_of_host_port(type, ntohs(a->sin_port), &ma, &c)) {
             // A peer's host port is the member's own port at its address.
             a->sin_addr.s_addr = ma;
@@ -2341,8 +2441,9 @@ static int fws_socket(int domain, int type, int protocol) {
 }
 INTERPOSE(fws_socket, socket);
 
-// port_path writes where the library listens on TCP port port.
-static int port_path(unsigned short port, struct sockaddr_un *u) {
+// port_path writes where the library listens on port port of type, TCP or
+// UDP.
+static int port_path(int type, unsigned short port, struct sockaddr_un *u) {
     char digits[8], *d = digits + sizeof digits;
     *--d = 0;
     do {
@@ -2351,7 +2452,7 @@ static int port_path(unsigned short port, struct sockaddr_un *u) {
     } while (port);
     memset(u, 0, sizeof *u);
     u->sun_family = AF_UNIX;
-    if (!join(u->sun_path, sizeof u->sun_path, port_dir, "/tcp-", d)) {
+    if (!join(u->sun_path, sizeof u->sun_path, port_dir, type == SOCK_DGRAM ? "/udp-" : "/tcp-", d)) {
         errno = ENAMETOOLONG;
         return -1;
     }
@@ -2359,11 +2460,13 @@ static int port_path(unsigned short port, struct sockaddr_un *u) {
     return 0;
 }
 
-// unbacked reports the TCP port sa names, on loopback, the wildcard or the
-// container's own address, when it has no host port and the container can
-// listen on it with a Unix socket; any is whether sa is the wildcard.
+// unbacked reports the TCP or UDP port sa names, on loopback, the wildcard
+// or the container's own address, when it has no host port and the
+// container can listen on it with a Unix socket; any is whether sa is the
+// wildcard.
 static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len, int *any, int *v6) {
-    if (!port_dir[0] || !sa || sock_type(fd) != SOCK_STREAM) {
+    int type = sa && port_dir[0] ? sock_type(fd) : 0;
+    if (type != SOCK_STREAM && type != SOCK_DGRAM) {
         return 0;
     }
     in_addr_t a;
@@ -2391,23 +2494,31 @@ static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len,
     if (own_address && a == own_address) a = htonl(INADDR_LOOPBACK);
     // A container port with a host port binds it, and so does a program
     // that binds the host port itself, as the container contract has it.
-    if (!port || !v4_local(a) || host_port(SOCK_STREAM, port) || container_port(SOCK_STREAM, port)) {
+    if (!port || !v4_local(a) || host_port(type, port) || container_port(type, port)) {
         return 0;
     }
     *any = a == htonl(INADDR_ANY);
     return port;
 }
 
-// listen_unix puts a Unix socket in fd's place and binds it where the
-// library listens on port.
+// listen_unix puts a Unix socket of fd's type in its place and binds it
+// where the library listens on port.
 static int listen_unix(int fd, unsigned short port, int any, int v6) {
+    int type = sock_type(fd);
     struct sockaddr_un u;
-    if (port_path(port, &u) == -1) {
+    if (port_path(type, port, &u) == -1) {
         return -1;
     }
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    int s = socket(AF_UNIX, type, 0);
     if (s < 0) {
         return -1;
+    }
+    if (type == SOCK_DGRAM) {
+        // A Unix datagram is bounded by its sender's buffer, and the router
+        // sends UDP's largest with its header.
+        int size = 4 * (65535 + DGRAM_HEADER);
+        setsockopt(s, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
+        setsockopt(s, SOL_SOCKET, SO_SNDBUF, &size, sizeof size);
     }
     int fl = fcntl(fd, F_GETFL), fdfl = fcntl(fd, F_GETFD);
     if (fl != -1) fcntl(s, F_SETFL, fl);
@@ -2425,7 +2536,7 @@ static int listen_unix(int fd, unsigned short port, int any, int v6) {
     if (r == -1 && errno == EADDRINUSE) {
         // A socket no listener holds is a stale one, which a listener that
         // ended left behind.
-        int t = socket(AF_UNIX, SOCK_STREAM, 0);
+        int t = socket(AF_UNIX, type, 0);
         int live = t >= 0 && connect(t, (struct sockaddr *)&u, u.sun_len) == 0;
         if (t >= 0) close(t);
         if (live) {
@@ -2527,7 +2638,7 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         // any other loopback port is the host's.
         struct sockaddr_un u;
         struct stat st;
-        if (port_path(port, &u) == -1 || stat(u.sun_path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
+        if (port_path(SOCK_STREAM, port, &u) == -1 || stat(u.sun_path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
             return 0;
         }
         *r = route(fd, own_address && a == own_address ? a : htonl(INADDR_LOOPBACK), router_port, port, v6);
@@ -2539,7 +2650,15 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
     return 0;
 }
 
+// A UDP socket on a port without a host port sends each datagram with the
+// router's header, which a connected one's send and write would leave off.
+static int dgram_unix(int fd);
+
 static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
+    if (dgram_unix(fd)) {
+        errno = EOPNOTSUPP;
+        return -1;
+    }
     int rr;
     if (routed(fd, sa, len, &rr)) {
         return rr;
@@ -2555,6 +2674,10 @@ INTERPOSE(fws_connect, connect);
 
 extern int connect_nocancel(int, const struct sockaddr *, socklen_t) __asm("_connect$NOCANCEL") __attribute__((weak_import));
 static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len) {
+    if (dgram_unix(fd)) {
+        errno = EOPNOTSUPP;
+        return -1;
+    }
     int rr;
     if (routed(fd, sa, len, &rr)) {
         return rr;
@@ -2568,7 +2691,123 @@ static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len
 }
 INTERPOSE(fws_connect_nocancel, connect_nocancel);
 
+// A UDP socket on a port without a host port is a Unix datagram one, whose
+// datagrams the router relays with a header: the destination, as reach
+// finds it, on the way out, and the source on the way in.
+static int dgram_unix(int fd) { return (state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_DGRAM; }
+
+typedef ssize_t (*sendmsg_fn)(int, const struct msghdr *, int);
+typedef ssize_t (*recvmsg_fn)(int, struct msghdr *, int);
+
+static ssize_t dgram_send(int fd, const struct iovec *iov, int iovlen, int flags, const struct sockaddr *sa, socklen_t len, sendmsg_fn send) {
+    if (!sa) {
+        errno = EDESTADDRREQ;
+        return -1;
+    }
+    if (iovlen < 0 || iovlen > DGRAM_IOV) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    in_addr_t v4;
+    unsigned short port;
+    if (sa->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *a = (const void *)sa;
+        v4 = a->sin_addr.s_addr;
+        port = ntohs(a->sin_port);
+    } else if (sa->sa_family == AF_INET6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *a = (const void *)sa;
+        port = ntohs(a->sin6_port);
+        if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr)) {
+            v4 = mapped_v4(&a->sin6_addr);
+        } else if (IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) || IN6_IS_ADDR_UNSPECIFIED(&a->sin6_addr)) {
+            v4 = htonl(INADDR_LOOPBACK);
+        } else {
+            errno = ENETUNREACH;
+            return -1;
+        }
+    } else {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    in_addr_t ra;
+    unsigned short rp;
+    if (reach(SOCK_DGRAM, v4, port, &ra, &rp) == -1) {
+        return -1;
+    }
+    unsigned char hdr[DGRAM_HEADER];
+    memcpy(hdr, &ra, 4);
+    hdr[4] = (unsigned char)(rp >> 8);
+    hdr[5] = (unsigned char)rp;
+    struct iovec v[DGRAM_IOV + 1];
+    v[0].iov_base = hdr;
+    v[0].iov_len = sizeof hdr;
+    if (iovlen) memcpy(&v[1], iov, (size_t)iovlen * sizeof *iov);
+    struct sockaddr_un u;
+    memset(&u, 0, sizeof u);
+    u.sun_family = AF_UNIX;
+    if (!join(u.sun_path, sizeof u.sun_path, port_dir, "/udp", "")) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    u.sun_len = (unsigned char)SUN_LEN(&u);
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    m.msg_name = &u;
+    m.msg_namelen = u.sun_len;
+    m.msg_iov = v;
+    m.msg_iovlen = iovlen + 1;
+    ssize_t r = send(fd, &m, flags);
+    return r < 0 ? r : r - (ssize_t)sizeof hdr;
+}
+
+static ssize_t dgram_recv(int fd, const struct iovec *iov, int iovlen, int flags, struct sockaddr *sa, socklen_t *len, int *mflags, recvmsg_fn recv) {
+    if (iovlen < 0 || iovlen > DGRAM_IOV) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    unsigned char hdr[DGRAM_HEADER];
+    struct iovec v[DGRAM_IOV + 1];
+    v[0].iov_base = hdr;
+    v[0].iov_len = sizeof hdr;
+    if (iovlen) memcpy(&v[1], iov, (size_t)iovlen * sizeof *iov);
+    struct msghdr m;
+    for (;;) {
+        memset(&m, 0, sizeof m);
+        m.msg_iov = v;
+        m.msg_iovlen = iovlen + 1;
+        ssize_t r = recv(fd, &m, flags);
+        if (r < 0) {
+            return r;
+        }
+        // Only the router sends here, and always with its header.
+        if (r < (ssize_t)sizeof hdr) {
+            if (flags & MSG_PEEK) recv(fd, &m, flags & ~MSG_PEEK);
+            continue;
+        }
+        if (mflags) *mflags = m.msg_flags & ~MSG_CTRUNC;
+        if (sa && len) {
+            in_addr_t a;
+            memcpy(&a, hdr, 4);
+            struct sockaddr_in k4 = v4_addr(a, (unsigned short)(hdr[4] << 8 | hdr[5]));
+            struct sockaddr_storage k;
+            memset(&k, 0, sizeof k);
+            memcpy(&k, &k4, sizeof k4);
+            present(fd, &k, sizeof k4, sa, len, 0);
+        } else if (len) {
+            *len = 0;
+        }
+        return r - (ssize_t)sizeof hdr;
+    }
+}
+
+static ssize_t plain_sendmsg(int fd, const struct msghdr *m, int flags) { return sendmsg(fd, m, flags); }
+static ssize_t plain_recvmsg(int fd, struct msghdr *m, int flags) { return recvmsg(fd, m, flags); }
+
 static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
+    if (dgram_unix(fd)) {
+        struct iovec v = {(void *)buf, n};
+        return dgram_send(fd, &v, 1, flags, sa, len, plain_sendmsg);
+    }
     struct sockaddr_storage b;
     const struct sockaddr *to = remote(fd, sa, &len, &b);
     if (sa && !to) {
@@ -2579,6 +2818,9 @@ static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const st
 INTERPOSE(fws_sendto, sendto);
 
 static ssize_t fws_sendmsg(int fd, const struct msghdr *m, int flags) {
+    if (m && dgram_unix(fd)) {
+        return dgram_send(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_namelen, plain_sendmsg);
+    }
     if (!m || !m->msg_name) {
         return sendmsg(fd, m, flags);
     }
@@ -2595,6 +2837,10 @@ static ssize_t fws_sendmsg(int fd, const struct msghdr *m, int flags) {
 INTERPOSE(fws_sendmsg, sendmsg);
 
 static ssize_t fws_recvfrom(int fd, void *buf, size_t n, int flags, struct sockaddr *sa, socklen_t *len) {
+    if (dgram_unix(fd)) {
+        struct iovec v = {buf, n};
+        return dgram_recv(fd, &v, 1, flags, sa, len, NULL, plain_recvmsg);
+    }
     if (!sa || !len) {
         return recvfrom(fd, buf, n, flags, sa, len);
     }
@@ -2613,6 +2859,10 @@ static ssize_t fws_recvfrom(int fd, void *buf, size_t n, int flags, struct socka
 INTERPOSE(fws_recvfrom, recvfrom);
 
 static ssize_t fws_recvmsg(int fd, struct msghdr *m, int flags) {
+    if (m && dgram_unix(fd)) {
+        m->msg_controllen = 0;
+        return dgram_recv(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_name ? &m->msg_namelen : NULL, &m->msg_flags, plain_recvmsg);
+    }
     if (!m || !m->msg_name) {
         return recvmsg(fd, m, flags);
     }
@@ -2635,6 +2885,24 @@ static ssize_t fws_recvmsg(int fd, struct msghdr *m, int flags) {
     return r;
 }
 INTERPOSE(fws_recvmsg, recvmsg);
+
+static ssize_t fws_recv(int fd, void *buf, size_t n, int flags) {
+    if (dgram_unix(fd)) {
+        struct iovec v = {buf, n};
+        return dgram_recv(fd, &v, 1, flags, NULL, NULL, NULL, plain_recvmsg);
+    }
+    return recv(fd, buf, n, flags);
+}
+INTERPOSE(fws_recv, recv);
+
+static ssize_t fws_read(int fd, void *buf, size_t n) {
+    if (dgram_unix(fd)) {
+        struct iovec v = {buf, n};
+        return dgram_recv(fd, &v, 1, 0, NULL, NULL, NULL, plain_recvmsg);
+    }
+    return read(fd, buf, n);
+}
+INTERPOSE(fws_read, read);
 
 static int fws_accept(int fd, struct sockaddr *sa, socklen_t *len) {
     struct sockaddr_storage k;
@@ -2746,7 +3014,14 @@ INTERPOSE(fws_dup2, dup2);
 // The cancellation-point-free variants, which libSystem's own wrappers and
 // some runtimes call.
 extern ssize_t sendto_nocancel(int, const void *, size_t, int, const struct sockaddr *, socklen_t) __asm("_sendto$NOCANCEL") __attribute__((weak_import));
+static ssize_t nocancel_sendmsg(int fd, const struct msghdr *m, int flags);
+static ssize_t nocancel_recvmsg(int fd, struct msghdr *m, int flags);
+
 static ssize_t fws_sendto_nocancel(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
+    if (dgram_unix(fd)) {
+        struct iovec v = {(void *)buf, n};
+        return dgram_send(fd, &v, 1, flags, sa, len, nocancel_sendmsg);
+    }
     struct sockaddr_storage b;
     const struct sockaddr *to = remote(fd, sa, &len, &b);
     if (sa && !to) {
@@ -2757,7 +3032,12 @@ static ssize_t fws_sendto_nocancel(int fd, const void *buf, size_t n, int flags,
 INTERPOSE(fws_sendto_nocancel, sendto_nocancel);
 
 extern ssize_t sendmsg_nocancel(int, const struct msghdr *, int) __asm("_sendmsg$NOCANCEL") __attribute__((weak_import));
+static ssize_t nocancel_sendmsg(int fd, const struct msghdr *m, int flags) { return sendmsg_nocancel(fd, m, flags); }
+
 static ssize_t fws_sendmsg_nocancel(int fd, const struct msghdr *m, int flags) {
+    if (m && dgram_unix(fd)) {
+        return dgram_send(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_namelen, nocancel_sendmsg);
+    }
     if (!m || !m->msg_name) {
         return sendmsg_nocancel(fd, m, flags);
     }
@@ -2775,6 +3055,10 @@ INTERPOSE(fws_sendmsg_nocancel, sendmsg_nocancel);
 
 extern ssize_t recvfrom_nocancel(int, void *, size_t, int, struct sockaddr *, socklen_t *) __asm("_recvfrom$NOCANCEL") __attribute__((weak_import));
 static ssize_t fws_recvfrom_nocancel(int fd, void *buf, size_t n, int flags, struct sockaddr *sa, socklen_t *len) {
+    if (dgram_unix(fd)) {
+        struct iovec v = {buf, n};
+        return dgram_recv(fd, &v, 1, flags, sa, len, NULL, nocancel_recvmsg);
+    }
     if (!sa || !len) {
         return recvfrom_nocancel(fd, buf, n, flags, sa, len);
     }
@@ -2793,7 +3077,13 @@ static ssize_t fws_recvfrom_nocancel(int fd, void *buf, size_t n, int flags, str
 INTERPOSE(fws_recvfrom_nocancel, recvfrom_nocancel);
 
 extern ssize_t recvmsg_nocancel(int, struct msghdr *, int) __asm("_recvmsg$NOCANCEL") __attribute__((weak_import));
+static ssize_t nocancel_recvmsg(int fd, struct msghdr *m, int flags) { return recvmsg_nocancel(fd, m, flags); }
+
 static ssize_t fws_recvmsg_nocancel(int fd, struct msghdr *m, int flags) {
+    if (m && dgram_unix(fd)) {
+        m->msg_controllen = 0;
+        return dgram_recv(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_name ? &m->msg_namelen : NULL, &m->msg_flags, nocancel_recvmsg);
+    }
     if (!m || !m->msg_name) {
         return recvmsg_nocancel(fd, m, flags);
     }
@@ -2946,12 +3236,6 @@ static int member_address(const char *name, in_addr_t *out) {
     }
     pthread_mutex_unlock(&members_lock);
     return found;
-}
-
-// member_host_port returns the host port behind a member's container port,
-// and whether addr is a member at all.
-static unsigned short member_host_port(in_addr_t addr, int type, unsigned short cport, int *member) {
-    return member_route(addr, type, cport, member, NULL);
 }
 
 // member_route returns the host port behind a member's container port, and

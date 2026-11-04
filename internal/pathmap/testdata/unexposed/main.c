@@ -1,8 +1,9 @@
 // unexposed listens on container port 7000, which has no host port, with a
-// dual-stack IPv6 socket, and reaches it on loopback, then reaches port
-// 7100 of stack member peer, in a sandbox that lets it bind Unix sockets in
-// its port directory and reach its router alone, as a container's does. It
-// reports each step.
+// dual-stack IPv6 socket, TCP and UDP, and reaches it on loopback, then
+// reaches port 7100 of stack member peer, TCP and UDP, in a sandbox that
+// lets it bind Unix sockets in its port directory and reach its router and
+// the two flow ports it gives the UDP ports alone, as a container's does.
+// It reports each step.
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -42,8 +43,8 @@ int main(int argc, char **argv) {
     snprintf(profile, sizeof profile,
              "(version 1)(allow default)(deny network-bind)(deny network-outbound)"
              "(allow network-bind (local unix-socket (subpath \"%s\")))"
-             "(allow network-outbound (remote unix-socket (subpath \"%s\")) (remote ip \"localhost:%s\"))",
-             argv[1], argv[1], argv[2]);
+             "(allow network-outbound (remote unix-socket (subpath \"%s\")) (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
+             argv[1], argv[1], argv[2], argv[3], argv[4]);
     char *err = NULL;
     if (sandbox_init(profile, 0, &err) != 0) {
         fprintf(stderr, "sandbox_init: %s\n", err);
@@ -100,5 +101,34 @@ int main(int argc, char **argv) {
     int q = socket(res->ai_family, SOCK_STREAM, 0);
     printf("refused=%d\n", connect(q, res->ai_addr, res->ai_addrlen));
     freeaddrinfo(res);
+
+    // UDP on port 7000, which has no host port either.
+    int u = socket(AF_INET6, SOCK_DGRAM, 0);
+    setsockopt(u, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof off);
+    if (bind(u, (void *)&any, sizeof any)) fail("udp-listen");
+    n = sizeof s;
+    getsockname(u, (void *)&s, &n);
+    printf("udp-listen=%s\n", addr(&s));
+    int uc = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sendto(uc, "ping", 4, 0, (void *)&lo, sizeof lo) != 4) fail("udp-local");
+    memset(buf, 0, sizeof buf);
+    n = sizeof s;
+    if (recvfrom(u, buf, sizeof buf, 0, (void *)&s, &n) != 4) fail("udp-local");
+    printf("udp-local=%s %s\n", buf, strncmp(addr(&s), "[::ffff:127.0.0.1]:", 19) == 0 ? "from-loopback" : addr(&s));
+    if (sendto(u, "pong", 4, 0, (void *)&s, n) != 4) fail("udp-reply");
+    memset(buf, 0, sizeof buf);
+    n = sizeof s;
+    if (recvfrom(uc, buf, sizeof buf, 0, (void *)&s, &n) != 4) fail("udp-reply");
+    printf("udp-reply=%s %s\n", buf, addr(&s));
+
+    hints.ai_socktype = SOCK_DGRAM;
+    if (getaddrinfo("peer", "7100", &hints, &res)) fail("udp-peer");
+    int up = socket(res->ai_family, SOCK_DGRAM, 0);
+    if (sendto(up, "hi", 2, 0, res->ai_addr, res->ai_addrlen) != 2) fail("udp-peer");
+    freeaddrinfo(res);
+    memset(buf, 0, sizeof buf);
+    n = sizeof s;
+    if (recvfrom(up, buf, sizeof buf, 0, (void *)&s, &n) != 5) fail("udp-peer");
+    printf("udp-peer=%s %s\n", buf, addr(&s));
     return 0;
 }

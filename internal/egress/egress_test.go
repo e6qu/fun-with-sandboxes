@@ -151,7 +151,9 @@ func TestReachesStackMembers(t *testing.T) {
 	}
 	defer ul.Close()
 	go http.Serve(ul, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "member routed") }))
-	rt, err := router.Listen("127.0.0.1:0", dir)
+	rt, err := router.Listen("127.0.0.1:0", dir, func() (*net.UDPConn, error) {
+		return net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

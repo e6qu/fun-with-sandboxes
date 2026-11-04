@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
@@ -413,11 +414,41 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	dir, _ = filepath.EvalSymlinks(dir)
-	r, err := router.Listen("127.0.0.1:0", dir)
+	// The router gives the probe's UDP ports these flow ports, which its
+	// sandbox lets it reach.
+	flowPorts := []int{freePort(t, "udp"), freePort(t, "udp")}
+	var flows atomic.Int32
+	r, err := router.Listen("127.0.0.1:0", dir, func() (*net.UDPConn, error) {
+		i := flows.Add(1) - 1
+		if int(i) >= len(flowPorts) {
+			return nil, fmt.Errorf("flow port %d asked for, %d given", i+1, len(flowPorts))
+		}
+		return net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: flowPorts[i]})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
+	// The member's UDP socket on its port 7100, which answers each datagram
+	// with "hello" through the router.
+	ul, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: router.UDPSocketPath(dir, 7100), Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ul.Close()
+	go func() {
+		buf := make([]byte, 128)
+		for {
+			n, _, err := ul.ReadFromUnix(buf)
+			if err != nil {
+				return
+			}
+			if n < router.Header {
+				continue
+			}
+			ul.WriteToUnix(append(append([]byte{}, buf[:router.Header]...), "hello"...), &net.UnixAddr{Name: router.UDPRouterPath(dir), Net: "unixgram"})
+		}
+	}()
 	// The member's listener on its port 7100, which the router reaches as
 	// a member's router would.
 	l, err := net.Listen("unix", router.SocketPath(dir, 7100))
@@ -442,14 +473,15 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, dir, strconv.Itoa(rp))
+	cmd := exec.Command(bin, dir, strconv.Itoa(rp), strconv.Itoa(flowPorts[0]), strconv.Itoa(flowPorts[1]))
 	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, PortDirVar + "=" + dir, RouterVar + "=" + strconv.Itoa(rp),
 		NetworkVar + "=" + network, AddressVar + "=127.88.0.2"}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("unexposed: %v\n%s", err, out)
 	}
-	want := "listen=[::]:7000\nlocal=ping 127.0.0.1:7000\npeer=hello 127.88.0.3:7100\nrefused=-1\n"
+	want := "listen=[::]:7000\nlocal=ping 127.0.0.1:7000\npeer=hello 127.88.0.3:7100\nrefused=-1\n" +
+		"udp-listen=[::]:7000\nudp-local=ping from-loopback\nudp-reply=pong 127.0.0.1:7000\nudp-peer=hello 127.88.0.3:7100\n"
 	if string(out) != want {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}
