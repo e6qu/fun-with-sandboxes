@@ -43,6 +43,7 @@ require (
 	github.com/moby/sys/signal v0.7.1
 	github.com/moby/sys/user v0.4.1
 	github.com/moby/sys/userns v0.2.1
+	github.com/moby/term v0.5.2
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runtime-spec v1.3.0
@@ -89,6 +90,7 @@ require (
 require (
 	cyphar.com/go-pathrs v0.2.5 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
+	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/hcsshim v0.15.0-rc.4 // indirect
 	github.com/anchore/go-struct-converter v0.1.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

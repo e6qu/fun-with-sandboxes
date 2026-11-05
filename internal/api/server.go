@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,6 +21,7 @@ import (
 	"github.com/moby/moby/api/types/events"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/volume"
+	"golang.org/x/net/websocket"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
 )
@@ -58,12 +61,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		r.URL.Path = m[2]
 		r.URL.RawPath = ""
+		r = r.WithContext(context.WithValue(r.Context(), versionKey{}, m[1]))
 	}
 	w.Header().Set("Api-Version", engine.APIVersion)
 	w.Header().Set("Server", "fun-with-sandboxes/"+engine.Version+" (darwin)")
 	w.Header().Set("Docker-Experimental", "false")
 	w.Header().Set("Ostype", "darwin")
 	s.mux.ServeHTTP(w, r)
+}
+
+type versionKey struct{}
+
+// apiVersion is the API version the request's path names, the engine's
+// own when it names none.
+func apiVersion(r *http.Request) string {
+	if v, ok := r.Context().Value(versionKey{}).(string); ok {
+		return v
+	}
+	return engine.APIVersion
 }
 
 func cmpVersion(a, b string) int {
@@ -119,6 +134,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /containers/{id}/wait", s.containerWait)
 	m.HandleFunc("GET /containers/{id}/logs", s.containerLogs)
 	m.HandleFunc("POST /containers/{id}/attach", s.containerAttach)
+	m.HandleFunc("GET /containers/{id}/attach/ws", s.containerAttachWS)
 	m.HandleFunc("DELETE /containers/{id}", s.simple(func(r *http.Request) error {
 		q := r.URL.Query()
 		if boolParam(q.Get("link")) {
@@ -467,26 +483,85 @@ func (s *Server) containerAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tty := c.IsTTY()
-	conn, rw, err := hijack(w, r, tty)
-	if err != nil {
+	var conn net.Conn
+	opts := attachOptions(q, boolParam(q.Get("stdin")), boolParam(q.Get("stdout")), boolParam(q.Get("stderr")))
+	err = s.e.Attach(context.Background(), id, opts, func() (io.Reader, func(engine.LogEntry) error, error) {
+		hc, rw, err := hijack(w, r, tty)
+		if err != nil {
+			return nil, nil, err
+		}
+		conn = hc
+		st := newStreams(conn, tty, nil)
+		return rw, func(le engine.LogEntry) error {
+			_, err := io.WriteString(st.of(le.Stream), le.Log)
+			return err
+		}, nil
+	})
+	if conn == nil {
+		if err != nil {
+			writeEngineError(w, err)
+		}
 		return
 	}
-	defer conn.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if boolParam(q.Get("stdin")) {
-		go func() {
-			s.e.AttachStdin(ctx, id, rw)
-		}()
-	}
-	st := newStreams(conn, tty, nil)
-	opts := engine.AttachOptions{Stream: boolParam(q.Get("stream")), Logs: boolParam(q.Get("logs")), Stdout: boolParam(q.Get("stdout")), Stderr: boolParam(q.Get("stderr"))}
-	s.e.Attach(ctx, id, opts, func(le engine.LogEntry) error {
-		_, err := io.WriteString(st.of(le.Stream), le.Log)
-		return err
-	})
 	closeWrite(conn)
+	conn.Close()
 }
+
+func attachOptions(q url.Values, stdin, stdout, stderr bool) engine.AttachOptions {
+	return engine.AttachOptions{
+		Stream: boolParam(q.Get("stream")), Logs: boolParam(q.Get("logs")),
+		Stdin: stdin, Stdout: stdout, Stderr: stderr, DetachKeys: q.Get("detachKeys"),
+	}
+}
+
+// containerAttachWS attaches over a websocket, which carries each stream's
+// output unframed, in binary messages from API 1.28 on and text ones before.
+func (s *Server) containerAttachWS(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	version := apiVersion(r)
+	// Before API 1.42 a websocket attach takes every stream.
+	stdin, stdout, stderr := true, true, true
+	if cmpVersion(version, "1.42") >= 0 {
+		stdin, stdout, stderr = boolParam(q.Get("stdin")), boolParam(q.Get("stdout")), boolParam(q.Get("stderr"))
+	}
+	conns := make(chan *websocket.Conn)
+	served := make(chan struct{})
+	release := make(chan struct{})
+	upgraded := false
+	err := s.e.Attach(context.Background(), r.PathValue("id"), attachOptions(q, stdin, stdout, stderr), func() (io.Reader, func(engine.LogEntry) error, error) {
+		upgraded = true
+		srv := websocket.Server{Handler: func(ws *websocket.Conn) {
+			conns <- ws
+			<-release
+			ws.Close()
+		}}
+		go func() {
+			defer close(served)
+			srv.ServeHTTP(w, r)
+		}()
+		select {
+		case ws := <-conns:
+			if cmpVersion(version, "1.28") >= 0 {
+				ws.PayloadType = websocket.BinaryFrame
+			}
+			return ws, func(le engine.LogEntry) error {
+				_, err := io.WriteString(ws, le.Log)
+				return err
+			}, nil
+		case <-served:
+			// The handshake failed, and the websocket server answered it.
+			return nil, nil, errHandshake
+		}
+	})
+	if !upgraded {
+		writeEngineError(w, err)
+		return
+	}
+	close(release)
+	<-served
+}
+
+var errHandshake = errors.New("websocket handshake failed")
 
 func (s *Server) execCreate(w http.ResponseWriter, r *http.Request) {
 	var req container.ExecCreateRequest
