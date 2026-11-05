@@ -21,6 +21,8 @@
 //     bootstrap names carry the container's prefix.
 //
 // The host still decides every access, by the engine's user's rights.
+// IPV6_RECVPKTINFO and IPV6_PKTINFO name RFC 3542's options only with this.
+#define __APPLE_USE_RFC_3542
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -53,11 +55,13 @@
 #include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <netdb.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/uio.h>
 #include <sys/xattr.h>
 #include <unistd.h>
 
@@ -81,6 +85,11 @@ static pid_t init_pid;
 // The engine's helper binary's name (FWS_HELPER), which the container's
 // exec anchor runs as.
 static char helper_comm[MAXCOMLEN + 1];
+
+// The file of the container's pids limit (FWS_PIDS), as a pids cgroup's
+// pids.max holds it: a number, or "max" for none. The engine rewrites it
+// as the limit changes.
+static char pids_path[PATH_MAX];
 
 struct mount {
     char *dest, *src;
@@ -221,9 +230,12 @@ static int parse_v4(const char *p, const char **end, in_addr_t *out) {
 
 // The stack's members (FWS_NETWORK): a file the engine rewrites as members
 // come and go, of a line per member holding its address, the names it
-// answers to, and its ports as FWS_PORTS lists them, tab-separated. Its
-// addresses lie in 127.88.0.0/16, which the kernel never sees: the library
-// reaches a member's ports through their host ports.
+// answers to, its ports as FWS_PORTS lists them, its router's port, the
+// networks it is on, and whether it is another stack's, tab-separated
+// (package members). Its addresses lie in 127.88.0.0/16, which the kernel
+// never sees: the library reaches a member's ports through their host
+// ports, and another stack's member through the container's own router.
+// The container sees the members it shares a network with.
 static char network_path[PATH_MAX];
 static in_addr_t own_address;
 
@@ -258,7 +270,7 @@ static void parse_network(const char *path, const char *address) {
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
 __attribute__((constructor)) static void fwsroot_init(void) {
@@ -273,6 +285,10 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     fake_uid = fake_euid = (uid_t)env_number("FWS_UID");
     fake_gid = fake_egid = (gid_t)env_number("FWS_GID");
     init_pid = (pid_t)env_number("FWS_INIT");
+    const char *pm = getenv("FWS_PIDS");
+    if (pm && pm[0] == '/') {
+        strlcpy(pids_path, pm, sizeof pids_path);
+    }
     const char *hc = getenv("FWS_HELPER");
     if (hc) {
         strlcpy(helper_comm, hc, sizeof helper_comm);
@@ -1029,8 +1045,20 @@ static int fws_execve(const char *path, char *const argv[], char *const envp[]) 
     return r;
 }
 INTERPOSE(fws_execve, execve);
+static int pids_full(void);
+
+// spawns reports whether a posix_spawn with attributes a starts a process,
+// rather than replacing the caller's program, as POSIX_SPAWN_SETEXEC does.
+static int spawns(const posix_spawnattr_t *a) {
+    short flags = 0;
+    return !(a && posix_spawnattr_getflags(a, &flags) == 0 && (flags & POSIX_SPAWN_SETEXEC));
+}
+
 static int fws_posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *a,
                            char *const argv[], char *const envp[]) {
+    if (spawns(a) && pids_full()) {
+        return EAGAIN;
+    }
     char ids[64];
     char **env = child_env(envp, ids);
     if (env) envp = env;
@@ -1054,6 +1082,9 @@ static int fws_posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file
     char full[PATH_MAX];
     if (find_on_path(file, full)) {
         return fws_posix_spawn(pid, full, fa, a, argv, envp);
+    }
+    if (spawns(a) && pids_full()) {
+        return EAGAIN;
     }
     char ids[64];
     char **env = child_env(envp, ids);
@@ -1662,6 +1693,46 @@ static int visible(pid_t pid, const char *comm) {
     return proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &info, sizeof info) == (int)sizeof info;
 }
 
+// pids_full reports whether the container runs as many processes as its
+// pids limit allows, so that a fork fails with EAGAIN, as one past a pids
+// cgroup's limit does. The container's supervisor kills any process that
+// a race between two forks lets past it.
+static int pids_full(void) {
+    if (!pids_path[0]) return 0;
+    char b[32];
+    int fd = open(pids_path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    ssize_t n = read(fd, b, sizeof b - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    b[n] = 0;
+    unsigned long max;
+    if (!num(b, &max) || max == 0) return 0;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_RUID, (int)getuid()};
+    size_t len = 0;
+    if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0) return 0;
+    len += 32 * sizeof(struct kinfo_proc);
+    struct kinfo_proc *kp = malloc(len);
+    if (!kp) return 0;
+    unsigned long count = 0;
+    if (sysctl(mib, 4, kp, &len, NULL, 0) == 0) {
+        for (size_t i = 0; i < len / sizeof *kp; i++) {
+            if (kp[i].kp_proc.p_stat != SZOMB && visible(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm)) count++;
+        }
+    }
+    free(kp);
+    return count >= max;
+}
+
+static pid_t fws_fork(void) {
+    if (pids_full()) {
+        errno = EAGAIN;
+        return -1;
+    }
+    return fork();
+}
+INTERPOSE(fws_fork, fork);
+
 // own_procs keeps the container's processes of a kinfo_proc array of n
 // bytes, in place, and returns its new size.
 static size_t own_procs(struct kinfo_proc *kp, size_t n) {
@@ -2014,6 +2085,9 @@ static unsigned short container_port(int type, unsigned short hport) {
 #define NET_UNIX 4
 #define NET_ROUTED 8
 #define NET_LO6 16
+// NET_DCONN: a UDP socket on a port without a host port connected to
+// net_peer and net_dport, the peer as reach finds it.
+#define NET_DCONN 32
 // What the router puts before a datagram on a Unix one: the IPv4 address
 // and port it came from, or goes to.
 #define DGRAM_HEADER 6
@@ -2025,6 +2099,23 @@ static unsigned char net_state[NET_FDS];
 // NET_ROUTED ones the peer's address.
 static unsigned short net_port[NET_FDS];
 static in_addr_t net_peer[NET_FDS];
+static unsigned short net_dport[NET_FDS];
+// The control messages a UDP socket on a port without a host port asks
+// for: the kernel sees a Unix datagram socket, which has no IP options, so
+// the library keeps them and writes the messages itself.
+#define CM_DSTADDR 1
+#define CM_PKTINFO 2
+#define CM_PKTINFO6 4
+#define CM_2292PKTINFO6 8
+static unsigned char net_cmsg[NET_FDS];
+
+static int cmsg_flag(int level, int name) {
+    if (level == IPPROTO_IP && name == IP_RECVDSTADDR) return CM_DSTADDR;
+    if (level == IPPROTO_IP && name == IP_PKTINFO) return CM_PKTINFO;
+    if (level == IPPROTO_IPV6 && name == IPV6_RECVPKTINFO) return CM_PKTINFO6;
+    if (level == IPPROTO_IPV6 && name == IPV6_2292PKTINFO) return CM_2292PKTINFO6;
+    return 0;
+}
 
 static unsigned char state_of(int fd) { return fd >= 0 && fd < NET_FDS ? net_state[fd] : 0; }
 
@@ -2240,7 +2331,13 @@ static int reach(int type, in_addr_t v4, unsigned short port, in_addr_t *a, unsi
         // closed, and an address no member holds is unreachable.
         int member;
         unsigned short router = 0, mh = member_route(v4, type, port, &member, &router);
-        if (!mh && member && type == SOCK_DGRAM && router) mh = flow_port(router, port, v4);
+        if (!mh && member == 1 && type == SOCK_DGRAM && router) mh = flow_port(router, port, v4);
+        if (member == 2) {
+            // Another stack's member is reached through the container's
+            // router, which carries connections alone.
+            errno = EHOSTUNREACH;
+            return -1;
+        }
         if (!mh) {
             errno = member ? ECONNREFUSED : EHOSTUNREACH;
             return -1;
@@ -2567,15 +2664,25 @@ INTERPOSE(fws_bind, bind);
 // route connects fd through the router at loopback port router to the
 // container port port of the member at addr, and reports whether it did:
 // at once, as a connection to loopback is made, whether or not fd blocks.
-static int route(int fd, in_addr_t addr, unsigned short router, unsigned short port, int v6) {
+// With foreign set, the router is the container's own, which relays to
+// another stack's member.
+static int route(int fd, in_addr_t addr, unsigned short router, unsigned short port, int v6, int foreign) {
     if (v6 && !(state_of(fd) & NET_V6) && to_ipv4(fd, SOCK_STREAM) == -1) {
         return -1;
     }
     int fl = fcntl(fd, F_GETFL);
     if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
-    unsigned char req[2] = {(unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
-    int ok = connect(fd, (struct sockaddr *)&r, sizeof r) == 0 && write(fd, req, 2) == 2 && read(fd, &ans, 1) == 1;
+    unsigned char req[8] = {(unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
+    size_t n = 2;
+    if (foreign) {
+        req[0] = req[1] = 0xff;
+        memcpy(req + 2, &addr, 4);
+        req[6] = (unsigned char)(port >> 8);
+        req[7] = (unsigned char)port;
+        n = 8;
+    }
+    int ok = connect(fd, (struct sockaddr *)&r, sizeof r) == 0 && write(fd, req, n) == (ssize_t)n && read(fd, &ans, 1) == 1;
     int e = errno;
     if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl);
     if (!ok) {
@@ -2627,10 +2734,16 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
     if (member_block(a) && !(own_address && a == own_address)) {
         int member;
         unsigned short router = 0;
-        if (member_route(a, SOCK_STREAM, port, &member, &router) || !member || !router) {
+        unsigned short h = member_route(a, SOCK_STREAM, port, &member, &router);
+        if (member == 2) {
+            if (!router_port) return 0;
+            *r = route(fd, a, router_port, port, v6, 1);
+            return 1;
+        }
+        if (h || !member || !router) {
             return 0;
         }
-        *r = route(fd, a, router, port, v6);
+        *r = route(fd, a, router, port, v6, 0);
         return 1;
     }
     if ((v4_local(a) || (own_address && a == own_address)) && router_port && !host_port(SOCK_STREAM, port)) {
@@ -2641,7 +2754,7 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         if (port_path(SOCK_STREAM, port, &u) == -1 || stat(u.sun_path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
             return 0;
         }
-        *r = route(fd, own_address && a == own_address ? a : htonl(INADDR_LOOPBACK), router_port, port, v6);
+        *r = route(fd, own_address && a == own_address ? a : htonl(INADDR_LOOPBACK), router_port, port, v6, 0);
         if (*r == 0 && v6 && IN6_IS_ADDR_LOOPBACK(&((const struct sockaddr_in6 *)sa)->sin6_addr)) {
             set_state(fd, state_of(fd) | NET_LO6);
         }
@@ -2650,14 +2763,12 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
     return 0;
 }
 
-// A UDP socket on a port without a host port sends each datagram with the
-// router's header, which a connected one's send and write would leave off.
 static int dgram_unix(int fd);
+static int dgram_connect(int fd, const struct sockaddr *sa, socklen_t len);
 
 static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
     if (dgram_unix(fd)) {
-        errno = EOPNOTSUPP;
-        return -1;
+        return dgram_connect(fd, sa, len);
     }
     int rr;
     if (routed(fd, sa, len, &rr)) {
@@ -2675,8 +2786,7 @@ INTERPOSE(fws_connect, connect);
 extern int connect_nocancel(int, const struct sockaddr *, socklen_t) __asm("_connect$NOCANCEL") __attribute__((weak_import));
 static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len) {
     if (dgram_unix(fd)) {
-        errno = EOPNOTSUPP;
-        return -1;
+        return dgram_connect(fd, sa, len);
     }
     int rr;
     if (routed(fd, sa, len, &rr)) {
@@ -2699,8 +2809,65 @@ static int dgram_unix(int fd) { return (state_of(fd) & NET_UNIX) && sock_type(fd
 typedef ssize_t (*sendmsg_fn)(int, const struct msghdr *, int);
 typedef ssize_t (*recvmsg_fn)(int, struct msghdr *, int);
 
-static ssize_t dgram_send(int fd, const struct iovec *iov, int iovlen, int flags, const struct sockaddr *sa, socklen_t len, sendmsg_fn send) {
+// dgram_dest reads a datagram's destination as an IPv4 address and port.
+static int dgram_dest(const struct sockaddr *sa, socklen_t len, in_addr_t *v4, unsigned short *port) {
+    if (sa->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *a = (const void *)sa;
+        *v4 = a->sin_addr.s_addr;
+        *port = ntohs(a->sin_port);
+        return 0;
+    }
+    if (sa->sa_family == AF_INET6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *a = (const void *)sa;
+        *port = ntohs(a->sin6_port);
+        if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr)) {
+            *v4 = mapped_v4(&a->sin6_addr);
+        } else if (IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) || IN6_IS_ADDR_UNSPECIFIED(&a->sin6_addr)) {
+            *v4 = htonl(INADDR_LOOPBACK);
+        } else {
+            errno = ENETUNREACH;
+            return -1;
+        }
+        return 0;
+    }
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
+// A connected one keeps its peer, as reach finds it, for the datagrams it
+// sends without a destination, and takes datagrams from that peer alone;
+// one connected to AF_UNSPEC is no longer connected.
+static int dgram_connect(int fd, const struct sockaddr *sa, socklen_t len) {
     if (!sa) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (sa->sa_family == AF_UNSPEC) {
+        set_state(fd, state_of(fd) & ~NET_DCONN);
+        return 0;
+    }
+    in_addr_t v4, ra;
+    unsigned short port, rp;
+    if (dgram_dest(sa, len, &v4, &port) == -1 || reach(SOCK_DGRAM, v4, port, &ra, &rp) == -1) {
+        return -1;
+    }
+    if (fd >= NET_FDS) {
+        errno = EMFILE;
+        return -1;
+    }
+    net_peer[fd] = ra;
+    net_dport[fd] = rp;
+    set_state(fd, state_of(fd) | NET_DCONN);
+    return 0;
+}
+
+static ssize_t dgram_send(int fd, const struct iovec *iov, int iovlen, int flags, const struct sockaddr *sa, socklen_t len, sendmsg_fn send) {
+    int connected = state_of(fd) & NET_DCONN;
+    if (sa && connected) {
+        errno = EISCONN;
+        return -1;
+    }
+    if (!sa && !connected) {
         errno = EDESTADDRREQ;
         return -1;
     }
@@ -2708,31 +2875,17 @@ static ssize_t dgram_send(int fd, const struct iovec *iov, int iovlen, int flags
         errno = EMSGSIZE;
         return -1;
     }
-    in_addr_t v4;
-    unsigned short port;
-    if (sa->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
-        const struct sockaddr_in *a = (const void *)sa;
-        v4 = a->sin_addr.s_addr;
-        port = ntohs(a->sin_port);
-    } else if (sa->sa_family == AF_INET6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
-        const struct sockaddr_in6 *a = (const void *)sa;
-        port = ntohs(a->sin6_port);
-        if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr)) {
-            v4 = mapped_v4(&a->sin6_addr);
-        } else if (IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) || IN6_IS_ADDR_UNSPECIFIED(&a->sin6_addr)) {
-            v4 = htonl(INADDR_LOOPBACK);
-        } else {
-            errno = ENETUNREACH;
-            return -1;
-        }
-    } else {
-        errno = EAFNOSUPPORT;
-        return -1;
-    }
     in_addr_t ra;
     unsigned short rp;
-    if (reach(SOCK_DGRAM, v4, port, &ra, &rp) == -1) {
-        return -1;
+    if (connected) {
+        ra = net_peer[fd];
+        rp = net_dport[fd];
+    } else {
+        in_addr_t v4;
+        unsigned short port;
+        if (dgram_dest(sa, len, &v4, &port) == -1 || reach(SOCK_DGRAM, v4, port, &ra, &rp) == -1) {
+            return -1;
+        }
     }
     unsigned char hdr[DGRAM_HEADER];
     memcpy(hdr, &ra, 4);
@@ -2780,7 +2933,13 @@ static ssize_t dgram_recv(int fd, const struct iovec *iov, int iovlen, int flags
             return r;
         }
         // Only the router sends here, and always with its header.
-        if (r < (ssize_t)sizeof hdr) {
+        int foreign = 0;
+        if (r >= (ssize_t)sizeof hdr && (state_of(fd) & NET_DCONN)) {
+            in_addr_t a;
+            memcpy(&a, hdr, 4);
+            foreign = a != net_peer[fd] || (unsigned short)(hdr[4] << 8 | hdr[5]) != net_dport[fd];
+        }
+        if (r < (ssize_t)sizeof hdr || foreign) {
             if (flags & MSG_PEEK) recv(fd, &m, flags & ~MSG_PEEK);
             continue;
         }
@@ -2798,6 +2957,96 @@ static ssize_t dgram_recv(int fd, const struct iovec *iov, int iovlen, int flags
         }
         return r - (ssize_t)sizeof hdr;
     }
+}
+
+static int fws_getsockname(int fd, struct sockaddr *sa, socklen_t *len);
+static int member_block(in_addr_t a);
+
+// v4_of is the IPv4 address of an IPv4 or IPv4-mapped IPv6 address, with
+// IPv6 loopback as IPv4's and any other IPv6 address as the wildcard.
+static in_addr_t v4_of(const struct sockaddr_storage *s) {
+    if (s->ss_family == AF_INET) return ((const struct sockaddr_in *)s)->sin_addr.s_addr;
+    if (s->ss_family == AF_INET6) {
+        const struct in6_addr *a = &((const struct sockaddr_in6 *)s)->sin6_addr;
+        if (IN6_IS_ADDR_V4MAPPED(a)) return mapped_v4(a);
+        if (IN6_IS_ADDR_LOOPBACK(a)) return htonl(INADDR_LOOPBACK);
+    }
+    return htonl(INADDR_ANY);
+}
+
+static void add_cmsg(struct msghdr *m, socklen_t cap, socklen_t *used, int level, int type, const void *data, size_t len) {
+    if (!m->msg_control || *used + CMSG_SPACE(len) > cap) {
+        m->msg_flags |= MSG_CTRUNC;
+        return;
+    }
+    struct cmsghdr *c = (struct cmsghdr *)((char *)m->msg_control + *used);
+    memset(c, 0, CMSG_SPACE(len));
+    c->cmsg_len = (socklen_t)CMSG_LEN(len);
+    c->cmsg_level = level;
+    c->cmsg_type = type;
+    memcpy(CMSG_DATA(c), data, len);
+    *used += (socklen_t)CMSG_SPACE(len);
+}
+
+// dgram_control writes to m the control messages fd asks for, of a
+// datagram from src. Its destination is the address the socket is bound
+// to, or, bound to the wildcard, the container's member address for a
+// member's datagram and loopback for any other: the kernel reports the
+// address the sender named.
+static void dgram_control(int fd, struct msghdr *m, const struct sockaddr_storage *src) {
+    socklen_t cap = m->msg_controllen, used = 0;
+    unsigned char want = fd < NET_FDS ? net_cmsg[fd] : 0;
+    in_addr_t dst = htonl(INADDR_LOOPBACK);
+    struct sockaddr_storage self;
+    socklen_t sn = sizeof self;
+    if (want && fws_getsockname(fd, (struct sockaddr *)&self, &sn) == 0 && v4_of(&self) != htonl(INADDR_ANY)) {
+        dst = v4_of(&self);
+    } else if (want) {
+        in_addr_t from = v4_of(src);
+        if (own_address && member_block(from) && from != own_address) dst = own_address;
+    }
+    static unsigned int lo0;
+    if (want && !lo0) lo0 = if_nametoindex("lo0");
+    if (want & CM_DSTADDR) {
+        struct in_addr a = {dst};
+        add_cmsg(m, cap, &used, IPPROTO_IP, IP_RECVDSTADDR, &a, sizeof a);
+    }
+    if (want & CM_PKTINFO) {
+        struct in_pktinfo pi;
+        memset(&pi, 0, sizeof pi);
+        pi.ipi_ifindex = lo0;
+        pi.ipi_spec_dst.s_addr = dst;
+        pi.ipi_addr.s_addr = dst;
+        add_cmsg(m, cap, &used, IPPROTO_IP, IP_PKTINFO, &pi, sizeof pi);
+    }
+    if (want & (CM_PKTINFO6 | CM_2292PKTINFO6)) {
+        struct in6_pktinfo pi;
+        memset(&pi, 0, sizeof pi);
+        pi.ipi6_ifindex = lo0;
+        pi.ipi6_addr.s6_addr[10] = pi.ipi6_addr.s6_addr[11] = 0xff;
+        memcpy(&pi.ipi6_addr.s6_addr[12], &dst, 4);
+        if (want & CM_PKTINFO6) add_cmsg(m, cap, &used, IPPROTO_IPV6, IPV6_PKTINFO, &pi, sizeof pi);
+        if (want & CM_2292PKTINFO6) add_cmsg(m, cap, &used, IPPROTO_IPV6, IPV6_2292PKTINFO, &pi, sizeof pi);
+    }
+    m->msg_controllen = used;
+}
+
+// dgram_recvmsg receives a datagram on a Unix one for recvmsg, with its
+// source and the control messages its socket asks for.
+static ssize_t dgram_recvmsg(int fd, struct msghdr *m, int flags, recvmsg_fn recv) {
+    struct sockaddr_storage src;
+    socklen_t sn = sizeof src;
+    ssize_t r = dgram_recv(fd, m->msg_iov, m->msg_iovlen, flags, (struct sockaddr *)&src, &sn, &m->msg_flags, recv);
+    if (r < 0) {
+        return r;
+    }
+    if (m->msg_name) {
+        socklen_t n = sn < m->msg_namelen ? sn : m->msg_namelen;
+        memcpy(m->msg_name, &src, n);
+        m->msg_namelen = n;
+    }
+    dgram_control(fd, m, &src);
+    return r;
 }
 
 static ssize_t plain_sendmsg(int fd, const struct msghdr *m, int flags) { return sendmsg(fd, m, flags); }
@@ -2860,8 +3109,7 @@ INTERPOSE(fws_recvfrom, recvfrom);
 
 static ssize_t fws_recvmsg(int fd, struct msghdr *m, int flags) {
     if (m && dgram_unix(fd)) {
-        m->msg_controllen = 0;
-        return dgram_recv(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_name ? &m->msg_namelen : NULL, &m->msg_flags, plain_recvmsg);
+        return dgram_recvmsg(fd, m, flags, plain_recvmsg);
     }
     if (!m || !m->msg_name) {
         return recvmsg(fd, m, flags);
@@ -2885,6 +3133,40 @@ static ssize_t fws_recvmsg(int fd, struct msghdr *m, int flags) {
     return r;
 }
 INTERPOSE(fws_recvmsg, recvmsg);
+
+static ssize_t fws_send(int fd, const void *buf, size_t n, int flags) {
+    if (dgram_unix(fd)) {
+        struct iovec v = {(void *)buf, n};
+        return dgram_send(fd, &v, 1, flags, NULL, 0, plain_sendmsg);
+    }
+    return send(fd, buf, n, flags);
+}
+INTERPOSE(fws_send, send);
+
+static ssize_t fws_write(int fd, const void *buf, size_t n) {
+    if (dgram_unix(fd)) {
+        struct iovec v = {(void *)buf, n};
+        return dgram_send(fd, &v, 1, 0, NULL, 0, plain_sendmsg);
+    }
+    return write(fd, buf, n);
+}
+INTERPOSE(fws_write, write);
+
+static ssize_t fws_writev(int fd, const struct iovec *iov, int iovcnt) {
+    if (dgram_unix(fd)) {
+        return dgram_send(fd, iov, iovcnt, 0, NULL, 0, plain_sendmsg);
+    }
+    return writev(fd, iov, iovcnt);
+}
+INTERPOSE(fws_writev, writev);
+
+static ssize_t fws_readv(int fd, const struct iovec *iov, int iovcnt) {
+    if (dgram_unix(fd)) {
+        return dgram_recv(fd, iov, iovcnt, 0, NULL, NULL, NULL, plain_recvmsg);
+    }
+    return readv(fd, iov, iovcnt);
+}
+INTERPOSE(fws_readv, readv);
 
 static ssize_t fws_recv(int fd, void *buf, size_t n, int flags) {
     if (dgram_unix(fd)) {
@@ -2927,6 +3209,18 @@ static int fws_getsockname(int fd, struct sockaddr *sa, socklen_t *len) {
 INTERPOSE(fws_getsockname, getsockname);
 
 static int fws_getpeername(int fd, struct sockaddr *sa, socklen_t *len) {
+    if (dgram_unix(fd)) {
+        if (!(state_of(fd) & NET_DCONN)) {
+            errno = ENOTCONN;
+            return -1;
+        }
+        struct sockaddr_in k4 = v4_addr(net_peer[fd], net_dport[fd]);
+        struct sockaddr_storage k;
+        memset(&k, 0, sizeof k);
+        memcpy(&k, &k4, sizeof k4);
+        present(fd, &k, sizeof k4, sa, len, 0);
+        return 0;
+    }
     struct sockaddr_storage k;
     socklen_t kn = sizeof k;
     int r = getpeername(fd, (struct sockaddr *)&k, &kn);
@@ -2948,6 +3242,19 @@ static int v4_option(int name) {
 }
 
 static int fws_setsockopt(int fd, int level, int name, const void *v, socklen_t n) {
+    int cf = fd >= 0 && fd < NET_FDS && dgram_unix(fd) ? cmsg_flag(level, name) : 0;
+    if (cf) {
+        if (!v || n < (socklen_t)sizeof(int)) {
+            errno = EINVAL;
+            return -1;
+        }
+        if (*(const int *)v) {
+            net_cmsg[fd] |= (unsigned char)cf;
+        } else {
+            net_cmsg[fd] &= (unsigned char)~cf;
+        }
+        return 0;
+    }
     // A Unix stream has no IP or TCP options to set: it delays no segment
     // and has no packets to tune.
     if ((state_of(fd) & NET_UNIX) && (level == IPPROTO_TCP || level == IPPROTO_IP || level == IPPROTO_IPV6)) {
@@ -2970,6 +3277,12 @@ static int fws_setsockopt(int fd, int level, int name, const void *v, socklen_t 
 INTERPOSE(fws_setsockopt, setsockopt);
 
 static int fws_getsockopt(int fd, int level, int name, void *v, socklen_t *n) {
+    int cf = fd >= 0 && fd < NET_FDS && dgram_unix(fd) ? cmsg_flag(level, name) : 0;
+    if (cf && v && n && *n >= (socklen_t)sizeof(int)) {
+        *(int *)v = (net_cmsg[fd] & cf) != 0;
+        *n = sizeof(int);
+        return 0;
+    }
     if ((state_of(fd) & NET_UNIX) && (level == IPPROTO_TCP || level == IPPROTO_IP || level == IPPROTO_IPV6) && v && n &&
         *n >= (socklen_t)sizeof(int)) {
         *(int *)v = level == IPPROTO_TCP && name == TCP_NODELAY;
@@ -2994,8 +3307,30 @@ static void copy_state(int from, int to) {
     if (from >= 0 && from < NET_FDS && to >= 0 && to < NET_FDS) {
         net_port[to] = net_port[from];
         net_peer[to] = net_peer[from];
+        net_dport[to] = net_dport[from];
+        net_cmsg[to] = net_cmsg[from];
     }
 }
+
+// A descriptor's number outlives it, and the next socketpair, pipe or file
+// to take it is none of the library's.
+static void forget(int fd) {
+    set_state(fd, 0);
+    if (fd >= 0 && fd < NET_FDS) net_cmsg[fd] = 0;
+}
+
+static int fws_close(int fd) {
+    forget(fd);
+    return close(fd);
+}
+INTERPOSE(fws_close, close);
+
+extern int close_nocancel(int) __asm("_close$NOCANCEL") __attribute__((weak_import));
+static int fws_close_nocancel(int fd) {
+    forget(fd);
+    return close_nocancel(fd);
+}
+INTERPOSE(fws_close_nocancel, close_nocancel);
 
 static int fws_dup(int fd) {
     int c = dup(fd);
@@ -3081,8 +3416,7 @@ static ssize_t nocancel_recvmsg(int fd, struct msghdr *m, int flags) { return re
 
 static ssize_t fws_recvmsg_nocancel(int fd, struct msghdr *m, int flags) {
     if (m && dgram_unix(fd)) {
-        m->msg_controllen = 0;
-        return dgram_recv(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_name ? &m->msg_namelen : NULL, &m->msg_flags, nocancel_recvmsg);
+        return dgram_recvmsg(fd, m, flags, nocancel_recvmsg);
     }
     if (!m || !m->msg_name) {
         return recvmsg_nocancel(fd, m, flags);
@@ -3160,8 +3494,9 @@ static const char *members_text(void) {
 
 struct member {
     in_addr_t addr;
-    const char *names, *names_end, *ports, *ports_end;
+    const char *names, *names_end, *ports, *ports_end, *nets, *nets_end;
     unsigned short router;
+    int foreign;
 };
 
 static const char *next_member(const char *p, struct member *m) {
@@ -3173,12 +3508,17 @@ static const char *next_member(const char *p, struct member *m) {
         const char *after;
         if (t2 && parse_v4(p, &after, &m->addr) && after == t1) {
             const char *t3 = memchr(t2 + 1, '\t', (size_t)(end - t2 - 1));
+            const char *t4 = t3 ? memchr(t3 + 1, '\t', (size_t)(end - t3 - 1)) : NULL;
+            const char *t5 = t4 ? memchr(t4 + 1, '\t', (size_t)(end - t4 - 1)) : NULL;
             unsigned long r = 0;
             m->names = t1 + 1;
             m->names_end = t2;
             m->ports = t2 + 1;
             m->ports_end = t3 ? t3 : end;
             m->router = t3 && num(t3 + 1, &r) && r < 65536 ? (unsigned short)r : 0;
+            m->nets = t4 ? t4 + 1 : end;
+            m->nets_end = t5 ? t5 : end;
+            m->foreign = t5 && t5[1] == '1';
             return nl ? nl + 1 : end;
         }
         p = nl ? nl + 1 : end;
@@ -3223,12 +3563,50 @@ static unsigned short member_ports(const struct member *m, int type, unsigned sh
     return 0;
 }
 
+// shares reports whether two members' space-separated networks meet.
+static int shares(const struct member *a, const struct member *b) {
+    for (const char *p = a->nets; p < a->nets_end;) {
+        const char *e = memchr(p, ' ', (size_t)(a->nets_end - p));
+        if (!e) e = a->nets_end;
+        for (const char *q = b->nets; q < b->nets_end;) {
+            const char *f = memchr(q, ' ', (size_t)(b->nets_end - q));
+            if (!f) f = b->nets_end;
+            if (e > p && e - p == f - q && memcmp(p, q, (size_t)(e - p)) == 0) return 1;
+            q = f + 1;
+        }
+        p = e + 1;
+    }
+    return 0;
+}
+
+// find_self finds the container's own line among the members in text.
+static int find_self(const char *text, struct member *out) {
+    struct member m;
+    for (const char *p = text; own_address && (p = next_member(p, &m));) {
+        if (m.addr == own_address) {
+            *out = m;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// sees reports whether the container sees member m, as a container sees
+// the containers on its networks: m is the container itself, or shares a
+// network with it. A container the file does not list sees its own stack.
+static int sees(const struct member *m, const struct member *me, int have_me) {
+    if (!have_me) return !m->foreign;
+    return m->addr == me->addr || shares(m, me);
+}
+
 static int member_address(const char *name, in_addr_t *out) {
     int found = 0;
     pthread_mutex_lock(&members_lock);
-    struct member m;
-    for (const char *p = members_text(); (p = next_member(p, &m));) {
-        if (answers(&m, name)) {
+    struct member m, me;
+    const char *text = members_text();
+    int have_me = find_self(text, &me);
+    for (const char *p = text; (p = next_member(p, &m));) {
+        if (sees(&m, &me, have_me) && answers(&m, name)) {
             *out = m.addr;
             found = 1;
             break;
@@ -3239,16 +3617,21 @@ static int member_address(const char *name, in_addr_t *out) {
 }
 
 // member_route returns the host port behind a member's container port, and
-// whether addr is a member, and its router's port.
+// whether addr is a member the container sees, 2 for another stack's, and
+// its router's port. Another stack's member's host ports lie outside the
+// container's reach, so none is returned for one.
 static unsigned short member_route(in_addr_t addr, int type, unsigned short cport, int *member, unsigned short *router) {
     unsigned short h = 0;
     *member = 0;
     pthread_mutex_lock(&members_lock);
-    struct member m;
-    for (const char *p = members_text(); (p = next_member(p, &m));) {
+    struct member m, me;
+    const char *text = members_text();
+    int have_me = find_self(text, &me);
+    for (const char *p = text; (p = next_member(p, &m));) {
         if (m.addr == addr) {
-            *member = 1;
-            h = member_ports(&m, type, cport, 0);
+            if (!sees(&m, &me, have_me)) break;
+            *member = m.foreign ? 2 : 1;
+            h = m.foreign ? 0 : member_ports(&m, type, cport, 0);
             if (router) *router = m.router;
             break;
         }
@@ -3262,7 +3645,7 @@ static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, 
     pthread_mutex_lock(&members_lock);
     struct member m;
     for (const char *p = members_text(); (p = next_member(p, &m));) {
-        unsigned short c = member_ports(&m, type, hport, 1);
+        unsigned short c = m.foreign ? 0 : member_ports(&m, type, hport, 1);
         if (c) {
             *addr = m.addr;
             *cport = c;

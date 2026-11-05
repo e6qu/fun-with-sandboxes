@@ -506,6 +506,7 @@ func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string
 	if helper, err := roles.Binary(); err == nil {
 		env = append(env, pathmap.HelperVar+"="+filepath.Base(helper))
 	}
+	env = append(env, pathmap.PidsVar+"="+c.pidsPath())
 	if onNetwork(net) && net.rec.Address != "" {
 		nf, err := e.networkFile(net.rec.Stack)
 		if err != nil {
@@ -681,7 +682,7 @@ func (e *Engine) resolveNetworksLocked(stack, name, service string, req containe
 		if netName == "default" {
 			netName = "bridge"
 		}
-		n, err := e.checkNetworkLocked(netName, stack)
+		n, err := e.checkNetworkLocked(netName)
 		if err != nil {
 			return err
 		}
@@ -1169,7 +1170,7 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	}
 	spec := seatbelt.Spec{
 		Root: c.root(), StateRoot: e.cfg.Root, ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
-		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib},
+		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath()},
 	}
 	for _, m := range c.rec.Mounts {
 		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW})
@@ -1187,7 +1188,7 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	if err != nil {
 		return seatbelt.Spec{}, err
 	}
-	spec.ReadFiles = []string{nf}
+	spec.ReadFiles = append(spec.ReadFiles, nf)
 	if net.rec.RouterPort != 0 {
 		spec.PortDir = e.portDir(net)
 	}
@@ -1273,6 +1274,9 @@ func (c *Container) start(e *Engine) error {
 	if err := e.emptyTmpfsVolumes(c); err != nil {
 		return err
 	}
+	if err := c.writePidsLimit(c.rec.HostConfig.PidsLimit); err != nil {
+		return err
+	}
 	if e.hasEgress(c) {
 		if _, err := e.ensureEgress(c.rec.Stack); err != nil {
 			return err
@@ -1296,6 +1300,12 @@ func (c *Container) start(e *Engine) error {
 		LogPath: c.logs.path, Socket: e.shimSocket(c), Anchor: e.anchorSocket(c), ExitPath: c.exitPath(),
 		Router: c.rec.RouterPort, PortDir: e.portDir(c),
 		Tag: c.tag(), AllocRoot: e.cfg.Root, Stack: c.rec.Stack, Resources: res,
+	}
+	if c.rec.RouterPort != 0 {
+		if cfg.NetworkFile, err = e.networkFile(c.rec.Stack); err != nil {
+			return err
+		}
+		cfg.Address = c.rec.Address
 	}
 	for _, p := range plan {
 		cfg.Publish = append(cfg.Publish, p.binding)
@@ -1353,6 +1363,23 @@ func (c *Container) attachTaskLocked(e *Engine, task *shim.Client, reconnect boo
 }
 
 func (c *Container) exitPath() string { return filepath.Join(c.dir, "exit.json") }
+
+// pidsPath is the file of the container's pids limit, which its processes
+// read before they fork, as a pids cgroup's pids.max holds it.
+func (c *Container) pidsPath() string { return filepath.Join(c.dir, "pids.max") }
+
+// writePidsLimit writes the container's pids limit to its file.
+func (c *Container) writePidsLimit(limit *int64) error {
+	v := "max"
+	if limit != nil && *limit > 0 {
+		v = strconv.FormatInt(*limit, 10)
+	}
+	tmp := c.pidsPath() + ".tmp"
+	if err := os.WriteFile(tmp, []byte(v+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, c.pidsPath())
+}
 
 // shimSocket is where the container's shim listens: under the engine's
 // root, kept short, as macOS caps socket paths at 104 bytes.

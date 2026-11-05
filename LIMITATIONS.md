@@ -131,9 +131,24 @@ machine — and from what macOS offers an unprivileged process under them.
     member addresses.
   - A member's port without a host port is reached through its router,
     whose connections and datagrams its server sees come from `127.0.0.1`.
-- **One stack, one reachability domain.** A container can reach every port in
-  its stack's block and nothing else. Networks shared across Compose projects
-  are refused.
+- **A stack's block is one reachability domain.** Seatbelt lets a container
+  reach every port in its stack's block and nothing else, so within a stack
+  network membership is presented, not enforced: the container library
+  resolves and connects to the members a container shares a network with,
+  and a program that loads no library reaches any member's host port.
+- **Stacks meet on a network they share through their routers.** Containers
+  of different stacks on one user-defined network, such as two Compose
+  projects on an external network or two `docker run` containers on a
+  `docker network create` one, reach one another by name: a container's
+  router, outside its sandbox, relays its connections to the other stack's
+  members. Its limits:
+  - Only TCP crosses; a datagram to another stack's member fails with
+    `EHOSTUNREACH`.
+  - A program that loads no library cannot reach the other stack's members,
+    and its stack's egress proxy reaches them for any member of its stack.
+  - Any member of a stack can ask another member's router for a relay, so
+    a member off the shared network can reach the other stack's members
+    on it through a member on it.
 - **A host process that later binds a port inside a stack's block is
   reachable from that stack.** The allocator skips ports in use when it
   assigns them, but cannot stop other host software from binding them later.
@@ -163,9 +178,12 @@ machine — and from what macOS offers an unprivileged process under them.
     members reach by name, through the container's router; it is published
     nowhere, as in Docker. A listener on an address other than loopback's,
     the wildcard or the container's own is refused.
-  - A UDP socket on such a port sends and receives with `sendto`,
-    `sendmsg`, `recvfrom`, `recvmsg`, `recv` and `read`; `connect` on it
-    fails with `EOPNOTSUPP`, and it takes no IP-level control messages.
+  - A UDP socket on such a port sends and receives with the socket and
+    file calls, connected or not. Of IP-level control messages it takes
+    those that report a datagram's destination, `IP_RECVDSTADDR`,
+    `IP_PKTINFO` and `IPV6_RECVPKTINFO`, and sends with none: a reply
+    leaves from the port the socket is bound to. Other IP options on it
+    set nothing, as there are no packets for them to shape.
     The router gives each such port a flow port of the stack's block for as
     long as the container runs, so a stack holds as many of them as its
     block has ports to spare.
@@ -194,8 +212,11 @@ machine — and from what macOS offers an unprivileged process under them.
     control. `--cpu-shares` sets the nice value, and since only root lowers
     one, more shares than the default run at the default priority.
     Cpusets and real-time scheduling are refused.
-  - `--pids-limit` kills processes started past the limit rather than
-    failing their fork.
+  - `--pids-limit` counts processes, not threads as a pids cgroup does.
+    The container library fails a `fork` or `posix_spawn` at the limit
+    with `EAGAIN`; the supervisor kills a process two racing forks let
+    past it, and one forked by a program that loads no library or through
+    `vfork`.
   - `--blkio-weight` picks a disk I/O policy tier (standard, utility,
     throttle); per-device rates are refused, and a running container's
     weight cannot change, as macOS lets a process set only its own policy.
@@ -242,7 +263,9 @@ machine — and from what macOS offers an unprivileged process under them.
 - **tmpfs mounts are directories** under the container's state, emptied at
   each start, not memory-backed. A tmpfs volume (`--opt type=tmpfs`) is a
   directory too, emptied when a container first mounts it; size and
-  ownership options are refused, as nothing would hold them.
+  ownership options are refused, as nothing would hold them. The one
+  memory-backed filesystem an unprivileged user can make, an `hdiutil` RAM
+  disk, mounts system-wide under `/Volumes`, in Finder's sight.
 - **Local volumes bind host directories or nothing else.** The local
   driver's `type=none,o=bind,device=<dir>` binds a host directory, which
   must exist; other filesystem types need root and are refused.

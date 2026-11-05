@@ -273,7 +273,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	network := filepath.Join(t.TempDir(), "network")
-	if err := os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t8080/tcp=%d\n127.88.0.3\tdb proj-db-1\t5432/tcp=%d\n", tcp1, peer)), 0o644); err != nil {
+	if err := os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t8080/tcp=%d\t0\tproj_default\t0\n127.88.0.3\tdb proj-db-1\t5432/tcp=%d\t0\tproj_default\t0\n", tcp1, peer)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	portDir, err := os.MkdirTemp("/tmp", "fwsp")
@@ -416,7 +416,7 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	dir, _ = filepath.EvalSymlinks(dir)
 	// The router gives the probe's UDP ports these flow ports, which its
 	// sandbox lets it reach.
-	flowPorts := []int{freePort(t, "udp"), freePort(t, "udp")}
+	flowPorts := []int{freePort(t, "udp"), freePort(t, "udp"), freePort(t, "udp")}
 	var flows atomic.Int32
 	r, err := router.Listen("127.0.0.1:0", dir, func() (*net.UDPConn, error) {
 		i := flows.Add(1) - 1
@@ -424,7 +424,7 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 			return nil, fmt.Errorf("flow port %d asked for, %d given", i+1, len(flowPorts))
 		}
 		return net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: flowPorts[i]})
-	})
+	}, router.Network{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,12 +468,12 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	}()
 	network := filepath.Join(t.TempDir(), "network")
 	rp := r.Addr().Port
-	os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t\t%d\n127.88.0.3\tpeer\t\t%d\n", rp, rp)), 0o644)
+	os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t\t%d\tproj_default\t0\n127.88.0.3\tpeer\t\t%d\tproj_default\t0\n", rp, rp)), 0o644)
 	lib, err := Build(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, dir, strconv.Itoa(rp), strconv.Itoa(flowPorts[0]), strconv.Itoa(flowPorts[1]))
+	cmd := exec.Command(bin, dir, strconv.Itoa(rp), strconv.Itoa(flowPorts[0]), strconv.Itoa(flowPorts[1]), strconv.Itoa(flowPorts[2]))
 	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, PortDirVar + "=" + dir, RouterVar + "=" + strconv.Itoa(rp),
 		NetworkVar + "=" + network, AddressVar + "=127.88.0.2"}
 	out, err := cmd.CombinedOutput()
@@ -481,7 +481,10 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 		t.Fatalf("unexposed: %v\n%s", err, out)
 	}
 	want := "listen=[::]:7000\nlocal=ping 127.0.0.1:7000\npeer=hello 127.88.0.3:7100\nrefused=-1\n" +
-		"udp-listen=[::]:7000\nudp-local=ping from-loopback\nudp-reply=pong 127.0.0.1:7000\nudp-peer=hello 127.88.0.3:7100\n"
+		"udp-listen=[::]:7000\nudp-local=ping from-loopback\nudp-reply=pong 127.0.0.1:7000\n" +
+		"udp-connect=0 peer-is-client\nudp-connected-send=send writ wriv\nudp-isconn=-1 EISCONN\nudp-filter=mine\n" +
+		"udp-disconnect=0 ENOTCONN\nudp-disconnected=ot hr\nudp-pktinfo6=1 pk6 ::ffff:127.0.0.1\n" +
+		"udp-dstaddr=127.0.0.1 pktinfo=127.0.0.1 truncated=yes\nudp-peer=hello 127.88.0.3:7100\n"
 	if string(out) != want {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}

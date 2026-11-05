@@ -224,7 +224,9 @@ func run(op, arg string) error {
 		fmt.Println("cpu", (ru.Utime.Nano()+ru.Stime.Nano())/1e6)
 		hold()
 	case "forkmany":
-		// Start arg children, reaping those that end, and stay running.
+		// Start arg children, reaping those that end, and stay running;
+		// report a fork that fails, and stay running with the children
+		// started.
 		n, err := strconv.Atoi(arg)
 		if err != nil {
 			return err
@@ -236,7 +238,8 @@ func run(op, arg string) error {
 		for i := 0; i < n; i++ {
 			p, err := os.StartProcess(self, []string{self, "hold"}, &os.ProcAttr{Files: []*os.File{nil, nil, nil}})
 			if err != nil {
-				return err
+				fmt.Printf("fork %d failed: %v\n", i+1, err)
+				hold()
 			}
 			go p.Wait()
 		}

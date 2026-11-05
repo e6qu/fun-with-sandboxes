@@ -34,6 +34,11 @@ const (
 	RouterVar  = "FWS_ROUTER"
 )
 
+// PidsVar names the file of the container's pids limit, which the engine
+// rewrites as the limit changes: the library fails a fork with EAGAIN once
+// the container runs as many processes.
+const PidsVar = "FWS_PIDS"
+
 // HelperVar names the engine's helper binary, as a process listing shows
 // it: the library leaves the container's exec anchor out of listings.
 const HelperVar = "FWS_HELPER"

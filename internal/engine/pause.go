@@ -142,6 +142,9 @@ func (e *Engine) Update(ref string, req container.UpdateConfig) (container.Updat
 			return container.UpdateResponse{}, err
 		}
 	}
+	if err := c.writePidsLimit(r.PidsLimit); err != nil {
+		return container.UpdateResponse{}, err
+	}
 	c.rec.HostConfig.Resources = r
 	if req.RestartPolicy.Name != "" {
 		c.rec.HostConfig.RestartPolicy = req.RestartPolicy

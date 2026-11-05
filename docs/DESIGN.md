@@ -96,7 +96,7 @@ container using anything it was not handed.
 | Process signalling | Seatbelt `(deny signal)` and `(deny process-info*)` except same-sandbox; execs start in the container's sandbox; the container library lists the sandbox's processes alone | A cannot `kill`, inspect or list B's processes | pids are the host's (no PID namespace) |
 | Default deny | Seatbelt `(deny default)` on Apple's `system.sb` baseline, each operation class re-allowed by name | A container gets no IOKit, Mach registration, preferences, AppleEvents, kernel control sockets or anything else the profile does not name | — |
 | IPC | Seatbelt `ipc-posix-name-prefix` filters; the container library's per-container System V keys | POSIX shared memory and semaphores confined to a per-container name prefix (`--ipc` private); System V keys hashed with it; `none` denies all IPC | a System V key is presented, not confined: a guessed hashed key reaches another container's object |
-| Resource limits | Per-container supervisor (§3a); `setrlimit` through a spawn helper | Memory, CPU, pids caps, `--ulimit`, priority and disk I/O tiers | Enforced by ending, stopping or killing processes, not by refusing allocations or forks |
+| Resource limits | Per-container supervisor (§3a); `setrlimit` through a spawn helper | Memory, CPU, pids caps, `--ulimit`, priority and disk I/O tiers | Enforced by ending, stopping or killing processes, not by refusing allocations; the container library refuses forks at the pids limit |
 | Identity | Runs as the invoking user | — | No `user:`-switch to arbitrary UID (needs root) → non-default `user:` is **rejected** |
 
 Rejections are deliberate: an unsupported knob returns a clear API error rather
@@ -156,7 +156,13 @@ same knobs, each enforced by a real mechanism or refused:
   - `--cpus` / `--cpu-quota`: the processes' CPU time against the quota; a
     run over it stops them with `SIGSTOP` until the quota has paid it back,
     and the throttled periods and time show in `docker stats`.
-  - `--pids-limit`: processes past the limit are killed as they appear.
+  - `--pids-limit`: the engine writes the limit to the container's
+    `pids.max`, as a pids cgroup holds it, and rewrites it on
+    `docker update`; the container library reads it before a `fork` or a
+    `posix_spawn` that starts a process, and fails it with `EAGAIN` when
+    the container already runs that many. Processes past the limit, which
+    two racing forks or a program without the library start, are killed
+    as they appear.
   `docker update` changes these live; `docker pause` stops the processes
   through the shim so throttling never continues them.
 - **Network I/O.** The shim connects to macOS's network statistics control
@@ -249,7 +255,17 @@ same knobs, each enforced by a real mechanism or refused:
   becomes a Unix datagram socket there too. For each such port the router
   binds a flow port, a UDP port of the stack's block, and relays datagrams
   between it and the socket, with a six-byte header of the IPv4 source or
-  destination on the Unix side alone. A client asks the router for the flow
+  destination on the Unix side alone. The library adds and strips that
+  header in every call that sends or receives on the socket, and keeps a
+  connected one's peer itself, as the router finds it: datagrams sent
+  without a destination go there, and datagrams from anywhere else are
+  dropped, as the kernel drops them for a connected UDP socket. It keeps
+  the socket's requests for a datagram's destination too (`IP_RECVDSTADDR`,
+  `IP_PKTINFO`, `IPV6_RECVPKTINFO`), which a Unix socket has no IP options
+  for, and writes their control messages to `recvmsg` itself: the address
+  the socket is bound to, or for one bound to the wildcard, its member
+  address for a member's datagram and loopback for its own container's,
+  on `lo0`. A client asks the router for the flow
   port once (a request for port 0, then the UDP port) and the library
   caches it, sends the client's datagrams to it as to a host port, and
   reports datagrams from it as the member's address and port. A container
@@ -393,6 +409,18 @@ it; it tells services their assignment through the environment.
 - **Isolation.** A container may connect to every port of its own stack's
   block and nowhere else, so stack A cannot reach stack B even though both
   live on `127.0.0.1`. That includes B's published ports.
+- **Shared networks.** Stacks whose containers share a user-defined network
+  keep their blocks and profiles; each container's router, which runs in
+  its shim outside the sandbox, carries its connections to the other
+  stack's members. Member addresses are unique across stacks, and each
+  stack's network file also lists the other stacks' members on a network
+  one of its members is on, marked as foreign, with every member's
+  networks. The library resolves and reaches only the members its
+  container shares a network with, and connects to a foreign one through
+  its own router with a relay request of the member's address and port.
+  The router reads the network file, checks that the member shares a
+  network with its container, and joins the connection to the member's
+  host port, or to its router for a port without one.
 - **Egress.** Seatbelt can allow loopback ports or every destination, nothing
   in between, so containers reach the internet through a proxy the engine
   runs for each stack on a port of the stack's block (`internal/egress`): an
@@ -686,8 +714,10 @@ every *action* across stacks is denied.
 - macOS-native images only; no Linux images, ever, without a VM.
 - Images must be macOS builds; programs the container library cannot load
   into must follow the `$SANDBOX_ROOT` + configurable-port contract.
-- Memory, CPU and pids limits are enforced by a supervisor that kills or
-  stops processes, not by a kernel that refuses an allocation or a fork.
+- Memory and CPU limits are enforced by a supervisor that kills or stops
+  processes, not by a kernel that refuses an allocation; the container
+  library refuses a fork at the pids limit, and the supervisor kills what
+  gets past it.
 - `user:` and `USER` are presented by the container library; every process
   runs as the invoking user.
 - Pids are the host's but the main process's, which the container library

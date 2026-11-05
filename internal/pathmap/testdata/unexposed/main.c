@@ -3,8 +3,12 @@
 // reaches port 7100 of stack member peer, TCP and UDP, in a sandbox that
 // lets it bind Unix sockets in its port directory and reach its router and
 // the two flow ports it gives the UDP ports alone, as a container's does.
-// It reports each step.
+// It asks UDP sockets for their datagrams' destinations, as IPv6 and IPv4
+// control messages. It reports each step.
+#define __APPLE_USE_RFC_3542
 #include <arpa/inet.h>
+#include <errno.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -12,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 int sandbox_init(const char *profile, uint64_t flags, char **err);
@@ -43,8 +48,8 @@ int main(int argc, char **argv) {
     snprintf(profile, sizeof profile,
              "(version 1)(allow default)(deny network-bind)(deny network-outbound)"
              "(allow network-bind (local unix-socket (subpath \"%s\")))"
-             "(allow network-outbound (remote unix-socket (subpath \"%s\")) (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
-             argv[1], argv[1], argv[2], argv[3], argv[4]);
+             "(allow network-outbound (remote unix-socket (subpath \"%s\")) (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
+             argv[1], argv[1], argv[2], argv[3], argv[4], argv[5]);
     char *err = NULL;
     if (sandbox_init(profile, 0, &err) != 0) {
         fprintf(stderr, "sandbox_init: %s\n", err);
@@ -115,11 +120,107 @@ int main(int argc, char **argv) {
     n = sizeof s;
     if (recvfrom(u, buf, sizeof buf, 0, (void *)&s, &n) != 4) fail("udp-local");
     printf("udp-local=%s %s\n", buf, strncmp(addr(&s), "[::ffff:127.0.0.1]:", 19) == 0 ? "from-loopback" : addr(&s));
+    struct sockaddr_storage from = s;
+    socklen_t fromn = n;
     if (sendto(u, "pong", 4, 0, (void *)&s, n) != 4) fail("udp-reply");
     memset(buf, 0, sizeof buf);
     n = sizeof s;
     if (recvfrom(uc, buf, sizeof buf, 0, (void *)&s, &n) != 4) fail("udp-reply");
     printf("udp-reply=%s %s\n", buf, addr(&s));
+
+    // Connected to the client, the socket sends without a destination and
+    // takes the client's datagrams alone.
+    char want[80];
+    snprintf(want, sizeof want, "%s", addr(&from));
+    int cr = connect(u, (void *)&from, fromn);
+    n = sizeof s;
+    int pr = getpeername(u, (void *)&s, &n);
+    printf("udp-connect=%d %s\n", cr, pr == 0 && strcmp(addr(&s), want) == 0 ? "peer-is-client" : addr(&s));
+    struct iovec halves[2] = {{"wr", 2}, {"iv", 2}};
+    if (send(u, "send", 4, 0) != 4 || write(u, "writ", 4) != 4 || writev(u, halves, 2) != 4) fail("udp-connected-send");
+    char b1[8] = {0}, b2[8] = {0}, b3[8] = {0};
+    if (recv(uc, b1, 4, 0) != 4 || recv(uc, b2, 4, 0) != 4 || recv(uc, b3, 4, 0) != 4) fail("udp-connected-send");
+    printf("udp-connected-send=%s %s %s\n", b1, b2, b3);
+    errno = 0;
+    int ir = (int)sendto(u, "x", 1, 0, (void *)&from, fromn);
+    printf("udp-isconn=%d %s\n", ir, errno == EISCONN ? "EISCONN" : strerror(errno));
+    int other = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sendto(other, "othr", 4, 0, (void *)&lo, sizeof lo) != 4 || sendto(uc, "mine", 4, 0, (void *)&lo, sizeof lo) != 4) fail("udp-filter");
+    memset(buf, 0, sizeof buf);
+    if (read(u, buf, sizeof buf) != 4) fail("udp-filter");
+    printf("udp-filter=%s\n", buf);
+    struct sockaddr unspec;
+    memset(&unspec, 0, sizeof unspec);
+    unspec.sa_len = sizeof unspec;
+    unspec.sa_family = AF_UNSPEC;
+    cr = connect(u, &unspec, sizeof unspec);
+    n = sizeof s;
+    errno = 0;
+    pr = getpeername(u, (void *)&s, &n);
+    printf("udp-disconnect=%d %s\n", cr, pr == -1 && errno == ENOTCONN ? "ENOTCONN" : "connected");
+    if (sendto(other, "othr", 4, 0, (void *)&lo, sizeof lo) != 4) fail("udp-disconnected");
+    char h1[4] = {0}, h2[4] = {0};
+    struct iovec parts[2] = {{h1, 2}, {h2, 2}};
+    if (readv(u, parts, 2) != 4) fail("udp-disconnected");
+    printf("udp-disconnected=%s %s\n", h1, h2);
+
+    // The dual-stack socket's datagrams carry their destination, as
+    // IPV6_PKTINFO on loopback's interface.
+    unsigned int lo0 = if_nametoindex("lo0");
+    char cbuf[256];
+    struct iovec iv = {buf, sizeof buf};
+    struct msghdr mh;
+    int got = 0;
+    socklen_t gl = sizeof got;
+    if (setsockopt(u, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof on) || getsockopt(u, IPPROTO_IPV6, IPV6_RECVPKTINFO, &got, &gl)) fail("udp-pktinfo6");
+    if (sendto(uc, "pk6", 3, 0, (void *)&lo, sizeof lo) != 3) fail("udp-pktinfo6");
+    memset(buf, 0, sizeof buf);
+    memset(&mh, 0, sizeof mh);
+    mh.msg_iov = &iv;
+    mh.msg_iovlen = 1;
+    mh.msg_control = cbuf;
+    mh.msg_controllen = sizeof cbuf;
+    if (recvmsg(u, &mh, 0) != 3) fail("udp-pktinfo6");
+    char dst[64] = "none";
+    for (struct cmsghdr *cm = CMSG_FIRSTHDR(&mh); cm; cm = CMSG_NXTHDR(&mh, cm)) {
+        if (cm->cmsg_level == IPPROTO_IPV6 && cm->cmsg_type == IPV6_PKTINFO) {
+            struct in6_pktinfo pi;
+            memcpy(&pi, CMSG_DATA(cm), sizeof pi);
+            inet_ntop(AF_INET6, &pi.ipi6_addr, dst, sizeof dst);
+            if (pi.ipi6_ifindex != lo0) strcpy(dst, "other-interface");
+        }
+    }
+    printf("udp-pktinfo6=%d %s %s\n", got, buf, dst);
+
+    // An IPv4 socket on port 7001, which has no host port, takes
+    // IP_RECVDSTADDR and IP_PKTINFO, and a short buffer truncates them.
+    int u4 = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in any4 = lo;
+    any4.sin_port = htons(7001);
+    any4.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(u4, (void *)&any4, sizeof any4)) fail("udp-dstaddr");
+    if (setsockopt(u4, IPPROTO_IP, IP_RECVDSTADDR, &on, sizeof on) || setsockopt(u4, IPPROTO_IP, IP_PKTINFO, &on, sizeof on)) fail("udp-dstaddr");
+    struct sockaddr_in lo4 = lo;
+    lo4.sin_port = htons(7001);
+    if (sendto(uc, "pk4", 3, 0, (void *)&lo4, sizeof lo4) != 3) fail("udp-dstaddr");
+    memset(buf, 0, sizeof buf);
+    mh.msg_controllen = sizeof cbuf;
+    if (recvmsg(u4, &mh, 0) != 3) fail("udp-dstaddr");
+    char da[32] = "none", pa[32] = "none";
+    for (struct cmsghdr *cm = CMSG_FIRSTHDR(&mh); cm; cm = CMSG_NXTHDR(&mh, cm)) {
+        if (cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_RECVDSTADDR) {
+            inet_ntop(AF_INET, CMSG_DATA(cm), da, sizeof da);
+        } else if (cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_PKTINFO) {
+            struct in_pktinfo pi;
+            memcpy(&pi, CMSG_DATA(cm), sizeof pi);
+            inet_ntop(AF_INET, &pi.ipi_addr, pa, sizeof pa);
+            if (pi.ipi_ifindex != lo0) strcpy(pa, "other-interface");
+        }
+    }
+    if (sendto(uc, "cut", 3, 0, (void *)&lo4, sizeof lo4) != 3) fail("udp-dstaddr");
+    mh.msg_controllen = CMSG_SPACE(sizeof(struct in_addr));
+    if (recvmsg(u4, &mh, 0) != 3) fail("udp-dstaddr");
+    printf("udp-dstaddr=%s pktinfo=%s truncated=%s\n", da, pa, (mh.msg_flags & MSG_CTRUNC) ? "yes" : "no");
 
     hints.ai_socktype = SOCK_DGRAM;
     if (getaddrinfo("peer", "7100", &hints, &res)) fail("udp-peer");

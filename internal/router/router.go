@@ -6,6 +6,12 @@
 // loopback port every member of its stack may reach, and the router joins
 // the connection to the socket.
 //
+// A client of a member of another stack, on a network the two stacks
+// share, reaches it through its own container's router, which relays the
+// connection to the member's host port or router when the member shares a
+// network with its container. The member's ports lie in its own stack's
+// block, which the client's sandbox does not reach.
+//
 // For UDP, the router gives each such port a flow port, a loopback UDP port
 // of the stack's block, and relays datagrams between it and the port's Unix
 // datagram socket. A client asks the router for the flow port once, then
@@ -15,6 +21,7 @@ package router
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -24,17 +31,24 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/members"
 )
 
 // A request is the container port, two bytes big-endian; the answer is one
 // byte, Connected or Refused, after which the connection carries the
 // stream. A request for port 0, which no TCP port is, is a UDP lookup: two
 // more bytes name the UDP port, and Connected is followed by its flow port,
-// two bytes big-endian.
+// two bytes big-endian. A request for port Foreign is a relay to another
+// stack's member: four more bytes name the member's IPv4 address and two
+// its container port.
 const (
 	Connected = 0
 	Refused   = 1
 )
+
+// Foreign is the request for a relay to another stack's member.
+const Foreign = 0xffff
 
 // Header is the size of what the router puts before a datagram on the Unix
 // side: the IPv4 address and port the datagram came from, to the
@@ -65,6 +79,7 @@ const maxDatagram = 65535 + Header
 type Router struct {
 	l   net.Listener
 	dir string
+	net Network
 	mu  sync.Mutex
 	cs  map[net.Conn]struct{}
 
@@ -78,7 +93,13 @@ type Router struct {
 
 // Listen starts a router on addr for the port directory dir; flow opens a
 // UDP port's flow port.
-func Listen(addr, dir string, flow func() (*net.UDPConn, error)) (*Router, error) {
+// Network locates the router's container among its stack's members: the
+// stack's network file and the container's member address.
+type Network struct {
+	File, Address string
+}
+
+func Listen(addr, dir string, flow func() (*net.UDPConn, error), nw Network) (*Router, error) {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -92,7 +113,7 @@ func Listen(addr, dir string, flow func() (*net.UDPConn, error)) (*Router, error
 	// A Unix datagram is bounded by the sending socket's buffer.
 	ux.SetReadBuffer(4 * maxDatagram)
 	ux.SetWriteBuffer(2 * maxDatagram)
-	r := &Router{l: l, dir: dir, cs: map[net.Conn]struct{}{}, ux: ux, flow: flow, flows: map[int]*net.UDPConn{}}
+	r := &Router{l: l, dir: dir, net: nw, cs: map[net.Conn]struct{}{}, ux: ux, flow: flow, flows: map[int]*net.UDPConn{}}
 	go r.serve()
 	go r.fromContainer()
 	return r, nil
@@ -215,8 +236,18 @@ func (r *Router) join(c net.Conn) {
 		r.lookup(c)
 		return
 	}
+	var up net.Conn
+	var err error
+	if port == Foreign {
+		var to [6]byte
+		if _, err := io.ReadFull(c, to[:]); err != nil {
+			return
+		}
+		up, err = r.foreign(netip.AddrFrom4([4]byte(to[:4])), int(binary.BigEndian.Uint16(to[4:])))
+	} else {
+		up, err = net.Dial("unix", SocketPath(r.dir, port))
+	}
 	c.SetReadDeadline(time.Time{})
-	up, err := net.Dial("unix", SocketPath(r.dir, port))
 	if err != nil {
 		c.Write([]byte{Refused})
 		return
@@ -232,6 +263,35 @@ func (r *Router) join(c net.Conn) {
 	go func() { io.Copy(c, up); closeWrite(c); done <- struct{}{} }()
 	<-done
 	<-done
+}
+
+// foreign connects to port of the member at addr, which must share a
+// network with the router's container: at its host port, or through its
+// router.
+func (r *Router) foreign(addr netip.Addr, port int) (net.Conn, error) {
+	if r.net.File == "" {
+		return nil, errRefused
+	}
+	b, err := os.ReadFile(r.net.File)
+	if err != nil {
+		return nil, err
+	}
+	ms := members.Parse(b)
+	self, ok := members.Find(ms, r.net.Address)
+	if !ok {
+		return nil, errRefused
+	}
+	to, ok := members.Find(ms, addr.String())
+	if !ok || !members.Share(self, to) {
+		return nil, errRefused
+	}
+	if hp, ok := to.Ports[fmt.Sprintf("%d/tcp", port)]; ok {
+		return net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
+	}
+	if to.Router == 0 {
+		return nil, errRefused
+	}
+	return Dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(to.Router)), port)
 }
 
 // lookup answers a UDP lookup with the port's flow port.
