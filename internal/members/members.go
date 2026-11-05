@@ -104,7 +104,9 @@ func Parse(b []byte) []Member {
 }
 
 // Find returns the member host names, as DNS compares names: in any case,
-// with or without a final dot; or the member whose address host is.
+// with or without a final dot; or the member whose address host is. A
+// name no member answers to may be an alias a link gives one, for
+// whichever member makes the link.
 func Find(ms []Member, host string) (Member, bool) {
 	name := strings.TrimSuffix(host, ".")
 	for _, m := range ms {
@@ -113,6 +115,13 @@ func Find(ms []Member, host string) (Member, bool) {
 		}
 		for _, n := range m.Names {
 			if strings.EqualFold(n, name) {
+				return m, true
+			}
+		}
+	}
+	for _, m := range ms {
+		for _, l := range m.Links {
+			if strings.EqualFold(l.Alias, name) {
 				return m, true
 			}
 		}

@@ -160,7 +160,9 @@ machine — and from what macOS offers an unprivileged process under them.
   the default bridge network reach one another only within a stack, where
   Docker lets any two reach each other by address. A link on a
   user-defined network, as Compose's `links:` makes, is an alias the
-  linking container alone resolves.
+  linking container alone resolves. The stack's egress proxy, which an
+  HTTP client may send a request for the alias to, cannot tell its
+  containers apart, so it resolves any link's alias for any of them.
 - **A host process that later binds a port inside a stack's block is
   reachable from that stack.** The allocator skips ports in use when it
   assigns them, but cannot stop other host software from binding them later.

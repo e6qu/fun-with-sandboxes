@@ -353,8 +353,9 @@ networks:
 }
 
 // A legacy link on the default bridge network reaches a container of
-// another stack, by the alias, the child's name and hostname, with Docker's
-// variables, /etc/hosts entries and link names.
+// another stack, by the alias, the child's name and hostname, through the
+// egress proxy too, with Docker's variables, /etc/hosts entries and link
+// names.
 func TestLinks(t *testing.T) {
 	const db, web = "e2e-link-db", "e2e-link-web"
 	docker(t, "rm", "-f", web)
@@ -366,6 +367,8 @@ func TestLinks(t *testing.T) {
 import os
 addr = socket.gethostbyname("database")
 print(os.environ["DATABASE_PORT"] == "tcp://" + addr + ":8000", os.environ["DATABASE_NAME"], os.environ["DATABASE_ENV_SECRET"])
+import urllib.request
+print("proxied", urllib.request.urlopen("http://database:8000", timeout=10).status, "HTTP_PROXY" in os.environ)
 print([l.split()[1:] for l in open("/etc/hosts") if l.split()[:1] == [addr]])
 `
 	mustDocker(t, "run", "-d", "--name", web, "--link", db+":database", "fws/python:3.14", "python3", "-u", "-c", client+`
@@ -378,6 +381,7 @@ time.sleep(600)`, "database:8000", db+":8000")
 	for _, want := range []string{
 		"database:8000 HTTP/1.0 200 OK\n", db + ":8000 HTTP/1.0 200 OK\n",
 		"True /" + web + "/database s3\n",
+		"proxied 200 True\n",
 		"[['database', '" + hostname + "', '" + db + "']]\n",
 	} {
 		if !strings.Contains(out, want) {

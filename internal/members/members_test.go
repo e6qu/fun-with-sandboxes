@@ -17,7 +17,7 @@ func TestFormatParseFind(t *testing.T) {
 	if got := Parse(append(b, "garbage\n"...)); !reflect.DeepEqual(got, ms) {
 		t.Fatalf("Parse: %+v", got)
 	}
-	for host, want := range map[string]string{"DB.": "127.88.0.2", "web": "127.88.0.3", "127.88.0.3": "127.88.0.3"} {
+	for host, want := range map[string]string{"DB.": "127.88.0.2", "web": "127.88.0.3", "127.88.0.3": "127.88.0.3", "Front": "127.88.0.3"} {
 		if m, ok := Find(ms, host); !ok || m.Address != want {
 			t.Errorf("Find(%q): %+v, %v", host, m, ok)
 		}
