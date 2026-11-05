@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,12 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/testcontainers/testcontainers-go"
 	tcmemcached "github.com/testcontainers/testcontainers-go/modules/memcached"
-	tcminio "github.com/testcontainers/testcontainers-go/modules/minio"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 	tcvalkey "github.com/testcontainers/testcontainers-go/modules/valkey"
 )
@@ -151,40 +146,6 @@ func TestMemcached(t *testing.T) {
 	}
 	if user := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.Config.User}}", c.GetContainerID())); user != "memcache" {
 		t.Errorf("memcached runs as %q", user)
-	}
-}
-
-// Testcontainers' MinIO module waits on MinIO's liveness endpoint; an S3
-// client then stores an object. MinIO starts its console on a port it
-// binds as port 0, which the container library gives it.
-func TestMinIO(t *testing.T) {
-	ctx := context.Background()
-	c, err := tcminio.Run(ctx, "fws/minio:RELEASE.2025-10-15T17-29-55Z", tcminio.WithUsername("e2e-user"), tcminio.WithPassword("e2e-password"))
-	testcontainers.CleanupContainer(t, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	endpoint, err := c.ConnectionString(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := s3.New(s3.Options{
-		Region: "us-east-1", BaseEndpoint: aws.String("http://" + endpoint), UsePathStyle: true,
-		Credentials: credentials.NewStaticCredentialsProvider("e2e-user", "e2e-password", ""),
-	})
-	if _, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String("notes")}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("notes"), Key: aws.String("note.txt"), Body: strings.NewReader("kept")}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String("notes"), Key: aws.String("note.txt")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer got.Body.Close()
-	if b, _ := io.ReadAll(got.Body); string(b) != "kept" {
-		t.Fatalf("the object reads %q", b)
 	}
 }
 

@@ -56,7 +56,6 @@ pushes them to a registry the engine can pull from:
 | `fws/mysql:8.4` | `MYSQL_ROOT_PASSWORD` (or `MYSQL_ALLOW_EMPTY_PASSWORD`/`MYSQL_RANDOM_ROOT_PASSWORD`), `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_HOST`, `MYSQL_ONETIME_PASSWORD`, `/etc/mysql/conf.d/*.cnf`, `/docker-entrypoint-initdb.d/*.sql` and `*.sql.gz` |
 | `fws/valkey:9` | arguments to `valkey-server`, or a `.conf` file |
 | `fws/memcached:1.6` | arguments to `memcached` |
-| `fws/minio:RELEASE.2025-10-15T17-29-55Z` | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, arguments to `minio`, as `server /data` |
 | `fws/nats:2.14` | arguments to `nats-server`; `/nats-server.conf` serves clients on 4222, monitoring on 8222 and routes on 6222 |
 | `fws/rabbitmq:4` | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`; AMQP on 5672, the Erlang port mapper and distribution on their own assigned ports |
 | `fws/dynamodb-local:2` | arguments to DynamoDB Local (default `-sharedDb -dbPath /home/dynamodblocal/data`); port 8000 |

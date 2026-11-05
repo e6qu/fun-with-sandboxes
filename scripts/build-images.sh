@@ -26,7 +26,6 @@ go build -o "$build/toolbox" ./images/toolbox
 go build -o "$build/mysql-entry" ./images/mysql/entry
 go build -o "$build/valkey-entry" ./images/valkey/entry
 go build -o "$build/memcached-entry" ./images/memcached/entry
-go build -o "$build/minio-entry" ./images/minio/entry
 go build -o "$build/nc" ./images/nc
 
 # pkg_with ATTR BINARY prints the output of ATTR that holds bin/BINARY.
@@ -111,11 +110,6 @@ memcached=$(pkg_with memcached memcached)
 closure "$memcached" > "$build/memcached.closure"
 mkimage $(accounts memcached memcache 11211 11211 /home/memcache) -spec images/memcached/image.json -closure "$build/memcached.closure" -pkg "$memcached" \
   -file "/entry=$build/memcached-entry" -out "$out/memcached.tar"
-
-minio=$(pkg_with minio minio)
-closure "$minio" > "$build/minio.closure"
-mkimage $(accounts minio) -spec images/minio/image.json -closure "$build/minio.closure" -pkg "$minio" \
-  -file "/entry=$build/minio-entry" -out "$out/minio.tar"
 
 nats=$(pkg_with nats-server nats-server)
 closure "$nats" > "$build/nats.closure"
