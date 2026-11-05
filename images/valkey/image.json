@@ -1,0 +1,40 @@
+{
+  "tag": "fws/valkey:9",
+  "files": {},
+  "dirs": [
+    "/data",
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC"
+    ],
+    "Entrypoint": [
+      "/entry"
+    ],
+    "Cmd": [
+      "valkey-server"
+    ],
+    "WorkingDir": "/data",
+    "ExposedPorts": {
+      "6379/tcp": {}
+    },
+    "Volumes": {
+      "/data": {}
+    },
+    "Healthcheck": {
+      "Test": [
+        "CMD",
+        "/entry",
+        "health"
+      ],
+      "Interval": 1000000000,
+      "Timeout": 5000000000,
+      "Retries": 30
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

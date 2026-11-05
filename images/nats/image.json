@@ -1,0 +1,28 @@
+{
+  "tag": "fws/nats:2.14",
+  "files": {},
+  "dirs": [
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC"
+    ],
+    "Entrypoint": [
+      "/bin/nats-server"
+    ],
+    "Cmd": [
+      "--config",
+      "/nats-server.conf"
+    ],
+    "ExposedPorts": {
+      "4222/tcp": {},
+      "6222/tcp": {},
+      "8222/tcp": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

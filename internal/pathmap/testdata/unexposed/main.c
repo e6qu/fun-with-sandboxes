@@ -107,6 +107,33 @@ int main(int argc, char **argv) {
     printf("refused=%d\n", connect(q, res->ai_addr, res->ai_addrlen));
     freeaddrinfo(res);
 
+    // A bind to port 0, which the sandbox would refuse the kernel, takes a
+    // port of the ephemeral range, which the container reaches.
+    int e = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in zero = lo;
+    zero.sin_port = 0;
+    if (bind(e, (void *)&zero, sizeof zero) || listen(e, 4)) fail("ephemeral");
+    struct sockaddr_in got;
+    n = sizeof got;
+    getsockname(e, (void *)&got, &n);
+    unsigned short eport = ntohs(got.sin_port);
+    struct sockaddr_in to = lo;
+    to.sin_port = got.sin_port;
+    int ec = socket(AF_INET, SOCK_STREAM, 0);
+    if (connect(ec, (void *)&to, sizeof to)) fail("ephemeral");
+    int ek = accept(e, NULL, NULL);
+    memset(buf, 0, sizeof buf);
+    if (ek < 0 || write(ec, "ping", 4) != 4 || read(ek, buf, 4) != 4) fail("ephemeral");
+    printf("ephemeral=%s %s\n", buf, eport >= 49152 ? "in-range" : "out-of-range");
+    int ue = socket(AF_INET6, SOCK_DGRAM, 0);
+    struct sockaddr_in6 uzero = any;
+    uzero.sin6_port = 0;
+    if (bind(ue, (void *)&uzero, sizeof uzero)) fail("udp-ephemeral");
+    struct sockaddr_in6 ugot;
+    n = sizeof ugot;
+    getsockname(ue, (void *)&ugot, &n);
+    printf("udp-ephemeral=%s\n", ntohs(ugot.sin6_port) >= 49152 ? "in-range" : "out-of-range");
+
     // UDP on port 7000, which has no host port either.
     int u = socket(AF_INET6, SOCK_DGRAM, 0);
     setsockopt(u, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof off);

@@ -23,6 +23,11 @@ go build -o "$build/lambda-entrypoint" ./images/lambda/entry
 go build -o "$build/rabbitmq-entry" ./images/rabbitmq/entry
 go build -o "$build/playwright-entry" ./images/playwright/entry
 go build -o "$build/toolbox" ./images/toolbox
+go build -o "$build/mysql-entry" ./images/mysql/entry
+go build -o "$build/valkey-entry" ./images/valkey/entry
+go build -o "$build/memcached-entry" ./images/memcached/entry
+go build -o "$build/minio-entry" ./images/minio/entry
+go build -o "$build/nc" ./images/nc
 
 # pkg_with ATTR BINARY prints the output of ATTR that holds bin/BINARY.
 # Unfree packages, such as DynamoDB Local, build too.
@@ -46,8 +51,10 @@ dash=$(pkg_with dash dash)
 # images carry in netbase.
 iana=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths "$nixpkgs#iana-etc")
 closure() { nix-store -qR "$@" "$dash" | sort -u; }
+# /bin/nc answers the in-container port check Testcontainers runs, which
+# reads /proc/net/tcp on Linux.
 mkimage() {
-  "$build/fws-mkimage" "$@" -pkg "$dash" -link /bin/sh=dash \
+  "$build/fws-mkimage" "$@" -pkg "$dash" -link /bin/sh=dash -file "/bin/nc=$build/nc" \
     -file "/etc/services=$iana/etc/services" -file "/etc/protocols=$iana/etc/protocols"
 }
 
@@ -89,6 +96,31 @@ mariadb=$(pkg_with mariadb mariadbd)
 closure "$mariadb" > "$build/mariadb.closure"
 mkimage $(accounts mariadb mysql 999 999 /var/lib/mysql) -spec images/mariadb/image.json -closure "$build/mariadb.closure" -pkg "$mariadb" \
   -file "/entry=$build/mariadb-entry" -out "$out/mariadb.tar"
+
+mysql=$(pkg_with mysql84 mysqld)
+closure "$mysql" > "$build/mysql.closure"
+mkimage $(accounts mysql mysql 999 999 /var/lib/mysql) -spec images/mysql/image.json -closure "$build/mysql.closure" -pkg "$mysql" \
+  -file "/entry=$build/mysql-entry" -file "/etc/my.cnf=images/mysql/my.cnf" -out "$out/mysql.tar"
+
+valkey=$(pkg_with valkey valkey-server)
+closure "$valkey" > "$build/valkey.closure"
+mkimage $(accounts valkey valkey 999 999 /data) -spec images/valkey/image.json -closure "$build/valkey.closure" -pkg "$valkey" \
+  -file "/entry=$build/valkey-entry" -out "$out/valkey.tar"
+
+memcached=$(pkg_with memcached memcached)
+closure "$memcached" > "$build/memcached.closure"
+mkimage $(accounts memcached memcache 11211 11211 /home/memcache) -spec images/memcached/image.json -closure "$build/memcached.closure" -pkg "$memcached" \
+  -file "/entry=$build/memcached-entry" -out "$out/memcached.tar"
+
+minio=$(pkg_with minio minio)
+closure "$minio" > "$build/minio.closure"
+mkimage $(accounts minio) -spec images/minio/image.json -closure "$build/minio.closure" -pkg "$minio" \
+  -file "/entry=$build/minio-entry" -out "$out/minio.tar"
+
+nats=$(pkg_with nats-server nats-server)
+closure "$nats" > "$build/nats.closure"
+mkimage $(accounts nats) -spec images/nats/image.json -closure "$build/nats.closure" -pkg "$nats" \
+  -file "/nats-server.conf=images/nats/nats-server.conf" -out "$out/nats.tar"
 
 python=$(pkg_with python314 python3.14)
 closure "$python" > "$build/python.closure"
@@ -221,8 +253,7 @@ chmod -R u+w "$build/ryuk-src"
 patch -s -d "$build/ryuk-src" -p1 < images/ryuk/listen-loopback.patch
 (cd "$build/ryuk-src" && GOFLAGS=-mod=mod go build -o "$build/ryuk" .)
 go build -o "$build/ryuk-entry" ./images/ryuk/entry
-go build -o "$build/ryuk-nc" ./images/ryuk/nc
 "$build/fws-mkimage" -spec images/ryuk/image.json -file "/entry=$build/ryuk-entry" -file "/ryuk=$build/ryuk" \
-  -file "/bin/nc=$build/ryuk-nc" -out "$out/ryuk.tar"
+  -file "/bin/nc=$build/nc" -out "$out/ryuk.tar"
 
 ls -l "$out"

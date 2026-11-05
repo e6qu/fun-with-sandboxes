@@ -12,6 +12,11 @@ machine — and from what macOS offers an unprivileged process under them.
   library, or reads them from `SANDBOX_*` variables (see the README).
   Software the library cannot load into needs an entrypoint that configures
   it from the variables.
+- **Catalog images are built from source by Nix.** Their builds differ from
+  the vendors' binaries where the build records itself: `fws/mysql:8.4`'s
+  `version_comment` reads `Source distribution`, so its "ready for
+  connections" line lacks the `MySQL Community Server` that Testcontainers'
+  MySQL module waits for; wait for the log line `port: 3306` instead.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
@@ -27,7 +32,9 @@ machine — and from what macOS offers an unprivileged process under them.
   - Programs Apple signs, and programs with the hardened runtime, load no
     library: the host's `/bin/sh`, `/usr/bin/env` and Chrome see host paths.
     Catalog images carry their own `/bin/sh`, so `system()`, `popen()` and
-    package managers keep the library.
+    package managers keep the library, and a `/bin/nc` for the `nc -z`
+    port check Testcontainers runs inside a container, as macOS has no
+    `/proc/net/tcp` for it to read.
   - A statically linked program, or one making system calls without
     libSystem, sees host paths. Go and every other macOS program use
     libSystem.
@@ -191,7 +198,10 @@ machine — and from what macOS offers an unprivileged process under them.
     instead, which the container reaches on `localhost` and its stack's
     members reach by name, through the container's router; it is published
     nowhere, as in Docker. A listener on an address other than loopback's,
-    the wildcard or the container's own is refused.
+    the wildcard or the container's own is refused. A bind to port 0 takes
+    a free port of the range macOS draws ephemeral ports from, 49152 to
+    65535, the same way, as Seatbelt lets the kernel bind none but the
+    stack's ports.
   - A UDP socket on such a port sends and receives with the socket and
     file calls, connected or not. Of IP-level control messages it takes
     those that report a datagram's destination, `IP_RECVDSTADDR`,

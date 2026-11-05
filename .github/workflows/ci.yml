@@ -82,7 +82,7 @@ jobs:
           $crane registry serve --address 127.0.0.1:5000 &
           until curl -sf 127.0.0.1:5000/v2/ >/dev/null; do sleep 1; done
           scripts/publish-images.sh "$RUNNER_TEMP/images" 127.0.0.1:5000/e6qu
-          for ref in fws-postgres:16 fws-postgres:18 fws-redis:8 fws-nginx:1 fws-mariadb:11 fws-python:3.14 fws-node:26 fws-bun:1 fws-gitea:1 fws-dynamodb-local:2 fws-rabbitmq:4 fws-lambda/python:3.14 fws-lambda/nodejs:24 fws-lambda/java:17 fws-playwright:1.59 fws-toolbox:1 fws-ryuk:0.14.0; do
+          for ref in fws-postgres:16 fws-postgres:18 fws-redis:8 fws-nginx:1 fws-mariadb:11 fws-python:3.14 fws-node:26 fws-bun:1 fws-gitea:1 fws-dynamodb-local:2 fws-rabbitmq:4 fws-lambda/python:3.14 fws-lambda/nodejs:24 fws-lambda/java:17 fws-playwright:1.59 fws-toolbox:1 fws-ryuk:0.14.0 fws-mysql:8.4 fws-valkey:9 fws-memcached:1.6 fws-minio:RELEASE.2025-10-15T17-29-55Z fws-nats:2.14; do
             $crane config "127.0.0.1:5000/e6qu/$ref" | grep -q '"os":"darwin"'
           done
       - name: end-to-end tests
