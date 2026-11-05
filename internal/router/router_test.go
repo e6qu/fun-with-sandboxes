@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -223,5 +224,139 @@ func TestRelaysToForeignMembers(t *testing.T) {
 	if c, err := dialForeign(theirs.Addr().String(), netip.MustParseAddr("127.88.0.3"), 8000); err == nil {
 		c.Close()
 		t.Error("a router that knows no network relayed")
+	}
+}
+
+// lookupForeign asks the router at router for its relay to UDP port port of
+// another stack's member at addr, as the container library does.
+func lookupForeign(router string, addr netip.Addr, port int) (int, error) {
+	c, err := net.Dial("tcp", router)
+	if err != nil {
+		return 0, err
+	}
+	defer c.Close()
+	req := make([]byte, 10)
+	binary.BigEndian.PutUint16(req[2:], Foreign)
+	v4 := addr.As4()
+	copy(req[4:], v4[:])
+	binary.BigEndian.PutUint16(req[8:], uint16(port))
+	if _, err := c.Write(req); err != nil {
+		return 0, err
+	}
+	var ans [3]byte
+	if _, err := io.ReadFull(c, ans[:1]); err != nil {
+		return 0, err
+	}
+	if ans[0] != Connected {
+		return 0, errRefused
+	}
+	if _, err := io.ReadFull(c, ans[1:]); err != nil {
+		return 0, err
+	}
+	return int(binary.BigEndian.Uint16(ans[1:])), nil
+}
+
+// A router relays its container's datagrams to another stack's members'
+// UDP ports, with a host port or without, from the member's stack's block,
+// and their replies back.
+func TestRelaysDatagramsToForeignMembers(t *testing.T) {
+	hosted, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hosted.Close()
+	go func() {
+		buf := make([]byte, 128)
+		for {
+			n, from, err := hosted.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			hosted.WriteToUDP(append([]byte("hosted "), buf[:n]...), from)
+		}
+	}()
+	theirDir := portDir(t)
+	unhosted, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: UDPSocketPath(theirDir, 5353), Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unhosted.Close()
+	go func() {
+		buf := make([]byte, 128)
+		for {
+			n, _, err := unhosted.ReadFromUnix(buf)
+			if err != nil {
+				return
+			}
+			if n < Header {
+				continue
+			}
+			reply := append(append([]byte{}, buf[:Header]...), "unhosted "...)
+			unhosted.WriteToUnix(append(reply, buf[Header:n]...), &net.UnixAddr{Name: UDPRouterPath(theirDir), Net: "unixgram"})
+		}
+	}()
+	theirs, err := Listen("127.0.0.1:0", theirDir, listenFlow, Network{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer theirs.Close()
+
+	file := filepath.Join(portDir(t), "network")
+	ms := []members.Member{
+		{Address: "127.88.0.2", Names: []string{"app"}, Networks: []string{"shared"}},
+		{Address: "127.88.0.3", Names: []string{"dns"}, Ports: map[string]int{"53/udp": hosted.LocalAddr().(*net.UDPAddr).Port}, Router: theirs.Addr().Port, Networks: []string{"shared"}, Foreign: true, Stack: "theirs"},
+		{Address: "127.88.0.4", Names: []string{"db"}, Ports: map[string]int{"53/udp": hosted.LocalAddr().(*net.UDPAddr).Port}, Networks: []string{"theirs"}, Foreign: true, Stack: "theirs"},
+	}
+	if err := os.WriteFile(file, members.Format(ms), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var smu sync.Mutex
+	var stacks []string
+	mine, err := Listen("127.0.0.1:0", portDir(t), listenFlow, Network{File: file, Address: "127.88.0.2",
+		DialFlow: func(stack string, raddr *net.UDPAddr) (net.Conn, error) {
+			smu.Lock()
+			defer smu.Unlock()
+			stacks = append(stacks, stack)
+			return net.DialUDP("udp", nil, raddr)
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mine.Close()
+
+	client, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	for port, want := range map[int]string{53: "hosted hi", 5353: "unhosted hi"} {
+		f, err := lookupForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.3"), port)
+		if err != nil {
+			t.Fatalf("port %d: %v", port, err)
+		}
+		if again, err := lookupForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.3"), port); err != nil || again != f {
+			t.Errorf("a second lookup of port %d: %d, %v, want %d", port, again, err, f)
+		}
+		relay := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: f}
+		if _, err := client.WriteToUDP([]byte("hi"), relay); err != nil {
+			t.Fatal(err)
+		}
+		client.SetReadDeadline(time.Now().Add(10 * time.Second))
+		buf := make([]byte, 128)
+		n, from, err := client.ReadFromUDP(buf)
+		if err != nil {
+			t.Fatalf("port %d: %v", port, err)
+		}
+		if string(buf[:n]) != want || from.Port != f {
+			t.Errorf("port %d answered %q from %v, want %q from the relay", port, buf[:n], from, want)
+		}
+	}
+	smu.Lock()
+	if len(stacks) != 2 || stacks[0] != "theirs" || stacks[1] != "theirs" {
+		t.Errorf("the relays sent from the blocks of %q", stacks)
+	}
+	smu.Unlock()
+	if _, err := lookupForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.4"), 53); err == nil {
+		t.Error("a member on no shared network was relayed to")
 	}
 }

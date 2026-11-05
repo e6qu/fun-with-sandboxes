@@ -420,7 +420,13 @@ it; it tells services their assignment through the environment.
   its own router with a relay request of the member's address and port.
   The router reads the network file, checks that the member shares a
   network with its container, and joins the connection to the member's
-  host port, or to its router for a port without one.
+  host port, or to its router for a port without one. A UDP lookup of a
+  foreign member's port at the container's own router gets a relay port
+  of its own stack's block, which the library caches as a flow port and
+  reports replies from as the member's address and port. The router
+  sends each socket's datagrams on from its own socket, leased from the
+  member's stack's block so the member may answer, to the member's host
+  port or flow port, as a published UDP port's proxy does.
 - **Egress.** Seatbelt can allow loopback ports or every destination, nothing
   in between, so containers reach the internet through a proxy the engine
   runs for each stack on a port of the stack's block (`internal/egress`): an

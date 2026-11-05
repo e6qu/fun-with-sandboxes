@@ -165,7 +165,7 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 		}
 		member := stackmembers.Member{Address: m.rec.Address, Names: memberNames(m), Ports: ports, Router: m.rec.RouterPort}
 		if member.Foreign = m.rec.Stack != stack; member.Foreign {
-			member.Networks = userNetworks(m)
+			member.Networks, member.Stack = userNetworks(m), m.rec.Stack
 		} else {
 			for n := range m.rec.Networks {
 				member.Networks = append(member.Networks, n)

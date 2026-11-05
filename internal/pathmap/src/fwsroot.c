@@ -2262,15 +2262,24 @@ static struct flow {
 static int nflows;
 
 // ask_router asks the router at loopback port router for UDP port port's
-// flow port.
-static unsigned short ask_router(unsigned short router, unsigned short port) {
+// flow port, or with foreign set, the container's own router for its relay
+// to UDP port port of another stack's member at addr.
+static unsigned short ask_router(unsigned short router, unsigned short port, in_addr_t addr, int foreign) {
     int s = socket(AF_INET, SOCK_STREAM, 0);
     if (s < 0) {
         return 0;
     }
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
-    unsigned char req[4] = {0, 0, (unsigned char)(port >> 8), (unsigned char)port}, ans[3] = {1, 0, 0};
-    int ok = connect(s, (struct sockaddr *)&r, sizeof r) == 0 && write(s, req, 4) == 4 && read(s, ans, 1) == 1 && ans[0] == 0 &&
+    unsigned char req[10] = {0, 0, (unsigned char)(port >> 8), (unsigned char)port}, ans[3] = {1, 0, 0};
+    ssize_t n = 4;
+    if (foreign) {
+        req[2] = req[3] = 0xff;
+        memcpy(req + 4, &addr, 4);
+        req[8] = (unsigned char)(port >> 8);
+        req[9] = (unsigned char)port;
+        n = 10;
+    }
+    int ok = connect(s, (struct sockaddr *)&r, sizeof r) == 0 && write(s, req, (size_t)n) == n && read(s, ans, 1) == 1 && ans[0] == 0 &&
              read(s, ans + 1, 2) == 2;
     close(s);
     return ok ? (unsigned short)(ans[1] << 8 | ans[2]) : 0;
@@ -2278,14 +2287,14 @@ static unsigned short ask_router(unsigned short router, unsigned short port) {
 
 static int port_path(int type, unsigned short port, struct sockaddr_un *u);
 
-static unsigned short flow_port(unsigned short router, unsigned short port, in_addr_t addr) {
+static unsigned short flow_port(unsigned short router, unsigned short port, in_addr_t addr, int foreign) {
     int n = __atomic_load_n(&nflows, __ATOMIC_ACQUIRE);
     for (int i = 0; i < n && i < MAX_FLOWS; i++) {
-        if (__atomic_load_n(&flows[i].ready, __ATOMIC_ACQUIRE) && flows[i].router == router && flows[i].port == port) {
+        if (__atomic_load_n(&flows[i].ready, __ATOMIC_ACQUIRE) && flows[i].router == router && flows[i].port == port && flows[i].addr == addr) {
             return flows[i].flow;
         }
     }
-    unsigned short f = ask_router(router, port);
+    unsigned short f = ask_router(router, port, addr, foreign);
     if (!f) {
         return 0;
     }
@@ -2331,13 +2340,10 @@ static int reach(int type, in_addr_t v4, unsigned short port, in_addr_t *a, unsi
         // closed, and an address no member holds is unreachable.
         int member;
         unsigned short router = 0, mh = member_route(v4, type, port, &member, &router);
-        if (!mh && member == 1 && type == SOCK_DGRAM && router) mh = flow_port(router, port, v4);
-        if (member == 2) {
-            // Another stack's member is reached through the container's
-            // router, which carries connections alone.
-            errno = EHOSTUNREACH;
-            return -1;
-        }
+        if (!mh && member == 1 && type == SOCK_DGRAM && router) mh = flow_port(router, port, v4, 0);
+        // Another stack's member's datagrams go through the container's
+        // own router's relay to it.
+        if (member == 2 && type == SOCK_DGRAM && router_port) mh = flow_port(router_port, port, v4, 1);
         if (!mh) {
             errno = member ? ECONNREFUSED : EHOSTUNREACH;
             return -1;
@@ -2348,7 +2354,7 @@ static int reach(int type, in_addr_t v4, unsigned short port, in_addr_t *a, unsi
     }
     unsigned short h = v4_local(v4) ? host_port(type, port) : 0;
     if (!h && v4_local(v4) && type == SOCK_DGRAM && router_port && own_listener(SOCK_DGRAM, port)) {
-        h = flow_port(router_port, port, htonl(INADDR_LOOPBACK));
+        h = flow_port(router_port, port, htonl(INADDR_LOOPBACK), 0);
     }
     *a = v4 == htonl(INADDR_ANY) ? htonl(INADDR_LOOPBACK) : v4;
     *p = h ? h : port;
