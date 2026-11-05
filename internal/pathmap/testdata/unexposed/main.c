@@ -113,12 +113,12 @@ int main(int argc, char **argv) {
     struct sockaddr_in zero = lo;
     zero.sin_port = 0;
     if (bind(e, (void *)&zero, sizeof zero) || listen(e, 4)) fail("ephemeral");
-    struct sockaddr_in got;
-    n = sizeof got;
-    getsockname(e, (void *)&got, &n);
-    unsigned short eport = ntohs(got.sin_port);
+    struct sockaddr_in ebound;
+    n = sizeof ebound;
+    getsockname(e, (void *)&ebound, &n);
+    unsigned short eport = ntohs(ebound.sin_port);
     struct sockaddr_in to = lo;
-    to.sin_port = got.sin_port;
+    to.sin_port = ebound.sin_port;
     int ec = socket(AF_INET, SOCK_STREAM, 0);
     if (connect(ec, (void *)&to, sizeof to)) fail("ephemeral");
     int ek = accept(e, NULL, NULL);
