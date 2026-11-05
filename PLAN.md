@@ -46,28 +46,40 @@ mount or network namespace.
 
 | Resource | Mechanism | Guarantee | Accepted exception |
 |---|---|---|---|
-| Filesystem writes | APFS `clonefile` root per container; Seatbelt `file-write*` allowed only on the container root, its volumes, and `/dev/null`-style devices | A container writes nowhere else | — |
-| Host reads | Seatbelt `file-read*` denied on `$HOME`, `/Users`, `/Volumes`, `/private/var/folders`, and other stacks' state; allowed on the container root, its volumes, and the system paths every macOS process needs (`/System`, `/usr/lib`, `/usr/share/locale`, `/usr/share/zoneinfo`, `/private/var/db/timezone`, `/dev`) | A container reads its own files and the OS, nothing of the user's | The macOS system tree is readable |
+| Filesystem writes | APFS `clonefile` root per container; Seatbelt `file-write*` allowed only on the container root, its volumes and mounts, and `/dev/null`-style devices | A container writes nowhere else | — |
+| Host reads | Seatbelt deny-default profile: `file-read*` allowed on the container root, its volumes, and the system paths every macOS process needs (`/System`, `/usr/lib`, `/usr/share`, `/bin/sh`, `/dev`) | A container reads its own files and the OS, nothing of the user's | The macOS system tree is readable |
+| Container view | The container library, `fwsroot`, loaded into every container process, maps paths into the root, presents the container's user, groups, hostname and pids | Programs see `/`, `--user`, `--hostname` and pid 1 as under Docker | Programs Apple signs, and static ones, load no library |
 | Cross-stack visibility | Per-stack path tree; a stack's Seatbelt profile names only its own paths and ports | Stack A cannot read, write, or connect to stack B | — |
-| Processes | Seatbelt `signal` and `process-info*` restricted to the same sandbox | A container cannot signal or inspect another stack's processes | `ps`/`pstree` still list them (no unprivileged PID namespace) |
-| Ports | Engine allocates a disjoint host-port block per stack; Seatbelt `network-bind`/`network-outbound` allowed only on the stack's ports | Two stacks never clash; a container binds only its grants | Host sees all listening sockets globally |
-| Resource limits | `setrlimit` (fds, procs), QoS class | Bounded fds/procs | No hard CPU/memory cap → `mem_limit`/`cpus` are rejected, not emulated |
-| Identity | Runs as the invoking user | — | No `user:` switch to arbitrary UID (needs root) → rejected |
+| Processes | Seatbelt `signal` and `process-info*` restricted to the same sandbox; the library lists a container's own processes alone | A container cannot signal or inspect another's processes | Processes keep their host pids beyond pid 1 |
+| Ports | Engine allocates a disjoint host-port block per stack; Seatbelt `network-bind`/`network-outbound` allowed only on the stack's ports; ports without host ports go through a per-container router over Unix sockets | Two stacks never clash; a container binds only its grants | Host sees all listening sockets globally |
+| Resource limits | Each container's supervisor, `fws-shim`, enforces `--memory`, `--cpus`, `--pids-limit` and the block I/O tier; `setrlimit` for `--ulimit` | Limits hold to within one 100 ms sample | Knobs only the kernel could honour are refused |
+| Identity | Runs as the invoking user; the library presents the container's user from its own `/etc/passwd` | `--user` and `USER` behave as in Docker | Presented, not enforced |
 
 Rejected knobs return a precise API error; silent no-ops would be a fidelity
-bug.
+bug. `LIMITATIONS.md` lists every one.
 
 ## Components (Go)
 
 ```
 cmd/fwsd/             # the daemon: Docker Engine API over a unix socket
+cmd/fws-shim/         # the helper binary: spawn helper, supervisors, egress proxies
 cmd/fws-mkimage/      # Nix closure -> darwin image archive
 internal/alloc/       # per-stack port blocks and directories
 internal/seatbelt/    # Seatbelt profile rendering
 internal/image/       # image store, layer extraction, clonefile roots
 internal/runtime/     # launch under sandbox-exec, process groups, pipes
-internal/egress/      # the per-stack HTTP proxy to the internet
+internal/shim/        # a container's supervisor: limits, output, live restore
+internal/roles/       # the helper processes the engine's binary runs
+internal/libsystem/   # libSystem calls syscall does not offer (posix_spawn)
+internal/pathmap/     # fwsroot, the container library, and its build
+internal/identity/    # users and groups from the container's /etc/passwd
+internal/members/     # a stack's network file: member addresses and names
+internal/router/      # traffic to container ports without host ports
+internal/portproxy/   # published host ports, TCP and UDP
+internal/egress/      # the per-stack HTTP and SOCKS5 proxy to the internet
+internal/netstat/     # per-socket network counters for docker stats
 internal/procs/       # the host process table, for top and stats
+internal/logfile/     # json-file logs
 internal/dockerfile/  # Dockerfile parsing and variable expansion
 internal/buildkit/    # embedded BuildKit with a darwin worker
 third_party/buildkit/ # the BuildKit packages it uses, patched (sync-buildkit.sh)
@@ -81,27 +93,32 @@ tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite
 
 ## Image catalog
 
-A small Nix-built catalog for `aarch64-darwin`/`x86_64-darwin`, converted to
-OCI layers with a `darwin/<arch>` platform entry and an entrypoint that reads
-`$SANDBOX_ROOT`, its assigned port, and its data path from the environment.
-Initial catalog: `postgres`, `redis`. Compose files name these images
-explicitly; the engine never silently substitutes an image name.
+A Nix-built catalog for `aarch64-darwin`/`x86_64-darwin`, converted to OCI
+layers with a `darwin/<arch>` platform entry: `bun`, `dynamodb`, `gitea`,
+`lambda`, `mariadb`, `nginx`, `node`, `playwright`, `postgres`, `python`,
+`rabbitmq`, `redis`, `ryuk` (Testcontainers' reaper) and `toolbox`. Compose
+files name these images explicitly; the engine never silently substitutes an
+image name.
 
-## Milestone — definition of done
+## Milestone — done
 
-One branch, one PR, fully tested on a macOS CI runner (`macos-15`, Apple
-Silicon), no `t.Skip` for missing tools:
+The first milestone shipped: two independent Compose stacks (`postgres` +
+`redis` + a tiny app each) run concurrently on a macOS CI runner, serve
+queries on different assigned ports, cannot reach each other's ports or
+paths, and `down` on one leaves the other working and frees its ports.
+Later pull requests widened the Docker API, Compose and Testcontainers
+surface; each landed with its tests on the macOS runner.
 
-1. Repo skeleton, Go module, macOS CI workflow.
-2. `internal/alloc` + unit tests (per-stack disjointness).
-3. `internal/image` (pull/unpack + `clonefile` root) + tests.
-4. `internal/runtime` (launch under `sandbox-exec`, process groups) + tests.
-5. `internal/api` (Compose subset) + Docker-client conformance tests.
-6. `images/` Nix definitions for `postgres` and `redis`.
-7. **The proof:** two independent Compose stacks (`postgres` + `redis` + a tiny
-   app each) brought up concurrently, asserting they
-   - serve queries at the same time on different assigned ports,
-   - cannot connect to each other's ports (Seatbelt-refused),
-   - cannot read or write each other's paths,
-   - and that `down` on one leaves the other working and frees its ports.
-8. `README.md`, `docs/DESIGN.md`, and a `LIMITATIONS.md` kept in sync.
+## Remaining work
+
+Gaps that the two constraints leave open to close:
+
+- A server sees its stack's clients connect from `127.0.0.1` rather than
+  their member addresses.
+- Networks shared across Compose projects are refused.
+- tmpfs mounts are directories on disk, not memory-backed.
+- UDP sockets on ports without host ports take no IP-level control messages.
+
+Out of reach without root or a VM: Linux images, ICMP, PID and user
+namespaces, `# syntax=` frontends and multi-platform builds, and identity or
+memory limits the kernel enforces. Swarm is out of scope.
