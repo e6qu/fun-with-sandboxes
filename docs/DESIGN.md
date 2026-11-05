@@ -246,7 +246,11 @@ same knobs, each enforced by a real mechanism or refused:
   container port that has no host port becomes a Unix socket, in the same
   descriptor, in the container's port directory under the engine's state,
   which the container's profile lets it bind and reach and no other
-  container's does; it reads as the TCP socket the program made. Each
+  container's does; it reads as the TCP socket the program made. A bind
+  to port 0, which the kernel would answer from its ephemeral range and
+  Seatbelt refuses, takes a port of that range, 49152 to 65535, that no
+  host port backs and no socket file in the port directory holds, the
+  same way. Each
   container's shim runs its router, on a port of the stack's block that
   the network file names: a client sends the container port it wants, two
   bytes, and the router joins the connection to that port's socket or

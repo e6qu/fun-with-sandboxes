@@ -95,8 +95,11 @@ tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite
 
 A Nix-built catalog for `aarch64-darwin`/`x86_64-darwin`, converted to OCI
 layers with a `darwin/<arch>` platform entry: `bun`, `dynamodb`, `gitea`,
-`lambda`, `mariadb`, `nginx`, `node`, `playwright`, `postgres`, `python`,
-`rabbitmq`, `redis`, `ryuk` (Testcontainers' reaper) and `toolbox`. Compose
+`lambda`, `mariadb`, `memcached`, `mysql`, `nats`, `nginx`, `node`,
+`playwright`, `postgres`, `python`, `rabbitmq`, `redis`, `ryuk`
+(Testcontainers' reaper), `toolbox` and `valkey`. Nixpkgs marks MinIO
+insecure, abandoned upstream with unfixed vulnerabilities, so the catalog
+has no S3 server. Compose
 files name these images explicitly; the engine never silently substitutes an
 image name.
 

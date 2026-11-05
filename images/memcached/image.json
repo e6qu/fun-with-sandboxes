@@ -1,0 +1,36 @@
+{
+  "tag": "fws/memcached:1.6",
+  "files": {},
+  "dirs": [
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC"
+    ],
+    "Entrypoint": [
+      "/entry"
+    ],
+    "Cmd": [
+      "memcached"
+    ],
+    "User": "memcache",
+    "ExposedPorts": {
+      "11211/tcp": {}
+    },
+    "Healthcheck": {
+      "Test": [
+        "CMD",
+        "/entry",
+        "health"
+      ],
+      "Interval": 1000000000,
+      "Timeout": 5000000000,
+      "Retries": 30
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

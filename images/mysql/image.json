@@ -1,0 +1,44 @@
+{
+  "tag": "fws/mysql:8.4",
+  "files": {},
+  "dirs": [
+    "/var/lib/mysql",
+    "/var/lib/mysql-files",
+    "/var/run/mysqld",
+    "/etc/mysql/conf.d",
+    "/tmp",
+    "/docker-entrypoint-initdb.d"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC"
+    ],
+    "Entrypoint": [
+      "/entry"
+    ],
+    "Cmd": [
+      "mysqld"
+    ],
+    "ExposedPorts": {
+      "3306/tcp": {},
+      "33060/tcp": {}
+    },
+    "Volumes": {
+      "/var/lib/mysql": {}
+    },
+    "Healthcheck": {
+      "Test": [
+        "CMD",
+        "/entry",
+        "health"
+      ],
+      "Interval": 1000000000,
+      "Timeout": 5000000000,
+      "Retries": 60
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

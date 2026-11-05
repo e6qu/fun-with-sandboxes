@@ -2567,8 +2567,10 @@ static int port_path(int type, unsigned short port, struct sockaddr_un *u) {
 // unbacked reports the TCP or UDP port sa names, on loopback, the wildcard
 // or the container's own address, when it has no host port and the
 // container can listen on it with a Unix socket; any is whether sa is the
-// wildcard.
-static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len, int *any, int *v6) {
+// wildcard, and zero whether sa asks for any port, which unbacked reports
+// as 0.
+static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len, int *any, int *v6, int *zero) {
+    *zero = 0;
     int type = sa && port_dir[0] ? sock_type(fd) : 0;
     if (type != SOCK_STREAM && type != SOCK_DGRAM) {
         return 0;
@@ -2596,18 +2598,26 @@ static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len,
         return 0;
     }
     if (own_address && a == own_address) a = htonl(INADDR_LOOPBACK);
-    // A container port with a host port binds it, and so does a program
-    // that binds the host port itself, as the container contract has it.
-    if (!port || !v4_local(a) || host_port(type, port) || container_port(type, port)) {
+    if (!v4_local(a)) {
         return 0;
     }
     *any = a == htonl(INADDR_ANY);
+    if (!port) {
+        *zero = 1;
+        return 0;
+    }
+    // A container port with a host port binds it, and so does a program
+    // that binds the host port itself, as the container contract has it.
+    if (host_port(type, port) || container_port(type, port)) {
+        return 0;
+    }
     return port;
 }
 
 // listen_unix puts a Unix socket of fd's type in its place and binds it
-// where the library listens on port.
-static int listen_unix(int fd, unsigned short port, int any, int v6) {
+// where the library listens on port. With reclaim set, it takes over a
+// socket file no listener holds.
+static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim) {
     int type = sock_type(fd);
     struct sockaddr_un u;
     if (port_path(type, port, &u) == -1) {
@@ -2637,7 +2647,7 @@ static int listen_unix(int fd, unsigned short port, int any, int v6) {
     set_state(fd, NET_UNIX | (v6 ? NET_V6 : 0) | (any ? NET_ANY : 0));
     if (fd < NET_FDS) net_port[fd] = port;
     int r = bind(fd, (struct sockaddr *)&u, u.sun_len);
-    if (r == -1 && errno == EADDRINUSE) {
+    if (r == -1 && errno == EADDRINUSE && reclaim) {
         // A socket no listener holds is a stale one, which a listener that
         // ended left behind.
         int t = socket(AF_UNIX, type, 0);
@@ -2653,11 +2663,38 @@ static int listen_unix(int fd, unsigned short port, int any, int v6) {
     return r;
 }
 
+// listen_ephemeral binds fd to a port of its own, for a bind to port 0,
+// as the kernel picks one: from the range macOS draws ephemeral ports
+// from, one that no host port backs and no socket of the container holds.
+// The kernel would bind the port itself, which Seatbelt allows only for
+// the stack's ports, so the port is one with a Unix socket, as a container
+// port without a host port is.
+static int listen_ephemeral(int fd, int any, int v6) {
+    int type = sock_type(fd);
+    const unsigned first = 49152, span = 65536 - first;
+    unsigned start = arc4random_uniform(span);
+    for (unsigned i = 0; i < span; i++) {
+        unsigned short p = (unsigned short)(first + (start + i) % span);
+        struct sockaddr_un u;
+        if (host_port(type, p) || container_port(type, p) || port_path(type, p, &u) == -1) continue;
+        // A file there is another socket's, live or not; taking a stale
+        // one could race the listener about to hold it.
+        if (access(u.sun_path, F_OK) == 0) continue;
+        if (listen_unix(fd, p, any, v6, 0) == 0) return 0;
+        if (errno != EADDRINUSE) return -1;
+    }
+    errno = EADDRINUSE;
+    return -1;
+}
+
 static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
-    int uany, uv6;
-    unsigned short uport = unbacked(fd, sa, len, &uany, &uv6);
+    int uany, uv6, zero;
+    unsigned short uport = unbacked(fd, sa, len, &uany, &uv6, &zero);
     if (uport) {
-        return listen_unix(fd, uport, uany, uv6);
+        return listen_unix(fd, uport, uany, uv6, 1);
+    }
+    if (zero) {
+        return listen_ephemeral(fd, uany, uv6);
     }
     struct sockaddr_storage b;
     unsigned char any;
