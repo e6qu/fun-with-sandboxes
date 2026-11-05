@@ -117,8 +117,10 @@ a network also get `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5, for
 any TCP) and `NO_PROXY` pointing at their stack's egress proxy; `network_mode: none` and `internal: true`
 networks get none, as in Docker. Volumes and bind
 mounts appear at their destination inside the root. As Docker does, the engine writes
-the container's `/etc/hosts`, with `localhost`, its hostname on loopback and
-its `--add-host` entries, and its `/etc/hostname`. An image's entrypoint
+the container's `/etc/hosts` as it starts, with `localhost`, its
+`--add-host` entries, its hostname at its member address and its legacy
+links, and its `/etc/hostname`; the container library resolves the names
+it lists before any other. An image's entrypoint
 reads these variables and configures its service — see
 `images/postgres/entry` and `internal/sandboxenv`.
 

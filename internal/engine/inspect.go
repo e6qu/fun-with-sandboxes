@@ -19,6 +19,7 @@ func (e *Engine) Inspect(ref string) (container.InspectResponse, error) {
 	if err != nil {
 		return container.InspectResponse{}, err
 	}
+	links := e.inspectLinks(c)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	r := c.rec
@@ -47,6 +48,7 @@ func (e *Engine) Inspect(ref string) (container.InspectResponse, error) {
 		cfg.Hostname = r.ID[:12]
 	}
 	hc := r.HostConfig
+	hc.Links = links
 	var execIDs []string
 	for id := range e.execsFor(r.ID) {
 		execIDs = append(execIDs, id)
@@ -177,12 +179,14 @@ type ListOptions struct {
 func (e *Engine) List(opts ListOptions) []container.Summary {
 	var out []container.Summary
 	for _, c := range e.allContainers() {
+		names := e.linkNames(c)
 		c.mu.Lock()
 		s, ok := c.summary(opts)
 		c.mu.Unlock()
 		if !ok {
 			continue
 		}
+		s.Names = append(s.Names, names...)
 		if opts.Size {
 			if rw, err := c.sizeRw(context.Background()); err == nil {
 				s.SizeRw = rw

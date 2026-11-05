@@ -187,6 +187,9 @@ func (e *Engine) containerLocked(ref string) (*Container, error) {
 			return c, nil
 		}
 	}
+	if _, child, _, ok := e.linkLocked(name); ok {
+		return child, nil
+	}
 	var match *Container
 	if len(ref) > 0 {
 		for id, c := range e.containers {

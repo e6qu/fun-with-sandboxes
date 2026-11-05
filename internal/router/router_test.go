@@ -192,6 +192,8 @@ func TestRelaysToForeignMembers(t *testing.T) {
 		{Address: "127.88.0.2", Names: []string{"app"}, Networks: []string{"shared", "own"}},
 		{Address: "127.88.0.3", Names: []string{"api"}, Ports: map[string]int{"8000/tcp": hosted.Addr().(*net.TCPAddr).Port}, Router: theirs.Addr().Port, Networks: []string{"shared"}, Foreign: true},
 		{Address: "127.88.0.4", Names: []string{"db"}, Ports: map[string]int{"5432/tcp": hosted.Addr().(*net.TCPAddr).Port}, Networks: []string{"theirs"}, Foreign: true},
+		// A container the router's links to, on no network they share.
+		{Address: "127.88.0.5", Names: []string{"cache"}, Ports: map[string]int{"6379/tcp": hosted.Addr().(*net.TCPAddr).Port}, Foreign: true, Links: []members.Link{{Viewer: "127.88.0.2", Alias: "redis"}}},
 	}
 	if err := os.WriteFile(file, members.Format(ms), 0o644); err != nil {
 		t.Fatal(err)
@@ -220,6 +222,11 @@ func TestRelaysToForeignMembers(t *testing.T) {
 	if c, err := dialForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.4"), 5432); err == nil {
 		c.Close()
 		t.Error("a member on no shared network was reached")
+	}
+	if c, err := dialForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.5"), 6379); err != nil {
+		t.Errorf("a linked member: %v", err)
+	} else {
+		c.Close()
 	}
 	if c, err := dialForeign(theirs.Addr().String(), netip.MustParseAddr("127.88.0.3"), 8000); err == nil {
 		c.Close()

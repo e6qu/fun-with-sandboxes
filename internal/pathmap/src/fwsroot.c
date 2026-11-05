@@ -58,6 +58,7 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -3500,7 +3501,7 @@ static const char *members_text(void) {
 
 struct member {
     in_addr_t addr;
-    const char *names, *names_end, *ports, *ports_end, *nets, *nets_end;
+    const char *names, *names_end, *ports, *ports_end, *nets, *nets_end, *links, *links_end;
     unsigned short router;
     int foreign;
 };
@@ -3516,6 +3517,8 @@ static const char *next_member(const char *p, struct member *m) {
             const char *t3 = memchr(t2 + 1, '\t', (size_t)(end - t2 - 1));
             const char *t4 = t3 ? memchr(t3 + 1, '\t', (size_t)(end - t3 - 1)) : NULL;
             const char *t5 = t4 ? memchr(t4 + 1, '\t', (size_t)(end - t4 - 1)) : NULL;
+            const char *t6 = t5 ? memchr(t5 + 1, '\t', (size_t)(end - t5 - 1)) : NULL;
+            const char *t7 = t6 ? memchr(t6 + 1, '\t', (size_t)(end - t6 - 1)) : NULL;
             unsigned long r = 0;
             m->names = t1 + 1;
             m->names_end = t2;
@@ -3525,6 +3528,8 @@ static const char *next_member(const char *p, struct member *m) {
             m->nets = t4 ? t4 + 1 : end;
             m->nets_end = t5 ? t5 : end;
             m->foreign = t5 && t5[1] == '1';
+            m->links = t7 ? t7 + 1 : end;
+            m->links_end = end;
             return nl ? nl + 1 : end;
         }
         p = nl ? nl + 1 : end;
@@ -3534,22 +3539,45 @@ static const char *next_member(const char *p, struct member *m) {
 
 static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 
-// answers reports whether a member's space-separated names hold name, as
-// DNS compares names: in any case, and with or without a final dot.
-static int answers(const struct member *m, const char *name) {
-    size_t n = strlen(name);
-    if (n && name[n - 1] == '.') n--;
-    for (const char *p = m->names; p < m->names_end;) {
-        const char *e = memchr(p, ' ', (size_t)(m->names_end - p));
-        if (!e) e = m->names_end;
-        if ((size_t)(e - p) == n) {
-            size_t i = 0;
-            while (i < n && lower(p[i]) == lower(name[i])) i++;
-            if (i == n) return 1;
+// same_name compares a name of n bytes at p with name, as DNS compares
+// names: in any case, and with or without a final dot.
+static int same_name(const char *p, size_t n, const char *name) {
+    size_t k = strlen(name);
+    if (k && name[k - 1] == '.') k--;
+    if (n != k) return 0;
+    for (size_t i = 0; i < n; i++) {
+        if (lower(p[i]) != lower(name[i])) return 0;
+    }
+    return 1;
+}
+
+// link_of finds among a member's links, of space-separated viewer/alias
+// pairs, the first that viewer makes, or with name, the one of that alias.
+static int link_of(const struct member *m, in_addr_t viewer, const char *name) {
+    for (const char *p = m->links; p < m->links_end;) {
+        const char *e = memchr(p, ' ', (size_t)(m->links_end - p));
+        if (!e) e = m->links_end;
+        const char *after;
+        in_addr_t v;
+        if (parse_v4(p, &after, &v) && after < e && *after == '/' && v == viewer &&
+            (!name || same_name(after + 1, (size_t)(e - after - 1), name))) {
+            return 1;
         }
         p = e + 1;
     }
     return 0;
+}
+
+// answers reports whether a member answers to name: one of its
+// space-separated names, or an alias a link of the container gives it.
+static int answers(const struct member *m, const char *name) {
+    for (const char *p = m->names; p < m->names_end;) {
+        const char *e = memchr(p, ' ', (size_t)(m->names_end - p));
+        if (!e) e = m->names_end;
+        if (same_name(p, (size_t)(e - p), name)) return 1;
+        p = e + 1;
+    }
+    return own_address && link_of(m, own_address, name);
 }
 
 // member_ports finds in a member's ports the host port behind container
@@ -3598,11 +3626,12 @@ static int find_self(const char *text, struct member *out) {
 }
 
 // sees reports whether the container sees member m, as a container sees
-// the containers on its networks: m is the container itself, or shares a
-// network with it. A container the file does not list sees its own stack.
+// the containers on its networks and those it links to: m is the
+// container itself, shares a network with it, or is linked to from it. A
+// container the file does not list sees its own stack.
 static int sees(const struct member *m, const struct member *me, int have_me) {
     if (!have_me) return !m->foreign;
-    return m->addr == me->addr || shares(m, me);
+    return m->addr == me->addr || shares(m, me) || link_of(m, me->addr, NULL);
 }
 
 static int member_address(const char *name, in_addr_t *out) {
@@ -3696,12 +3725,106 @@ static struct addrinfo *member_info(in_addr_t a, int family, int type, unsigned 
     return ai;
 }
 
-// A member's name resolves to its member address, as Docker's DNS resolves
-// a container on the network; any other name to what the host resolves.
+#define HOSTS_MAX 8
+
+// hosts_lookup reads the container's /etc/hosts, which the host's
+// resolver never reads, as a resolver reads its own: it copies to addrs
+// the addresses, up to HOSTS_MAX, of the lines that list name, and to
+// canon the first name of the first, and returns how many it found.
+static int hosts_lookup(const char *name, char addrs[HOSTS_MAX][INET6_ADDRSTRLEN], char *canon, size_t canon_size) {
+    int fd = open(MAP("/etc/hosts"), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    struct stat st;
+    char *b = NULL;
+    ssize_t n = -1;
+    if (fstat(fd, &st) == 0 && st.st_size < (1 << 24) && (b = malloc((size_t)st.st_size + 1))) {
+        n = read(fd, b, (size_t)st.st_size);
+    }
+    close(fd);
+    if (n < 0) {
+        free(b);
+        return 0;
+    }
+    b[n] = 0;
+    int found = 0;
+    for (char *line = b, *next; line && found < HOSTS_MAX; line = next) {
+        next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        char *hash = strchr(line, '#');
+        if (hash) *hash = 0;
+        char *save, *addr = strtok_r(line, " \t\r", &save);
+        unsigned char bin[sizeof(struct in6_addr)];
+        if (!addr || (inet_pton(AF_INET, addr, bin) != 1 && inet_pton(AF_INET6, addr, bin) != 1)) continue;
+        const char *first = strtok_r(NULL, " \t\r", &save);
+        for (const char *h = first; h; h = strtok_r(NULL, " \t\r", &save)) {
+            if (same_name(h, strlen(h), name)) {
+                if (!found) strlcpy(canon, first, canon_size);
+                strlcpy(addrs[found++], addr, INET6_ADDRSTRLEN);
+                break;
+            }
+        }
+    }
+    free(b);
+    return found;
+}
+
+// hosts_addrinfo answers getaddrinfo from the container's /etc/hosts, as
+// a resolver whose hosts file lists the name: what the host's resolver
+// makes of each address it lists, of the family and type asked for.
+static int hosts_addrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
+    char addrs[HOSTS_MAX][INET6_ADDRSTRLEN], canon[256];
+    int n = hosts_lookup(node, addrs, canon, sizeof canon);
+    if (!n) return EAI_NONAME;
+    struct addrinfo h = {0};
+    if (hints) h = *hints;
+    h.ai_flags = (h.ai_flags | AI_NUMERICHOST) & ~(AI_CANONNAME | AI_ADDRCONFIG);
+    h.ai_canonname = NULL;
+    h.ai_addr = NULL;
+    h.ai_next = NULL;
+    struct addrinfo *head = NULL, **tail = &head;
+    int err = EAI_NONAME;
+    for (int i = 0; i < n; i++) {
+        struct addrinfo *r;
+        if ((err = getaddrinfo(addrs[i], service, &h, &r)) != 0) continue;
+        *tail = r;
+        while (*tail) tail = &(*tail)->ai_next;
+    }
+    if (!head) return err == EAI_SERVICE || err == EAI_SOCKTYPE ? err : EAI_NONAME;
+    if (hints && (hints->ai_flags & AI_CANONNAME)) {
+        free(head->ai_canonname);
+        if (!(head->ai_canonname = strdup(canon))) {
+            freeaddrinfo(head);
+            return EAI_MEMORY;
+        }
+    }
+    *res = head;
+    return 0;
+}
+
+// hosts_v4 finds the first IPv4 address the container's /etc/hosts lists
+// name at.
+static int hosts_v4(const char *name, in_addr_t *out) {
+    char addrs[HOSTS_MAX][INET6_ADDRSTRLEN], canon[256];
+    int n = hosts_lookup(name, addrs, canon, sizeof canon);
+    for (int i = 0; i < n; i++) {
+        if (inet_pton(AF_INET, addrs[i], out) == 1) return 1;
+    }
+    return 0;
+}
+
+// A name resolves as a container's resolver resolves it: to the addresses
+// its /etc/hosts lists it at, then a member's name to its member address,
+// as Docker's DNS resolves a container on the network, and any other name
+// to what the host resolves.
 static int fws_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
     int flags = hints ? hints->ai_flags : 0;
     in_addr_t a;
-    if (!node || (flags & AI_NUMERICHOST) || !member_address(node, &a)) {
+    if (!node || (flags & AI_NUMERICHOST)) {
+        return getaddrinfo(node, service, hints, res);
+    }
+    int herr = hosts_addrinfo(node, service, hints, res);
+    if (herr != EAI_NONAME) return herr;
+    if (!member_address(node, &a)) {
         return getaddrinfo(node, service, hints, res);
     }
     int family = hints ? hints->ai_family : AF_UNSPEC;
@@ -3773,12 +3896,12 @@ static struct hostent *member_hostent(const char *name, in_addr_t a) {
 
 static struct hostent *fws_gethostbyname(const char *name) {
     in_addr_t a;
-    return name && member_address(name, &a) ? member_hostent(name, a) : gethostbyname(name);
+    return name && (hosts_v4(name, &a) || member_address(name, &a)) ? member_hostent(name, a) : gethostbyname(name);
 }
 INTERPOSE(fws_gethostbyname, gethostbyname);
 
 static struct hostent *fws_gethostbyname2(const char *name, int af) {
     in_addr_t a;
-    return af == AF_INET && name && member_address(name, &a) ? member_hostent(name, a) : gethostbyname2(name, af);
+    return af == AF_INET && name && (hosts_v4(name, &a) || member_address(name, &a)) ? member_hostent(name, a) : gethostbyname2(name, af);
 }
 INTERPOSE(fws_gethostbyname2, gethostbyname2);

@@ -295,7 +295,7 @@ func (r *Router) foreign(addr netip.Addr, port int) (net.Conn, error) {
 }
 
 // peer finds the member at addr, which must share a network with the
-// router's container.
+// router's container or be linked to from it.
 func (r *Router) peer(addr netip.Addr) (members.Member, error) {
 	if r.net.File == "" {
 		return members.Member{}, errRefused
@@ -310,7 +310,7 @@ func (r *Router) peer(addr netip.Addr) (members.Member, error) {
 		return members.Member{}, errRefused
 	}
 	to, ok := members.Find(ms, addr.String())
-	if !ok || !members.Share(self, to) {
+	if !ok || !members.Sees(self, to) {
 		return members.Member{}, errRefused
 	}
 	return to, nil

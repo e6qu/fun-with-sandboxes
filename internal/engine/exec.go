@@ -121,7 +121,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	if user == "" {
 		user = c.rec.Config.User
 	}
-	env, err := e.processEnv(c, x.cfg.Env, user)
+	env, err := e.processEnv(c, x.cfg.Env, user, tty)
 	if err != nil {
 		return invalid("%v", err)
 	}
@@ -275,7 +275,7 @@ func (e *Engine) probe(c *Container, argv []string, timeout time.Duration) (int,
 	if err != nil {
 		return -1, err.Error()
 	}
-	env, err := e.processEnv(c, nil, c.rec.Config.User)
+	env, err := e.processEnv(c, nil, c.rec.Config.User, false)
 	if err != nil {
 		return -1, err.Error()
 	}

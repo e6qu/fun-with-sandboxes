@@ -114,9 +114,10 @@ func (e *Engine) writeNetworkLocked(stack string) error {
 
 // writeStackNetworkLocked writes the stack's network file: a line per
 // member on a network, of its address, its names, its ports, its router,
-// its networks, and whether it is another stack's, tab-separated. Another
-// stack's member is listed when it shares a user-defined network with one
-// of the stack's.
+// its networks, whether it is another stack's, that stack, and the
+// aliases the stack's links give it, tab-separated. Another stack's member
+// is listed when it shares a user-defined network with one of the
+// stack's, or one of the stack's links to it.
 func (e *Engine) writeStackNetworkLocked(stack string) error {
 	path, err := e.networkFile(stack)
 	if err != nil {
@@ -136,11 +137,16 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 	for _, o := range own {
 		taken[o.rec.Address] = true
 	}
+	links := e.linkAliasesLocked(stack)
 	for _, o := range e.containers {
 		// Records of an older engine, which numbered each stack's members
 		// alone, may give another stack's member one of this stack's
 		// addresses, which the container could not tell apart.
 		if o.rec.Stack == stack || o.rec.Address == "" || !onNetwork(o) || taken[o.rec.Address] {
+			continue
+		}
+		if len(links[o]) > 0 {
+			foreign = append(foreign, o)
 			continue
 		}
 		for _, n := range userNetworks(o) {
@@ -163,7 +169,7 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 				ports[k] = v
 			}
 		}
-		member := stackmembers.Member{Address: m.rec.Address, Names: memberNames(m), Ports: ports, Router: m.rec.RouterPort}
+		member := stackmembers.Member{Address: m.rec.Address, Names: memberNames(m), Ports: ports, Router: m.rec.RouterPort, Links: links[m]}
 		if member.Foreign = m.rec.Stack != stack; member.Foreign {
 			member.Networks, member.Stack = userNetworks(m), m.rec.Stack
 		} else {
@@ -182,4 +188,54 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// linkAliasesLocked returns, for each container the stack's containers
+// link to, the aliases they know it by: legacy links on the default bridge
+// network, which reach a container of any stack there, and links on a
+// user-defined network, to the container on it that answers to the name.
+func (e *Engine) linkAliasesLocked(stack string) map[*Container][]stackmembers.Link {
+	out := map[*Container][]stackmembers.Link{}
+	for _, v := range e.containers {
+		if v.rec.Stack != stack || v.rec.Address == "" || !onNetwork(v) {
+			continue
+		}
+		if v.rec.Networks["bridge"] != nil {
+			for _, l := range v.rec.Links {
+				if c, ok := e.containers[l.Child]; ok && c.rec.Address != "" && c.rec.Networks["bridge"] != nil {
+					out[c] = append(out[c], stackmembers.Link{Viewer: v.rec.Address, Alias: l.Alias})
+				}
+			}
+		}
+		for n, pairs := range endpointLinks(v) {
+			for _, p := range pairs {
+				if c := e.answeringLocked(n, p[0], v); c != nil {
+					out[c] = append(out[c], stackmembers.Link{Viewer: v.rec.Address, Alias: p[1]})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// answeringLocked finds the container other than v on network n that
+// answers to name.
+func (e *Engine) answeringLocked(n, name string, v *Container) *Container {
+	ids := make([]string, 0, len(e.containers))
+	for id := range e.containers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		c := e.containers[id]
+		if c == v || c.rec.Address == "" || !onNetwork(c) || c.rec.Networks[n] == nil {
+			continue
+		}
+		for _, m := range memberNames(c) {
+			if strings.EqualFold(m, name) {
+				return c
+			}
+		}
+	}
+	return nil
 }

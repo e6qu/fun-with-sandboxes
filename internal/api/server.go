@@ -135,10 +135,10 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /containers/{id}/logs", s.containerLogs)
 	m.HandleFunc("POST /containers/{id}/attach", s.containerAttach)
 	m.HandleFunc("GET /containers/{id}/attach/ws", s.containerAttachWS)
-	m.HandleFunc("DELETE /containers/{id}", s.simple(func(r *http.Request) error {
+	m.HandleFunc("DELETE /containers/{id...}", s.simple(func(r *http.Request) error {
 		q := r.URL.Query()
 		if boolParam(q.Get("link")) {
-			return unsupportedErr("container links are not supported")
+			return s.e.RemoveLink(r.PathValue("id"))
 		}
 		return s.e.Remove(r.PathValue("id"), engine.RemoveOptions{Force: boolParam(q.Get("force")), RemoveVolumes: boolParam(q.Get("v"))})
 	}, http.StatusNoContent))

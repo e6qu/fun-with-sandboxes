@@ -1,7 +1,8 @@
 // Package members reads and writes a stack's network file: a line per
 // member of the stack, of its member address, the names it answers to, the
 // host ports behind its ports, its router's port, the networks it is on,
-// whether it belongs to another stack, and that stack, tab-separated. The engine writes it;
+// whether it belongs to another stack, that stack, and the aliases links
+// give it, tab-separated. The engine writes it;
 // the container library, the container's router and the stack's egress
 // proxy read it.
 package members
@@ -32,6 +33,15 @@ type Member struct {
 	// Stack names a foreign member's stack, whose block a datagram to it
 	// is sent from, so that its replies may return.
 	Stack string
+	// Links are the names the member answers to for one member alone, as
+	// a container's links name others; a legacy link also lets the member
+	// that makes it reach this one where they share no network.
+	Links []Link
+}
+
+// Link is an alias the member at Viewer knows another member by.
+type Link struct {
+	Viewer, Alias string
 }
 
 func Format(ms []Member) []byte {
@@ -50,7 +60,11 @@ func Format(ms []Member) []byte {
 		if m.Foreign {
 			foreign = 1
 		}
-		fmt.Fprintf(&b, "%s\t%s\t%s\t%d\t%s\t%d\t%s\n", m.Address, strings.Join(m.Names, " "), strings.Join(ports, ","), m.Router, strings.Join(m.Networks, " "), foreign, m.Stack)
+		links := make([]string, len(m.Links))
+		for i, l := range m.Links {
+			links[i] = l.Viewer + "/" + l.Alias
+		}
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n", m.Address, strings.Join(m.Names, " "), strings.Join(ports, ","), m.Router, strings.Join(m.Networks, " "), foreign, m.Stack, strings.Join(links, " "))
 	}
 	return b.Bytes()
 }
@@ -60,12 +74,19 @@ func Parse(b []byte) []Member {
 	var out []Member
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) < 6 || len(f) > 7 || f[0] == "" {
+		if len(f) < 6 || len(f) > 8 || f[0] == "" {
 			continue
 		}
 		m := Member{Address: f[0], Names: strings.Fields(f[1]), Ports: map[string]int{}, Networks: strings.Fields(f[4]), Foreign: f[5] == "1"}
-		if len(f) == 7 {
+		if len(f) >= 7 {
 			m.Stack = f[6]
+		}
+		if len(f) == 8 {
+			for _, t := range strings.Fields(f[7]) {
+				if v, a, ok := strings.Cut(t, "/"); ok && v != "" && a != "" {
+					m.Links = append(m.Links, Link{Viewer: v, Alias: a})
+				}
+			}
 		}
 		m.Router, _ = strconv.Atoi(f[3])
 		for _, p := range strings.Split(f[2], ",") {
@@ -97,6 +118,20 @@ func Find(ms []Member, host string) (Member, bool) {
 		}
 	}
 	return Member{}, false
+}
+
+// Sees reports whether the member self reaches the member to: they share
+// a network, or self has a link to it.
+func Sees(self, to Member) bool {
+	if Share(self, to) {
+		return true
+	}
+	for _, l := range to.Links {
+		if l.Viewer == self.Address {
+			return true
+		}
+	}
+	return false
 }
 
 // Share reports whether two members are on a network together.

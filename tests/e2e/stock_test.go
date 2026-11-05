@@ -351,3 +351,112 @@ networks:
 		t.Errorf("project b's service off the external network printed %q", out)
 	}
 }
+
+// A legacy link on the default bridge network reaches a container of
+// another stack, by the alias, the child's name and hostname, with Docker's
+// variables, /etc/hosts entries and link names.
+func TestLinks(t *testing.T) {
+	const db, web = "e2e-link-db", "e2e-link-web"
+	docker(t, "rm", "-f", web)
+	waitedRun(t, db, "-e", "SECRET=s3", "--expose", "8000",
+		"--health-cmd", `python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000')"`,
+		"--health-interval", "1s", "--health-start-interval", "200ms", "--health-start-period", "30s",
+		"fws/python:3.14", "python3", "-m", "http.server", "8000")
+	client := sharedClient + `
+import os
+addr = socket.gethostbyname("database")
+print(os.environ["DATABASE_PORT"] == "tcp://" + addr + ":8000", os.environ["DATABASE_NAME"], os.environ["DATABASE_ENV_SECRET"])
+print([l.split()[1:] for l in open("/etc/hosts") if l.split()[:1] == [addr]])
+`
+	mustDocker(t, "run", "-d", "--name", web, "--link", db+":database", "fws/python:3.14", "python3", "-u", "-c", client+`
+import time
+time.sleep(600)`, "database:8000", db+":8000")
+	defer docker(t, "rm", "-f", web)
+	waitLog(t, web, "]]")
+	out := mustDocker(t, "logs", web)
+	hostname := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.Config.Hostname}}", db))
+	for _, want := range []string{
+		"database:8000 HTTP/1.0 200 OK\n", db + ":8000 HTTP/1.0 200 OK\n",
+		"True /" + web + "/database s3\n",
+		"[['database', '" + hostname + "', '" + db + "']]\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the linked client printed %q, want %q in it", out, want)
+		}
+	}
+	if out := mustDocker(t, "run", "--rm", "fws/python:3.14", "python3", "-c", sharedClient, db+":8000", "database:8000"); out != db+":8000 gaierror\ndatabase:8000 gaierror\n" {
+		t.Errorf("an unlinked client printed %q", out)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{json .HostConfig.Links}}", web)); got != `["/`+db+`:/`+web+`/database"]` {
+		t.Errorf("inspect reports the links as %s", got)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "ps", "--filter", "name=^"+db+"$", "--format", "{{.Names}}")); got != db+","+web+"/database" {
+		t.Errorf("ps names the child %q", got)
+	}
+	mustDocker(t, "rm", "--link", web+"/database")
+	if got := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{json .HostConfig.Links}}", web)); got != "null" {
+		t.Errorf("after rm --link, inspect reports %s", got)
+	}
+	if _, err := docker(t, "rm", "--link", db); err == nil || !strings.Contains(err.Error(), "cannot remove the default link name") {
+		t.Errorf("rm --link of a container's own name: %v", err)
+	}
+	if _, err := docker(t, "run", "--rm", "--link", "e2e-link-nothing", "fws/python:3.14", "true"); err == nil || !strings.Contains(err.Error(), "could not get container for e2e-link-nothing") {
+		t.Errorf("a link to no container: %v", err)
+	}
+}
+
+// A container resolves the names its /etc/hosts lists, its own hostname to
+// its member address, as Docker writes them.
+func TestHostsResolve(t *testing.T) {
+	out := mustDocker(t, "run", "--rm", "--hostname", "e2e-hosted", "--add-host", "extra.local:10.1.2.3", "--add-host", "host.docker.internal:host-gateway",
+		"fws/python:3.14", "python3", "-c", `import os, socket
+print(socket.gethostbyname("extra.local"), socket.gethostbyname("host.docker.internal"), socket.gethostbyname("e2e-hosted").startswith("127.88."), os.environ["HOSTNAME"])`)
+	if out != "10.1.2.3 127.0.0.1 True e2e-hosted\n" {
+		t.Errorf("the container resolved %q", out)
+	}
+}
+
+// Compose's links give a service an alias of its own for another on the
+// project's network.
+func TestComposeLinks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(`services:
+  db:
+    image: fws/python:3.14
+    command: ["python3", "-m", "http.server", "8000"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000')"]
+      interval: 1s
+      start_interval: 200ms
+      start_period: 30s
+  client:
+    image: fws/python:3.14
+    command: ["sleep", "600"]
+    links: ["db:database"]
+    depends_on:
+      db: {condition: service_healthy}
+  other:
+    image: fws/python:3.14
+    command: ["sleep", "600"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "docker-compose", append([]string{"-p", "e2e-links", "-f", filepath.Join(dir, "compose.yaml")}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("docker-compose %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	defer run("down", "-t", "0")
+	run("up", "-d", "--wait")
+	if out := run("exec", "-T", "client", "python3", "-c", sharedClient, "database:8000", "db:8000"); out != "database:8000 HTTP/1.0 200 OK\ndb:8000 HTTP/1.0 200 OK\n" {
+		t.Errorf("the linking service printed %q", out)
+	}
+	if out := run("exec", "-T", "other", "python3", "-c", sharedClient, "database:8000", "db:8000"); out != "database:8000 gaierror\ndb:8000 HTTP/1.0 200 OK\n" {
+		t.Errorf("another service printed %q", out)
+	}
+}
