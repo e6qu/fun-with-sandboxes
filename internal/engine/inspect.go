@@ -221,7 +221,7 @@ func (c *Container) summary(opts ListOptions) (container.Summary, bool) {
 	for n := range r.Networks {
 		nets = append(nets, n)
 	}
-	if !f.matchName("name", r.Name) || !f.matchLabels(r.Config.Labels) || !f.matchExact("status", string(c.stateName())) ||
+	if !f.matchName("name", "/"+r.Name, r.Name) || !f.matchLabels(r.Config.Labels) || !f.matchExact("status", string(c.stateName())) ||
 		!f.matchExact("health", health) || !f.matchExact("network", nets...) || !matchID(f, r.ID) ||
 		!f.matchExact("ancestor", r.Image, r.ImageID) {
 		return container.Summary{}, false
