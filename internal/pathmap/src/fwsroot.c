@@ -21,6 +21,8 @@
 //     bootstrap names carry the container's prefix.
 //
 // The host still decides every access, by the engine's user's rights.
+// IPV6_RECVPKTINFO and IPV6_PKTINFO name RFC 3542's options only with this.
+#define __APPLE_USE_RFC_3542
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -53,6 +55,7 @@
 #include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <netdb.h>
@@ -82,6 +85,11 @@ static pid_t init_pid;
 // The engine's helper binary's name (FWS_HELPER), which the container's
 // exec anchor runs as.
 static char helper_comm[MAXCOMLEN + 1];
+
+// The file of the container's pids limit (FWS_PIDS), as a pids cgroup's
+// pids.max holds it: a number, or "max" for none. The engine rewrites it
+// as the limit changes.
+static char pids_path[PATH_MAX];
 
 struct mount {
     char *dest, *src;
@@ -262,7 +270,7 @@ static void parse_network(const char *path, const char *address) {
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
 __attribute__((constructor)) static void fwsroot_init(void) {
@@ -277,6 +285,10 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     fake_uid = fake_euid = (uid_t)env_number("FWS_UID");
     fake_gid = fake_egid = (gid_t)env_number("FWS_GID");
     init_pid = (pid_t)env_number("FWS_INIT");
+    const char *pm = getenv("FWS_PIDS");
+    if (pm && pm[0] == '/') {
+        strlcpy(pids_path, pm, sizeof pids_path);
+    }
     const char *hc = getenv("FWS_HELPER");
     if (hc) {
         strlcpy(helper_comm, hc, sizeof helper_comm);
@@ -1033,8 +1045,20 @@ static int fws_execve(const char *path, char *const argv[], char *const envp[]) 
     return r;
 }
 INTERPOSE(fws_execve, execve);
+static int pids_full(void);
+
+// spawns reports whether a posix_spawn with attributes a starts a process,
+// rather than replacing the caller's program, as POSIX_SPAWN_SETEXEC does.
+static int spawns(const posix_spawnattr_t *a) {
+    short flags = 0;
+    return !(a && posix_spawnattr_getflags(a, &flags) == 0 && (flags & POSIX_SPAWN_SETEXEC));
+}
+
 static int fws_posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *a,
                            char *const argv[], char *const envp[]) {
+    if (spawns(a) && pids_full()) {
+        return EAGAIN;
+    }
     char ids[64];
     char **env = child_env(envp, ids);
     if (env) envp = env;
@@ -1058,6 +1082,9 @@ static int fws_posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file
     char full[PATH_MAX];
     if (find_on_path(file, full)) {
         return fws_posix_spawn(pid, full, fa, a, argv, envp);
+    }
+    if (spawns(a) && pids_full()) {
+        return EAGAIN;
     }
     char ids[64];
     char **env = child_env(envp, ids);
@@ -1666,6 +1693,46 @@ static int visible(pid_t pid, const char *comm) {
     return proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &info, sizeof info) == (int)sizeof info;
 }
 
+// pids_full reports whether the container runs as many processes as its
+// pids limit allows, so that a fork fails with EAGAIN, as one past a pids
+// cgroup's limit does. The container's supervisor kills any process that
+// a race between two forks lets past it.
+static int pids_full(void) {
+    if (!pids_path[0]) return 0;
+    char b[32];
+    int fd = open(pids_path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    ssize_t n = read(fd, b, sizeof b - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    b[n] = 0;
+    unsigned long max;
+    if (!num(b, &max) || max == 0) return 0;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_RUID, (int)getuid()};
+    size_t len = 0;
+    if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0) return 0;
+    len += 32 * sizeof(struct kinfo_proc);
+    struct kinfo_proc *kp = malloc(len);
+    if (!kp) return 0;
+    unsigned long count = 0;
+    if (sysctl(mib, 4, kp, &len, NULL, 0) == 0) {
+        for (size_t i = 0; i < len / sizeof *kp; i++) {
+            if (kp[i].kp_proc.p_stat != SZOMB && visible(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm)) count++;
+        }
+    }
+    free(kp);
+    return count >= max;
+}
+
+static pid_t fws_fork(void) {
+    if (pids_full()) {
+        errno = EAGAIN;
+        return -1;
+    }
+    return fork();
+}
+INTERPOSE(fws_fork, fork);
+
 // own_procs keeps the container's processes of a kinfo_proc array of n
 // bytes, in place, and returns its new size.
 static size_t own_procs(struct kinfo_proc *kp, size_t n) {
@@ -2033,6 +2100,22 @@ static unsigned char net_state[NET_FDS];
 static unsigned short net_port[NET_FDS];
 static in_addr_t net_peer[NET_FDS];
 static unsigned short net_dport[NET_FDS];
+// The control messages a UDP socket on a port without a host port asks
+// for: the kernel sees a Unix datagram socket, which has no IP options, so
+// the library keeps them and writes the messages itself.
+#define CM_DSTADDR 1
+#define CM_PKTINFO 2
+#define CM_PKTINFO6 4
+#define CM_2292PKTINFO6 8
+static unsigned char net_cmsg[NET_FDS];
+
+static int cmsg_flag(int level, int name) {
+    if (level == IPPROTO_IP && name == IP_RECVDSTADDR) return CM_DSTADDR;
+    if (level == IPPROTO_IP && name == IP_PKTINFO) return CM_PKTINFO;
+    if (level == IPPROTO_IPV6 && name == IPV6_RECVPKTINFO) return CM_PKTINFO6;
+    if (level == IPPROTO_IPV6 && name == IPV6_2292PKTINFO) return CM_2292PKTINFO6;
+    return 0;
+}
 
 static unsigned char state_of(int fd) { return fd >= 0 && fd < NET_FDS ? net_state[fd] : 0; }
 
@@ -2876,6 +2959,96 @@ static ssize_t dgram_recv(int fd, const struct iovec *iov, int iovlen, int flags
     }
 }
 
+static int fws_getsockname(int fd, struct sockaddr *sa, socklen_t *len);
+static int member_block(in_addr_t a);
+
+// v4_of is the IPv4 address of an IPv4 or IPv4-mapped IPv6 address, with
+// IPv6 loopback as IPv4's and any other IPv6 address as the wildcard.
+static in_addr_t v4_of(const struct sockaddr_storage *s) {
+    if (s->ss_family == AF_INET) return ((const struct sockaddr_in *)s)->sin_addr.s_addr;
+    if (s->ss_family == AF_INET6) {
+        const struct in6_addr *a = &((const struct sockaddr_in6 *)s)->sin6_addr;
+        if (IN6_IS_ADDR_V4MAPPED(a)) return mapped_v4(a);
+        if (IN6_IS_ADDR_LOOPBACK(a)) return htonl(INADDR_LOOPBACK);
+    }
+    return htonl(INADDR_ANY);
+}
+
+static void add_cmsg(struct msghdr *m, socklen_t cap, socklen_t *used, int level, int type, const void *data, size_t len) {
+    if (!m->msg_control || *used + CMSG_SPACE(len) > cap) {
+        m->msg_flags |= MSG_CTRUNC;
+        return;
+    }
+    struct cmsghdr *c = (struct cmsghdr *)((char *)m->msg_control + *used);
+    memset(c, 0, CMSG_SPACE(len));
+    c->cmsg_len = (socklen_t)CMSG_LEN(len);
+    c->cmsg_level = level;
+    c->cmsg_type = type;
+    memcpy(CMSG_DATA(c), data, len);
+    *used += (socklen_t)CMSG_SPACE(len);
+}
+
+// dgram_control writes to m the control messages fd asks for, of a
+// datagram from src. Its destination is the address the socket is bound
+// to, or, bound to the wildcard, the container's member address for a
+// member's datagram and loopback for any other: the kernel reports the
+// address the sender named.
+static void dgram_control(int fd, struct msghdr *m, const struct sockaddr_storage *src) {
+    socklen_t cap = m->msg_controllen, used = 0;
+    unsigned char want = fd < NET_FDS ? net_cmsg[fd] : 0;
+    in_addr_t dst = htonl(INADDR_LOOPBACK);
+    struct sockaddr_storage self;
+    socklen_t sn = sizeof self;
+    if (want && fws_getsockname(fd, (struct sockaddr *)&self, &sn) == 0 && v4_of(&self) != htonl(INADDR_ANY)) {
+        dst = v4_of(&self);
+    } else if (want) {
+        in_addr_t from = v4_of(src);
+        if (own_address && member_block(from) && from != own_address) dst = own_address;
+    }
+    static unsigned int lo0;
+    if (want && !lo0) lo0 = if_nametoindex("lo0");
+    if (want & CM_DSTADDR) {
+        struct in_addr a = {dst};
+        add_cmsg(m, cap, &used, IPPROTO_IP, IP_RECVDSTADDR, &a, sizeof a);
+    }
+    if (want & CM_PKTINFO) {
+        struct in_pktinfo pi;
+        memset(&pi, 0, sizeof pi);
+        pi.ipi_ifindex = lo0;
+        pi.ipi_spec_dst.s_addr = dst;
+        pi.ipi_addr.s_addr = dst;
+        add_cmsg(m, cap, &used, IPPROTO_IP, IP_PKTINFO, &pi, sizeof pi);
+    }
+    if (want & (CM_PKTINFO6 | CM_2292PKTINFO6)) {
+        struct in6_pktinfo pi;
+        memset(&pi, 0, sizeof pi);
+        pi.ipi6_ifindex = lo0;
+        pi.ipi6_addr.s6_addr[10] = pi.ipi6_addr.s6_addr[11] = 0xff;
+        memcpy(&pi.ipi6_addr.s6_addr[12], &dst, 4);
+        if (want & CM_PKTINFO6) add_cmsg(m, cap, &used, IPPROTO_IPV6, IPV6_PKTINFO, &pi, sizeof pi);
+        if (want & CM_2292PKTINFO6) add_cmsg(m, cap, &used, IPPROTO_IPV6, IPV6_2292PKTINFO, &pi, sizeof pi);
+    }
+    m->msg_controllen = used;
+}
+
+// dgram_recvmsg receives a datagram on a Unix one for recvmsg, with its
+// source and the control messages its socket asks for.
+static ssize_t dgram_recvmsg(int fd, struct msghdr *m, int flags, recvmsg_fn recv) {
+    struct sockaddr_storage src;
+    socklen_t sn = sizeof src;
+    ssize_t r = dgram_recv(fd, m->msg_iov, m->msg_iovlen, flags, (struct sockaddr *)&src, &sn, &m->msg_flags, recv);
+    if (r < 0) {
+        return r;
+    }
+    if (m->msg_name) {
+        socklen_t n = sn < m->msg_namelen ? sn : m->msg_namelen;
+        memcpy(m->msg_name, &src, n);
+        m->msg_namelen = n;
+    }
+    dgram_control(fd, m, &src);
+    return r;
+}
+
 static ssize_t plain_sendmsg(int fd, const struct msghdr *m, int flags) { return sendmsg(fd, m, flags); }
 static ssize_t plain_recvmsg(int fd, struct msghdr *m, int flags) { return recvmsg(fd, m, flags); }
 
@@ -2936,8 +3109,7 @@ INTERPOSE(fws_recvfrom, recvfrom);
 
 static ssize_t fws_recvmsg(int fd, struct msghdr *m, int flags) {
     if (m && dgram_unix(fd)) {
-        m->msg_controllen = 0;
-        return dgram_recv(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_name ? &m->msg_namelen : NULL, &m->msg_flags, plain_recvmsg);
+        return dgram_recvmsg(fd, m, flags, plain_recvmsg);
     }
     if (!m || !m->msg_name) {
         return recvmsg(fd, m, flags);
@@ -3070,6 +3242,19 @@ static int v4_option(int name) {
 }
 
 static int fws_setsockopt(int fd, int level, int name, const void *v, socklen_t n) {
+    int cf = fd >= 0 && fd < NET_FDS && dgram_unix(fd) ? cmsg_flag(level, name) : 0;
+    if (cf) {
+        if (!v || n < (socklen_t)sizeof(int)) {
+            errno = EINVAL;
+            return -1;
+        }
+        if (*(const int *)v) {
+            net_cmsg[fd] |= (unsigned char)cf;
+        } else {
+            net_cmsg[fd] &= (unsigned char)~cf;
+        }
+        return 0;
+    }
     // A Unix stream has no IP or TCP options to set: it delays no segment
     // and has no packets to tune.
     if ((state_of(fd) & NET_UNIX) && (level == IPPROTO_TCP || level == IPPROTO_IP || level == IPPROTO_IPV6)) {
@@ -3092,6 +3277,12 @@ static int fws_setsockopt(int fd, int level, int name, const void *v, socklen_t 
 INTERPOSE(fws_setsockopt, setsockopt);
 
 static int fws_getsockopt(int fd, int level, int name, void *v, socklen_t *n) {
+    int cf = fd >= 0 && fd < NET_FDS && dgram_unix(fd) ? cmsg_flag(level, name) : 0;
+    if (cf && v && n && *n >= (socklen_t)sizeof(int)) {
+        *(int *)v = (net_cmsg[fd] & cf) != 0;
+        *n = sizeof(int);
+        return 0;
+    }
     if ((state_of(fd) & NET_UNIX) && (level == IPPROTO_TCP || level == IPPROTO_IP || level == IPPROTO_IPV6) && v && n &&
         *n >= (socklen_t)sizeof(int)) {
         *(int *)v = level == IPPROTO_TCP && name == TCP_NODELAY;
@@ -3117,20 +3308,26 @@ static void copy_state(int from, int to) {
         net_port[to] = net_port[from];
         net_peer[to] = net_peer[from];
         net_dport[to] = net_dport[from];
+        net_cmsg[to] = net_cmsg[from];
     }
 }
 
 // A descriptor's number outlives it, and the next socketpair, pipe or file
 // to take it is none of the library's.
-static int fws_close(int fd) {
+static void forget(int fd) {
     set_state(fd, 0);
+    if (fd >= 0 && fd < NET_FDS) net_cmsg[fd] = 0;
+}
+
+static int fws_close(int fd) {
+    forget(fd);
     return close(fd);
 }
 INTERPOSE(fws_close, close);
 
 extern int close_nocancel(int) __asm("_close$NOCANCEL") __attribute__((weak_import));
 static int fws_close_nocancel(int fd) {
-    set_state(fd, 0);
+    forget(fd);
     return close_nocancel(fd);
 }
 INTERPOSE(fws_close_nocancel, close_nocancel);
@@ -3219,8 +3416,7 @@ static ssize_t nocancel_recvmsg(int fd, struct msghdr *m, int flags) { return re
 
 static ssize_t fws_recvmsg_nocancel(int fd, struct msghdr *m, int flags) {
     if (m && dgram_unix(fd)) {
-        m->msg_controllen = 0;
-        return dgram_recv(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_name ? &m->msg_namelen : NULL, &m->msg_flags, nocancel_recvmsg);
+        return dgram_recvmsg(fd, m, flags, nocancel_recvmsg);
     }
     if (!m || !m->msg_name) {
         return recvmsg_nocancel(fd, m, flags);

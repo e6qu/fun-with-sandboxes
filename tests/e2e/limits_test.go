@@ -61,24 +61,22 @@ func TestCPUQuota(t *testing.T) {
 	}
 }
 
-// Forks past the pids limit end at once.
+// A fork past the pids limit fails with EAGAIN, as under a pids cgroup,
+// and a raised limit lets the container fork again.
 func TestPidsLimit(t *testing.T) {
 	const name = "fws-e2e-pids"
 	mustDocker(t, "run", "-d", "--name", name, "--pids-limit", "6", "fws/toolbox:1", "forkmany", "20")
 	defer docker(t, "rm", "-f", name)
-	waitLog(t, name, "started 20")
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		n, err := strconv.Atoi(strings.TrimSpace(mustDocker(t, "stats", "--no-stream", "--format", "{{.PIDs}}", name)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n == 6 {
-			break
-		}
-		if n < 6 || time.Now().After(deadline) {
-			t.Fatalf("the container runs %d processes, want its limit of 6", n)
-		}
+	waitLog(t, name, "fork 6 failed")
+	if logs := mustDocker(t, "logs", name); !strings.Contains(logs, "resource temporarily unavailable") {
+		t.Fatalf("the failed fork logged %q", logs)
+	}
+	if n := strings.TrimSpace(mustDocker(t, "stats", "--no-stream", "--format", "{{.PIDs}}", name)); n != "6" {
+		t.Fatalf("the container runs %s processes, want its limit of 6", n)
+	}
+	mustDocker(t, "update", "--pids-limit", "8", name)
+	if out, err := docker(t, "exec", name, "/toolbox", "echo", "forked"); err != nil || strings.TrimSpace(out) != "forked" {
+		t.Fatalf("an exec under a raised limit: %q, %v", out, err)
 	}
 }
 

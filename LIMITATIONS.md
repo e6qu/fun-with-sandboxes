@@ -179,7 +179,11 @@ machine — and from what macOS offers an unprivileged process under them.
     nowhere, as in Docker. A listener on an address other than loopback's,
     the wildcard or the container's own is refused.
   - A UDP socket on such a port sends and receives with the socket and
-    file calls, connected or not, but takes no IP-level control messages.
+    file calls, connected or not. Of IP-level control messages it takes
+    those that report a datagram's destination, `IP_RECVDSTADDR`,
+    `IP_PKTINFO` and `IPV6_RECVPKTINFO`, and sends with none: a reply
+    leaves from the port the socket is bound to. Other IP options on it
+    set nothing, as there are no packets for them to shape.
     The router gives each such port a flow port of the stack's block for as
     long as the container runs, so a stack holds as many of them as its
     block has ports to spare.
@@ -208,8 +212,11 @@ machine — and from what macOS offers an unprivileged process under them.
     control. `--cpu-shares` sets the nice value, and since only root lowers
     one, more shares than the default run at the default priority.
     Cpusets and real-time scheduling are refused.
-  - `--pids-limit` kills processes started past the limit rather than
-    failing their fork.
+  - `--pids-limit` counts processes, not threads as a pids cgroup does.
+    The container library fails a `fork` or `posix_spawn` at the limit
+    with `EAGAIN`; the supervisor kills a process two racing forks let
+    past it, and one forked by a program that loads no library or through
+    `vfork`.
   - `--blkio-weight` picks a disk I/O policy tier (standard, utility,
     throttle); per-device rates are refused, and a running container's
     weight cannot change, as macOS lets a process set only its own policy.
@@ -256,7 +263,9 @@ machine — and from what macOS offers an unprivileged process under them.
 - **tmpfs mounts are directories** under the container's state, emptied at
   each start, not memory-backed. A tmpfs volume (`--opt type=tmpfs`) is a
   directory too, emptied when a container first mounts it; size and
-  ownership options are refused, as nothing would hold them.
+  ownership options are refused, as nothing would hold them. The one
+  memory-backed filesystem an unprivileged user can make, an `hdiutil` RAM
+  disk, mounts system-wide under `/Volumes`, in Finder's sight.
 - **Local volumes bind host directories or nothing else.** The local
   driver's `type=none,o=bind,device=<dir>` binds a host directory, which
   must exist; other filesystem types need root and are refused.

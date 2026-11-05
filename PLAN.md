@@ -111,13 +111,26 @@ surface; each landed with its tests on the macOS runner.
 
 ## Remaining work
 
-Gaps that the two constraints leave open to close:
-
-- A server sees its stack's clients connect from `127.0.0.1` rather than
-  their member addresses.
-- tmpfs mounts are directories on disk, not memory-backed.
-- UDP sockets on ports without host ports take no IP-level control messages.
-
 Out of reach without root or a VM: Linux images, ICMP, PID and user
 namespaces, `# syntax=` frontends and multi-platform builds, and identity or
 memory limits the kernel enforces. Swarm is out of scope.
+
+Also out of reach: a server seeing its stack's clients connect from their
+member addresses rather than `127.0.0.1`. The kernel never sees member
+addresses, so a server could learn a client's only from a record of the
+client's source port, made before it connects. That takes binding an
+ephemeral loopback port, which Seatbelt would then have to allow every
+container, beyond the ports it is granted; a record made after the
+connection would race the server's `accept`.
+
+Left as they are, each with its reason in `LIMITATIONS.md`:
+
+- tmpfs mounts are directories on disk. The one memory-backed filesystem
+  macOS gives an unprivileged user, a RAM disk from `hdiutil`, takes a
+  fixed size up front and mounts system-wide under `/Volumes`, where Finder
+  and Spotlight see it: every container's tmpfs would appear on the host's
+  desktop.
+- `docker stats` counts payload bytes, without packet headers, and leaves
+  out the disk I/O of a process that starts and ends between two samples:
+  the kernel's per-socket and per-process counters hold no more.
+- `--pids-limit` counts processes, not threads.
