@@ -42,7 +42,7 @@ func TestMySQL(t *testing.T) {
 		"-v", conf+":/etc/mysql/conf.d:ro", "-v", initdb+":/docker-entrypoint-initdb.d:ro", "fws/mysql:8.4")
 	defer docker(t, "rm", "-f", "-v", name)
 	waitHealthy(t, name, since)
-	if logs := mustDocker(t, "logs", name); !strings.Contains(logs, "port: 3306") {
+	if logs := containerLogs(t, name); !strings.Contains(logs, "port: 3306") {
 		t.Errorf("the server's log names no container port 3306:\n%s", logs)
 	}
 	addr := strings.TrimSpace(mustDocker(t, "port", name, "3306"))
@@ -212,7 +212,7 @@ func TestSeaweedFS(t *testing.T) {
 	mustDocker(t, "run", "-d", "--name", name, "-p", "127.0.0.1::8333", "fws/seaweedfs:4.36")
 	defer docker(t, "rm", "-f", "-v", name)
 	waitLog(t, name, "All enabled components are running and ready to use")
-	if logs := mustDocker(t, "logs", name); !strings.Contains(logs, "S3 Endpoint:     http://127.88.") {
+	if logs := containerLogs(t, name); !strings.Contains(logs, "S3 Endpoint:     http://127.88.") {
 		t.Errorf("SeaweedFS advertises no member address:\n%s", logs)
 	}
 	ctx := context.Background()

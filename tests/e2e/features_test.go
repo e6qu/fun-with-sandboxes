@@ -810,26 +810,44 @@ func dockerIn(t *testing.T, stdin string, args ...string) (string, error) {
 }
 
 // waitLog follows a container's log until a line holds text.
+// waitLog follows a container's log, both its streams, until a line holds
+// text.
 func waitLog(t *testing.T, name, text string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "logs", "--follow", name)
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	r, w := io.Pipe()
+	cmd.Stdout, cmd.Stderr = w, w
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { cancel(); cmd.Wait() }()
-	sc := bufio.NewScanner(out)
+	done := make(chan struct{})
+	go func() {
+		cmd.Wait()
+		w.Close()
+		close(done)
+	}()
+	defer func() { cancel(); <-done }()
+	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		if strings.Contains(sc.Text(), text) {
 			return
 		}
 	}
 	t.Fatalf("%s's log ended without %q", name, text)
+}
+
+// containerLogs returns a container's log, both its streams.
+func containerLogs(t *testing.T, name string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "logs", name).CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker logs %s: %v\n%s", name, err, out)
+	}
+	return string(out)
 }
 
 func TestPublishUDPAndHostPortRanges(t *testing.T) {

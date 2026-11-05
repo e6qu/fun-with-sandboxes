@@ -2447,10 +2447,46 @@ static int to_ipv4(int fd, int type) {
 
 // local returns the address a bind to sa binds, in out, converting fd first
 // where an IPv4 address goes through an IPv6 socket.
+// unix_host maps a Unix socket address's container path to the host path
+// it names, as the file calls map paths; follow says whether a link its
+// last component names is followed. A path whose host path does not fit
+// a Unix socket address fails with ENAMETOOLONG.
+static const struct sockaddr *unix_host(const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out, int follow) {
+    size_t at = offsetof(struct sockaddr_un, sun_path);
+    if (!rootlen || *len <= (socklen_t)at) {
+        return sa;
+    }
+    char path[sizeof((struct sockaddr_un *)0)->sun_path + 1];
+    size_t n = (size_t)*len - at;
+    if (n > sizeof path - 1) n = sizeof path - 1;
+    memcpy(path, ((const struct sockaddr_un *)(const void *)sa)->sun_path, n);
+    path[n] = 0;
+    if (!path[0]) {
+        return sa;
+    }
+    const char *host = MAPF(path, follow);
+    if (host == path || strcmp(host, path) == 0) {
+        return sa;
+    }
+    struct sockaddr_un *u = (struct sockaddr_un *)out;
+    memset(u, 0, sizeof *u);
+    if (strlcpy(u->sun_path, host, sizeof u->sun_path) >= sizeof u->sun_path) {
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
+    u->sun_family = AF_UNIX;
+    u->sun_len = (unsigned char)SUN_LEN(u);
+    *len = u->sun_len;
+    return (const struct sockaddr *)out;
+}
+
 static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out, unsigned char *any) {
     *any = 0;
     if (!sa) {
         return sa;
+    }
+    if (sa->sa_family == AF_UNIX) {
+        return unix_host(sa, len, out, 0);
     }
     int type = sock_type(fd);
     if (sa->sa_family == AF_INET && *len >= (socklen_t)sizeof(struct sockaddr_in)) {
@@ -2639,6 +2675,9 @@ static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_
     if (!sa) {
         return sa;
     }
+    if (sa->sa_family == AF_UNIX) {
+        return unix_host(sa, len, out, 1);
+    }
     int type = sock_type(fd);
     in_addr_t v4;
     unsigned short port;
@@ -2744,6 +2783,14 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
     memcpy(&v, k, sizeof v);
     socklen_t vn = kn;
     int type = sock_type(fd);
+    if (k->ss_family == AF_UNIX && kn > (socklen_t)offsetof(struct sockaddr_un, sun_path)) {
+        // A Unix socket's path is the container's.
+        struct sockaddr_un *u = (struct sockaddr_un *)&v;
+        u->sun_path[sizeof u->sun_path - 1] = 0;
+        unmap(u->sun_path, sizeof u->sun_path);
+        u->sun_len = (unsigned char)SUN_LEN(u);
+        vn = u->sun_len;
+    }
     if (k->ss_family == AF_INET) {
         struct sockaddr_in *a = (struct sockaddr_in *)&v;
         unsigned short c = v4_local(a->sin_addr.s_addr) ? container_port(type, ntohs(a->sin_port)) : 0;
@@ -2949,6 +2996,9 @@ static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
     struct sockaddr_storage b;
     unsigned char any;
     const struct sockaddr *to = local(fd, sa, &len, &b, &any);
+    if (sa && !to) {
+        return -1;
+    }
     int r = bind(fd, to, len);
     if (r == 0 && any) set_state(fd, state_of(fd) | NET_ANY);
     return r;

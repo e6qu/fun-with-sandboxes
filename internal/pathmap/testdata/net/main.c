@@ -10,6 +10,7 @@
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <sys/sockio.h>
+#include <sys/un.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -237,5 +238,23 @@ int main(int argc, char **argv) {
     strlcpy(r.ifr_name, "en0", sizeof r.ifr_name);
     int hidden = ioctl(q, SIOCGIFFLAGS, &r) == -1 && errno == ENXIO;
     printf("ifreq=%s %s\n", b4, hidden ? "en0-hidden" : "en0-seen");
+
+    // A Unix socket at a path of the container's.
+    int ul = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un un;
+    memset(&un, 0, sizeof un);
+    un.sun_family = AF_UNIX;
+    strlcpy(un.sun_path, "/probe.sock", sizeof un.sun_path);
+    un.sun_len = (unsigned char)SUN_LEN(&un);
+    if (bind(ul, (void *)&un, un.sun_len) || listen(ul, 1)) fail("unix");
+    int uc2 = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (connect(uc2, (void *)&un, un.sun_len)) fail("unix");
+    int ua = accept(ul, NULL, NULL);
+    if (ua < 0) fail("unix");
+    struct sockaddr_un named;
+    socklen_t nl = sizeof named;
+    memset(&named, 0, sizeof named);
+    getsockname(ul, (void *)&named, &nl);
+    printf("unix=%s\n", named.sun_path);
     return 0;
 }

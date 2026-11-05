@@ -223,8 +223,10 @@ machine — and from what macOS offers an unprivileged process under them.
     `::ffff:127.0.0.1`. An IPv4-only listener takes a client of `::1` too,
     where Docker would refuse it.
   - Programs that load no library, as Apple's do not, see the host ports.
-- **Unix socket paths are capped at 104 bytes** on macOS. Keep the state root
-  short (the default `~/.fws` is).
+- **Unix socket paths are capped at 104 bytes** on macOS. A Unix socket at
+  a container path, `/var/run/mysqld/mysqld.sock` say, binds and connects
+  at its host path in the container's root, which must fit: keep the state
+  root short (the default `~/.fws` is).
 
 ## Resources and identity
 

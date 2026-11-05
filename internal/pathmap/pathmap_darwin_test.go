@@ -318,10 +318,14 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		"ifaddrs":  "lo0=127.0.0.1,eth0=127.88.0.2",
 		"ifindex":  "eth0",
 		"ifreq":    "127.88.0.2 en0-hidden",
+		"unix":     "/probe.sock",
 	} {
 		if got[k] != want {
 			t.Errorf("%s: %q, want %q (all: %v)", k, got[k], want, got)
 		}
+	}
+	if fi, err := os.Stat(filepath.Join(root, "probe.sock")); err != nil || fi.Mode()&os.ModeSocket == 0 {
+		t.Errorf("the socket is not in the container's root: %v", err)
 	}
 }
 

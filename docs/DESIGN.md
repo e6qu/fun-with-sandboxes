@@ -241,7 +241,9 @@ same knobs, each enforced by a real mechanism or refused:
   lists them, in the routing sysctl (`NET_RT_IFLIST`, `NET_RT_IFLIST2`)
   that `getifaddrs` and Go read and in the `SIOCGIF*` ioctls: the host's
   loopback interface, and `eth0`, which takes the index after the host's
-  highest, with the member address. The library resolves names in `getaddrinfo` and `gethostbyname`
+  highest, with the member address. A Unix socket's address maps as a
+  file path does, in `bind`, `connect` and `sendto`, and reads back as the
+  container's path. The library resolves names in `getaddrinfo` and `gethostbyname`
   as a resolver does: from the container's `/etc/hosts` first, which the
   host's resolver never reads, then from those names, and then as the host
   does; it connects to a member's address through the host port
