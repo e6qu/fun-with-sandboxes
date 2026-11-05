@@ -138,6 +138,12 @@ machine — and from what macOS offers an unprivileged process under them.
     member addresses.
   - A member's port without a host port is reached through its router,
     whose connections and datagrams its server sees come from `127.0.0.1`.
+- **A container's interfaces are presented.** `getifaddrs`, `if_nameindex`,
+  the `SIOCGIF*` ioctls and the routing sysctl Go's `net.Interfaces` reads
+  list the loopback interface and, on a network, `eth0` with the member
+  address in `127.88.0.0/16` and a MAC address of Docker's form, where the
+  host's interfaces are. The kernel knows no `eth0`: binding a socket to
+  its index, or joining a multicast group on it, fails.
 - **A stack's block is one reachability domain.** Seatbelt lets a container
   reach every port in its stack's block and nothing else, so within a stack
   network membership is presented, not enforced: the container library

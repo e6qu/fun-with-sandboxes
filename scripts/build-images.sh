@@ -25,6 +25,7 @@ go build -o "$build/playwright-entry" ./images/playwright/entry
 go build -o "$build/toolbox" ./images/toolbox
 go build -o "$build/mysql-entry" ./images/mysql/entry
 go build -o "$build/valkey-entry" ./images/valkey/entry
+go build -o "$build/seaweedfs-entry" ./images/seaweedfs/entry
 go build -o "$build/memcached-entry" ./images/memcached/entry
 go build -o "$build/nc" ./images/nc
 
@@ -110,6 +111,12 @@ memcached=$(pkg_with memcached memcached)
 closure "$memcached" > "$build/memcached.closure"
 mkimage $(accounts memcached memcache 11211 11211 /home/memcache) -spec images/memcached/image.json -closure "$build/memcached.closure" -pkg "$memcached" \
   -file "/entry=$build/memcached-entry" -out "$out/memcached.tar"
+
+seaweedfs=$(pkg_with seaweedfs weed)
+closure "$seaweedfs" > "$build/seaweedfs.closure"
+mkimage $(accounts seaweedfs seaweed 1000 1000 /home/seaweed) -spec images/seaweedfs/image.json -closure "$build/seaweedfs.closure" -pkg "$seaweedfs" \
+  -link /usr/bin/weed=../../bin/weed -file "/etc/seaweedfs/filer.toml=images/seaweedfs/filer.toml" -file "/entry=$build/seaweedfs-entry" \
+  -out "$out/seaweedfs.tar"
 
 nats=$(pkg_with nats-server nats-server)
 closure "$nats" > "$build/nats.closure"

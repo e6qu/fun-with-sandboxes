@@ -56,6 +56,12 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <net/if.h>
+#include <net/if_dl.h>
+#include <net/if_types.h>
+#include <net/route.h>
+#include <ifaddrs.h>
+#include <sys/ioctl.h>
+#include <sys/sockio.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -1825,7 +1831,251 @@ INTERPOSE(fws_proc_listchildpids, proc_listchildpids);
 
 // Go and other programs read the hostname, and ps the process table,
 // through sysctl.
+// The container's network interfaces, as a container's network namespace
+// holds them: the loopback interface, and on a network, eth0 with the
+// member address in the member block, where the host's interfaces are.
+// libSystem's getifaddrs and if_nameindex, and Go's net.Interfaces, read
+// them from the routing sysctl NET_RT_IFLIST2 or NET_RT_IFLIST.
+
+#define MEMBER_MASK 0xffff0000u
+#define ETH0_MTU 1500
+#define RT_ROUNDUP(a) ((a) > 0 ? (1 + (((a) - 1) | (sizeof(uint32_t) - 1))) : sizeof(uint32_t))
+
+static const char eth0_name[] = "eth0";
+
+// eth0_mac is a MAC address of Docker's form, 02:42 and the address.
+static void eth0_mac(unsigned char mac[6]) {
+    mac[0] = 0x02;
+    mac[1] = 0x42;
+    memcpy(mac + 2, &own_address, 4);
+}
+
+static struct sockaddr_in v4_sockaddr(in_addr_t a) {
+    struct sockaddr_in s;
+    memset(&s, 0, sizeof s);
+    s.sin_len = sizeof s;
+    s.sin_family = AF_INET;
+    s.sin_addr.s_addr = a;
+    return s;
+}
+
+// eth0_info writes at out eth0's interface message of type, RTM_IFINFO
+// or RTM_IFINFO2, and returns its length.
+static size_t eth0_info(char *out, unsigned char type, unsigned short index) {
+    size_t head = type == RTM_IFINFO2 ? sizeof(struct if_msghdr2) : sizeof(struct if_msghdr);
+    struct sockaddr_dl dl;
+    memset(&dl, 0, sizeof dl);
+    dl.sdl_len = sizeof dl;
+    dl.sdl_family = AF_LINK;
+    dl.sdl_index = index;
+    dl.sdl_type = IFT_ETHER;
+    dl.sdl_nlen = sizeof eth0_name - 1;
+    dl.sdl_alen = 6;
+    memcpy(dl.sdl_data, eth0_name, sizeof eth0_name - 1);
+    eth0_mac((unsigned char *)dl.sdl_data + dl.sdl_nlen);
+    memset(out, 0, head);
+    struct if_msghdr *m = (struct if_msghdr *)out;
+    m->ifm_version = RTM_VERSION;
+    m->ifm_type = type;
+    m->ifm_addrs = RTA_IFP;
+    m->ifm_flags = IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_SIMPLEX | IFF_MULTICAST;
+    m->ifm_index = index;
+    if (type == RTM_IFINFO2) {
+        struct if_msghdr2 *m2 = (struct if_msghdr2 *)out;
+        m2->ifm_data.ifi_type = IFT_ETHER;
+        m2->ifm_data.ifi_addrlen = 6;
+        m2->ifm_data.ifi_hdrlen = 14;
+        m2->ifm_data.ifi_mtu = ETH0_MTU;
+    } else {
+        m->ifm_data.ifi_type = IFT_ETHER;
+        m->ifm_data.ifi_addrlen = 6;
+        m->ifm_data.ifi_hdrlen = 14;
+        m->ifm_data.ifi_mtu = ETH0_MTU;
+    }
+    memcpy(out + head, &dl, sizeof dl);
+    size_t n = head + RT_ROUNDUP(sizeof dl);
+    m->ifm_msglen = (unsigned short)n;
+    return n;
+}
+
+// eth0_addr writes at out the message of eth0's address and returns its
+// length.
+static size_t eth0_addr(char *out, unsigned short index) {
+    struct ifa_msghdr h;
+    memset(&h, 0, sizeof h);
+    h.ifam_version = RTM_VERSION;
+    h.ifam_type = RTM_NEWADDR;
+    h.ifam_addrs = RTA_NETMASK | RTA_IFA | RTA_BRD;
+    h.ifam_index = index;
+    struct sockaddr_in sa[3] = {v4_sockaddr(htonl(MEMBER_MASK)), v4_sockaddr(own_address),
+                                v4_sockaddr(own_address | htonl(~MEMBER_MASK))};
+    size_t n = sizeof h;
+    for (int i = 0; i < 3; i++) {
+        memcpy(out + n, &sa[i], sizeof sa[i]);
+        n += RT_ROUNDUP(sizeof sa[i]);
+    }
+    h.ifam_msglen = (unsigned short)n;
+    memcpy(out, &h, sizeof h);
+    return n;
+}
+
+// iflist answers a routing sysctl of interfaces, NET_RT_IFLIST or
+// NET_RT_IFLIST2, as the container's network namespace would: the host's
+// messages of its loopback interfaces, then eth0's, for the interface the
+// request names, or all of them.
+static int iflist(const int *name, void *old, size_t *oldlen) {
+    int mib[6];
+    memcpy(mib, name, sizeof mib);
+    int want = mib[5], af = mib[3];
+    mib[5] = 0;
+    char *buf = NULL;
+    size_t n = 0;
+    for (;;) {
+        if (sysctl(mib, 6, NULL, &n, NULL, 0) == -1) return -1;
+        n += n / 4 + 1024;
+        free(buf);
+        if (!(buf = malloc(n + 512))) {
+            errno = ENOMEM;
+            return -1;
+        }
+        if (sysctl(mib, 6, buf, &n, NULL, 0) == 0) break;
+        if (errno != ENOMEM) {
+            free(buf);
+            return -1;
+        }
+    }
+    // The loopback interfaces, and the highest index, whose successor
+    // eth0 takes so that no host interface's index names it.
+    unsigned char loop[65536 / 8] = {0};
+    unsigned short top = 0;
+    for (size_t off = 0; off + sizeof(struct if_msghdr) <= n;) {
+        const struct if_msghdr *m = (const void *)(buf + off);
+        if (m->ifm_msglen == 0) break;
+        if (m->ifm_index > top) top = m->ifm_index;
+        if ((m->ifm_type == RTM_IFINFO || m->ifm_type == RTM_IFINFO2) && (m->ifm_flags & IFF_LOOPBACK)) {
+            loop[m->ifm_index / 8] |= (unsigned char)(1 << (m->ifm_index % 8));
+        }
+        off += m->ifm_msglen;
+    }
+    unsigned short eth0 = (unsigned short)(top + 1);
+    size_t out = 0;
+    for (size_t off = 0; off + sizeof(struct if_msghdr) <= n;) {
+        struct if_msghdr *m = (void *)(buf + off);
+        size_t len = m->ifm_msglen;
+        if (len == 0) break;
+        if ((loop[m->ifm_index / 8] & (1 << (m->ifm_index % 8))) && (!want || want == m->ifm_index)) {
+            memmove(buf + out, m, len);
+            out += len;
+        }
+        off += len;
+    }
+    char extra[512];
+    size_t more = 0;
+    if (own_address && top < 65535 && (!want || want == eth0)) {
+        more = eth0_info(extra, mib[4] == NET_RT_IFLIST2 ? RTM_IFINFO2 : RTM_IFINFO, eth0);
+        if (af == 0 || af == AF_INET) more += eth0_addr(extra + more, eth0);
+    }
+    memcpy(buf + out, extra, more);
+    out += more;
+    if (!old) {
+        *oldlen = out;
+        free(buf);
+        return 0;
+    }
+    int r = 0;
+    if (*oldlen < out) {
+        errno = ENOMEM;
+        r = -1;
+        out = *oldlen;
+    }
+    memcpy(old, buf, out);
+    *oldlen = out;
+    free(buf);
+    return r;
+}
+
+// ifconf answers SIOCGIFCONF from the interfaces getifaddrs reads, which
+// the routing sysctl presents: an entry per address, of its interface's
+// name and the address, as long as the address or a struct sockaddr.
+static int ifconf(struct ifconf *c) {
+    struct ifaddrs *list;
+    if (getifaddrs(&list) == -1) return -1;
+    int used = 0;
+    for (struct ifaddrs *a = list; a; a = a->ifa_next) {
+        if (!a->ifa_addr) continue;
+        int size = IFNAMSIZ + (a->ifa_addr->sa_len > sizeof(struct sockaddr) ? a->ifa_addr->sa_len : (int)sizeof(struct sockaddr));
+        if (c->ifc_buf && used + size > c->ifc_len) break;
+        if (c->ifc_buf) {
+            char *e = c->ifc_buf + used;
+            memset(e, 0, (size_t)size);
+            strlcpy(e, a->ifa_name, IFNAMSIZ);
+            memcpy(e + IFNAMSIZ, a->ifa_addr, a->ifa_addr->sa_len);
+        }
+        used += size;
+    }
+    freeifaddrs(list);
+    c->ifc_len = used;
+    return 0;
+}
+
+// eth0_ioctl answers a query of eth0's flags, MTU or addresses.
+static int eth0_ioctl(unsigned long req, struct ifreq *r) {
+    struct sockaddr_in a;
+    switch (req) {
+    case SIOCGIFFLAGS:
+        r->ifr_flags = IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_SIMPLEX | IFF_MULTICAST;
+        return 0;
+    case SIOCGIFMTU:
+        r->ifr_mtu = ETH0_MTU;
+        return 0;
+    case SIOCGIFADDR:
+        a = v4_sockaddr(own_address);
+        break;
+    case SIOCGIFNETMASK:
+        a = v4_sockaddr(htonl(MEMBER_MASK));
+        break;
+    default:
+        a = v4_sockaddr(own_address | htonl(~MEMBER_MASK));
+        break;
+    }
+    memcpy(&r->ifr_addr, &a, sizeof a);
+    return 0;
+}
+
+static int fws_ioctl(int fd, unsigned long req, ...) {
+    va_list ap;
+    va_start(ap, req);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    switch (req) {
+    case SIOCGIFCONF:
+        if (arg) return ifconf(arg);
+        break;
+    case SIOCGIFFLAGS:
+    case SIOCGIFMTU:
+    case SIOCGIFADDR:
+    case SIOCGIFNETMASK:
+    case SIOCGIFBRDADDR: {
+        struct ifreq *r = arg;
+        if (!r) break;
+        if (own_address && strncmp(r->ifr_name, eth0_name, IFNAMSIZ) == 0) return eth0_ioctl(req, r);
+        // The host's other interfaces are not the container's.
+        if (strncmp(r->ifr_name, "lo", 2) != 0) {
+            errno = ENXIO;
+            return -1;
+        }
+        break;
+    }
+    }
+    return ioctl(fd, req, arg);
+}
+INTERPOSE(fws_ioctl, ioctl);
+
 static int fws_sysctl(int *name, u_int namelen, void *old, size_t *oldlen, void *new, size_t newlen) {
+    if (namelen == 6 && name[0] == CTL_NET && name[1] == PF_ROUTE && name[2] == 0 &&
+        (name[4] == NET_RT_IFLIST || name[4] == NET_RT_IFLIST2) && oldlen && !new) {
+        return iflist(name, old, oldlen);
+    }
     if (namelen == 3 && name[0] == CTL_KERN && (name[1] == KERN_PROCARGS || name[1] == KERN_PROCARGS2) && init_pid) {
         int mib[3] = {name[0], name[1], to_host(name[2])};
         return sysctl(mib, 3, old, oldlen, new, newlen);

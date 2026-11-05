@@ -237,7 +237,11 @@ same knobs, each enforced by a real mechanism or refused:
   of each member's address, the names it answers to (its container name,
   service, hostname, DNS names and aliases) and its ports' host ports; the
   container reads it (`FWS_NETWORK`) and nothing else of the engine's
-  state. The library resolves names in `getaddrinfo` and `gethostbyname`
+  state. The library presents the container's interfaces where a program
+  lists them, in the routing sysctl (`NET_RT_IFLIST`, `NET_RT_IFLIST2`)
+  that `getifaddrs` and Go read and in the `SIOCGIF*` ioctls: the host's
+  loopback interface, and `eth0`, which takes the index after the host's
+  highest, with the member address. The library resolves names in `getaddrinfo` and `gethostbyname`
   as a resolver does: from the container's `/etc/hosts` first, which the
   host's resolver never reads, then from those names, and then as the host
   does; it connects to a member's address through the host port
@@ -440,7 +444,8 @@ it; it tells services their assignment through the environment.
   authentication) for any TCP, told apart by the first byte a client sends.
   Containers, classic `RUN` steps and BuildKit steps receive `HTTP_PROXY`,
   `HTTPS_PROXY`, `ALL_PROXY` (`socks5h://`, so the proxy resolves names) and
-  `NO_PROXY`. The proxy resolves each destination once, refuses it if any
+  `NO_PROXY`, which leaves loopback and the member block to the container
+  library. The proxy resolves each destination once, refuses it if any
   address is loopback, link-local, multicast, unspecified or assigned to one
   of the host's interfaces, and dials an address it checked, so DNS cannot
   rebind a name onto the host. Containers with `network_mode: none`, or only

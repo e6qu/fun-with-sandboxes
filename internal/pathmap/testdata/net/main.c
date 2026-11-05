@@ -5,6 +5,11 @@
 // does, by an alias a link gives it, and a name its /etc/hosts lists. It
 // reports each step.
 #include <arpa/inet.h>
+#include <errno.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
+#include <sys/sockio.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -203,5 +208,34 @@ int main(int argc, char **argv) {
     char *port = strrchr(host, ':');
     if (port) *port = 0;
     printf("udp=%s\n", host);
+
+    // The container's interfaces: loopback, and eth0 at its member address.
+    struct ifaddrs *ifs;
+    if (getifaddrs(&ifs)) fail("ifaddrs");
+    char list[512] = "";
+    for (struct ifaddrs *a = ifs; a; a = a->ifa_next) {
+        if (!a->ifa_addr || a->ifa_addr->sa_family != AF_INET) continue;
+        char b4[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &((struct sockaddr_in *)(void *)a->ifa_addr)->sin_addr, b4, sizeof b4);
+        if (list[0]) strlcat(list, ",", sizeof list);
+        strlcat(list, a->ifa_name, sizeof list);
+        strlcat(list, "=", sizeof list);
+        strlcat(list, b4, sizeof list);
+    }
+    freeifaddrs(ifs);
+    printf("ifaddrs=%s\n", list);
+    unsigned idx = if_nametoindex("eth0");
+    char back[IF_NAMESIZE] = "";
+    printf("ifindex=%s\n", idx && if_indextoname(idx, back) && strcmp(back, "eth0") == 0 ? "eth0" : "none");
+    int q = socket(AF_INET, SOCK_DGRAM, 0);
+    struct ifreq r;
+    memset(&r, 0, sizeof r);
+    strlcpy(r.ifr_name, "eth0", sizeof r.ifr_name);
+    if (ioctl(q, SIOCGIFADDR, &r)) fail("ifreq");
+    char b4[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &((struct sockaddr_in *)(void *)&r.ifr_addr)->sin_addr, b4, sizeof b4);
+    strlcpy(r.ifr_name, "en0", sizeof r.ifr_name);
+    int hidden = ioctl(q, SIOCGIFFLAGS, &r) == -1 && errno == ENXIO;
+    printf("ifreq=%s %s\n", b4, hidden ? "en0-hidden" : "en0-seen");
     return 0;
 }

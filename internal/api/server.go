@@ -63,6 +63,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawPath = ""
 		r = r.WithContext(context.WithValue(r.Context(), versionKey{}, m[1]))
 	}
+	linkReference(r.URL)
 	w.Header().Set("Api-Version", engine.APIVersion)
 	w.Header().Set("Server", "fun-with-sandboxes/"+engine.Version+" (darwin)")
 	w.Header().Set("Docker-Experimental", "false")
@@ -94,6 +95,27 @@ func cmpVersion(a, b string) int {
 		}
 	}
 	return 0
+}
+
+// containerActions are the routes under a container's reference.
+var containerActions = []string{"/attach/ws", "/json", "/start", "/stop", "/restart", "/kill", "/pause", "/unpause", "/wait",
+	"/rename", "/resize", "/update", "/attach", "/exec", "/logs", "/stats", "/top", "/changes", "/export", "/archive"}
+
+// linkReference escapes the slashes of a container reference that names a
+// link, /containers/<parent>/<alias>/json, which Docker's router takes
+// whole, so that the route's {id} holds it.
+func linkReference(u *url.URL) {
+	rest, ok := strings.CutPrefix(u.Path, "/containers/")
+	if !ok {
+		return
+	}
+	for _, a := range containerActions {
+		ref, ok := strings.CutSuffix(rest, a)
+		if ok && strings.Contains(ref, "/") {
+			u.RawPath = "/containers/" + url.PathEscape(ref) + a
+			return
+		}
+	}
 }
 
 func (s *Server) routes() {

@@ -69,6 +69,19 @@ func TestPathsNameTheRoot(t *testing.T) {
 	}
 }
 
+// A container's interfaces are its own, as in its network namespace:
+// loopback, and on a network, eth0 at its member address, where the host's
+// are.
+func TestInterfaces(t *testing.T) {
+	root := containerRoot(t)
+	if got := probe(t, root, []string{AddressVar + "=127.88.0.2"}, "interfaces"); got["interfaces"] != "lo0(loopback 127.0.0.1/8 ),eth0(127.88.0.2/16 02:42:7f:58:00:02)" {
+		t.Errorf("on a network: %q", got["interfaces"])
+	}
+	if got := probe(t, root, nil, "interfaces"); got["interfaces"] != "lo0(loopback 127.0.0.1/8 )" {
+		t.Errorf("on no network: %q", got["interfaces"])
+	}
+}
+
 func TestIdentityAndOwnership(t *testing.T) {
 	root := containerRoot(t)
 	got := probe(t, root, []string{"FWS_HOSTNAME=web-1"}, "ids", "user", "owner", "chown", "hostname")
@@ -302,6 +315,9 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		"hosts":    "10.1.2.3:80 extra.local",
 		"hostent":  "10.1.2.3",
 		"direct":   "127.0.0.1:8082",
+		"ifaddrs":  "lo0=127.0.0.1,eth0=127.88.0.2",
+		"ifindex":  "eth0",
+		"ifreq":    "127.88.0.2 en0-hidden",
 	} {
 		if got[k] != want {
 			t.Errorf("%s: %q, want %q (all: %v)", k, got[k], want, got)

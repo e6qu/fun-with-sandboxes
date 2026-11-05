@@ -4,6 +4,8 @@
 package main
 
 import (
+	"bufio"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -55,21 +57,15 @@ func main() {
 	if err := sandboxenv.Become("postgres", pgdata, sockets); err != nil {
 		log.Fatal(err)
 	}
-	if err := initialise(pgdata, user); err != nil {
-		log.Fatal(err)
-	}
 	args := os.Args[1:]
 	if len(args) > 0 && args[0] == "postgres" {
 		args = args[1:]
 	}
-	server := []string{"postgres", "-D", pgdata,
-		"-c", "listen_addresses=127.0.0.1", "-c", "port=" + port, "-c", "unix_socket_directories=" + sockets}
-	for _, s := range serverSettings {
-		server = append(server, "-c", s)
+	if err := initialise(pgdata, user, port, sockets, args); err != nil {
+		log.Fatal(err)
 	}
-	postgres := bin("postgres")
-	server[0] = postgres
-	log.Fatal(syscall.Exec(postgres, append(server, args...), os.Environ()))
+	server := append([]string{"postgres"}, serverArgs(pgdata, "127.0.0.1", port, sockets)...)
+	log.Fatal(syscall.Exec(bin("postgres"), append(server, args...), os.Environ()))
 }
 
 // bin returns the real path of a PostgreSQL program. PostgreSQL finds its
@@ -107,7 +103,7 @@ func run(name string, args ...string) int {
 	return 0
 }
 
-func initialise(pgdata, user string) error {
+func initialise(pgdata, user, port, sockets string, extra []string) error {
 	if _, err := os.Stat(filepath.Join(pgdata, "PG_VERSION")); err == nil {
 		log.Printf("PostgreSQL database directory appears to contain a database; skipping initialization")
 		return nil
@@ -145,38 +141,121 @@ func initialise(pgdata, user string) error {
 	if code := run(bin("initdb"), args...); code != 0 {
 		return fmt.Errorf("initdb exited with %d", code)
 	}
+	// The database and init scripts go through a server that listens on
+	// its socket alone, as the official image's entrypoint runs it, with
+	// the server's own arguments.
+	temp := exec.Command(bin("postgres"), append(serverArgs(pgdata, "", port, sockets), extra...)...)
+	temp.Args[0] = "postgres"
+	temp.Stdout = os.Stdout
+	logs, err := temp.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := temp.Start(); err != nil {
+		return err
+	}
+	ready := make(chan struct{})
+	go relay(logs, ready)
+	exited := make(chan error, 1)
+	go func() { exited <- temp.Wait() }()
+	select {
+	case <-ready:
+	case err := <-exited:
+		return fmt.Errorf("the setup server exited before it was ready: %v", err)
+	}
+	stop := func() error {
+		temp.Process.Signal(syscall.SIGINT)
+		return <-exited
+	}
+	psql := func(db string, stdin io.Reader, script string) error {
+		args := []string{"-v", "ON_ERROR_STOP=1", "--username", user, "--no-password", "--no-psqlrc", "--host", sockets, "--port", port, "--dbname", db}
+		if script != "" {
+			args = append(args, "-f", script)
+		}
+		cmd := exec.Command(bin("psql"), args...)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, os.Stdout, os.Stderr
+		return cmd.Run()
+	}
 	db := getenv("POSTGRES_DB", user)
 	if db != "postgres" {
-		if err := single(pgdata, "postgres", strings.NewReader(fmt.Sprintf("CREATE DATABASE %q;\n", db))); err != nil {
+		if err := psql("postgres", strings.NewReader("CREATE DATABASE "+ident(db)+";\n"), ""); err != nil {
+			stop()
+			return fmt.Errorf("create database %s: %w", db, err)
+		}
+	}
+	scripts, _ := filepath.Glob(filepath.Join(sandboxenv.Path("/docker-entrypoint-initdb.d"), "*"))
+	sort.Strings(scripts)
+	for _, s := range scripts {
+		if err := initScript(s, db, psql); err != nil {
+			stop()
 			return err
 		}
 	}
-	scripts, _ := filepath.Glob(filepath.Join(sandboxenv.Path("/docker-entrypoint-initdb.d"), "*.sql"))
-	sort.Strings(scripts)
-	for _, s := range scripts {
-		f, err := os.Open(s)
-		if err != nil {
-			return err
-		}
-		log.Printf("running %s", filepath.Base(s))
-		err = single(pgdata, db, f)
-		f.Close()
-		if err != nil {
-			return err
-		}
+	if err := stop(); err != nil {
+		return fmt.Errorf("the setup server: %w", err)
 	}
 	log.Printf("PostgreSQL init process complete; ready for start up.")
 	return nil
 }
 
-// single runs SQL through PostgreSQL's single-user mode, which needs no
-// listening server.
-func single(pgdata, db string, sql io.Reader) error {
-	args := []string{"--single", "-j", "-D", pgdata}
+// initScript runs an init script as the official image does: SQL, plain
+// or gzipped, through psql into the database, and a shell script with the
+// image's shell; it ignores any other file.
+func initScript(path, db string, psql func(string, io.Reader, string) error) error {
+	name := filepath.Base(path)
+	switch {
+	case strings.HasSuffix(name, ".sql"):
+		log.Printf("running %s", name)
+		return psql(db, nil, path)
+	case strings.HasSuffix(name, ".sql.gz"):
+		log.Printf("running %s", name)
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		z, err := gzip.NewReader(f)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		return psql(db, z, "")
+	case strings.HasSuffix(name, ".sh"):
+		log.Printf("running %s", name)
+		cmd := exec.Command(sandboxenv.Path("/bin/sh"), path)
+		if fi, err := os.Stat(path); err == nil && fi.Mode()&0o111 != 0 {
+			cmd = exec.Command(path)
+		}
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		return cmd.Run()
+	}
+	log.Printf("ignoring %s", name)
+	return nil
+}
+
+// relay copies the server's log to the entry's and closes ready when the
+// server logs that it accepts connections.
+func relay(r io.Reader, ready chan<- struct{}) {
+	sc := bufio.NewScanner(r)
+	announced := false
+	for sc.Scan() {
+		line := sc.Text()
+		fmt.Fprintln(os.Stderr, line)
+		if !announced && strings.Contains(line, "ready to accept connections") {
+			announced = true
+			close(ready)
+		}
+	}
+}
+
+func ident(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+
+// serverArgs are the server's arguments: its data directory, the address
+// it listens on ("" for its socket alone), its port and socket directory,
+// and the settings macOS's limits ask for.
+func serverArgs(pgdata, listen, port, sockets string) []string {
+	args := []string{"-D", pgdata, "-c", "listen_addresses=" + listen, "-c", "port=" + port, "-c", "unix_socket_directories=" + sockets}
 	for _, s := range serverSettings {
 		args = append(args, "-c", s)
 	}
-	cmd := exec.Command(bin("postgres"), append(args, db)...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = sql, os.Stdout, os.Stderr
-	return cmd.Run()
+	return args
 }
