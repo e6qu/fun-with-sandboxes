@@ -142,8 +142,11 @@ machine — and from what macOS offers an unprivileged process under them.
   `docker network create` one, reach one another by name: a container's
   router, outside its sandbox, relays its connections to the other stack's
   members. Its limits:
-  - Only TCP crosses; a datagram to another stack's member fails with
-    `EHOSTUNREACH`.
+  - A datagram crosses through a relay port of the sender's router, which
+    keeps one upstream socket per sending socket while it is used, as a
+    published UDP port does, so a relay's concurrent senders are bounded
+    by the other stack's block. A relay outlives a disconnect for the
+    senders already using it, until 90 seconds pass without traffic.
   - A program that loads no library cannot reach the other stack's members,
     and its stack's egress proxy reaches them for any member of its stack.
   - Any member of a stack can ask another member's router for a relay, so

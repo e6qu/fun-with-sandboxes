@@ -142,7 +142,17 @@ func (s *server) run(report func(Ready)) (int, error) {
 			}
 			return c, err
 		}
-		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir, flow, router.Network{File: cfg.NetworkFile, Address: cfg.Address})
+		// A relay to another stack's member sends from that stack's block,
+		// carrying the container's traffic.
+		dialFlow := func(stack string, raddr *net.UDPAddr) (net.Conn, error) {
+			c, err := alloc.DialFlow(cfg.AllocRoot, stack, raddr)
+			if err != nil {
+				return nil, err
+			}
+			traffic.AddEndpoint(os.Getpid(), uint16(c.LocalAddr().(*net.UDPAddr).Port))
+			return c, nil
+		}
+		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir, flow, router.Network{File: cfg.NetworkFile, Address: cfg.Address, DialFlow: dialFlow})
 		if err != nil {
 			closeProxies()
 			report(Ready{Error: err.Error()})

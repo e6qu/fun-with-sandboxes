@@ -246,6 +246,38 @@ func TestSharedNetworks(t *testing.T) {
 	if out := mustDocker(t, "run", "--rm", "fws/python:3.14", "python3", "-c", sharedClient, "e2e-shared-api:8000", "kv:8001"); out != "e2e-shared-api:8000 gaierror\nkv:8001 gaierror\n" {
 		t.Errorf("a client on no shared network printed %q", out)
 	}
+	// Datagrams cross too, to a port with a host port and one without, and
+	// their replies come from the member's address and port.
+	udp := "e2e-shared-udp"
+	mustDocker(t, "run", "-d", "--name", udp, "--network", network, "--expose", "9054/udp", "fws/python:3.14", "python3", "-c", `import socket, threading
+socks = []
+for port in (9053, 9054):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("0.0.0.0", port))
+    socks.append(s)
+def echo(s):
+    while True:
+        d, a = s.recvfrom(512)
+        s.sendto(d.upper(), a)
+threads = [threading.Thread(target=echo, args=(s,)) for s in socks]
+for th in threads:
+    th.start()
+print("ready", flush=True)
+for th in threads:
+    th.join()`)
+	defer docker(t, "rm", "-f", udp)
+	waitLog(t, udp, "ready")
+	out = mustDocker(t, "run", "--rm", "--network", network, "fws/python:3.14", "python3", "-c", `import socket
+addr = socket.gethostbyname("`+udp+`")
+for port in (9053, 9054):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(10)
+    s.sendto(b"ping", ("`+udp+`", port))
+    d, a = s.recvfrom(512)
+    print(port, d.decode(), "from-member" if a == (addr, port) else a)`)
+	if out != "9053 PING from-member\n9054 PING from-member\n" {
+		t.Errorf("a UDP client on %s printed %q", network, out)
+	}
 	// Disconnected, a container no longer reaches the network's members.
 	mustDocker(t, "network", "disconnect", network, "e2e-shared-cache")
 	if out := mustDocker(t, "exec", "e2e-shared-cache", "python3", "-c", sharedClient, "e2e-shared-api:8000"); out != "e2e-shared-api:8000 gaierror\n" {

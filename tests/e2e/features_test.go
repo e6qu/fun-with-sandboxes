@@ -30,6 +30,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/testcontainers/testcontainers-go"
+	tcnetwork "github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
@@ -169,6 +170,45 @@ func TestTestcontainers(t *testing.T) {
 	rc.Close()
 	if !bytes.Equal(b, []byte("seeded\n")) {
 		t.Fatalf("file copied in at creation reads back %q", b)
+	}
+}
+
+// Testcontainers' containers on a network it creates reach one another by
+// their network aliases.
+func TestTestcontainersNetwork(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	nw, err := tcnetwork.New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nw.Remove(context.Background())
+	redis, err := testcontainers.Run(ctx, "fws/redis:8",
+		testcontainers.WithExposedPorts("6379/tcp"),
+		testcontainers.WithWaitStrategy(wait.ForLog("Ready to accept connections")),
+		tcnetwork.WithNetwork([]string{"cache"}, nw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer redis.Terminate(context.Background())
+	client, err := testcontainers.Run(ctx, "fws/python:3.14",
+		testcontainers.WithCmd("python3", "-c", `import socket
+s = socket.create_connection(("cache", 6379), timeout=10)
+s.sendall(b"PING\r\n")
+print("answer", s.recv(16).decode().strip())`),
+		testcontainers.WithWaitStrategy(wait.ForExit()),
+		tcnetwork.WithNetwork(nil, nw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Terminate(context.Background())
+	logs, err := client.Logs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(logs)
+	if !strings.Contains(string(b), "answer +PONG") {
+		t.Fatalf("the client on the network printed %q", b)
 	}
 }
 

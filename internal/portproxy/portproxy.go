@@ -142,9 +142,7 @@ func Listen(proto string, ip netip.Addr, lo, hi int, upstream string, dial FlowD
 		if proto == "udp" {
 			var pc net.PacketConn
 			if pc, err = net.ListenPacket("udp", addr); err == nil {
-				px := newUDPProxy(pc, upstream, dial)
-				go px.serve()
-				return px, pc.LocalAddr().(*net.UDPAddr).Port, nil
+				return ServeUDP(pc, upstream, dial), pc.LocalAddr().(*net.UDPAddr).Port, nil
 			}
 		} else {
 			var l net.Listener
@@ -178,6 +176,14 @@ type udpProxy struct {
 	flows    map[string]net.Conn
 	closed   bool
 	wg       sync.WaitGroup
+}
+
+// ServeUDP forwards the datagrams pc receives to upstream, from a socket
+// dial opens for each client, and the replies back to the client.
+func ServeUDP(pc net.PacketConn, upstream string, dial FlowDialer) io.Closer {
+	px := newUDPProxy(pc, upstream, dial)
+	go px.serve()
+	return px
 }
 
 func newUDPProxy(pc net.PacketConn, upstream string, dial FlowDialer) *udpProxy {

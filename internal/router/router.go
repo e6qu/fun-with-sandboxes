@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/members"
+	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
 )
 
 // A request is the container port, two bytes big-endian; the answer is one
@@ -41,7 +42,9 @@ import (
 // more bytes name the UDP port, and Connected is followed by its flow port,
 // two bytes big-endian. A request for port Foreign is a relay to another
 // stack's member: four more bytes name the member's IPv4 address and two
-// its container port.
+// its container port. A UDP lookup for port Foreign names a member's UDP
+// port the same way, and is answered with the port of the router's relay
+// to it.
 const (
 	Connected = 0
 	Refused   = 1
@@ -89,15 +92,21 @@ type Router struct {
 	// flows are the UDP ports' flow ports, by container port, kept while
 	// the router runs so a client's lookup stays good.
 	flows map[int]*net.UDPConn
+	// relays are the relays to other stacks' members' UDP ports.
+	relays       map[relayKey]*net.UDPConn
+	relayClosers []io.Closer
+}
+
+// Network locates the router's container among its stack's members: the
+// stack's network file and the container's member address. DialFlow opens
+// a UDP socket to raddr on a port of another stack's block.
+type Network struct {
+	File, Address string
+	DialFlow      func(stack string, raddr *net.UDPAddr) (net.Conn, error)
 }
 
 // Listen starts a router on addr for the port directory dir; flow opens a
-// UDP port's flow port.
-// Network locates the router's container among its stack's members: the
-// stack's network file and the container's member address.
-type Network struct {
-	File, Address string
-}
+// UDP port of the router's stack's block.
 
 func Listen(addr, dir string, flow func() (*net.UDPConn, error), nw Network) (*Router, error) {
 	l, err := net.Listen("tcp", addr)
@@ -113,7 +122,7 @@ func Listen(addr, dir string, flow func() (*net.UDPConn, error), nw Network) (*R
 	// A Unix datagram is bounded by the sending socket's buffer.
 	ux.SetReadBuffer(4 * maxDatagram)
 	ux.SetWriteBuffer(2 * maxDatagram)
-	r := &Router{l: l, dir: dir, net: nw, cs: map[net.Conn]struct{}{}, ux: ux, flow: flow, flows: map[int]*net.UDPConn{}}
+	r := &Router{l: l, dir: dir, net: nw, relays: map[relayKey]*net.UDPConn{}, cs: map[net.Conn]struct{}{}, ux: ux, flow: flow, flows: map[int]*net.UDPConn{}}
 	go r.serve()
 	go r.fromContainer()
 	return r, nil
@@ -133,6 +142,9 @@ func (r *Router) Close() error {
 	r.ux.Close()
 	r.umu.Lock()
 	for _, c := range r.flows {
+		c.Close()
+	}
+	for _, c := range r.relayClosers {
 		c.Close()
 	}
 	r.umu.Unlock()
@@ -269,21 +281,9 @@ func (r *Router) join(c net.Conn) {
 // network with the router's container: at its host port, or through its
 // router.
 func (r *Router) foreign(addr netip.Addr, port int) (net.Conn, error) {
-	if r.net.File == "" {
-		return nil, errRefused
-	}
-	b, err := os.ReadFile(r.net.File)
+	to, err := r.peer(addr)
 	if err != nil {
 		return nil, err
-	}
-	ms := members.Parse(b)
-	self, ok := members.Find(ms, r.net.Address)
-	if !ok {
-		return nil, errRefused
-	}
-	to, ok := members.Find(ms, addr.String())
-	if !ok || !members.Share(self, to) {
-		return nil, errRefused
 	}
 	if hp, ok := to.Ports[fmt.Sprintf("%d/tcp", port)]; ok {
 		return net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
@@ -292,6 +292,80 @@ func (r *Router) foreign(addr netip.Addr, port int) (net.Conn, error) {
 		return nil, errRefused
 	}
 	return Dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(to.Router)), port)
+}
+
+// peer finds the member at addr, which must share a network with the
+// router's container.
+func (r *Router) peer(addr netip.Addr) (members.Member, error) {
+	if r.net.File == "" {
+		return members.Member{}, errRefused
+	}
+	b, err := os.ReadFile(r.net.File)
+	if err != nil {
+		return members.Member{}, err
+	}
+	ms := members.Parse(b)
+	self, ok := members.Find(ms, r.net.Address)
+	if !ok {
+		return members.Member{}, errRefused
+	}
+	to, ok := members.Find(ms, addr.String())
+	if !ok || !members.Share(self, to) {
+		return members.Member{}, errRefused
+	}
+	return to, nil
+}
+
+type relayKey struct {
+	addr netip.Addr
+	port int
+}
+
+// relay returns the port of the router's relay to UDP port port of
+// another stack's member at addr, made on the first lookup: a UDP port of
+// the router's stack's block, which its container may send to, whose
+// datagrams go on to the member's host port or flow port from a socket on
+// a port of the member's stack's block, which the member may answer, one
+// for each of the container's sockets. A socket's first datagram checks
+// again that the member shares a network with the container.
+func (r *Router) relay(addr netip.Addr, port int) (int, error) {
+	to, err := r.peer(addr)
+	if err != nil {
+		return 0, err
+	}
+	if r.net.DialFlow == nil {
+		return 0, errRefused
+	}
+	r.umu.Lock()
+	defer r.umu.Unlock()
+	key := relayKey{addr, port}
+	if pc, ok := r.relays[key]; ok {
+		return pc.LocalAddr().(*net.UDPAddr).Port, nil
+	}
+	var upstream int
+	if hp, ok := to.Ports[fmt.Sprintf("%d/udp", port)]; ok {
+		upstream = hp
+	} else if to.Router != 0 {
+		if upstream, err = LookupUDP(net.JoinHostPort("127.0.0.1", strconv.Itoa(to.Router)), port); err != nil {
+			return 0, err
+		}
+	} else {
+		return 0, errRefused
+	}
+	pc, err := r.flow()
+	if err != nil {
+		return 0, err
+	}
+	stack := to.Stack
+	px := portproxy.ServeUDP(pc, net.JoinHostPort("127.0.0.1", strconv.Itoa(upstream)), func(raddr *net.UDPAddr) (net.Conn, error) {
+		if _, err := r.peer(addr); err != nil {
+			return nil, err
+		}
+		return r.net.DialFlow(stack, raddr)
+	})
+	r.relays[key] = pc
+	r.relayClosers = append(r.relayClosers, px)
+	return pc.LocalAddr().(*net.UDPAddr).Port, nil
 }
 
 // lookup answers a UDP lookup with the port's flow port.
@@ -305,13 +379,27 @@ func (r *Router) lookup(c net.Conn) {
 		c.Write([]byte{Refused})
 		return
 	}
-	f, err := r.flowPort(port)
-	if err != nil {
-		c.Write([]byte{Refused})
-		return
+	var f int
+	if port == Foreign {
+		var to [6]byte
+		if _, err := io.ReadFull(c, to[:]); err != nil {
+			return
+		}
+		var err error
+		if f, err = r.relay(netip.AddrFrom4([4]byte(to[:4])), int(binary.BigEndian.Uint16(to[4:]))); err != nil {
+			c.Write([]byte{Refused})
+			return
+		}
+	} else {
+		fc, err := r.flowPort(port)
+		if err != nil {
+			c.Write([]byte{Refused})
+			return
+		}
+		f = fc.LocalAddr().(*net.UDPAddr).Port
 	}
 	ans := []byte{Connected, 0, 0}
-	binary.BigEndian.PutUint16(ans[1:], uint16(f.LocalAddr().(*net.UDPAddr).Port))
+	binary.BigEndian.PutUint16(ans[1:], uint16(f))
 	c.Write(ans)
 }
 

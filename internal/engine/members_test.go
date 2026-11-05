@@ -53,9 +53,9 @@ func TestMembersAndTheirNetworkFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "127.88.0.2\tproj-db-1 db aaaa database\t5432/tcp=30010\t30020\tproj_default\t0\n" +
-		"127.88.0.3\tproj-web-1 web bbbb database\t53/udp=30012,80/tcp=30011\t30021\tproj_default shared\t0\n" +
-		"127.88.0.5\tother-api-1 api dddd database\t8000/tcp=30110\t30023\tother_default shared\t1\n"
+	want := "127.88.0.2\tproj-db-1 db aaaa database\t5432/tcp=30010\t30020\tproj_default\t0\t\n" +
+		"127.88.0.3\tproj-web-1 web bbbb database\t53/udp=30012,80/tcp=30011\t30021\tproj_default shared\t0\t\n" +
+		"127.88.0.5\tother-api-1 api dddd database\t8000/tcp=30110\t30023\tother_default shared\t1\tother\n"
 	if string(b) != want {
 		t.Errorf("network file:\n%s\nwant:\n%s", b, want)
 	}
@@ -65,7 +65,7 @@ func TestMembersAndTheirNetworkFile(t *testing.T) {
 	if b, err = os.ReadFile(path); err != nil {
 		t.Fatal(err)
 	}
-	want = "127.88.0.3\tproj-web-1 web bbbb database\t53/udp=30012,80/tcp=30011\t30021\tproj_default shared\t1\n"
+	want = "127.88.0.3\tproj-web-1 web bbbb database\t53/udp=30012,80/tcp=30011\t30021\tproj_default shared\t1\tproj\n"
 	if !strings.HasPrefix(string(b), "127.88.0.5\t") || !strings.HasSuffix(string(b), want) || strings.Count(string(b), "\n") != 3 {
 		t.Errorf("the other stack's network file:\n%s", b)
 	}
