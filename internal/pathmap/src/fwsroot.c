@@ -58,6 +58,7 @@
 #include <netdb.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/uio.h>
 #include <sys/xattr.h>
 #include <unistd.h>
 
@@ -2014,6 +2015,9 @@ static unsigned short container_port(int type, unsigned short hport) {
 #define NET_UNIX 4
 #define NET_ROUTED 8
 #define NET_LO6 16
+// NET_DCONN: a UDP socket on a port without a host port connected to
+// net_peer and net_dport, the peer as reach finds it.
+#define NET_DCONN 32
 // What the router puts before a datagram on a Unix one: the IPv4 address
 // and port it came from, or goes to.
 #define DGRAM_HEADER 6
@@ -2025,6 +2029,7 @@ static unsigned char net_state[NET_FDS];
 // NET_ROUTED ones the peer's address.
 static unsigned short net_port[NET_FDS];
 static in_addr_t net_peer[NET_FDS];
+static unsigned short net_dport[NET_FDS];
 
 static unsigned char state_of(int fd) { return fd >= 0 && fd < NET_FDS ? net_state[fd] : 0; }
 
@@ -2650,14 +2655,12 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
     return 0;
 }
 
-// A UDP socket on a port without a host port sends each datagram with the
-// router's header, which a connected one's send and write would leave off.
 static int dgram_unix(int fd);
+static int dgram_connect(int fd, const struct sockaddr *sa, socklen_t len);
 
 static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
     if (dgram_unix(fd)) {
-        errno = EOPNOTSUPP;
-        return -1;
+        return dgram_connect(fd, sa, len);
     }
     int rr;
     if (routed(fd, sa, len, &rr)) {
@@ -2675,8 +2678,7 @@ INTERPOSE(fws_connect, connect);
 extern int connect_nocancel(int, const struct sockaddr *, socklen_t) __asm("_connect$NOCANCEL") __attribute__((weak_import));
 static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len) {
     if (dgram_unix(fd)) {
-        errno = EOPNOTSUPP;
-        return -1;
+        return dgram_connect(fd, sa, len);
     }
     int rr;
     if (routed(fd, sa, len, &rr)) {
@@ -2699,8 +2701,65 @@ static int dgram_unix(int fd) { return (state_of(fd) & NET_UNIX) && sock_type(fd
 typedef ssize_t (*sendmsg_fn)(int, const struct msghdr *, int);
 typedef ssize_t (*recvmsg_fn)(int, struct msghdr *, int);
 
-static ssize_t dgram_send(int fd, const struct iovec *iov, int iovlen, int flags, const struct sockaddr *sa, socklen_t len, sendmsg_fn send) {
+// dgram_dest reads a datagram's destination as an IPv4 address and port.
+static int dgram_dest(const struct sockaddr *sa, socklen_t len, in_addr_t *v4, unsigned short *port) {
+    if (sa->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *a = (const void *)sa;
+        *v4 = a->sin_addr.s_addr;
+        *port = ntohs(a->sin_port);
+        return 0;
+    }
+    if (sa->sa_family == AF_INET6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *a = (const void *)sa;
+        *port = ntohs(a->sin6_port);
+        if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr)) {
+            *v4 = mapped_v4(&a->sin6_addr);
+        } else if (IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) || IN6_IS_ADDR_UNSPECIFIED(&a->sin6_addr)) {
+            *v4 = htonl(INADDR_LOOPBACK);
+        } else {
+            errno = ENETUNREACH;
+            return -1;
+        }
+        return 0;
+    }
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
+// A connected one keeps its peer, as reach finds it, for the datagrams it
+// sends without a destination, and takes datagrams from that peer alone;
+// one connected to AF_UNSPEC is no longer connected.
+static int dgram_connect(int fd, const struct sockaddr *sa, socklen_t len) {
     if (!sa) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (sa->sa_family == AF_UNSPEC) {
+        set_state(fd, state_of(fd) & ~NET_DCONN);
+        return 0;
+    }
+    in_addr_t v4, ra;
+    unsigned short port, rp;
+    if (dgram_dest(sa, len, &v4, &port) == -1 || reach(SOCK_DGRAM, v4, port, &ra, &rp) == -1) {
+        return -1;
+    }
+    if (fd >= NET_FDS) {
+        errno = EMFILE;
+        return -1;
+    }
+    net_peer[fd] = ra;
+    net_dport[fd] = rp;
+    set_state(fd, state_of(fd) | NET_DCONN);
+    return 0;
+}
+
+static ssize_t dgram_send(int fd, const struct iovec *iov, int iovlen, int flags, const struct sockaddr *sa, socklen_t len, sendmsg_fn send) {
+    int connected = state_of(fd) & NET_DCONN;
+    if (sa && connected) {
+        errno = EISCONN;
+        return -1;
+    }
+    if (!sa && !connected) {
         errno = EDESTADDRREQ;
         return -1;
     }
@@ -2708,31 +2767,17 @@ static ssize_t dgram_send(int fd, const struct iovec *iov, int iovlen, int flags
         errno = EMSGSIZE;
         return -1;
     }
-    in_addr_t v4;
-    unsigned short port;
-    if (sa->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
-        const struct sockaddr_in *a = (const void *)sa;
-        v4 = a->sin_addr.s_addr;
-        port = ntohs(a->sin_port);
-    } else if (sa->sa_family == AF_INET6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
-        const struct sockaddr_in6 *a = (const void *)sa;
-        port = ntohs(a->sin6_port);
-        if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr)) {
-            v4 = mapped_v4(&a->sin6_addr);
-        } else if (IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) || IN6_IS_ADDR_UNSPECIFIED(&a->sin6_addr)) {
-            v4 = htonl(INADDR_LOOPBACK);
-        } else {
-            errno = ENETUNREACH;
-            return -1;
-        }
-    } else {
-        errno = EAFNOSUPPORT;
-        return -1;
-    }
     in_addr_t ra;
     unsigned short rp;
-    if (reach(SOCK_DGRAM, v4, port, &ra, &rp) == -1) {
-        return -1;
+    if (connected) {
+        ra = net_peer[fd];
+        rp = net_dport[fd];
+    } else {
+        in_addr_t v4;
+        unsigned short port;
+        if (dgram_dest(sa, len, &v4, &port) == -1 || reach(SOCK_DGRAM, v4, port, &ra, &rp) == -1) {
+            return -1;
+        }
     }
     unsigned char hdr[DGRAM_HEADER];
     memcpy(hdr, &ra, 4);
@@ -2780,7 +2825,13 @@ static ssize_t dgram_recv(int fd, const struct iovec *iov, int iovlen, int flags
             return r;
         }
         // Only the router sends here, and always with its header.
-        if (r < (ssize_t)sizeof hdr) {
+        int foreign = 0;
+        if (r >= (ssize_t)sizeof hdr && (state_of(fd) & NET_DCONN)) {
+            in_addr_t a;
+            memcpy(&a, hdr, 4);
+            foreign = a != net_peer[fd] || (unsigned short)(hdr[4] << 8 | hdr[5]) != net_dport[fd];
+        }
+        if (r < (ssize_t)sizeof hdr || foreign) {
             if (flags & MSG_PEEK) recv(fd, &m, flags & ~MSG_PEEK);
             continue;
         }
@@ -2886,6 +2937,40 @@ static ssize_t fws_recvmsg(int fd, struct msghdr *m, int flags) {
 }
 INTERPOSE(fws_recvmsg, recvmsg);
 
+static ssize_t fws_send(int fd, const void *buf, size_t n, int flags) {
+    if (dgram_unix(fd)) {
+        struct iovec v = {(void *)buf, n};
+        return dgram_send(fd, &v, 1, flags, NULL, 0, plain_sendmsg);
+    }
+    return send(fd, buf, n, flags);
+}
+INTERPOSE(fws_send, send);
+
+static ssize_t fws_write(int fd, const void *buf, size_t n) {
+    if (dgram_unix(fd)) {
+        struct iovec v = {(void *)buf, n};
+        return dgram_send(fd, &v, 1, 0, NULL, 0, plain_sendmsg);
+    }
+    return write(fd, buf, n);
+}
+INTERPOSE(fws_write, write);
+
+static ssize_t fws_writev(int fd, const struct iovec *iov, int iovcnt) {
+    if (dgram_unix(fd)) {
+        return dgram_send(fd, iov, iovcnt, 0, NULL, 0, plain_sendmsg);
+    }
+    return writev(fd, iov, iovcnt);
+}
+INTERPOSE(fws_writev, writev);
+
+static ssize_t fws_readv(int fd, const struct iovec *iov, int iovcnt) {
+    if (dgram_unix(fd)) {
+        return dgram_recv(fd, iov, iovcnt, 0, NULL, NULL, NULL, plain_recvmsg);
+    }
+    return readv(fd, iov, iovcnt);
+}
+INTERPOSE(fws_readv, readv);
+
 static ssize_t fws_recv(int fd, void *buf, size_t n, int flags) {
     if (dgram_unix(fd)) {
         struct iovec v = {buf, n};
@@ -2927,6 +3012,18 @@ static int fws_getsockname(int fd, struct sockaddr *sa, socklen_t *len) {
 INTERPOSE(fws_getsockname, getsockname);
 
 static int fws_getpeername(int fd, struct sockaddr *sa, socklen_t *len) {
+    if (dgram_unix(fd)) {
+        if (!(state_of(fd) & NET_DCONN)) {
+            errno = ENOTCONN;
+            return -1;
+        }
+        struct sockaddr_in k4 = v4_addr(net_peer[fd], net_dport[fd]);
+        struct sockaddr_storage k;
+        memset(&k, 0, sizeof k);
+        memcpy(&k, &k4, sizeof k4);
+        present(fd, &k, sizeof k4, sa, len, 0);
+        return 0;
+    }
     struct sockaddr_storage k;
     socklen_t kn = sizeof k;
     int r = getpeername(fd, (struct sockaddr *)&k, &kn);
@@ -2994,8 +3091,24 @@ static void copy_state(int from, int to) {
     if (from >= 0 && from < NET_FDS && to >= 0 && to < NET_FDS) {
         net_port[to] = net_port[from];
         net_peer[to] = net_peer[from];
+        net_dport[to] = net_dport[from];
     }
 }
+
+// A descriptor's number outlives it, and the next socketpair, pipe or file
+// to take it is none of the library's.
+static int fws_close(int fd) {
+    set_state(fd, 0);
+    return close(fd);
+}
+INTERPOSE(fws_close, close);
+
+extern int close_nocancel(int) __asm("_close$NOCANCEL") __attribute__((weak_import));
+static int fws_close_nocancel(int fd) {
+    set_state(fd, 0);
+    return close_nocancel(fd);
+}
+INTERPOSE(fws_close_nocancel, close_nocancel);
 
 static int fws_dup(int fd) {
     int c = dup(fd);

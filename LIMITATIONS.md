@@ -163,9 +163,8 @@ machine — and from what macOS offers an unprivileged process under them.
     members reach by name, through the container's router; it is published
     nowhere, as in Docker. A listener on an address other than loopback's,
     the wildcard or the container's own is refused.
-  - A UDP socket on such a port sends and receives with `sendto`,
-    `sendmsg`, `recvfrom`, `recvmsg`, `recv` and `read`; `connect` on it
-    fails with `EOPNOTSUPP`, and it takes no IP-level control messages.
+  - A UDP socket on such a port sends and receives with the socket and
+    file calls, connected or not, but takes no IP-level control messages.
     The router gives each such port a flow port of the stack's block for as
     long as the container runs, so a stack holds as many of them as its
     block has ports to spare.

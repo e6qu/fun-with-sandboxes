@@ -5,6 +5,7 @@
 // the two flow ports it gives the UDP ports alone, as a container's does.
 // It reports each step.
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -12,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 int sandbox_init(const char *profile, uint64_t flags, char **err);
@@ -115,11 +117,49 @@ int main(int argc, char **argv) {
     n = sizeof s;
     if (recvfrom(u, buf, sizeof buf, 0, (void *)&s, &n) != 4) fail("udp-local");
     printf("udp-local=%s %s\n", buf, strncmp(addr(&s), "[::ffff:127.0.0.1]:", 19) == 0 ? "from-loopback" : addr(&s));
+    struct sockaddr_storage from = s;
+    socklen_t fromn = n;
     if (sendto(u, "pong", 4, 0, (void *)&s, n) != 4) fail("udp-reply");
     memset(buf, 0, sizeof buf);
     n = sizeof s;
     if (recvfrom(uc, buf, sizeof buf, 0, (void *)&s, &n) != 4) fail("udp-reply");
     printf("udp-reply=%s %s\n", buf, addr(&s));
+
+    // Connected to the client, the socket sends without a destination and
+    // takes the client's datagrams alone.
+    char want[80];
+    snprintf(want, sizeof want, "%s", addr(&from));
+    int cr = connect(u, (void *)&from, fromn);
+    n = sizeof s;
+    int pr = getpeername(u, (void *)&s, &n);
+    printf("udp-connect=%d %s\n", cr, pr == 0 && strcmp(addr(&s), want) == 0 ? "peer-is-client" : addr(&s));
+    struct iovec halves[2] = {{"wr", 2}, {"iv", 2}};
+    if (send(u, "send", 4, 0) != 4 || write(u, "writ", 4) != 4 || writev(u, halves, 2) != 4) fail("udp-connected-send");
+    char b1[8] = {0}, b2[8] = {0}, b3[8] = {0};
+    if (recv(uc, b1, 4, 0) != 4 || recv(uc, b2, 4, 0) != 4 || recv(uc, b3, 4, 0) != 4) fail("udp-connected-send");
+    printf("udp-connected-send=%s %s %s\n", b1, b2, b3);
+    errno = 0;
+    int ir = (int)sendto(u, "x", 1, 0, (void *)&from, fromn);
+    printf("udp-isconn=%d %s\n", ir, errno == EISCONN ? "EISCONN" : strerror(errno));
+    int other = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sendto(other, "othr", 4, 0, (void *)&lo, sizeof lo) != 4 || sendto(uc, "mine", 4, 0, (void *)&lo, sizeof lo) != 4) fail("udp-filter");
+    memset(buf, 0, sizeof buf);
+    if (read(u, buf, sizeof buf) != 4) fail("udp-filter");
+    printf("udp-filter=%s\n", buf);
+    struct sockaddr unspec;
+    memset(&unspec, 0, sizeof unspec);
+    unspec.sa_len = sizeof unspec;
+    unspec.sa_family = AF_UNSPEC;
+    cr = connect(u, &unspec, sizeof unspec);
+    n = sizeof s;
+    errno = 0;
+    pr = getpeername(u, (void *)&s, &n);
+    printf("udp-disconnect=%d %s\n", cr, pr == -1 && errno == ENOTCONN ? "ENOTCONN" : "connected");
+    if (sendto(other, "othr", 4, 0, (void *)&lo, sizeof lo) != 4) fail("udp-disconnected");
+    char h1[4] = {0}, h2[4] = {0};
+    struct iovec parts[2] = {{h1, 2}, {h2, 2}};
+    if (readv(u, parts, 2) != 4) fail("udp-disconnected");
+    printf("udp-disconnected=%s %s\n", h1, h2);
 
     hints.ai_socktype = SOCK_DGRAM;
     if (getaddrinfo("peer", "7100", &hints, &res)) fail("udp-peer");

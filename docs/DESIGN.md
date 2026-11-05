@@ -249,7 +249,11 @@ same knobs, each enforced by a real mechanism or refused:
   becomes a Unix datagram socket there too. For each such port the router
   binds a flow port, a UDP port of the stack's block, and relays datagrams
   between it and the socket, with a six-byte header of the IPv4 source or
-  destination on the Unix side alone. A client asks the router for the flow
+  destination on the Unix side alone. The library adds and strips that
+  header in every call that sends or receives on the socket, and keeps a
+  connected one's peer itself, as the router finds it: datagrams sent
+  without a destination go there, and datagrams from anywhere else are
+  dropped, as the kernel drops them for a connected UDP socket. A client asks the router for the flow
   port once (a request for port 0, then the UDP port) and the library
   caches it, sends the client's datagrams to it as to a host port, and
   reports datagrams from it as the member's address and port. A container

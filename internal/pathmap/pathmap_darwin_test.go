@@ -481,7 +481,9 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 		t.Fatalf("unexposed: %v\n%s", err, out)
 	}
 	want := "listen=[::]:7000\nlocal=ping 127.0.0.1:7000\npeer=hello 127.88.0.3:7100\nrefused=-1\n" +
-		"udp-listen=[::]:7000\nudp-local=ping from-loopback\nudp-reply=pong 127.0.0.1:7000\nudp-peer=hello 127.88.0.3:7100\n"
+		"udp-listen=[::]:7000\nudp-local=ping from-loopback\nudp-reply=pong 127.0.0.1:7000\n" +
+		"udp-connect=0 peer-is-client\nudp-connected-send=send writ wriv\nudp-isconn=-1 EISCONN\nudp-filter=mine\n" +
+		"udp-disconnect=0 ENOTCONN\nudp-disconnected=ot hr\nudp-peer=hello 127.88.0.3:7100\n"
 	if string(out) != want {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}
