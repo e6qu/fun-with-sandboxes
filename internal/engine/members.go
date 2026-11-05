@@ -42,7 +42,22 @@ func (e *Engine) networkFile(stack string) (string, error) {
 	return filepath.Join(dir, "network"), nil
 }
 
-func onNetwork(c *Container) bool { return c.rec.HostConfig.NetworkMode != "none" }
+// onNetwork reports whether c has a network endpoint of its own: not on no
+// network, and not on another container's.
+func onNetwork(c *Container) bool {
+	m := string(c.rec.HostConfig.NetworkMode)
+	return m != "none" && !strings.HasPrefix(m, "container:")
+}
+
+// netOwner is the container whose network c is on: c, or with network mode
+// container:<id>, that container, which its record names by full ID.
+func (e *Engine) netOwner(c *Container) (*Container, error) {
+	id, ok := strings.CutPrefix(string(c.rec.HostConfig.NetworkMode), "container:")
+	if !ok {
+		return c, nil
+	}
+	return e.Container(id)
+}
 
 // memberNames are the names a member answers to: its container name, its
 // service, its hostname and its network aliases.

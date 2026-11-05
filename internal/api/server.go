@@ -678,6 +678,8 @@ func writeEngineError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotImplemented, err.Error())
 	case engine.KindUnauthorized:
 		writeError(w, http.StatusUnauthorized, err.Error())
+	case engine.KindForbidden:
+		writeError(w, http.StatusForbidden, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}
