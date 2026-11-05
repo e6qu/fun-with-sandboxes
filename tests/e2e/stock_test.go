@@ -390,7 +390,7 @@ time.sleep(600)`, "database:8000", db+":8000")
 	if got := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{json .HostConfig.Links}}", web)); got != `["/`+db+`:/`+web+`/database"]` {
 		t.Errorf("inspect reports the links as %s", got)
 	}
-	if got := strings.TrimSpace(mustDocker(t, "ps", "--filter", "name=^/"+db+"$", "--format", "{{.Names}}")); got != db+","+web+"/database" {
+	if got := strings.TrimSpace(mustDocker(t, "ps", "--no-trunc", "--filter", "name=^/"+db+"$", "--format", "{{.Names}}")); got != db+","+web+"/database" {
 		t.Errorf("ps names the child %q", got)
 	}
 	mustDocker(t, "rm", "--link", web+"/database")
