@@ -98,6 +98,7 @@ type record struct {
 	RouterPort int        `json:"routerPort,omitempty"`
 	Mounts     []mountRec `json:"mounts"`
 	State      stateRec   `json:"state"`
+	Links      []linkRec  `json:"links,omitempty"`
 }
 
 type Container struct {
@@ -344,6 +345,10 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			return container.CreateResponse{}, err
 		}
 	}
+	links, err := e.legacyLinksLocked(req.HostConfig)
+	if err != nil {
+		return container.CreateResponse{}, err
+	}
 
 	if _, err := e.alloc.Stack(stack); err != nil {
 		return container.CreateResponse{}, invalid("stack %q: %v", stack, err)
@@ -390,20 +395,26 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err != nil {
 		return container.CreateResponse{}, err
 	}
-	hostname, extraHosts := cfg.Hostname, req.HostConfig.ExtraHosts
+	address := ""
+	if net == nil {
+		if address, err = e.assignAddressLocked(stack); err != nil {
+			return container.CreateResponse{}, err
+		}
+	}
+	hostname, extraHosts, hostAddress := cfg.Hostname, req.HostConfig.ExtraHosts, address
+	if req.HostConfig.NetworkMode == "none" {
+		hostAddress = ""
+	}
 	if net != nil {
 		// A container on another's network has its hostname and hosts, as
 		// it would its UTS namespace's files in Docker.
-		hostname, extraHosts = net.rec.Config.Hostname, net.rec.HostConfig.ExtraHosts
-		if hostname == "" {
-			hostname = net.rec.ID[:12]
-		}
+		hostname, extraHosts, hostAddress = hostnameOf(net), net.rec.HostConfig.ExtraHosts, net.rec.Address
 		cfg.Hostname = hostname
 	}
 	if hostname == "" {
 		hostname = id[:12]
 	}
-	if err := writeHostsFiles(c.root(), hostname, extraHosts, mounts); err != nil {
+	if err := writeHostsFiles(c.root(), hostname, hostAddress, extraHosts, nil, mounts); err != nil {
 		return container.CreateResponse{}, err
 	}
 
@@ -423,18 +434,12 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if hc.RestartPolicy.Name == "" {
 		hc.RestartPolicy.Name = container.RestartPolicyDisabled
 	}
-	address := ""
-	if net == nil {
-		if address, err = e.assignAddressLocked(stack); err != nil {
-			return container.CreateResponse{}, err
-		}
-	}
 	c.rec = record{
 		ID: id, Name: name, Created: time.Now().UTC(),
 		Image: req.Config.Image, ImageID: img.ID,
 		Config: cfg, HostConfig: hc, Networks: networks,
 		Stack: stack, Service: service, Ports: ports, Mounts: mounts,
-		Address: address, RouterPort: routerPort,
+		Address: address, RouterPort: routerPort, Links: links,
 		State: stateRec{Status: container.StateCreated},
 	}
 	if err := c.save(); err != nil {
@@ -465,7 +470,7 @@ func (e *Engine) checkUser(u string) error {
 // processEnv is the environment of a process of the container running as
 // user: the container's, with the identity and hostname the container
 // library presents.
-func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string, error) {
+func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool) ([]string, error) {
 	id, err := identity.Resolve(c.root(), user)
 	if err != nil {
 		return nil, err
@@ -474,11 +479,12 @@ func (e *Engine) processEnv(c *Container, extra []string, user string) ([]string
 	if err != nil {
 		return nil, err
 	}
-	env := e.environment(c, net, extra)
-	host := c.rec.Config.Hostname
-	if host == "" {
-		host = c.rec.ID[:12]
+	links, err := e.linksOf(net)
+	if err != nil {
+		return nil, err
 	}
+	env := e.environment(c, net, extra, tty, linkEnv(links))
+	host := hostnameOf(c)
 	env = append(env, id.Env()...)
 	// On the host's UTS namespace the library presents no hostname, so the
 	// container reads the host's, as it changes.
@@ -1051,7 +1057,7 @@ func envName(s string) string {
 // with PATH mapped into the root, plus the variables through which the
 // service learns its root, its own ports and its peers' ports; net is the
 // container whose network it is on.
-func (e *Engine) environment(c, net *Container, extra []string) []string {
+func (e *Engine) environment(c, net *Container, extra []string, tty bool, links []string) []string {
 	root := c.root()
 	vars := map[string]string{}
 	var order []string
@@ -1064,6 +1070,13 @@ func (e *Engine) environment(c, net *Container, extra []string) []string {
 	}
 	set("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	set("HOME=" + filepath.Join(root, "root"))
+	set("HOSTNAME=" + hostnameOf(c))
+	if tty {
+		set("TERM=xterm")
+	}
+	for _, kv := range links {
+		set(kv)
+	}
 	for _, kv := range c.rec.Config.Env {
 		set(kv)
 	}
@@ -1081,7 +1094,6 @@ func (e *Engine) environment(c, net *Container, extra []string) []string {
 		vars["HOME"] = filepath.Join(root, h)
 	}
 	os.MkdirAll(vars["HOME"], 0o755)
-	set("HOSTNAME=" + c.rec.ID[:12])
 	set("SANDBOX_ROOT=" + root)
 	set("SANDBOX_STACK=" + c.rec.Stack)
 	set("SANDBOX_HOST=127.0.0.1")
@@ -1277,6 +1289,12 @@ func (c *Container) start(e *Engine) error {
 	if err := c.writePidsLimit(c.rec.HostConfig.PidsLimit); err != nil {
 		return err
 	}
+	if err := checkEndpointLinks(c); err != nil {
+		return err
+	}
+	if err := e.writeHosts(c); err != nil {
+		return err
+	}
 	if e.hasEgress(c) {
 		if _, err := e.ensureEgress(c.rec.Stack); err != nil {
 			return err
@@ -1286,8 +1304,11 @@ func (c *Container) start(e *Engine) error {
 	if err != nil {
 		return err
 	}
-	env, err := e.processEnv(c, nil, c.rec.Config.User)
+	env, err := e.processEnv(c, nil, c.rec.Config.User, c.rec.Config.Tty)
 	if err != nil {
+		if KindOf(err) != KindInternal {
+			return err
+		}
 		return invalid("%v", err)
 	}
 	cfg := shim.Config{

@@ -273,7 +273,12 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	network := filepath.Join(t.TempDir(), "network")
-	if err := os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t8080/tcp=%d\t0\tproj_default\t0\n127.88.0.3\tdb proj-db-1\t5432/tcp=%d\t0\tproj_default\t0\n", tcp1, peer)), 0o644); err != nil {
+	if err := os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t8080/tcp=%d\t0\tproj_default\t0\n127.88.0.3\tdb proj-db-1\t5432/tcp=%d\t0\tproj_default\t0\t\t127.88.0.9/theirs 127.88.0.2/database\n", tcp1, peer)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "etc"), 0o755)
+	if err := os.WriteFile(filepath.Join(root, "etc", "hosts"), []byte("127.0.0.1\tlocalhost\n# 10.9.9.9 extra.local\n10.1.2.3\textra.local other  # --add-host\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	portDir, err := os.MkdirTemp("/tmp", "fwsp")
@@ -281,7 +286,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(portDir) })
-	got := run("DYLD_INSERT_LIBRARIES="+lib, ports, NetworkVar+"="+network, AddressVar+"=127.88.0.2", PortDirVar+"="+portDir, RouterVar+"=1")
+	got := run("DYLD_INSERT_LIBRARIES="+lib, "SANDBOX_ROOT="+root, ports, NetworkVar+"="+network, AddressVar+"=127.88.0.2", PortDirVar+"="+portDir, RouterVar+"=1")
 	for k, want := range map[string]string{
 		"listen6":  "[::]:8080",
 		"client4":  "127.0.0.1:8080",
@@ -292,6 +297,10 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		"listen4":  "0.0.0.0:8081",
 		"udp":      "[::]",
 		"member":   "127.88.0.3:5432",
+		"alias":    "127.88.0.3:5432",
+		"hidden":   "unknown",
+		"hosts":    "10.1.2.3:80 extra.local",
+		"hostent":  "10.1.2.3",
 		"direct":   "127.0.0.1:8082",
 	} {
 		if got[k] != want {

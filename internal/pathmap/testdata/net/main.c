@@ -2,7 +2,8 @@
 // ports 8080, 8081 and 8083 (TCP) and 9090 (UDP), with dual-stack IPv6 sockets
 // and IPv4 ones, and reaches a stack member by name, in a sandbox that lets
 // it bind and reach the host ports behind them alone, as a container's
-// does. It reports each step.
+// does, by an alias a link gives it, and a name its /etc/hosts lists. It
+// reports each step.
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -151,6 +152,37 @@ int main(int argc, char **argv) {
     n = sizeof s;
     getpeername(cm, (void *)&s, &n);
     printf("member=%s\n", addr(&s));
+
+    // An alias a link of the container gives db; one another container's
+    // link gives it resolves for that container alone.
+    if (getaddrinfo("database", "5432", &hints, &res)) fail("alias");
+    int ca = socket(res->ai_family, SOCK_STREAM, 0);
+    if (connect(ca, res->ai_addr, res->ai_addrlen)) fail("alias");
+    freeaddrinfo(res);
+    n = sizeof s;
+    getpeername(ca, (void *)&s, &n);
+    printf("alias=%s\n", addr(&s));
+    if (getaddrinfo("theirs", "5432", &hints, &res) == 0) {
+        freeaddrinfo(res);
+        printf("hidden=resolved\n");
+    } else {
+        printf("hidden=unknown\n");
+    }
+
+    // A name the container's /etc/hosts lists, as --add-host writes it.
+    struct addrinfo h4;
+    memset(&h4, 0, sizeof h4);
+    h4.ai_family = AF_INET;
+    h4.ai_socktype = SOCK_STREAM;
+    h4.ai_flags = AI_CANONNAME;
+    if (getaddrinfo("Extra.Local.", "80", &h4, &res)) fail("hosts");
+    memcpy(&s, res->ai_addr, res->ai_addrlen);
+    printf("hosts=%s %s\n", addr(&s), res->ai_canonname);
+    freeaddrinfo(res);
+    struct hostent *he = gethostbyname("extra.local");
+    char hb[64];
+    if (!he || !inet_ntop(AF_INET, he->h_addr_list[0], hb, sizeof hb)) fail("hostent");
+    printf("hostent=%s\n", hb);
 
     // UDP: an IPv4 server, an IPv6 client to its IPv4 address.
     int u = socket(AF_INET, SOCK_DGRAM, 0);

@@ -237,8 +237,10 @@ same knobs, each enforced by a real mechanism or refused:
   of each member's address, the names it answers to (its container name,
   service, hostname, DNS names and aliases) and its ports' host ports; the
   container reads it (`FWS_NETWORK`) and nothing else of the engine's
-  state. The library resolves those names in `getaddrinfo` and
-  `gethostbyname`, connects to a member's address through the host port
+  state. The library resolves names in `getaddrinfo` and `gethostbyname`
+  as a resolver does: from the container's `/etc/hosts` first, which the
+  host's resolver never reads, then from those names, and then as the host
+  does; it connects to a member's address through the host port
   behind its port, refuses a port the member does not expose, and reports
   a peer's host port as its member address and port. A TCP listener on a
   container port that has no host port becomes a Unix socket, in the same
@@ -416,10 +418,10 @@ it; it tells services their assignment through the environment.
   stack's network file also lists the other stacks' members on a network
   one of its members is on, marked as foreign, with every member's
   networks. The library resolves and reaches only the members its
-  container shares a network with, and connects to a foreign one through
+  container shares a network with or links to, and connects to a foreign one through
   its own router with a relay request of the member's address and port.
   The router reads the network file, checks that the member shares a
-  network with its container, and joins the connection to the member's
+  network with its container or is linked to from it, and joins the connection to the member's
   host port, or to its router for a port without one. A UDP lookup of a
   foreign member's port at the container's own router gets a relay port
   of its own stack's block, which the library caches as a flow port and

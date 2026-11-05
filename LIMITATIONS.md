@@ -152,6 +152,15 @@ machine — and from what macOS offers an unprivileged process under them.
   - Any member of a stack can ask another member's router for a relay, so
     a member off the shared network can reach the other stack's members
     on it through a member on it.
+- **Legacy links reach across stacks the same way.** A `--link` on the
+  default bridge network, from one `docker run` container to another, each
+  its own stack, gives the linking container Docker's variables and
+  `/etc/hosts` entries for the child, and its router relays to the child
+  as to a member of a network they share. Without a link, containers on
+  the default bridge network reach one another only within a stack, where
+  Docker lets any two reach each other by address. A link on a
+  user-defined network, as Compose's `links:` makes, is an alias the
+  linking container alone resolves.
 - **A host process that later binds a port inside a stack's block is
   reachable from that stack.** The allocator skips ports in use when it
   assigns them, but cannot stop other host software from binding them later.

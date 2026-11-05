@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -38,15 +39,19 @@ func ParseFilters(raw string) (Filters, error) {
 
 func (f Filters) has(key string) bool { return len(f[key]) > 0 }
 
-// matchName reports whether value contains any of the key's values; an absent
-// key matches everything.
-func (f Filters) matchName(key, value string) bool {
+// matchName reports whether any of the key's values, as regular
+// expressions, matches one of values, as Docker's name filters match; an
+// absent key matches everything.
+func (f Filters) matchName(key string, values ...string) bool {
 	if !f.has(key) {
 		return true
 	}
 	for _, want := range f[key] {
-		if strings.Contains(value, strings.TrimPrefix(want, "/")) {
-			return true
+		re, err := regexp.Compile(want)
+		for _, v := range values {
+			if v == want || err == nil && re.MatchString(v) {
+				return true
+			}
 		}
 	}
 	return false
