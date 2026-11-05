@@ -3,8 +3,12 @@
 package e2e
 
 import (
+	"context"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -187,5 +191,131 @@ func TestContainerNetworkMode(t *testing.T) {
 	mustDocker(t, "stop", web)
 	if _, err := docker(t, "start", late); err == nil || !strings.Contains(err.Error(), "cannot join network namespace of a non running container") {
 		t.Errorf("start on a stopped container's network: %v", err)
+	}
+}
+
+// sharedClient prints, for each host:port it names, the status line of an
+// HTTP request to it, or the name of the error that stopped the request.
+const sharedClient = `import socket, sys
+def get(host, port):
+    try:
+        s = socket.create_connection((host, int(port)), timeout=10)
+    except OSError as e:
+        return type(e).__name__
+    s.sendall(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n")
+    data = b""
+    while True:
+        b = s.recv(4096)
+        if not b:
+            break
+        data += b
+    return data.split(b"\r\n", 1)[0].decode()
+for target in sys.argv[1:]:
+    print(target, get(*target.rsplit(":", 1)))
+`
+
+// Containers of different stacks on one user-defined network reach one
+// another by name, at ports with and without host ports, as containers on
+// one Docker network do; a container on no network they share does not.
+func TestSharedNetworks(t *testing.T) {
+	const network = "e2e-shared"
+	docker(t, "network", "rm", network)
+	mustDocker(t, "network", "create", network)
+	defer docker(t, "network", "rm", network)
+	health := func(port string) []string {
+		return []string{"--health-cmd", `python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:` + port + `')"`,
+			"--health-interval", "1s", "--health-start-interval", "200ms", "--health-start-period", "30s"}
+	}
+	serve := func(name, port string, args ...string) {
+		waitedRun(t, name, append(append(args, health(port)...), "fws/python:3.14", "python3", "-m", "http.server", port)...)
+	}
+	serve("e2e-shared-api", "8000", "--network", network, "--expose", "8000")
+	serve("e2e-shared-cache", "8001", "--network", network, "--network-alias", "kv")
+	serve("e2e-shared-loner", "8002", "--expose", "8002")
+
+	out := mustDocker(t, "run", "--rm", "--network", network, "fws/python:3.14", "python3", "-c", sharedClient,
+		"e2e-shared-api:8000", "kv:8001", "e2e-shared-api:9999", "e2e-shared-loner:8002")
+	for _, want := range []string{
+		"e2e-shared-api:8000 HTTP/1.0 200 OK\n", "kv:8001 HTTP/1.0 200 OK\n",
+		"e2e-shared-api:9999 ConnectionRefusedError\n", "e2e-shared-loner:8002 gaierror\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a client on %s printed %q, want %q in it", network, out, want)
+		}
+	}
+	if out := mustDocker(t, "run", "--rm", "fws/python:3.14", "python3", "-c", sharedClient, "e2e-shared-api:8000", "kv:8001"); out != "e2e-shared-api:8000 gaierror\nkv:8001 gaierror\n" {
+		t.Errorf("a client on no shared network printed %q", out)
+	}
+	// Disconnected, a container no longer reaches the network's members.
+	mustDocker(t, "network", "disconnect", network, "e2e-shared-cache")
+	if out := mustDocker(t, "exec", "e2e-shared-cache", "python3", "-c", sharedClient, "e2e-shared-api:8000"); out != "e2e-shared-api:8000 gaierror\n" {
+		t.Errorf("a disconnected container printed %q", out)
+	}
+	mustDocker(t, "network", "connect", network, "e2e-shared-cache")
+	if out := mustDocker(t, "exec", "e2e-shared-cache", "python3", "-c", sharedClient, "e2e-shared-api:8000"); out != "e2e-shared-api:8000 HTTP/1.0 200 OK\n" {
+		t.Errorf("a reconnected container printed %q", out)
+	}
+}
+
+// Two Compose projects on an external network reach each other's services
+// on it by service name; a service not on it does not.
+func TestComposeExternalNetwork(t *testing.T) {
+	const network = "e2e-shared-compose"
+	docker(t, "network", "rm", network)
+	mustDocker(t, "network", "create", network)
+	defer docker(t, "network", "rm", network)
+	dir := t.TempDir()
+	files := map[string]string{
+		"a.yaml": `services:
+  api:
+    image: fws/python:3.14
+    command: ["python3", "-m", "http.server", "8000"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000')"]
+      interval: 1s
+      start_interval: 200ms
+      start_period: 30s
+    networks: [default, shared]
+networks:
+  shared:
+    external: true
+    name: ` + network + `
+`,
+		"b.yaml": `services:
+  client:
+    image: fws/python:3.14
+    networks: [default, shared]
+  loner:
+    image: fws/python:3.14
+networks:
+  shared:
+    external: true
+    name: ` + network + `
+`,
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	composeFile := func(project, file string, args ...string) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "docker-compose", append([]string{"-p", project, "-f", filepath.Join(dir, file)}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("docker-compose -p %s %s: %v\n%s", project, strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	t.Cleanup(func() { composeFile("e2esharedb", "b.yaml", "down"); composeFile("e2eshareda", "a.yaml", "down") })
+	composeFile("e2eshareda", "a.yaml", "up", "-d", "--wait")
+	out := composeFile("e2esharedb", "b.yaml", "run", "--rm", "-T", "client", "python3", "-c", sharedClient, "api:8000")
+	if !strings.Contains(out, "api:8000 HTTP/1.0 200 OK\n") {
+		t.Errorf("project b's client on the external network printed %q", out)
+	}
+	out = composeFile("e2esharedb", "b.yaml", "run", "--rm", "-T", "loner", "python3", "-c", sharedClient, "api:8000")
+	if !strings.Contains(out, "api:8000 gaierror\n") {
+		t.Errorf("project b's service off the external network printed %q", out)
 	}
 }

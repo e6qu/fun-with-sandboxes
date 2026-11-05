@@ -153,12 +153,12 @@ func TestReachesStackMembers(t *testing.T) {
 	go http.Serve(ul, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "member routed") }))
 	rt, err := router.Listen("127.0.0.1:0", dir, func() (*net.UDPConn, error) {
 		return net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	})
+	}, router.Network{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rt.Close()
-	os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tweb proj-web-1\t8000/tcp=%s\t%d\n", port, rt.Addr().Port)), 0o644)
+	os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tweb proj-web-1\t8000/tcp=%s\t%d\tproj_default\t0\n", port, rt.Addr().Port)), 0o644)
 	policy := testPolicy()
 	policy.Deny = func(net.IP) bool { return true }
 	policy.Members = network

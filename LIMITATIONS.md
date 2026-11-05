@@ -131,9 +131,24 @@ machine — and from what macOS offers an unprivileged process under them.
     member addresses.
   - A member's port without a host port is reached through its router,
     whose connections and datagrams its server sees come from `127.0.0.1`.
-- **One stack, one reachability domain.** A container can reach every port in
-  its stack's block and nothing else. Networks shared across Compose projects
-  are refused.
+- **A stack's block is one reachability domain.** Seatbelt lets a container
+  reach every port in its stack's block and nothing else, so within a stack
+  network membership is presented, not enforced: the container library
+  resolves and connects to the members a container shares a network with,
+  and a program that loads no library reaches any member's host port.
+- **Stacks meet on a network they share through their routers.** Containers
+  of different stacks on one user-defined network, such as two Compose
+  projects on an external network or two `docker run` containers on a
+  `docker network create` one, reach one another by name: a container's
+  router, outside its sandbox, relays its connections to the other stack's
+  members. Its limits:
+  - Only TCP crosses; a datagram to another stack's member fails with
+    `EHOSTUNREACH`.
+  - A program that loads no library cannot reach the other stack's members,
+    and its stack's egress proxy reaches them for any member of its stack.
+  - Any member of a stack can ask another member's router for a relay, so
+    a member off the shared network can reach the other stack's members
+    on it through a member on it.
 - **A host process that later binds a port inside a stack's block is
   reachable from that stack.** The allocator skips ports in use when it
   assigns them, but cannot stop other host software from binding them later.

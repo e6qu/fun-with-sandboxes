@@ -115,7 +115,6 @@ Gaps that the two constraints leave open to close:
 
 - A server sees its stack's clients connect from `127.0.0.1` rather than
   their member addresses.
-- Networks shared across Compose projects are refused.
 - tmpfs mounts are directories on disk, not memory-backed.
 - UDP sockets on ports without host ports take no IP-level control messages.
 

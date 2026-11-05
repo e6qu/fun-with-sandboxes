@@ -186,27 +186,22 @@ func (e *Engine) NetworkRemove(ref string) error {
 	return e.saveNetworksLocked()
 }
 
-// checkNetworkLocked refuses networks a container's stack may not join: one
-// stack's containers never share a network with another stack's.
-func (e *Engine) checkNetworkLocked(name, stack string) (*Network, error) {
+// checkNetworkLocked refuses networks a container may not join. A network
+// another stack's containers are on joins the stacks: their members reach
+// one another on it through their routers.
+func (e *Engine) checkNetworkLocked(name string) (*Network, error) {
 	n, err := e.networkLocked(name)
 	if err != nil {
 		return nil, err
 	}
-	switch n.Name {
-	case "host":
+	if n.Name == "host" {
 		return nil, unsupported("network mode \"host\" is not supported: every container is confined to its own stack's ports")
-	case "bridge", "none":
-		return n, nil
-	}
-	if owner, ok := n.Labels[LabelProject]; ok && owner != stack {
-		return nil, unsupported("network %s belongs to stack %q; a container of stack %q cannot join it", n.Name, owner, stack)
 	}
 	return n, nil
 }
 
-// NetworkConnect adds the container to the network. Membership scopes names
-// within the stack; it opens no path to another stack.
+// NetworkConnect adds the container to the network: its members, of any
+// stack, reach the container by name, and it reaches them.
 func (e *Engine) NetworkConnect(ref string, req network.ConnectRequest) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -221,7 +216,7 @@ func (e *Engine) NetworkConnect(ref string, req network.ConnectRequest) error {
 	if strings.HasPrefix(string(c.rec.HostConfig.NetworkMode), "container:") {
 		return forbidden("container sharing network namespace with another container or host cannot be connected to any other network")
 	}
-	if _, err := e.checkNetworkLocked(n.Name, c.rec.Stack); err != nil {
+	if _, err := e.checkNetworkLocked(n.Name); err != nil {
 		return err
 	}
 	c.mu.Lock()

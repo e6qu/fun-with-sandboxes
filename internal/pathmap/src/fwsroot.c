@@ -222,9 +222,12 @@ static int parse_v4(const char *p, const char **end, in_addr_t *out) {
 
 // The stack's members (FWS_NETWORK): a file the engine rewrites as members
 // come and go, of a line per member holding its address, the names it
-// answers to, and its ports as FWS_PORTS lists them, tab-separated. Its
-// addresses lie in 127.88.0.0/16, which the kernel never sees: the library
-// reaches a member's ports through their host ports.
+// answers to, its ports as FWS_PORTS lists them, its router's port, the
+// networks it is on, and whether it is another stack's, tab-separated
+// (package members). Its addresses lie in 127.88.0.0/16, which the kernel
+// never sees: the library reaches a member's ports through their host
+// ports, and another stack's member through the container's own router.
+// The container sees the members it shares a network with.
 static char network_path[PATH_MAX];
 static in_addr_t own_address;
 
@@ -2245,7 +2248,13 @@ static int reach(int type, in_addr_t v4, unsigned short port, in_addr_t *a, unsi
         // closed, and an address no member holds is unreachable.
         int member;
         unsigned short router = 0, mh = member_route(v4, type, port, &member, &router);
-        if (!mh && member && type == SOCK_DGRAM && router) mh = flow_port(router, port, v4);
+        if (!mh && member == 1 && type == SOCK_DGRAM && router) mh = flow_port(router, port, v4);
+        if (member == 2) {
+            // Another stack's member is reached through the container's
+            // router, which carries connections alone.
+            errno = EHOSTUNREACH;
+            return -1;
+        }
         if (!mh) {
             errno = member ? ECONNREFUSED : EHOSTUNREACH;
             return -1;
@@ -2572,15 +2581,25 @@ INTERPOSE(fws_bind, bind);
 // route connects fd through the router at loopback port router to the
 // container port port of the member at addr, and reports whether it did:
 // at once, as a connection to loopback is made, whether or not fd blocks.
-static int route(int fd, in_addr_t addr, unsigned short router, unsigned short port, int v6) {
+// With foreign set, the router is the container's own, which relays to
+// another stack's member.
+static int route(int fd, in_addr_t addr, unsigned short router, unsigned short port, int v6, int foreign) {
     if (v6 && !(state_of(fd) & NET_V6) && to_ipv4(fd, SOCK_STREAM) == -1) {
         return -1;
     }
     int fl = fcntl(fd, F_GETFL);
     if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
-    unsigned char req[2] = {(unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
-    int ok = connect(fd, (struct sockaddr *)&r, sizeof r) == 0 && write(fd, req, 2) == 2 && read(fd, &ans, 1) == 1;
+    unsigned char req[8] = {(unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
+    size_t n = 2;
+    if (foreign) {
+        req[0] = req[1] = 0xff;
+        memcpy(req + 2, &addr, 4);
+        req[6] = (unsigned char)(port >> 8);
+        req[7] = (unsigned char)port;
+        n = 8;
+    }
+    int ok = connect(fd, (struct sockaddr *)&r, sizeof r) == 0 && write(fd, req, n) == (ssize_t)n && read(fd, &ans, 1) == 1;
     int e = errno;
     if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl);
     if (!ok) {
@@ -2632,10 +2651,16 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
     if (member_block(a) && !(own_address && a == own_address)) {
         int member;
         unsigned short router = 0;
-        if (member_route(a, SOCK_STREAM, port, &member, &router) || !member || !router) {
+        unsigned short h = member_route(a, SOCK_STREAM, port, &member, &router);
+        if (member == 2) {
+            if (!router_port) return 0;
+            *r = route(fd, a, router_port, port, v6, 1);
+            return 1;
+        }
+        if (h || !member || !router) {
             return 0;
         }
-        *r = route(fd, a, router, port, v6);
+        *r = route(fd, a, router, port, v6, 0);
         return 1;
     }
     if ((v4_local(a) || (own_address && a == own_address)) && router_port && !host_port(SOCK_STREAM, port)) {
@@ -2646,7 +2671,7 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         if (port_path(SOCK_STREAM, port, &u) == -1 || stat(u.sun_path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
             return 0;
         }
-        *r = route(fd, own_address && a == own_address ? a : htonl(INADDR_LOOPBACK), router_port, port, v6);
+        *r = route(fd, own_address && a == own_address ? a : htonl(INADDR_LOOPBACK), router_port, port, v6, 0);
         if (*r == 0 && v6 && IN6_IS_ADDR_LOOPBACK(&((const struct sockaddr_in6 *)sa)->sin6_addr)) {
             set_state(fd, state_of(fd) | NET_LO6);
         }
@@ -3273,8 +3298,9 @@ static const char *members_text(void) {
 
 struct member {
     in_addr_t addr;
-    const char *names, *names_end, *ports, *ports_end;
+    const char *names, *names_end, *ports, *ports_end, *nets, *nets_end;
     unsigned short router;
+    int foreign;
 };
 
 static const char *next_member(const char *p, struct member *m) {
@@ -3286,12 +3312,17 @@ static const char *next_member(const char *p, struct member *m) {
         const char *after;
         if (t2 && parse_v4(p, &after, &m->addr) && after == t1) {
             const char *t3 = memchr(t2 + 1, '\t', (size_t)(end - t2 - 1));
+            const char *t4 = t3 ? memchr(t3 + 1, '\t', (size_t)(end - t3 - 1)) : NULL;
+            const char *t5 = t4 ? memchr(t4 + 1, '\t', (size_t)(end - t4 - 1)) : NULL;
             unsigned long r = 0;
             m->names = t1 + 1;
             m->names_end = t2;
             m->ports = t2 + 1;
             m->ports_end = t3 ? t3 : end;
             m->router = t3 && num(t3 + 1, &r) && r < 65536 ? (unsigned short)r : 0;
+            m->nets = t4 ? t4 + 1 : end;
+            m->nets_end = t5 ? t5 : end;
+            m->foreign = t5 && t5[1] == '1';
             return nl ? nl + 1 : end;
         }
         p = nl ? nl + 1 : end;
@@ -3336,12 +3367,50 @@ static unsigned short member_ports(const struct member *m, int type, unsigned sh
     return 0;
 }
 
+// shares reports whether two members' space-separated networks meet.
+static int shares(const struct member *a, const struct member *b) {
+    for (const char *p = a->nets; p < a->nets_end;) {
+        const char *e = memchr(p, ' ', (size_t)(a->nets_end - p));
+        if (!e) e = a->nets_end;
+        for (const char *q = b->nets; q < b->nets_end;) {
+            const char *f = memchr(q, ' ', (size_t)(b->nets_end - q));
+            if (!f) f = b->nets_end;
+            if (e > p && e - p == f - q && memcmp(p, q, (size_t)(e - p)) == 0) return 1;
+            q = f + 1;
+        }
+        p = e + 1;
+    }
+    return 0;
+}
+
+// find_self finds the container's own line among the members in text.
+static int find_self(const char *text, struct member *out) {
+    struct member m;
+    for (const char *p = text; own_address && (p = next_member(p, &m));) {
+        if (m.addr == own_address) {
+            *out = m;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// sees reports whether the container sees member m, as a container sees
+// the containers on its networks: m is the container itself, or shares a
+// network with it. A container the file does not list sees its own stack.
+static int sees(const struct member *m, const struct member *me, int have_me) {
+    if (!have_me) return !m->foreign;
+    return m->addr == me->addr || shares(m, me);
+}
+
 static int member_address(const char *name, in_addr_t *out) {
     int found = 0;
     pthread_mutex_lock(&members_lock);
-    struct member m;
-    for (const char *p = members_text(); (p = next_member(p, &m));) {
-        if (answers(&m, name)) {
+    struct member m, me;
+    const char *text = members_text();
+    int have_me = find_self(text, &me);
+    for (const char *p = text; (p = next_member(p, &m));) {
+        if (sees(&m, &me, have_me) && answers(&m, name)) {
             *out = m.addr;
             found = 1;
             break;
@@ -3352,16 +3421,21 @@ static int member_address(const char *name, in_addr_t *out) {
 }
 
 // member_route returns the host port behind a member's container port, and
-// whether addr is a member, and its router's port.
+// whether addr is a member the container sees, 2 for another stack's, and
+// its router's port. Another stack's member's host ports lie outside the
+// container's reach, so none is returned for one.
 static unsigned short member_route(in_addr_t addr, int type, unsigned short cport, int *member, unsigned short *router) {
     unsigned short h = 0;
     *member = 0;
     pthread_mutex_lock(&members_lock);
-    struct member m;
-    for (const char *p = members_text(); (p = next_member(p, &m));) {
+    struct member m, me;
+    const char *text = members_text();
+    int have_me = find_self(text, &me);
+    for (const char *p = text; (p = next_member(p, &m));) {
         if (m.addr == addr) {
-            *member = 1;
-            h = member_ports(&m, type, cport, 0);
+            if (!sees(&m, &me, have_me)) break;
+            *member = m.foreign ? 2 : 1;
+            h = m.foreign ? 0 : member_ports(&m, type, cport, 0);
             if (router) *router = m.router;
             break;
         }
@@ -3375,7 +3449,7 @@ static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, 
     pthread_mutex_lock(&members_lock);
     struct member m;
     for (const char *p = members_text(); (p = next_member(p, &m));) {
-        unsigned short c = member_ports(&m, type, hport, 1);
+        unsigned short c = m.foreign ? 0 : member_ports(&m, type, hport, 1);
         if (c) {
             *addr = m.addr;
             *cport = c;

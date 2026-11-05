@@ -142,7 +142,7 @@ func (s *server) run(report func(Ready)) (int, error) {
 			}
 			return c, err
 		}
-		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir, flow)
+		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir, flow, router.Network{File: cfg.NetworkFile, Address: cfg.Address})
 		if err != nil {
 			closeProxies()
 			report(Ready{Error: err.Error()})

@@ -273,7 +273,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	network := filepath.Join(t.TempDir(), "network")
-	if err := os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t8080/tcp=%d\n127.88.0.3\tdb proj-db-1\t5432/tcp=%d\n", tcp1, peer)), 0o644); err != nil {
+	if err := os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t8080/tcp=%d\t0\tproj_default\t0\n127.88.0.3\tdb proj-db-1\t5432/tcp=%d\t0\tproj_default\t0\n", tcp1, peer)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	portDir, err := os.MkdirTemp("/tmp", "fwsp")
@@ -424,7 +424,7 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 			return nil, fmt.Errorf("flow port %d asked for, %d given", i+1, len(flowPorts))
 		}
 		return net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: flowPorts[i]})
-	})
+	}, router.Network{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	}()
 	network := filepath.Join(t.TempDir(), "network")
 	rp := r.Addr().Port
-	os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t\t%d\n127.88.0.3\tpeer\t\t%d\n", rp, rp)), 0o644)
+	os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t\t%d\tproj_default\t0\n127.88.0.3\tpeer\t\t%d\tproj_default\t0\n", rp, rp)), 0o644)
 	lib, err := Build(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

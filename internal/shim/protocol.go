@@ -32,9 +32,13 @@ type Config struct {
 	Anchor string
 	// Router is the loopback port of the container's router, which joins
 	// connections to the listeners in PortDir (package router); 0 for none.
-	Router   int
-	PortDir  string
-	ExitPath string
+	Router  int
+	PortDir string
+	// NetworkFile and Address locate the container among its stack's
+	// members, for its router's relays to other stacks' members.
+	NetworkFile string
+	Address     string
+	ExitPath    string
 	// Tag is the environment entry every process of the container starts
 	// with.
 	Tag     string

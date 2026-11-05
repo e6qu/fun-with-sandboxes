@@ -397,6 +397,18 @@ it; it tells services their assignment through the environment.
 - **Isolation.** A container may connect to every port of its own stack's
   block and nowhere else, so stack A cannot reach stack B even though both
   live on `127.0.0.1`. That includes B's published ports.
+- **Shared networks.** Stacks whose containers share a user-defined network
+  keep their blocks and profiles; each container's router, which runs in
+  its shim outside the sandbox, carries its connections to the other
+  stack's members. Member addresses are unique across stacks, and each
+  stack's network file also lists the other stacks' members on a network
+  one of its members is on, marked as foreign, with every member's
+  networks. The library resolves and reaches only the members its
+  container shares a network with, and connects to a foreign one through
+  its own router with a relay request of the member's address and port.
+  The router reads the network file, checks that the member shares a
+  network with its container, and joins the connection to the member's
+  host port, or to its router for a port without one.
 - **Egress.** Seatbelt can allow loopback ports or every destination, nothing
   in between, so containers reach the internet through a proxy the engine
   runs for each stack on a port of the stack's block (`internal/egress`): an

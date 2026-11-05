@@ -681,7 +681,7 @@ func (e *Engine) resolveNetworksLocked(stack, name, service string, req containe
 		if netName == "default" {
 			netName = "bridge"
 		}
-		n, err := e.checkNetworkLocked(netName, stack)
+		n, err := e.checkNetworkLocked(netName)
 		if err != nil {
 			return err
 		}
@@ -1296,6 +1296,12 @@ func (c *Container) start(e *Engine) error {
 		LogPath: c.logs.path, Socket: e.shimSocket(c), Anchor: e.anchorSocket(c), ExitPath: c.exitPath(),
 		Router: c.rec.RouterPort, PortDir: e.portDir(c),
 		Tag: c.tag(), AllocRoot: e.cfg.Root, Stack: c.rec.Stack, Resources: res,
+	}
+	if c.rec.RouterPort != 0 {
+		if cfg.NetworkFile, err = e.networkFile(c.rec.Stack); err != nil {
+			return err
+		}
+		cfg.Address = c.rec.Address
 	}
 	for _, p := range plan {
 		cfg.Publish = append(cfg.Publish, p.binding)
