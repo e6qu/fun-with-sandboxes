@@ -471,12 +471,14 @@ with or without the `/v1.xx` prefix:
   `size`), `{id}/json`, `{id}/changes` (`docker diff`),
   `start`, `stop`, `restart`, `kill`, `wait` (all three conditions),
   `rename`, `resize`, `logs` (follow, tail, since, until, timestamps),
-  `attach` (hijacked, multiplexed or raw), `archive` (`HEAD`, `GET`, `PUT`:
+  `attach` (hijacked, multiplexed or raw) and `attach/ws` (a websocket of
+  unframed output, binary from API 1.28 on), both ending on a terminal at
+  the client's detach keys (ctrl-p ctrl-q unless it names its own), `archive` (`HEAD`, `GET`, `PUT`:
   `docker cp`), `top`, `stats` (streamed every second, or one sample),
   `pause`, `unpause`, `update` (restart policy), `DELETE`, `prune`
   (`label`, `until`)
 - Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached,
-  detached, TTY), `/exec/{id}/resize`, `GET /exec/{id}/json`
+  detached, TTY, detaching at the exec's detach keys), `/exec/{id}/resize`, `GET /exec/{id}/json`
 - Images: `json`, `create` (registry pull for `darwin/<arch>` with
   `X-Registry-Auth`, or `docker import` with `fromSrc` `-` or an http(s)
   URL, `changes` and `message`), `load`, `{ref}/json`, `{ref}/tag`,

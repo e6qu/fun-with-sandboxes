@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -18,6 +19,7 @@ type Exec struct {
 	ID          string
 	containerID string
 	cfg         container.ExecCreateRequest
+	detachKeys  []byte
 
 	mu       sync.Mutex
 	started  bool
@@ -48,7 +50,11 @@ func (e *Engine) ExecCreate(ref string, req container.ExecCreateRequest) (string
 	if err := e.checkUser(req.User); err != nil {
 		return "", err
 	}
-	x := &Exec{ID: newID(), containerID: c.rec.ID, cfg: req, done: make(chan struct{})}
+	keys, ok := parseDetachKeys(req.DetachKeys)
+	if !ok {
+		return "", fmt.Errorf("Invalid escape keys (%s) provided", req.DetachKeys)
+	}
+	x := &Exec{ID: newID(), containerID: c.rec.ID, cfg: req, detachKeys: keys, done: make(chan struct{})}
 	e.mu.Lock()
 	e.execs[x.ID] = x
 	e.mu.Unlock()
@@ -172,30 +178,48 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	}
 	e.publishContainer(c, events.ActionExecStart, map[string]string{"execID": id})
 
+	// The exec runs on when its client detaches from its terminal, its
+	// output dropped from then on.
+	out := &detachable{w: stdio.Stdout}
+	detached := make(chan struct{})
 	var copied sync.WaitGroup
 	if master != nil {
 		copied.Add(1)
 		go func() {
 			defer copied.Done()
-			io.Copy(stdio.Stdout, master)
+			io.Copy(out, master)
 		}()
 		if x.cfg.AttachStdin && stdio.Stdin != nil {
-			go io.Copy(master, stdio.Stdin)
+			go func() {
+				if _, err := io.Copy(master, escapable(stdio.Stdin, x.detachKeys)); detachedBy(err) {
+					out.detach()
+					close(detached)
+				}
+			}()
 		}
 	}
-	<-proc.Done()
-	proc.KillAll()
-	proc.DrainIO(outputDrain)
-	if master != nil {
-		master.Close()
-		copied.Wait()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		<-proc.Done()
+		proc.KillAll()
+		proc.DrainIO(outputDrain)
+		if master != nil {
+			master.Close()
+			copied.Wait()
+		}
+		code := proc.ExitCode()
+		x.mu.Lock()
+		x.running, x.exitCode, x.master = false, &code, nil
+		x.mu.Unlock()
+		close(x.done)
+		e.publishContainer(c, events.ActionExecDie, map[string]string{"execID": id, "exitCode": itoa(code)})
+	}()
+	select {
+	case <-finished:
+	case <-detached:
+		e.publishContainer(c, events.ActionExecDetach, map[string]string{"execID": id})
 	}
-	code := proc.ExitCode()
-	x.mu.Lock()
-	x.running, x.exitCode, x.master = false, &code, nil
-	x.mu.Unlock()
-	close(x.done)
-	e.publishContainer(c, events.ActionExecDie, map[string]string{"execID": id, "exitCode": itoa(code)})
 	return nil
 }
 
@@ -210,7 +234,7 @@ func (e *Engine) ExecInspect(id string) (container.ExecInspectResponse, error) {
 	return container.ExecInspectResponse{
 		ID: x.ID, Running: x.running, ExitCode: x.exitCode, ProcessConfig: pc,
 		OpenStdin: x.cfg.AttachStdin, OpenStdout: x.cfg.AttachStdout, OpenStderr: x.cfg.AttachStderr,
-		ContainerID: x.containerID, Pid: x.pid, DetachKeys: []byte(x.cfg.DetachKeys),
+		ContainerID: x.containerID, Pid: x.pid, DetachKeys: x.detachKeys,
 	}, nil
 }
 
