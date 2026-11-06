@@ -44,15 +44,15 @@ func TestNginx(t *testing.T) {
 		t.Fatalf("the default page reads %q", body)
 	}
 
-	// Content from a bind mount, and a server from a template that names
-	// the port the engine assigned and a variable of its own.
+	// Content from a bind mount, and a server from a template that listens
+	// on the container's port and names a variable of its own.
 	site := t.TempDir()
 	os.WriteFile(filepath.Join(site, "index.html"), []byte("served from the host\n"), 0o644)
 	templates := t.TempDir()
 	os.WriteFile(filepath.Join(templates, "default.conf.template"), []byte(`server {
-    listen 127.0.0.1:${SANDBOX_PORT_80};
+    listen 80;
     location /hello { return 200 "templated ${GREETING}\n"; }
-    location / { root ${SANDBOX_ROOT}/usr/share/nginx/html; }
+    location / { root /usr/share/nginx/html; }
 }
 `), 0o644)
 	const custom = "fws-e2e-nginx-templated"
@@ -295,4 +295,28 @@ func TestPlaywright(t *testing.T) {
 	if err != nil || !strings.Contains(out, "title rendered in fws text painted") || !strings.Contains(out, "screenshot true") {
 		t.Fatalf("playwright: %q, %v", out, err)
 	}
+}
+
+// A catalog server listens on its container port, so its own client in the
+// container reaches it with no port or socket named, as in the official
+// image, and the server reports the container's port.
+func TestCatalogClientsOnDefaultPorts(t *testing.T) {
+	t.Run("postgres", func(t *testing.T) {
+		const name = "fws-e2e-default-pg"
+		waitedRun(t, name, "-e", "POSTGRES_PASSWORD=secret", "fws/postgres:16")
+		out := strings.TrimSpace(mustDocker(t, "exec", name, "psql", "-U", "postgres", "-tA", "-c", "SHOW port", "-c", "SHOW listen_addresses"))
+		if out != "5432\n*" {
+			t.Fatalf("psql on the default socket: port and listen addresses %q, want 5432 and *", out)
+		}
+	})
+	t.Run("redis", func(t *testing.T) {
+		const name = "fws-e2e-default-redis"
+		waitedRun(t, name, "fws/redis:8")
+		if out := strings.TrimSpace(mustDocker(t, "exec", name, "redis-cli", "ping")); out != "PONG" {
+			t.Fatalf("redis-cli ping: %q", out)
+		}
+		if out := strings.Fields(mustDocker(t, "exec", name, "redis-cli", "config", "get", "port")); len(out) != 2 || out[1] != "6379" {
+			t.Fatalf("redis-cli config get port: %q", out)
+		}
+	})
 }

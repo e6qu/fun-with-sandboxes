@@ -401,9 +401,11 @@ ports.
 The host has one loopback and one port space. The engine does not virtualise
 it; it tells services their assignment through the environment.
 
-- **Binding.** A container's own ports arrive as `SANDBOX_PORT_<n>`; the
-  service listens on `127.0.0.1` at that port. Seatbelt allows binding
-  exactly those ports on loopback and nothing else.
+- **Binding.** A service listens on its container port, as under Docker,
+  and the container library binds that port's host port on loopback in its
+  place (§3). Seatbelt allows binding exactly those host ports on loopback
+  and nothing else. `SANDBOX_PORT_<n>` names the host port of port `<n>`,
+  for a program that loads no library.
 - **Discovery.** Each stack peer's ports arrive as
   `SANDBOX_<SERVICE>_PORT_<n>` with `SANDBOX_<SERVICE>_HOST=127.0.0.1`, for
   both the service name and the container name. With replicas, the names
@@ -463,9 +465,9 @@ it; it tells services their assignment through the environment.
   network another stack owns, and `host` and `container:` network modes are
   refused.
 
-Discovery is by assigned port, never by a faked fixed port. Software that
-hard-codes `5432` and cannot be told otherwise needs an entrypoint that
-configures it.
+A program that loads the container library listens on and connects to
+`5432` as written; one that loads none, as Apple's do not, needs the
+`SANDBOX_*` variables.
 
 ---
 
@@ -484,18 +486,17 @@ Stock Docker Hub images are Linux. The catalog is built from Nixpkgs for
   layer per store path, in sorted order, and a last layer with everything
   else, so images that share store paths share layers. The profile denies the host's
   `/nix`, so the tests prove it.
-- **Entrypoints are Go programs** (`images/*/entry`) that read the
-  `SANDBOX_*` variables, configure the service, and `exec` it. Images carry no
+- **Entrypoints are Go programs** (`images/*/entry`) that configure the
+  service as the official image's entrypoint does, on its container ports,
+  and `exec` it. Images carry no
   `#!` scripts: the kernel resolves interpreters on the host.
 - **Catalog.** `fws/postgres:16`, with `initdb`, `POSTGRES_PASSWORD`,
   `POSTGRES_DB` and `docker-entrypoint-initdb.d/*.sql` handled the way the
   official image handles them; `fws/redis:8`; and `fws/toolbox:1`, a small
   HTTP app backed by its stack's Redis that doubles as the tests' probe;
-  and `fws/ryuk:0.14.0`, Testcontainers' reaper built from its release with
-  a patch that makes it listen on loopback, an entrypoint that points it at
-  its assigned port and at the engine socket Testcontainers mounts, and an
-  `nc` that checks a container port through its assigned host port, as
-  Testcontainers' in-container port check runs `nc -z`. A container reaches
+  and `fws/ryuk:0.14.0`, Testcontainers' reaper built from its release
+  unchanged, and an `nc` that checks a container port through the container
+  library, as Testcontainers' in-container port check runs `nc -z`. A container reaches
   a Unix socket it bind-mounts, as in Docker, and makes sockets in its
   writable mounts.
   macOS allows only 87 System V semaphores machine-wide by default, so the

@@ -13,6 +13,10 @@
     "Entrypoint": [
       "/entry"
     ],
+    "Cmd": [
+      "redis-server"
+    ],
+    "WorkingDir": "/data",
     "ExposedPorts": {
       "6379/tcp": {}
     },

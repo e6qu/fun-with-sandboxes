@@ -10,8 +10,8 @@
       "PATH=/bin",
       "TZ=UTC"
     ],
-    "Entrypoint": [
-      "/entry"
+    "Cmd": [
+      "/bin/ryuk"
     ],
     "ExposedPorts": {
       "8080/tcp": {}

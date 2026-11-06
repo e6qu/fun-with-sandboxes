@@ -1,7 +1,7 @@
-// Command entry runs DynamoDB Local inside a fwsd container on the port the
-// engine assigned to 8000, storing its tables under /home/dynamodblocal/data
-// as the official image's working directory does, through a launcher that
-// binds it to loopback.
+// Command entry runs DynamoDB Local inside a fwsd container, storing its
+// tables under /home/dynamodblocal/data as the official image's working
+// directory does. The server listens on the container's port 8000, which the
+// container library puts on its host port.
 package main
 
 import (
@@ -18,15 +18,11 @@ import (
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("entry: ")
-	port, err := sandboxenv.Port("8000")
-	if err != nil {
-		log.Fatal(err)
-	}
 	if len(os.Args) > 1 && os.Args[1] == "health" {
 		// DynamoDB Local answers any request, an unsigned one with an
 		// error: an answer means it serves.
 		c := http.Client{Timeout: 2 * time.Second}
-		res, err := c.Get("http://127.0.0.1:" + port + "/")
+		res, err := c.Get("http://127.0.0.1:8000/")
 		if err != nil {
 			log.Print(err)
 			os.Exit(1)
@@ -50,7 +46,6 @@ func main() {
 	argv := []string{"java",
 		"-Djava.library.path=" + filepath.Join(home, "DynamoDBLocal_lib"),
 		"-Djava.io.tmpdir=" + sandboxenv.Path("/tmp"),
-		"-cp", filepath.Join(home, "DynamoDBLocal.jar") + ":" + sandboxenv.Path("/opt/fws"),
-		"Launcher", "-port", port}
+		"-jar", filepath.Join(home, "DynamoDBLocal.jar"), "-port", "8000"}
 	log.Fatal(syscall.Exec(java, append(argv, args...), os.Environ()))
 }

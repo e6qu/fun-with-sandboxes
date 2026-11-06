@@ -1,9 +1,9 @@
 // Command entry runs nginx inside a fwsd container. It renders the
 // /etc/nginx/templates/*.template files into /etc/nginx/conf.d, substituting
 // environment variables as the official image's entrypoint does, and a main
-// configuration that listens on the port the engine assigned to port 80,
-// keeps every path nginx writes inside the container, and serves
-// /usr/share/nginx/html unless a conf.d file defines servers.
+// configuration that keeps every path nginx writes inside the container and,
+// unless a conf.d file defines servers, serves /usr/share/nginx/html on the
+// container's port 80, which the container library puts on its host port.
 package main
 
 import (
@@ -23,13 +23,9 @@ import (
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("entry: ")
-	port, err := sandboxenv.Port("80")
-	if err != nil {
-		log.Fatal(err)
-	}
 	if len(os.Args) > 1 && os.Args[1] == "health" {
 		c := http.Client{Timeout: 2 * time.Second}
-		res, err := c.Get("http://127.0.0.1:" + port + "/")
+		res, err := c.Get("http://127.0.0.1/")
 		if err != nil {
 			log.Print(err)
 			os.Exit(1)
@@ -44,7 +40,7 @@ func main() {
 	// nginx's own files, mime.types among them, sit beside its binary in
 	// its package.
 	pkg := filepath.Dir(filepath.Dir(bin))
-	conf, err := render(pkg, port)
+	conf, err := render(pkg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -57,7 +53,7 @@ func main() {
 
 // render writes conf.d from the templates and the main configuration, and
 // returns the main configuration's path.
-func render(pkg, port string) (string, error) {
+func render(pkg string) (string, error) {
 	confd := sandboxenv.Path("/etc/nginx/conf.d")
 	state := sandboxenv.Path("/var/lib/nginx")
 	for _, d := range []string{confd, state, sandboxenv.Path("/var/run")} {
@@ -80,12 +76,14 @@ func render(pkg, port string) (string, error) {
 	}
 	servers := ""
 	if conf, _ := filepath.Glob(filepath.Join(confd, "*.conf")); len(conf) == 0 {
-		servers = fmt.Sprintf(`    server {
-        listen 127.0.0.1:%s;
-        root %s;
+		servers = `    server {
+        listen 80;
+        listen [::]:80;
+        server_name localhost;
+        root /usr/share/nginx/html;
         index index.html index.htm;
     }
-`, port, sandboxenv.Path("/usr/share/nginx/html"))
+`
 	}
 	var temps strings.Builder
 	for _, t := range []string{"client_body", "proxy", "fastcgi", "uwsgi", "scgi"} {

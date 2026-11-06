@@ -1,6 +1,7 @@
 // Command entry initialises and runs PostgreSQL inside a fwsd container,
-// configured from the environment the way the official image is, with the
-// listen port and paths the engine assigned.
+// configured from the environment the way the official image is. The
+// server listens on the container's port 5432, which the container library
+// puts on its host port, and on its socket in /var/run/postgresql.
 package main
 
 import (
@@ -38,13 +39,9 @@ var serverSettings = []string{
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("entry: ")
-	port, err := sandboxenv.Port("5432")
-	if err != nil {
-		log.Fatal(err)
-	}
 	user := getenv("POSTGRES_USER", "postgres")
 	if len(os.Args) > 1 && os.Args[1] == "health" {
-		os.Exit(run(bin("pg_isready"), "-q", "-h", "127.0.0.1", "-p", port, "-U", user, "-d", "postgres"))
+		os.Exit(run(bin("pg_isready"), "-q", "-h", "127.0.0.1", "-U", user, "-d", "postgres"))
 	}
 	pgdata := sandboxenv.Path(getenv("PGDATA", "/var/lib/postgresql/data"))
 	sockets := sandboxenv.Path("/var/run/postgresql")
@@ -61,11 +58,11 @@ func main() {
 	if len(args) > 0 && args[0] == "postgres" {
 		args = args[1:]
 	}
-	if err := initialise(pgdata, user, port, sockets, args); err != nil {
+	if err := initialise(pgdata, user, sockets, args); err != nil {
 		log.Fatal(err)
 	}
 	postgres := bin("postgres")
-	server := append([]string{postgres}, serverArgs(pgdata, "127.0.0.1", port, sockets)...)
+	server := append([]string{postgres}, serverArgs(pgdata, "*", sockets)...)
 	log.Fatal(syscall.Exec(postgres, append(server, args...), os.Environ()))
 }
 
@@ -104,7 +101,7 @@ func run(name string, args ...string) int {
 	return 0
 }
 
-func initialise(pgdata, user, port, sockets string, extra []string) error {
+func initialise(pgdata, user, sockets string, extra []string) error {
 	if _, err := os.Stat(filepath.Join(pgdata, "PG_VERSION")); err == nil {
 		log.Printf("PostgreSQL database directory appears to contain a database; skipping initialization")
 		return nil
@@ -145,7 +142,7 @@ func initialise(pgdata, user, port, sockets string, extra []string) error {
 	// The database and init scripts go through a server that listens on
 	// its socket alone, as the official image's entrypoint runs it, with
 	// the server's own arguments.
-	temp := exec.Command(bin("postgres"), append(serverArgs(pgdata, "", port, sockets), extra...)...)
+	temp := exec.Command(bin("postgres"), append(serverArgs(pgdata, "", sockets), extra...)...)
 	temp.Stdout = os.Stdout
 	logs, err := temp.StderrPipe()
 	if err != nil {
@@ -168,7 +165,7 @@ func initialise(pgdata, user, port, sockets string, extra []string) error {
 		return <-exited
 	}
 	psql := func(db string, stdin io.Reader, script string) error {
-		args := []string{"-v", "ON_ERROR_STOP=1", "--username", user, "--no-password", "--no-psqlrc", "--host", sockets, "--port", port, "--dbname", db}
+		args := []string{"-v", "ON_ERROR_STOP=1", "--username", user, "--no-password", "--no-psqlrc", "--host", sockets, "--dbname", db}
 		if script != "" {
 			args = append(args, "-f", script)
 		}
@@ -250,10 +247,10 @@ func relay(r io.Reader, ready chan<- struct{}) {
 func ident(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
 // serverArgs are the server's arguments: its data directory, the address
-// it listens on ("" for its socket alone), its port and socket directory,
+// it listens on ("" for its socket alone), its socket directory,
 // and the settings macOS's limits ask for.
-func serverArgs(pgdata, listen, port, sockets string) []string {
-	args := []string{"-D", pgdata, "-c", "listen_addresses=" + listen, "-c", "port=" + port, "-c", "unix_socket_directories=" + sockets}
+func serverArgs(pgdata, listen, sockets string) []string {
+	args := []string{"-D", pgdata, "-c", "listen_addresses=" + listen, "-c", "unix_socket_directories=" + sockets}
 	for _, s := range serverSettings {
 		args = append(args, "-c", s)
 	}

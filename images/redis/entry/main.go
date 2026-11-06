@@ -1,9 +1,13 @@
-// Command entry runs Redis inside a fwsd container on the port and data
-// directory the engine assigned.
+// Command entry runs Redis inside a fwsd container as the official
+// image's entrypoint does: options or a .conf file as the first argument
+// run redis-server with them, and redis-server runs as the redis user
+// under umask 0077. The server listens on the container's port 6379,
+// which the container library puts on its host port.
 package main
 
 import (
 	"bufio"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -18,31 +22,34 @@ import (
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("entry: ")
-	port, err := sandboxenv.Port("6379")
-	if err != nil {
-		log.Fatal(err)
-	}
-	if len(os.Args) > 1 && os.Args[1] == "health" {
-		if err := ping("127.0.0.1:" + port); err != nil {
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "health" {
+		if err := ping("127.0.0.1:6379"); err != nil {
 			log.Print(err)
 			os.Exit(1)
 		}
 		return
 	}
-	dir := sandboxenv.Path("/data")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		log.Fatal(err)
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") || strings.HasSuffix(args[0], ".conf") {
+		args = append([]string{"redis-server"}, args...)
 	}
-	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "redis-server" {
-		args = args[1:]
+	if args[0] == "redis-server" {
+		wd, err := os.Getwd()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := sandboxenv.Become("redis", wd); err != nil {
+			log.Fatal(err)
+		}
 	}
-	bin, err := exec.LookPath("redis-server")
+	if old := syscall.Umask(0o077); old != 0o022 {
+		syscall.Umask(old)
+	}
+	bin, err := exec.LookPath(args[0])
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := []string{"redis-server", "--port", port, "--bind", "127.0.0.1", "--dir", dir}
-	log.Fatal(syscall.Exec(bin, append(server, args...), os.Environ()))
+	log.Fatal(syscall.Exec(bin, args, os.Environ()))
 }
 
 func ping(addr string) error {
@@ -60,7 +67,7 @@ func ping(addr string) error {
 		return err
 	}
 	if strings.TrimSpace(line) != "+PONG" {
-		return &net.AddrError{Err: "unexpected reply " + strings.TrimSpace(line), Addr: addr}
+		return fmt.Errorf("%s answered %q", addr, strings.TrimSpace(line))
 	}
 	return nil
 }
