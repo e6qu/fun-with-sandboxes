@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <sys/sockio.h>
 #include <sys/un.h>
+#include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -62,12 +63,17 @@ static void fail(const char *step) {
 }
 
 int main(int argc, char **argv) {
-    char profile[1024];
+    // The container's root holds its Unix sockets, as a container's
+    // profile lets it bind and reach them there.
+    char root[PATH_MAX] = "/nonexistent";
+    const char *rootenv = getenv("SANDBOX_ROOT");
+    if (rootenv && !realpath(rootenv, root)) strlcpy(root, "/nonexistent", sizeof root);
+    char profile[2048];
     snprintf(profile, sizeof profile,
              "(version 1)(allow default)(deny network-bind)(deny network-outbound)"
-             "(allow network-bind (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\"))"
-             "(allow network-outbound (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
-             argv[1], argv[2], argv[3], argv[5], argv[6], argv[1], argv[2], argv[3], argv[4], argv[6]);
+             "(allow network-bind (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local unix-socket (subpath \"%s\")))"
+             "(allow network-outbound (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote unix-socket (subpath \"%s\")))",
+             argv[1], argv[2], argv[3], argv[5], argv[6], root, argv[1], argv[2], argv[3], argv[4], argv[6], root);
     char *err = NULL;
     if (sandbox_init(profile, 0, &err) != 0) {
         fprintf(stderr, "sandbox_init: %s\n", err);

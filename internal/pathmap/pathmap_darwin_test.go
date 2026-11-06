@@ -289,7 +289,13 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	if err := os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t8080/tcp=%d\t0\tproj_default\t0\n127.88.0.3\tdb proj-db-1\t5432/tcp=%d\t0\tproj_default\t0\t\t127.88.0.9/theirs 127.88.0.2/database\n", tcp1, peer)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
+	// A Unix socket's path is capped at 104 bytes, which a socket in a
+	// root under the test's temporary directory exceeds.
+	root, err := os.MkdirTemp("/tmp", "fwsr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
 	os.MkdirAll(filepath.Join(root, "etc"), 0o755)
 	if err := os.WriteFile(filepath.Join(root, "etc", "hosts"), []byte("127.0.0.1\tlocalhost\n# 10.9.9.9 extra.local\n10.1.2.3\textra.local other  # --add-host\n"), 0o644); err != nil {
 		t.Fatal(err)
