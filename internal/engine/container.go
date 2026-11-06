@@ -491,6 +491,9 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	if c.rec.HostConfig.UTSMode != "host" {
 		env = append(env, pathmap.HostnameVar+"="+host)
 	}
+	if c.rec.HostConfig.PidMode.IsHost() {
+		env = append(env, pathmap.PidNSVar+"=host")
+	}
 	var ms []pathmap.Mount
 	for _, m := range c.rec.Mounts {
 		ms = append(ms, pathmap.Mount{Dest: m.Destination, Source: m.Source})
@@ -561,7 +564,6 @@ func checkHostConfig(hc *container.HostConfig) error {
 	}
 	for _, k := range []knob{
 		{hc.Privileged, "privileged mode"},
-		{hc.PidMode != "" && hc.PidMode != "private", "PID modes"},
 		{hc.UsernsMode != "", "user namespaces"},
 		{hc.Runtime != "" && hc.Runtime != "runc", "alternative runtimes"},
 		{hc.LogConfig.Type != "" && hc.LogConfig.Type != "json-file" && hc.LogConfig.Type != "local", "log drivers other than json-file"},
@@ -573,6 +575,13 @@ func checkHostConfig(hc *container.HostConfig) error {
 	}
 	if err := checkSecurity(hc); err != nil {
 		return err
+	}
+	switch pid := string(hc.PidMode); {
+	case pid == "", pid == "private", pid == "host":
+	case strings.HasPrefix(pid, "container:"):
+		return unsupported("PID mode %q is not supported: a container's processes are those of its own sandbox, which no other container's processes join", pid)
+	default:
+		return invalid("invalid PID mode: %q", pid)
 	}
 	if hc.UTSMode != "" && hc.UTSMode != "host" {
 		return invalid("invalid UTS mode: %q", hc.UTSMode)
@@ -1183,6 +1192,7 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	spec := seatbelt.Spec{
 		Root: c.root(), StateRoot: e.cfg.Root, ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
 		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath()},
+		HostPIDs: c.rec.HostConfig.PidMode.IsHost(),
 	}
 	for _, m := range c.rec.Mounts {
 		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW})

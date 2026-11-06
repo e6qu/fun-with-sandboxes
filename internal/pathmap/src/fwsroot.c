@@ -89,6 +89,11 @@ static gid_t fake_gid, fake_egid;
 static char hostname[256];
 // The host pid of the container's main process (FWS_INIT), its pid 1.
 static pid_t init_pid;
+// On the host's PID namespace (FWS_PIDNS=host) there is no pid 1 to
+// present and every process is listed; root_tag, the variable the engine
+// tags the container's processes with, tells the container's apart.
+static int host_pids;
+static char root_tag[PATH_MAX + 16];
 // The engine's helper binary's name (FWS_HELPER), which the container's
 // exec anchor runs as.
 static char helper_comm[MAXCOMLEN + 1];
@@ -277,7 +282,7 @@ static void parse_network(const char *path, const char *address) {
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", "FWS_PIDNS", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
 __attribute__((constructor)) static void fwsroot_init(void) {
@@ -291,7 +296,9 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     }
     fake_uid = fake_euid = (uid_t)env_number("FWS_UID");
     fake_gid = fake_egid = (gid_t)env_number("FWS_GID");
-    init_pid = (pid_t)env_number("FWS_INIT");
+    const char *ns = getenv("FWS_PIDNS");
+    host_pids = ns && strcmp(ns, "host") == 0;
+    init_pid = host_pids ? 0 : (pid_t)env_number("FWS_INIT");
     const char *pm = getenv("FWS_PIDS");
     if (pm && pm[0] == '/') {
         strlcpy(pids_path, pm, sizeof pids_path);
@@ -310,6 +317,7 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     parse_routing(getenv("FWS_PORTDIR"), getenv("FWS_ROUTER"));
     const char *r = getenv("SANDBOX_ROOT");
     if (r && r[0] == '/' && strlen(r) < sizeof root) {
+        snprintf(root_tag, sizeof root_tag, "SANDBOX_ROOT=%s", r);
         strcpy(root, r);
         rootlen = strlen(root);
         while (rootlen > 1 && root[rootlen - 1] == '/') {
@@ -1688,9 +1696,10 @@ INTERPOSE(fws_proc_pid_rusage, proc_pid_rusage);
 // Processes. The container's processes are those of its sandbox, whose
 // information the sandbox lets them read, as a PID namespace holds a
 // container's processes; a listing leaves out the others, and the anchor
-// that starts the container's execs.
+// that starts the container's execs. On the host's PID namespace a
+// listing holds every process.
 static int visible(pid_t pid, const char *comm) {
-    if (pid == getpid()) {
+    if (pid == getpid() || host_pids) {
         return 1;
     }
     if (helper_comm[0] && strncmp(comm, helper_comm, MAXCOMLEN) == 0) {
@@ -1698,6 +1707,53 @@ static int visible(pid_t pid, const char *comm) {
     }
     struct proc_bsdshortinfo info;
     return proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &info, sizeof info) == (int)sizeof info;
+}
+
+// tagged reports whether pid started with the container's root in its
+// environment, as the engine tells a container's processes apart.
+static int tagged(pid_t pid) {
+    int mib[3] = {CTL_KERN, KERN_PROCARGS2, pid};
+    size_t len = 0;
+    if (!root_tag[0] || sysctl(mib, 3, NULL, &len, NULL, 0) != 0 || len <= sizeof(int)) {
+        return 0;
+    }
+    char *b = malloc(len);
+    if (!b) {
+        return 0;
+    }
+    int found = 0;
+    if (sysctl(mib, 3, b, &len, NULL, 0) == 0 && len > sizeof(int)) {
+        int argc;
+        memcpy(&argc, b, sizeof argc);
+        char *p = b + sizeof argc, *end = b + len;
+        // The executable's path, the padding after it, then the arguments.
+        p += strnlen(p, (size_t)(end - p));
+        while (p < end && !*p) p++;
+        for (int i = 0; i < argc && p < end; i++) p += strnlen(p, (size_t)(end - p)) + 1;
+        size_t tl = strlen(root_tag);
+        while (p < end && *p) {
+            size_t n = strnlen(p, (size_t)(end - p));
+            if (n == tl && memcmp(p, root_tag, tl) == 0) {
+                found = 1;
+                break;
+            }
+            p += n + 1;
+        }
+    }
+    free(b);
+    return found;
+}
+
+// counted reports whether pid is one of the container's processes: one of its
+// sandbox's, or on the host's PID namespace, one the engine tagged.
+static int counted(pid_t pid, const char *comm) {
+    if (!host_pids) {
+        return visible(pid, comm);
+    }
+    if (helper_comm[0] && strncmp(comm, helper_comm, MAXCOMLEN) == 0) {
+        return 0;
+    }
+    return pid == getpid() || tagged(pid);
 }
 
 // pids_full reports whether the container runs as many processes as its
@@ -1724,7 +1780,7 @@ static int pids_full(void) {
     unsigned long count = 0;
     if (sysctl(mib, 4, kp, &len, NULL, 0) == 0) {
         for (size_t i = 0; i < len / sizeof *kp; i++) {
-            if (kp[i].kp_proc.p_stat != SZOMB && visible(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm)) count++;
+            if (kp[i].kp_proc.p_stat != SZOMB && counted(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm)) count++;
         }
     }
     free(kp);

@@ -65,15 +65,20 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 150
     strategy:
+      fail-fast: false
       matrix:
         server: [mysql, mariadb]
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # A sandboxed build, as Hydra's: MySQL's CMake otherwise takes
+      # OpenSSL from the runner's Homebrew.
       - uses: cachix/install-nix-action@v31
         with:
-          extra_nix_config: trusted-users = root runner
+          extra_nix_config: |
+            trusted-users = root runner
+            sandbox = true
       - name: derivation
         id: drv
         run: echo "key=server-${{ matrix.server }}-$(scripts/build-images.sh --server-derivations ${{ matrix.server }} | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
@@ -85,7 +90,9 @@ jobs:
           lookup-only: true
       - name: build
         if: steps.cache.outputs.cache-hit != 'true'
-        run: nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-servers/${{ matrix.server }}" $(scripts/build-images.sh --servers ${{ matrix.server }})
+        run: |
+          paths=$(scripts/build-images.sh --servers ${{ matrix.server }})
+          nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-servers/${{ matrix.server }}" $paths
       - uses: actions/cache/save@v4
         if: steps.cache.outputs.cache-hit != 'true'
         with:

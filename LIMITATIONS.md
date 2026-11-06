@@ -106,7 +106,12 @@ machine — and from what macOS offers an unprivileged process under them.
   address, hostname and stack, so its listeners answer on the other's
   ports. When that container stops, so does the router behind its ports
   without host ports, and the joining container's listeners there go with
-  it. `--pid` and `--userns` need kernel namespaces and are refused.
+  it. `--pid host` lifts the process confinement: the container lists and
+  signals every process of the engine's user, by host pid, with no
+  presented pid 1, and its pids limit still counts its own processes.
+  `--pid container:` would put one container's processes in another's
+  sandbox, which a container with a sandbox of its own cannot join, and is
+  refused, as `--userns` is.
 - **Capabilities grant nothing to drop.** Containers run as the engine's
   unprivileged user, so `--cap-drop` changes nothing; `--cap-add` beyond
   Docker's default set needs root and is refused. AppArmor, SELinux and
