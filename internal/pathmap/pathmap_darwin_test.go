@@ -69,6 +69,19 @@ func TestPathsNameTheRoot(t *testing.T) {
 	}
 }
 
+// A container's interfaces are its own, as in its network namespace:
+// loopback, and on a network, eth0 at its member address, where the host's
+// are.
+func TestInterfaces(t *testing.T) {
+	root := containerRoot(t)
+	if got := probe(t, root, []string{AddressVar + "=127.88.0.2"}, "interfaces"); got["interfaces"] != "lo0(loopback 127.0.0.1/8 ),eth0(127.88.0.2/16 02:42:7f:58:00:02)" {
+		t.Errorf("on a network: %q", got["interfaces"])
+	}
+	if got := probe(t, root, nil, "interfaces"); got["interfaces"] != "lo0(loopback 127.0.0.1/8 )" {
+		t.Errorf("on no network: %q", got["interfaces"])
+	}
+}
+
 func TestIdentityAndOwnership(t *testing.T) {
 	root := containerRoot(t)
 	got := probe(t, root, []string{"FWS_HOSTNAME=web-1"}, "ids", "user", "owner", "chown", "hostname")
@@ -276,7 +289,17 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	if err := os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t8080/tcp=%d\t0\tproj_default\t0\n127.88.0.3\tdb proj-db-1\t5432/tcp=%d\t0\tproj_default\t0\t\t127.88.0.9/theirs 127.88.0.2/database\n", tcp1, peer)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
+	// A Unix socket's path is capped at 104 bytes, which a socket in a
+	// root under the test's temporary directory exceeds. Seatbelt matches
+	// the socket's path as given, so the root is resolved, as the engine's.
+	root, err := os.MkdirTemp("/tmp", "fwsr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	if root, err = filepath.EvalSymlinks(root); err != nil {
+		t.Fatal(err)
+	}
 	os.MkdirAll(filepath.Join(root, "etc"), 0o755)
 	if err := os.WriteFile(filepath.Join(root, "etc", "hosts"), []byte("127.0.0.1\tlocalhost\n# 10.9.9.9 extra.local\n10.1.2.3\textra.local other  # --add-host\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -288,23 +311,34 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(portDir) })
 	got := run("DYLD_INSERT_LIBRARIES="+lib, "SANDBOX_ROOT="+root, ports, NetworkVar+"="+network, AddressVar+"=127.88.0.2", PortDirVar+"="+portDir, RouterVar+"=1")
 	for k, want := range map[string]string{
-		"listen6":  "[::]:8080",
-		"client4":  "127.0.0.1:8080",
-		"accepted": "v6",
-		"client6":  "[::ffff:127.0.0.1]:8080",
-		"lo6":      "[::1]:8080 own-v6",
-		"only6":    "[::1]:8083",
-		"listen4":  "0.0.0.0:8081",
-		"udp":      "[::]",
-		"member":   "127.88.0.3:5432",
-		"alias":    "127.88.0.3:5432",
-		"hidden":   "unknown",
-		"hosts":    "10.1.2.3:80 extra.local",
-		"hostent":  "10.1.2.3",
-		"direct":   "127.0.0.1:8082",
+		"listen6":         "[::]:8080",
+		"client4":         "127.0.0.1:8080",
+		"accepted":        "v6",
+		"client6":         "[::ffff:127.0.0.1]:8080",
+		"lo6":             "[::1]:8080 own-v6",
+		"only6":           "[::1]:8083",
+		"listen4":         "0.0.0.0:8081",
+		"udp":             "[::]",
+		"member":          "127.88.0.3:5432",
+		"alias":           "127.88.0.3:5432",
+		"hidden":          "unknown",
+		"hosts":           "10.1.2.3:80 extra.local",
+		"hostent":         "10.1.2.3",
+		"direct":          "127.0.0.1:8082",
+		"ifaddrs":         "lo0=127.0.0.1,eth0=127.88.0.2",
+		"ifindex":         "eth0",
+		"ifreq":           "127.88.0.2 en0-hidden",
+		"unix":            "/probe.sock",
+		"unix-deep":       "/a-directory-whose-name-is-long-enough-to-take-the-host-path-past-the-socket-address-cap/s.sock peer-same",
+		"unix-dgram-deep": "ab",
 	} {
 		if got[k] != want {
 			t.Errorf("%s: %q, want %q (all: %v)", k, got[k], want, got)
+		}
+	}
+	for _, p := range []string{"probe.sock", "a-directory-whose-name-is-long-enough-to-take-the-host-path-past-the-socket-address-cap/s.sock"} {
+		if fi, err := os.Stat(filepath.Join(root, p)); err != nil || fi.Mode()&os.ModeSocket == 0 {
+			t.Errorf("the socket is not in the container's root: %v", err)
 		}
 	}
 }

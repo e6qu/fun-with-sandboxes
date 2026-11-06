@@ -10,7 +10,9 @@
 // share, reaches it through its own container's router, which relays the
 // connection to the member's host port or router when the member shares a
 // network with its container. The member's ports lie in its own stack's
-// block, which the client's sandbox does not reach.
+// block, which the client's sandbox does not reach. A relay request carries
+// the router's relay key, which it keeps in the port directory, so another
+// member of the stack cannot ask for one.
 //
 // For UDP, the router gives each such port a flow port, a loopback UDP port
 // of the stack's block, and relays datagrams between it and the port's Unix
@@ -19,6 +21,8 @@
 package router
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -41,10 +45,10 @@ import (
 // stream. A request for port 0, which no TCP port is, is a UDP lookup: two
 // more bytes name the UDP port, and Connected is followed by its flow port,
 // two bytes big-endian. A request for port Foreign is a relay to another
-// stack's member: four more bytes name the member's IPv4 address and two
-// its container port. A UDP lookup for port Foreign names a member's UDP
-// port the same way, and is answered with the port of the router's relay
-// to it.
+// stack's member: the relay key, then four bytes that name the member's
+// IPv4 address and two its container port. A UDP lookup for port Foreign
+// names a member's UDP port the same way, and is answered with the port of
+// the router's relay to it.
 const (
 	Connected = 0
 	Refused   = 1
@@ -52,6 +56,12 @@ const (
 
 // Foreign is the request for a relay to another stack's member.
 const Foreign = 0xffff
+
+// KeySize is the size of the relay key.
+const KeySize = 16
+
+// KeyPath is where the router keeps its relay key.
+func KeyPath(dir string) string { return filepath.Join(dir, "relay-key") }
 
 // Header is the size of what the router puts before a datagram on the Unix
 // side: the IPv4 address and port the datagram came from, to the
@@ -82,6 +92,7 @@ const maxDatagram = 65535 + Header
 type Router struct {
 	l   net.Listener
 	dir string
+	key []byte
 	net Network
 	mu  sync.Mutex
 	cs  map[net.Conn]struct{}
@@ -109,6 +120,10 @@ type Network struct {
 // UDP port of the router's stack's block.
 
 func Listen(addr, dir string, flow func() (*net.UDPConn, error), nw Network) (*Router, error) {
+	key, err := loadKey(dir)
+	if err != nil {
+		return nil, err
+	}
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -122,10 +137,40 @@ func Listen(addr, dir string, flow func() (*net.UDPConn, error), nw Network) (*R
 	// A Unix datagram is bounded by the sending socket's buffer.
 	ux.SetReadBuffer(4 * maxDatagram)
 	ux.SetWriteBuffer(2 * maxDatagram)
-	r := &Router{l: l, dir: dir, net: nw, relays: map[relayKey]*net.UDPConn{}, cs: map[net.Conn]struct{}{}, ux: ux, flow: flow, flows: map[int]*net.UDPConn{}}
+	r := &Router{l: l, dir: dir, key: key, net: nw, relays: map[relayKey]*net.UDPConn{}, cs: map[net.Conn]struct{}{}, ux: ux, flow: flow, flows: map[int]*net.UDPConn{}}
 	go r.serve()
 	go r.fromContainer()
 	return r, nil
+}
+
+// loadKey reads the relay key in dir, or makes it, so a router restarted
+// for a running container keeps the key its processes read.
+func loadKey(dir string) ([]byte, error) {
+	if b, err := os.ReadFile(KeyPath(dir)); err == nil && len(b) == KeySize {
+		return b, nil
+	}
+	key := make([]byte, KeySize)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	tmp := KeyPath(dir) + ".new"
+	if err := os.WriteFile(tmp, key, 0o600); err != nil {
+		return nil, err
+	}
+	return key, os.Rename(tmp, KeyPath(dir))
+}
+
+// foreignTarget reads the rest of a Foreign request: the member's address
+// and port, and whether the request carried the router's relay key.
+func (r *Router) foreignTarget(c net.Conn) (netip.Addr, int, error) {
+	var b [KeySize + 6]byte
+	if _, err := io.ReadFull(c, b[:]); err != nil {
+		return netip.Addr{}, 0, err
+	}
+	if subtle.ConstantTimeCompare(b[:KeySize], r.key) != 1 {
+		return netip.Addr{}, 0, errRefused
+	}
+	return netip.AddrFrom4([4]byte(b[KeySize : KeySize+4])), int(binary.BigEndian.Uint16(b[KeySize+4:])), nil
 }
 
 func (r *Router) Addr() *net.TCPAddr { return r.l.Addr().(*net.TCPAddr) }
@@ -251,11 +296,11 @@ func (r *Router) join(c net.Conn) {
 	var up net.Conn
 	var err error
 	if port == Foreign {
-		var to [6]byte
-		if _, err := io.ReadFull(c, to[:]); err != nil {
-			return
+		var addr netip.Addr
+		var p int
+		if addr, p, err = r.foreignTarget(c); err == nil {
+			up, err = r.foreign(addr, p)
 		}
-		up, err = r.foreign(netip.AddrFrom4([4]byte(to[:4])), int(binary.BigEndian.Uint16(to[4:])))
 	} else {
 		up, err = net.Dial("unix", SocketPath(r.dir, port))
 	}
@@ -381,12 +426,11 @@ func (r *Router) lookup(c net.Conn) {
 	}
 	var f int
 	if port == Foreign {
-		var to [6]byte
-		if _, err := io.ReadFull(c, to[:]); err != nil {
-			return
+		addr, p, err := r.foreignTarget(c)
+		if err == nil {
+			f, err = r.relay(addr, p)
 		}
-		var err error
-		if f, err = r.relay(netip.AddrFrom4([4]byte(to[:4])), int(binary.BigEndian.Uint16(to[4:]))); err != nil {
+		if err != nil {
 			c.Write([]byte{Refused})
 			return
 		}

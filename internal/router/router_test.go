@@ -121,18 +121,34 @@ func TestRelaysDatagrams(t *testing.T) {
 	}
 }
 
+// readKey reads the relay key of the router whose port directory is dir,
+// as the container library does.
+func readKey(t *testing.T, dir string) []byte {
+	t.Helper()
+	key, err := os.ReadFile(KeyPath(dir))
+	if err != nil || len(key) != KeySize {
+		t.Fatalf("the relay key: %x, %v", key, err)
+	}
+	return key
+}
+
+// foreignRequest is a Foreign request with key for port of the member at
+// addr.
+func foreignRequest(key []byte, addr netip.Addr, port int) []byte {
+	v4 := addr.As4()
+	req := binary.BigEndian.AppendUint16(nil, Foreign)
+	req = append(append(req, key...), v4[:]...)
+	return binary.BigEndian.AppendUint16(req, uint16(port))
+}
+
 // dialForeign reaches port of another stack's member at addr through the
 // router at router, as the container library does.
-func dialForeign(router string, addr netip.Addr, port int) (net.Conn, error) {
+func dialForeign(router string, key []byte, addr netip.Addr, port int) (net.Conn, error) {
 	c, err := net.Dial("tcp", router)
 	if err != nil {
 		return nil, err
 	}
-	req := make([]byte, 8)
-	binary.BigEndian.PutUint16(req, Foreign)
-	v4 := addr.As4()
-	copy(req[2:], v4[:])
-	binary.BigEndian.PutUint16(req[6:], uint16(port))
+	req := foreignRequest(key, addr, port)
 	var ans [1]byte
 	if _, err := c.Write(req); err == nil {
 		_, err = io.ReadFull(c, ans[:])
@@ -198,14 +214,16 @@ func TestRelaysToForeignMembers(t *testing.T) {
 	if err := os.WriteFile(file, members.Format(ms), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	mine, err := Listen("127.0.0.1:0", portDir(t), listenFlow, Network{File: file, Address: "127.88.0.2"})
+	myDir := portDir(t)
+	mine, err := Listen("127.0.0.1:0", myDir, listenFlow, Network{File: file, Address: "127.88.0.2"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mine.Close()
+	key := readKey(t, myDir)
 
 	for _, port := range []int{8000, 9000} {
-		c, err := dialForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.3"), port)
+		c, err := dialForeign(mine.Addr().String(), key, netip.MustParseAddr("127.88.0.3"), port)
 		if err != nil {
 			t.Fatalf("port %d: %v", port, err)
 		}
@@ -215,38 +233,51 @@ func TestRelaysToForeignMembers(t *testing.T) {
 		}
 		c.Close()
 	}
-	if c, err := dialForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.3"), 9001); err == nil {
+	if c, err := dialForeign(mine.Addr().String(), key, netip.MustParseAddr("127.88.0.3"), 9001); err == nil {
 		c.Close()
 		t.Error("a port nothing listens on was reached")
 	}
-	if c, err := dialForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.4"), 5432); err == nil {
+	if c, err := dialForeign(mine.Addr().String(), key, netip.MustParseAddr("127.88.0.4"), 5432); err == nil {
 		c.Close()
 		t.Error("a member on no shared network was reached")
 	}
-	if c, err := dialForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.5"), 6379); err != nil {
+	if c, err := dialForeign(mine.Addr().String(), key, netip.MustParseAddr("127.88.0.5"), 6379); err != nil {
 		t.Errorf("a linked member: %v", err)
 	} else {
 		c.Close()
 	}
-	if c, err := dialForeign(theirs.Addr().String(), netip.MustParseAddr("127.88.0.3"), 8000); err == nil {
+	if c, err := dialForeign(theirs.Addr().String(), readKey(t, theirDir), netip.MustParseAddr("127.88.0.3"), 8000); err == nil {
 		c.Close()
 		t.Error("a router that knows no network relayed")
+	}
+	// Another member of the stack reaches the router but not its key.
+	if c, err := dialForeign(mine.Addr().String(), make([]byte, KeySize), netip.MustParseAddr("127.88.0.3"), 8000); err == nil {
+		c.Close()
+		t.Error("a request without the relay key was relayed")
+	}
+	// A router restarted for the running container keeps its key.
+	mine.Close()
+	again, err := Listen("127.0.0.1:0", myDir, listenFlow, Network{File: file, Address: "127.88.0.2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	if c, err := dialForeign(again.Addr().String(), key, netip.MustParseAddr("127.88.0.3"), 8000); err != nil {
+		t.Errorf("the restarted router: %v", err)
+	} else {
+		c.Close()
 	}
 }
 
 // lookupForeign asks the router at router for its relay to UDP port port of
 // another stack's member at addr, as the container library does.
-func lookupForeign(router string, addr netip.Addr, port int) (int, error) {
+func lookupForeign(router string, key []byte, addr netip.Addr, port int) (int, error) {
 	c, err := net.Dial("tcp", router)
 	if err != nil {
 		return 0, err
 	}
 	defer c.Close()
-	req := make([]byte, 10)
-	binary.BigEndian.PutUint16(req[2:], Foreign)
-	v4 := addr.As4()
-	copy(req[4:], v4[:])
-	binary.BigEndian.PutUint16(req[8:], uint16(port))
+	req := append([]byte{0, 0}, foreignRequest(key, addr, port)...)
 	if _, err := c.Write(req); err != nil {
 		return 0, err
 	}
@@ -319,7 +350,8 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 	}
 	var smu sync.Mutex
 	var stacks []string
-	mine, err := Listen("127.0.0.1:0", portDir(t), listenFlow, Network{File: file, Address: "127.88.0.2",
+	myDir := portDir(t)
+	mine, err := Listen("127.0.0.1:0", myDir, listenFlow, Network{File: file, Address: "127.88.0.2",
 		DialFlow: func(stack string, raddr *net.UDPAddr) (net.Conn, error) {
 			smu.Lock()
 			defer smu.Unlock()
@@ -330,6 +362,7 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mine.Close()
+	key := readKey(t, myDir)
 
 	client, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -337,11 +370,11 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 	}
 	defer client.Close()
 	for port, want := range map[int]string{53: "hosted hi", 5353: "unhosted hi"} {
-		f, err := lookupForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.3"), port)
+		f, err := lookupForeign(mine.Addr().String(), key, netip.MustParseAddr("127.88.0.3"), port)
 		if err != nil {
 			t.Fatalf("port %d: %v", port, err)
 		}
-		if again, err := lookupForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.3"), port); err != nil || again != f {
+		if again, err := lookupForeign(mine.Addr().String(), key, netip.MustParseAddr("127.88.0.3"), port); err != nil || again != f {
 			t.Errorf("a second lookup of port %d: %d, %v, want %d", port, again, err, f)
 		}
 		relay := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: f}
@@ -363,7 +396,10 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 		t.Errorf("the relays sent from the blocks of %q", stacks)
 	}
 	smu.Unlock()
-	if _, err := lookupForeign(mine.Addr().String(), netip.MustParseAddr("127.88.0.4"), 53); err == nil {
+	if _, err := lookupForeign(mine.Addr().String(), key, netip.MustParseAddr("127.88.0.4"), 53); err == nil {
 		t.Error("a member on no shared network was relayed to")
+	}
+	if _, err := lookupForeign(mine.Addr().String(), make([]byte, KeySize), netip.MustParseAddr("127.88.0.3"), 53); err == nil {
+		t.Error("a lookup without the relay key was answered")
 	}
 }

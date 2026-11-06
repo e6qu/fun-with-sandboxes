@@ -237,7 +237,15 @@ same knobs, each enforced by a real mechanism or refused:
   of each member's address, the names it answers to (its container name,
   service, hostname, DNS names and aliases) and its ports' host ports; the
   container reads it (`FWS_NETWORK`) and nothing else of the engine's
-  state. The library resolves names in `getaddrinfo` and `gethostbyname`
+  state. The library presents the container's interfaces where a program
+  lists them, in the routing sysctl (`NET_RT_IFLIST`, `NET_RT_IFLIST2`)
+  that `getifaddrs` and Go read and in the `SIOCGIF*` ioctls: the host's
+  loopback interface, and `eth0`, which takes the index after the host's
+  highest, with the member address. A Unix socket's address maps as a
+  file path does, in `bind`, `connect` and `sendto`, and reads back as the
+  container's path. A host path past the address's 104 bytes binds,
+  connects and sends by its last component, from its directory as the
+  calling thread's working directory (`pthread_fchdir_np`). The library resolves names in `getaddrinfo` and `gethostbyname`
   as a resolver does: from the container's `/etc/hosts` first, which the
   host's resolver never reads, then from those names, and then as the host
   does; it connects to a member's address through the host port
@@ -424,6 +432,9 @@ it; it tells services their assignment through the environment.
   networks. The library resolves and reaches only the members its
   container shares a network with or links to, and connects to a foreign one through
   its own router with a relay request of the member's address and port.
+  The request carries the router's relay key, which the router keeps in
+  the container's port directory, where no other member's sandbox reads,
+  so a member reaches the router's relays only as its own container.
   The router reads the network file, checks that the member shares a
   network with its container or is linked to from it, and joins the connection to the member's
   host port, or to its router for a port without one. A UDP lookup of a
@@ -440,7 +451,8 @@ it; it tells services their assignment through the environment.
   authentication) for any TCP, told apart by the first byte a client sends.
   Containers, classic `RUN` steps and BuildKit steps receive `HTTP_PROXY`,
   `HTTPS_PROXY`, `ALL_PROXY` (`socks5h://`, so the proxy resolves names) and
-  `NO_PROXY`. The proxy resolves each destination once, refuses it if any
+  `NO_PROXY`, which leaves loopback and the member block to the container
+  library. The proxy resolves each destination once, refuses it if any
   address is loopback, link-local, multicast, unspecified or assigned to one
   of the host's interfaces, and dials an address it checked, so DNS cannot
   rebind a name onto the host. Containers with `network_mode: none`, or only

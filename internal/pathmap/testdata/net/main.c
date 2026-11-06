@@ -5,12 +5,20 @@
 // does, by an alias a link gives it, and a name its /etc/hosts lists. It
 // reports each step.
 #include <arpa/inet.h>
+#include <errno.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
+#include <sys/sockio.h>
+#include <sys/un.h>
+#include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 int sandbox_init(const char *profile, uint64_t flags, char **err);
@@ -51,17 +59,23 @@ static struct sockaddr_in v4(const char *a, unsigned short port) {
 }
 
 static void fail(const char *step) {
+    fprintf(stderr, "%s: %s\n", step, strerror(errno));
     printf("%s=error\n", step);
     exit(0);
 }
 
 int main(int argc, char **argv) {
-    char profile[1024];
+    // The container's root holds its Unix sockets, as a container's
+    // profile lets it bind and reach them there.
+    char root[PATH_MAX] = "/nonexistent";
+    const char *rootenv = getenv("SANDBOX_ROOT");
+    if (rootenv && !realpath(rootenv, root)) strlcpy(root, "/nonexistent", sizeof root);
+    char profile[2048];
     snprintf(profile, sizeof profile,
              "(version 1)(allow default)(deny network-bind)(deny network-outbound)"
-             "(allow network-bind (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\"))"
-             "(allow network-outbound (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
-             argv[1], argv[2], argv[3], argv[5], argv[6], argv[1], argv[2], argv[3], argv[4], argv[6]);
+             "(allow network-bind (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local ip \"localhost:%s\") (local unix-socket (subpath \"%s\")))"
+             "(allow network-outbound (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote unix-socket (subpath \"%s\")))",
+             argv[1], argv[2], argv[3], argv[5], argv[6], root, argv[1], argv[2], argv[3], argv[4], argv[6], root);
     char *err = NULL;
     if (sandbox_init(profile, 0, &err) != 0) {
         fprintf(stderr, "sandbox_init: %s\n", err);
@@ -203,5 +217,97 @@ int main(int argc, char **argv) {
     char *port = strrchr(host, ':');
     if (port) *port = 0;
     printf("udp=%s\n", host);
+
+    // The container's interfaces: loopback, and eth0 at its member address.
+    struct ifaddrs *ifs;
+    if (getifaddrs(&ifs)) fail("ifaddrs");
+    char list[512] = "";
+    for (struct ifaddrs *a = ifs; a; a = a->ifa_next) {
+        if (!a->ifa_addr || a->ifa_addr->sa_family != AF_INET) continue;
+        char b4[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &((struct sockaddr_in *)(void *)a->ifa_addr)->sin_addr, b4, sizeof b4);
+        if (list[0]) strlcat(list, ",", sizeof list);
+        strlcat(list, a->ifa_name, sizeof list);
+        strlcat(list, "=", sizeof list);
+        strlcat(list, b4, sizeof list);
+    }
+    freeifaddrs(ifs);
+    printf("ifaddrs=%s\n", list);
+    unsigned idx = if_nametoindex("eth0");
+    char back[IF_NAMESIZE] = "";
+    printf("ifindex=%s\n", idx && if_indextoname(idx, back) && strcmp(back, "eth0") == 0 ? "eth0" : "none");
+    int q = socket(AF_INET, SOCK_DGRAM, 0);
+    struct ifreq r;
+    memset(&r, 0, sizeof r);
+    strlcpy(r.ifr_name, "eth0", sizeof r.ifr_name);
+    if (ioctl(q, SIOCGIFADDR, &r)) fail("ifreq");
+    char b4[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &((struct sockaddr_in *)(void *)&r.ifr_addr)->sin_addr, b4, sizeof b4);
+    strlcpy(r.ifr_name, "en0", sizeof r.ifr_name);
+    int hidden = ioctl(q, SIOCGIFFLAGS, &r) == -1 && errno == ENXIO;
+    printf("ifreq=%s %s\n", b4, hidden ? "en0-hidden" : "en0-seen");
+
+    // A Unix socket at a path of the container's.
+    int ul = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un un;
+    memset(&un, 0, sizeof un);
+    un.sun_family = AF_UNIX;
+    strlcpy(un.sun_path, "/probe.sock", sizeof un.sun_path);
+    un.sun_len = (unsigned char)SUN_LEN(&un);
+    if (bind(ul, (void *)&un, un.sun_len) || listen(ul, 1)) fail("unix");
+    int uc2 = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (connect(uc2, (void *)&un, un.sun_len)) fail("unix");
+    int ua = accept(ul, NULL, NULL);
+    if (ua < 0) fail("unix");
+    struct sockaddr_un named;
+    socklen_t nl = sizeof named;
+    memset(&named, 0, sizeof named);
+    getsockname(ul, (void *)&named, &nl);
+    printf("unix=%s\n", named.sun_path);
+
+    // A Unix socket whose path fits the container's address but whose
+    // host path, under the root, does not.
+    const char *deep = "/a-directory-whose-name-is-long-enough-to-take-the-host-path-past-the-socket-address-cap";
+    mkdir(deep, 0755);
+    int dl = socket(AF_UNIX, SOCK_STREAM, 0);
+    memset(&un, 0, sizeof un);
+    un.sun_family = AF_UNIX;
+    snprintf(un.sun_path, sizeof un.sun_path, "%s/s.sock", deep);
+    un.sun_len = (unsigned char)SUN_LEN(&un);
+    if (bind(dl, (void *)&un, un.sun_len) || listen(dl, 1)) fail("unix-deep");
+    int dc = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (connect(dc, (void *)&un, un.sun_len)) fail("unix-deep");
+    int da = accept(dl, NULL, NULL);
+    if (da < 0 || write(dc, "x", 1) != 1) fail("unix-deep");
+    char got;
+    if (read(da, &got, 1) != 1) fail("unix-deep");
+    struct sockaddr_un self, peer;
+    socklen_t sl = sizeof self, pl = sizeof peer;
+    memset(&self, 0, sizeof self);
+    memset(&peer, 0, sizeof peer);
+    getsockname(dl, (void *)&self, &sl);
+    getpeername(dc, (void *)&peer, &pl);
+    printf("unix-deep=%s %s\n", self.sun_path, strcmp(self.sun_path, peer.sun_path) == 0 ? "peer-same" : peer.sun_path);
+
+    // Datagrams to a Unix socket at such a path, by sendto and sendmsg.
+    int gr = socket(AF_UNIX, SOCK_DGRAM, 0);
+    memset(&un, 0, sizeof un);
+    un.sun_family = AF_UNIX;
+    snprintf(un.sun_path, sizeof un.sun_path, "%s/d.sock", deep);
+    un.sun_len = (unsigned char)SUN_LEN(&un);
+    if (bind(gr, (void *)&un, un.sun_len)) fail("unix-dgram-deep");
+    int gs = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (sendto(gs, "a", 1, 0, (void *)&un, un.sun_len) != 1) fail("unix-dgram-deep");
+    struct iovec gv = {"b", 1};
+    struct msghdr gm;
+    memset(&gm, 0, sizeof gm);
+    gm.msg_name = &un;
+    gm.msg_namelen = un.sun_len;
+    gm.msg_iov = &gv;
+    gm.msg_iovlen = 1;
+    if (sendmsg(gs, &gm, 0) != 1) fail("unix-dgram-deep");
+    char g[2];
+    if (recv(gr, &g[0], 1, 0) != 1 || recv(gr, &g[1], 1, 0) != 1) fail("unix-dgram-deep");
+    printf("unix-dgram-deep=%.2s\n", g);
     return 0;
 }

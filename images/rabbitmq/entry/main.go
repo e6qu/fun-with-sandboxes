@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,22 +57,30 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	env := append(os.Environ(),
-		"HOME="+home,
+	// The engine's ports and paths, for whatever the environment leaves
+	// unset, as the official image's defaults are.
+	env := os.Environ()
+	for _, kv := range []string{
+		"HOME=" + home,
 		"RABBITMQ_NODENAME=rabbit@localhost",
 		"RABBITMQ_NODE_IP_ADDRESS=127.0.0.1",
-		"RABBITMQ_NODE_PORT="+amqp,
-		"RABBITMQ_DIST_PORT="+dist,
-		"ERL_EPMD_PORT="+epmd,
+		"RABBITMQ_NODE_PORT=" + amqp,
+		"RABBITMQ_DIST_PORT=" + dist,
+		"ERL_EPMD_PORT=" + epmd,
 		"ERL_EPMD_ADDRESS=127.0.0.1",
 		"RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-kernel inet_dist_use_interface {127,0,0,1}",
-		"RABBITMQ_MNESIA_BASE="+filepath.Join(home, "mnesia"),
-		"RABBITMQ_LOG_BASE="+filepath.Join(home, "log"),
+		"RABBITMQ_MNESIA_BASE=" + filepath.Join(home, "mnesia"),
+		"RABBITMQ_LOG_BASE=" + filepath.Join(home, "log"),
 		"RABBITMQ_LOGS=-",
-		"RABBITMQ_CONFIG_FILE="+filepath.Join(etc, "rabbitmq"),
-		"RABBITMQ_ADVANCED_CONFIG_FILE="+filepath.Join(etc, "advanced.config"),
-		"RABBITMQ_ENABLED_PLUGINS_FILE="+plugins,
-	)
+		"RABBITMQ_CONFIG_FILE=" + filepath.Join(etc, "rabbitmq"),
+		"RABBITMQ_ADVANCED_CONFIG_FILE=" + filepath.Join(etc, "advanced.config"),
+		"RABBITMQ_ENABLED_PLUGINS_FILE=" + plugins,
+	} {
+		k, _, _ := strings.Cut(kv, "=")
+		if k == "HOME" || os.Getenv(k) == "" {
+			env = setenv(env, kv)
+		}
+	}
 	// The script finds its siblings beside the path it runs from.
 	server, err := filepath.EvalSymlinks(sandboxenv.Path("/bin/rabbitmq-server"))
 	if err != nil {
@@ -104,4 +113,16 @@ func handshake(addr string) error {
 		return io.ErrUnexpectedEOF
 	}
 	return nil
+}
+
+// setenv sets kv in env, in place of any entry of its name.
+func setenv(env []string, kv string) []string {
+	k, _, _ := strings.Cut(kv, "=")
+	out := env[:0]
+	for _, e := range env {
+		if !strings.HasPrefix(e, k+"=") {
+			out = append(out, e)
+		}
+	}
+	return append(out, kv)
 }

@@ -56,6 +56,12 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <net/if.h>
+#include <net/if_dl.h>
+#include <net/if_types.h>
+#include <net/route.h>
+#include <ifaddrs.h>
+#include <sys/ioctl.h>
+#include <sys/sockio.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -1825,7 +1831,251 @@ INTERPOSE(fws_proc_listchildpids, proc_listchildpids);
 
 // Go and other programs read the hostname, and ps the process table,
 // through sysctl.
+// The container's network interfaces, as a container's network namespace
+// holds them: the loopback interface, and on a network, eth0 with the
+// member address in the member block, where the host's interfaces are.
+// libSystem's getifaddrs and if_nameindex, and Go's net.Interfaces, read
+// them from the routing sysctl NET_RT_IFLIST2 or NET_RT_IFLIST.
+
+#define MEMBER_MASK 0xffff0000u
+#define ETH0_MTU 1500
+#define RT_ROUNDUP(a) ((a) > 0 ? (1 + (((a) - 1) | (sizeof(uint32_t) - 1))) : sizeof(uint32_t))
+
+static const char eth0_name[] = "eth0";
+
+// eth0_mac is a MAC address of Docker's form, 02:42 and the address.
+static void eth0_mac(unsigned char mac[6]) {
+    mac[0] = 0x02;
+    mac[1] = 0x42;
+    memcpy(mac + 2, &own_address, 4);
+}
+
+static struct sockaddr_in v4_sockaddr(in_addr_t a) {
+    struct sockaddr_in s;
+    memset(&s, 0, sizeof s);
+    s.sin_len = sizeof s;
+    s.sin_family = AF_INET;
+    s.sin_addr.s_addr = a;
+    return s;
+}
+
+// eth0_info writes at out eth0's interface message of type, RTM_IFINFO
+// or RTM_IFINFO2, and returns its length.
+static size_t eth0_info(char *out, unsigned char type, unsigned short index) {
+    size_t head = type == RTM_IFINFO2 ? sizeof(struct if_msghdr2) : sizeof(struct if_msghdr);
+    struct sockaddr_dl dl;
+    memset(&dl, 0, sizeof dl);
+    dl.sdl_len = sizeof dl;
+    dl.sdl_family = AF_LINK;
+    dl.sdl_index = index;
+    dl.sdl_type = IFT_ETHER;
+    dl.sdl_nlen = sizeof eth0_name - 1;
+    dl.sdl_alen = 6;
+    memcpy(dl.sdl_data, eth0_name, sizeof eth0_name - 1);
+    eth0_mac((unsigned char *)dl.sdl_data + dl.sdl_nlen);
+    memset(out, 0, head);
+    struct if_msghdr *m = (struct if_msghdr *)out;
+    m->ifm_version = RTM_VERSION;
+    m->ifm_type = type;
+    m->ifm_addrs = RTA_IFP;
+    m->ifm_flags = IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_SIMPLEX | IFF_MULTICAST;
+    m->ifm_index = index;
+    if (type == RTM_IFINFO2) {
+        struct if_msghdr2 *m2 = (struct if_msghdr2 *)out;
+        m2->ifm_data.ifi_type = IFT_ETHER;
+        m2->ifm_data.ifi_addrlen = 6;
+        m2->ifm_data.ifi_hdrlen = 14;
+        m2->ifm_data.ifi_mtu = ETH0_MTU;
+    } else {
+        m->ifm_data.ifi_type = IFT_ETHER;
+        m->ifm_data.ifi_addrlen = 6;
+        m->ifm_data.ifi_hdrlen = 14;
+        m->ifm_data.ifi_mtu = ETH0_MTU;
+    }
+    memcpy(out + head, &dl, sizeof dl);
+    size_t n = head + RT_ROUNDUP(sizeof dl);
+    m->ifm_msglen = (unsigned short)n;
+    return n;
+}
+
+// eth0_addr writes at out the message of eth0's address and returns its
+// length.
+static size_t eth0_addr(char *out, unsigned short index) {
+    struct ifa_msghdr h;
+    memset(&h, 0, sizeof h);
+    h.ifam_version = RTM_VERSION;
+    h.ifam_type = RTM_NEWADDR;
+    h.ifam_addrs = RTA_NETMASK | RTA_IFA | RTA_BRD;
+    h.ifam_index = index;
+    struct sockaddr_in sa[3] = {v4_sockaddr(htonl(MEMBER_MASK)), v4_sockaddr(own_address),
+                                v4_sockaddr(own_address | htonl(~MEMBER_MASK))};
+    size_t n = sizeof h;
+    for (int i = 0; i < 3; i++) {
+        memcpy(out + n, &sa[i], sizeof sa[i]);
+        n += RT_ROUNDUP(sizeof sa[i]);
+    }
+    h.ifam_msglen = (unsigned short)n;
+    memcpy(out, &h, sizeof h);
+    return n;
+}
+
+// iflist answers a routing sysctl of interfaces, NET_RT_IFLIST or
+// NET_RT_IFLIST2, as the container's network namespace would: the host's
+// messages of its loopback interfaces, then eth0's, for the interface the
+// request names, or all of them.
+static int iflist(const int *name, void *old, size_t *oldlen) {
+    int mib[6];
+    memcpy(mib, name, sizeof mib);
+    int want = mib[5], af = mib[3];
+    mib[5] = 0;
+    char *buf = NULL;
+    size_t n = 0;
+    for (;;) {
+        if (sysctl(mib, 6, NULL, &n, NULL, 0) == -1) return -1;
+        n += n / 4 + 1024;
+        free(buf);
+        if (!(buf = malloc(n + 512))) {
+            errno = ENOMEM;
+            return -1;
+        }
+        if (sysctl(mib, 6, buf, &n, NULL, 0) == 0) break;
+        if (errno != ENOMEM) {
+            free(buf);
+            return -1;
+        }
+    }
+    // The loopback interfaces, and the highest index, whose successor
+    // eth0 takes so that no host interface's index names it.
+    unsigned char loop[65536 / 8] = {0};
+    unsigned short top = 0;
+    for (size_t off = 0; off + sizeof(struct if_msghdr) <= n;) {
+        const struct if_msghdr *m = (const void *)(buf + off);
+        if (m->ifm_msglen == 0) break;
+        if (m->ifm_index > top) top = m->ifm_index;
+        if ((m->ifm_type == RTM_IFINFO || m->ifm_type == RTM_IFINFO2) && (m->ifm_flags & IFF_LOOPBACK)) {
+            loop[m->ifm_index / 8] |= (unsigned char)(1 << (m->ifm_index % 8));
+        }
+        off += m->ifm_msglen;
+    }
+    unsigned short eth0 = (unsigned short)(top + 1);
+    size_t out = 0;
+    for (size_t off = 0; off + sizeof(struct if_msghdr) <= n;) {
+        struct if_msghdr *m = (void *)(buf + off);
+        size_t len = m->ifm_msglen;
+        if (len == 0) break;
+        if ((loop[m->ifm_index / 8] & (1 << (m->ifm_index % 8))) && (!want || want == m->ifm_index)) {
+            memmove(buf + out, m, len);
+            out += len;
+        }
+        off += len;
+    }
+    char extra[512];
+    size_t more = 0;
+    if (own_address && top < 65535 && (!want || want == eth0)) {
+        more = eth0_info(extra, mib[4] == NET_RT_IFLIST2 ? RTM_IFINFO2 : RTM_IFINFO, eth0);
+        if (af == 0 || af == AF_INET) more += eth0_addr(extra + more, eth0);
+    }
+    memcpy(buf + out, extra, more);
+    out += more;
+    if (!old) {
+        *oldlen = out;
+        free(buf);
+        return 0;
+    }
+    int r = 0;
+    if (*oldlen < out) {
+        errno = ENOMEM;
+        r = -1;
+        out = *oldlen;
+    }
+    memcpy(old, buf, out);
+    *oldlen = out;
+    free(buf);
+    return r;
+}
+
+// ifconf answers SIOCGIFCONF from the interfaces getifaddrs reads, which
+// the routing sysctl presents: an entry per address, of its interface's
+// name and the address, as long as the address or a struct sockaddr.
+static int ifconf(struct ifconf *c) {
+    struct ifaddrs *list;
+    if (getifaddrs(&list) == -1) return -1;
+    int used = 0;
+    for (struct ifaddrs *a = list; a; a = a->ifa_next) {
+        if (!a->ifa_addr) continue;
+        int size = IFNAMSIZ + (a->ifa_addr->sa_len > sizeof(struct sockaddr) ? a->ifa_addr->sa_len : (int)sizeof(struct sockaddr));
+        if (c->ifc_buf && used + size > c->ifc_len) break;
+        if (c->ifc_buf) {
+            char *e = c->ifc_buf + used;
+            memset(e, 0, (size_t)size);
+            strlcpy(e, a->ifa_name, IFNAMSIZ);
+            memcpy(e + IFNAMSIZ, a->ifa_addr, a->ifa_addr->sa_len);
+        }
+        used += size;
+    }
+    freeifaddrs(list);
+    c->ifc_len = used;
+    return 0;
+}
+
+// eth0_ioctl answers a query of eth0's flags, MTU or addresses.
+static int eth0_ioctl(unsigned long req, struct ifreq *r) {
+    struct sockaddr_in a;
+    switch (req) {
+    case SIOCGIFFLAGS:
+        r->ifr_flags = (short)(IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_SIMPLEX | IFF_MULTICAST);
+        return 0;
+    case SIOCGIFMTU:
+        r->ifr_mtu = ETH0_MTU;
+        return 0;
+    case SIOCGIFADDR:
+        a = v4_sockaddr(own_address);
+        break;
+    case SIOCGIFNETMASK:
+        a = v4_sockaddr(htonl(MEMBER_MASK));
+        break;
+    default:
+        a = v4_sockaddr(own_address | htonl(~MEMBER_MASK));
+        break;
+    }
+    memcpy(&r->ifr_addr, &a, sizeof a);
+    return 0;
+}
+
+static int fws_ioctl(int fd, unsigned long req, ...) {
+    va_list ap;
+    va_start(ap, req);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    switch (req) {
+    case SIOCGIFCONF:
+        if (arg) return ifconf(arg);
+        break;
+    case SIOCGIFFLAGS:
+    case SIOCGIFMTU:
+    case SIOCGIFADDR:
+    case SIOCGIFNETMASK:
+    case SIOCGIFBRDADDR: {
+        struct ifreq *r = arg;
+        if (!r) break;
+        if (own_address && strncmp(r->ifr_name, eth0_name, IFNAMSIZ) == 0) return eth0_ioctl(req, r);
+        // The host's other interfaces are not the container's.
+        if (strncmp(r->ifr_name, "lo", 2) != 0) {
+            errno = ENXIO;
+            return -1;
+        }
+        break;
+    }
+    }
+    return ioctl(fd, req, arg);
+}
+INTERPOSE(fws_ioctl, ioctl);
+
 static int fws_sysctl(int *name, u_int namelen, void *old, size_t *oldlen, void *new, size_t newlen) {
+    if (namelen == 6 && name[0] == CTL_NET && name[1] == PF_ROUTE && name[2] == 0 &&
+        (name[4] == NET_RT_IFLIST || name[4] == NET_RT_IFLIST2) && oldlen && !new) {
+        return iflist(name, old, oldlen);
+    }
     if (namelen == 3 && name[0] == CTL_KERN && (name[1] == KERN_PROCARGS || name[1] == KERN_PROCARGS2) && init_pid) {
         int mib[3] = {name[0], name[1], to_host(name[2])};
         return sysctl(mib, 3, old, oldlen, new, newlen);
@@ -2118,6 +2368,24 @@ static int cmsg_flag(int level, int name) {
     return 0;
 }
 
+// unix_names and unix_peers hold the container paths of Unix sockets
+// bound, or connected, relative to their directories, whose addresses
+// hold only the last component.
+static char *unix_names[NET_FDS], *unix_peers[NET_FDS];
+
+static void set_name(char **table, int fd, const char *name) {
+    if (fd < 0 || fd >= NET_FDS || table[fd] == name) return;
+    free(table[fd]);
+    table[fd] = name ? strdup(name) : NULL;
+}
+
+static void name_unix(char **table, int fd, const struct sockaddr *sa, socklen_t len) {
+    char p[sizeof((struct sockaddr_un *)0)->sun_path + 1] = {0};
+    size_t at = offsetof(struct sockaddr_un, sun_path), n = (size_t)len - at;
+    memcpy(p, ((const struct sockaddr_un *)(const void *)sa)->sun_path, n < sizeof p - 1 ? n : sizeof p - 1);
+    set_name(table, fd, p);
+}
+
 static unsigned char state_of(int fd) { return fd >= 0 && fd < NET_FDS ? net_state[fd] : 0; }
 
 static void set_state(int fd, unsigned char st) {
@@ -2195,12 +2463,98 @@ static int to_ipv4(int fd, int type) {
     return 0;
 }
 
+// enter_dir makes dir the calling thread's working directory alone, for
+// a Unix socket named relative to it; leave_dir restores the process's
+// and closes dir, which enter_dir also closes when it fails.
+extern int pthread_fchdir_np(int) __attribute__((weak_import));
+static int enter_dir(int dir) {
+    int r = pthread_fchdir_np(dir);
+    if (r != 0) {
+        int e = errno;
+        close(dir);
+        errno = e;
+    }
+    return r;
+}
+
+static void leave_dir(int dir) {
+    int e = errno;
+    pthread_fchdir_np(-1);
+    close(dir);
+    errno = e;
+}
+
+// in_dir runs a bind or connect of fd to a Unix socket named relative to
+// dir, which it closes.
+static int in_dir(int dir, int (*op)(int, const struct sockaddr *, socklen_t), int fd, const struct sockaddr *to, socklen_t len) {
+    if (enter_dir(dir) != 0) {
+        return -1;
+    }
+    int r = op(fd, to, len);
+    leave_dir(dir);
+    return r;
+}
+
+// unix_host maps a Unix socket address's container path to the host path
+// it names, as the file calls map paths; follow says whether a link its
+// last component names is followed. A host path longer than a Unix socket
+// address holds, as a root's deep path makes one the container's fits,
+// becomes its last component, relative to its directory opened in *dir,
+// for in_dir; without dir, it fails with ENAMETOOLONG.
+static const struct sockaddr *unix_host(const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out, int follow, int *dir) {
+    size_t at = offsetof(struct sockaddr_un, sun_path);
+    if (!rootlen || *len <= (socklen_t)at) {
+        return sa;
+    }
+    char path[sizeof((struct sockaddr_un *)0)->sun_path + 1];
+    size_t n = (size_t)*len - at;
+    if (n > sizeof path - 1) n = sizeof path - 1;
+    memcpy(path, ((const struct sockaddr_un *)(const void *)sa)->sun_path, n);
+    path[n] = 0;
+    if (!path[0]) {
+        return sa;
+    }
+    const char *host = MAPF(path, follow);
+    if (host == path || strcmp(host, path) == 0) {
+        return sa;
+    }
+    struct sockaddr_un *u = (struct sockaddr_un *)out;
+    memset(u, 0, sizeof *u);
+    if (strlcpy(u->sun_path, host, sizeof u->sun_path) >= sizeof u->sun_path) {
+        const char *base = strrchr(host, '/');
+        if (!dir || !base || strlen(base + 1) >= sizeof u->sun_path || !pthread_fchdir_np) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        char parent[PATH_MAX];
+        size_t pn = base == host ? 1 : (size_t)(base - host);
+        if (pn >= sizeof parent) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        memcpy(parent, host, pn);
+        parent[pn] = 0;
+        if ((*dir = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1) {
+            return NULL;
+        }
+        memset(u->sun_path, 0, sizeof u->sun_path);
+        strlcpy(u->sun_path, base + 1, sizeof u->sun_path);
+    }
+    u->sun_family = AF_UNIX;
+    u->sun_len = (unsigned char)SUN_LEN(u);
+    *len = u->sun_len;
+    return (const struct sockaddr *)out;
+}
+
 // local returns the address a bind to sa binds, in out, converting fd first
 // where an IPv4 address goes through an IPv6 socket.
-static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out, unsigned char *any) {
+static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out, unsigned char *any, int *dir) {
     *any = 0;
     if (!sa) {
         return sa;
+    }
+    if (sa->sa_family == AF_UNIX) {
+        return unix_host(sa, len, out, 0, dir);
     }
     int type = sock_type(fd);
     if (sa->sa_family == AF_INET && *len >= (socklen_t)sizeof(struct sockaddr_in)) {
@@ -2262,6 +2616,35 @@ static struct flow {
 } flows[MAX_FLOWS];
 static int nflows;
 
+// relay_key reads the relay key a request for a relay carries, which the
+// container's router keeps in the port directory for the container's life.
+#define RELAY_KEY 16
+static unsigned char relay_key_bytes[RELAY_KEY];
+static int relay_key_read;
+
+static const unsigned char *relay_key(void) {
+    if (__atomic_load_n(&relay_key_read, __ATOMIC_ACQUIRE)) {
+        return relay_key_bytes;
+    }
+    char p[PATH_MAX];
+    if (!join(p, sizeof p, port_dir, "/relay-key", "")) {
+        return NULL;
+    }
+    int f = open(p, O_RDONLY | O_CLOEXEC);
+    if (f < 0) {
+        return NULL;
+    }
+    unsigned char k[RELAY_KEY];
+    ssize_t n = read(f, k, sizeof k);
+    close(f);
+    if (n != RELAY_KEY) {
+        return NULL;
+    }
+    memcpy(relay_key_bytes, k, sizeof k);
+    __atomic_store_n(&relay_key_read, 1, __ATOMIC_RELEASE);
+    return relay_key_bytes;
+}
+
 // ask_router asks the router at loopback port router for UDP port port's
 // flow port, or with foreign set, the container's own router for its relay
 // to UDP port port of another stack's member at addr.
@@ -2271,14 +2654,20 @@ static unsigned short ask_router(unsigned short router, unsigned short port, in_
         return 0;
     }
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
-    unsigned char req[10] = {0, 0, (unsigned char)(port >> 8), (unsigned char)port}, ans[3] = {1, 0, 0};
+    unsigned char req[4 + RELAY_KEY + 6] = {0, 0, (unsigned char)(port >> 8), (unsigned char)port}, ans[3] = {1, 0, 0};
     ssize_t n = 4;
     if (foreign) {
+        const unsigned char *key = relay_key();
+        if (!key) {
+            close(s);
+            return 0;
+        }
         req[2] = req[3] = 0xff;
-        memcpy(req + 4, &addr, 4);
-        req[8] = (unsigned char)(port >> 8);
-        req[9] = (unsigned char)port;
-        n = 10;
+        memcpy(req + 4, key, RELAY_KEY);
+        memcpy(req + 4 + RELAY_KEY, &addr, 4);
+        req[8 + RELAY_KEY] = (unsigned char)(port >> 8);
+        req[9 + RELAY_KEY] = (unsigned char)port;
+        n = (ssize_t)sizeof req;
     }
     int ok = connect(s, (struct sockaddr *)&r, sizeof r) == 0 && write(s, req, (size_t)n) == n && read(s, ans, 1) == 1 && ans[0] == 0 &&
              read(s, ans + 1, 2) == 2;
@@ -2385,9 +2774,12 @@ static int bound_v6(int type, unsigned short port) {
 // remote returns the address a connection or datagram to sa reaches, in
 // out, converting fd first where an IPv4 address goes through an IPv6
 // socket, or NULL with errno set where nothing listens.
-static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out) {
+static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out, int *dir) {
     if (!sa) {
         return sa;
+    }
+    if (sa->sa_family == AF_UNIX) {
+        return unix_host(sa, len, out, 1, dir);
     }
     int type = sock_type(fd);
     in_addr_t v4;
@@ -2494,6 +2886,19 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
     memcpy(&v, k, sizeof v);
     socklen_t vn = kn;
     int type = sock_type(fd);
+    if (k->ss_family == AF_UNIX && kn > (socklen_t)offsetof(struct sockaddr_un, sun_path)) {
+        // A Unix socket's path is the container's.
+        struct sockaddr_un *u = (struct sockaddr_un *)&v;
+        u->sun_path[sizeof u->sun_path - 1] = 0;
+        char *name = fd >= 0 && fd < NET_FDS ? (own ? unix_names : unix_peers)[fd] : NULL;
+        if (name && u->sun_path[0] && u->sun_path[0] != '/') {
+            strlcpy(u->sun_path, name, sizeof u->sun_path);
+        } else {
+            unmap(u->sun_path, sizeof u->sun_path);
+        }
+        u->sun_len = (unsigned char)SUN_LEN(u);
+        vn = u->sun_len;
+    }
     if (k->ss_family == AF_INET) {
         struct sockaddr_in *a = (struct sockaddr_in *)&v;
         unsigned short c = v4_local(a->sin_addr.s_addr) ? container_port(type, ntohs(a->sin_port)) : 0;
@@ -2698,12 +3103,32 @@ static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
     }
     struct sockaddr_storage b;
     unsigned char any;
-    const struct sockaddr *to = local(fd, sa, &len, &b, &any);
+    int dir = -1;
+    socklen_t given = len;
+    const struct sockaddr *to = local(fd, sa, &len, &b, &any, &dir);
+    if (sa && !to) {
+        return -1;
+    }
+    if (dir != -1) {
+        int r = in_dir(dir, bind, fd, to, len), e = errno;
+        if (r == 0) name_unix(unix_names, fd, sa, given);
+        errno = e;
+        return r;
+    }
     int r = bind(fd, to, len);
     if (r == 0 && any) set_state(fd, state_of(fd) | NET_ANY);
     return r;
 }
 INTERPOSE(fws_bind, bind);
+
+// connect_dir connects fd to a Unix socket named relative to dir, which
+// it closes; sa and given are the address the caller gave.
+static int connect_dir(int dir, int fd, const struct sockaddr *sa, socklen_t given, const struct sockaddr *to, socklen_t len) {
+    int r = in_dir(dir, connect, fd, to, len), e = errno;
+    if (r == 0) name_unix(unix_peers, fd, sa, given);
+    errno = e;
+    return r;
+}
 
 // route connects fd through the router at loopback port router to the
 // container port port of the member at addr, and reports whether it did:
@@ -2717,14 +3142,21 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
     int fl = fcntl(fd, F_GETFL);
     if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
-    unsigned char req[8] = {(unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
+    unsigned char req[2 + RELAY_KEY + 6] = {(unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
     size_t n = 2;
     if (foreign) {
+        const unsigned char *key = relay_key();
+        if (!key) {
+            if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl);
+            errno = ECONNREFUSED;
+            return -1;
+        }
         req[0] = req[1] = 0xff;
-        memcpy(req + 2, &addr, 4);
-        req[6] = (unsigned char)(port >> 8);
-        req[7] = (unsigned char)port;
-        n = 8;
+        memcpy(req + 2, key, RELAY_KEY);
+        memcpy(req + 2 + RELAY_KEY, &addr, 4);
+        req[6 + RELAY_KEY] = (unsigned char)(port >> 8);
+        req[7 + RELAY_KEY] = (unsigned char)port;
+        n = sizeof req;
     }
     int ok = connect(fd, (struct sockaddr *)&r, sizeof r) == 0 && write(fd, req, n) == (ssize_t)n && read(fd, &ans, 1) == 1;
     int e = errno;
@@ -2819,11 +3251,13 @@ static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
         return rr;
     }
     struct sockaddr_storage b;
-    const struct sockaddr *to = remote(fd, sa, &len, &b);
+    int dir = -1;
+    socklen_t given = len;
+    const struct sockaddr *to = remote(fd, sa, &len, &b, &dir);
     if (sa && !to) {
         return -1;
     }
-    return connect(fd, to, len);
+    return dir == -1 ? connect(fd, to, len) : connect_dir(dir, fd, sa, given, to, len);
 }
 INTERPOSE(fws_connect, connect);
 
@@ -2837,11 +3271,13 @@ static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len
         return rr;
     }
     struct sockaddr_storage b;
-    const struct sockaddr *to = remote(fd, sa, &len, &b);
+    int dir = -1;
+    socklen_t given = len;
+    const struct sockaddr *to = remote(fd, sa, &len, &b, &dir);
     if (sa && !to) {
         return -1;
     }
-    return connect_nocancel(fd, to, len);
+    return dir == -1 ? connect_nocancel(fd, to, len) : connect_dir(dir, fd, sa, given, to, len);
 }
 INTERPOSE(fws_connect_nocancel, connect_nocancel);
 
@@ -2851,6 +3287,29 @@ INTERPOSE(fws_connect_nocancel, connect_nocancel);
 static int dgram_unix(int fd) { return (state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_DGRAM; }
 
 typedef ssize_t (*sendmsg_fn)(int, const struct msghdr *, int);
+
+// send_to sends m to its address as remote maps it, from the address's
+// directory where the host path is longer than the address holds.
+static ssize_t send_to(int fd, const struct msghdr *m, int flags, sendmsg_fn send) {
+    struct msghdr c = *m;
+    struct sockaddr_storage b;
+    socklen_t len = c.msg_namelen;
+    int dir = -1;
+    c.msg_name = (void *)remote(fd, m->msg_name, &len, &b, &dir);
+    if (!c.msg_name) {
+        return -1;
+    }
+    c.msg_namelen = len;
+    if (dir == -1) {
+        return send(fd, &c, flags);
+    }
+    if (enter_dir(dir) != 0) {
+        return -1;
+    }
+    ssize_t r = send(fd, &c, flags);
+    leave_dir(dir);
+    return r;
+}
 typedef ssize_t (*recvmsg_fn)(int, struct msghdr *, int);
 
 // dgram_dest reads a datagram's destination as an IPv4 address and port.
@@ -3101,12 +3560,17 @@ static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const st
         struct iovec v = {(void *)buf, n};
         return dgram_send(fd, &v, 1, flags, sa, len, plain_sendmsg);
     }
-    struct sockaddr_storage b;
-    const struct sockaddr *to = remote(fd, sa, &len, &b);
-    if (sa && !to) {
-        return -1;
+    if (!sa) {
+        return sendto(fd, buf, n, flags, sa, len);
     }
-    return sendto(fd, buf, n, flags, to, len);
+    struct iovec v = {(void *)buf, n};
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    m.msg_name = (void *)sa;
+    m.msg_namelen = len;
+    m.msg_iov = &v;
+    m.msg_iovlen = 1;
+    return send_to(fd, &m, flags, plain_sendmsg);
 }
 INTERPOSE(fws_sendto, sendto);
 
@@ -3117,15 +3581,7 @@ static ssize_t fws_sendmsg(int fd, const struct msghdr *m, int flags) {
     if (!m || !m->msg_name) {
         return sendmsg(fd, m, flags);
     }
-    struct msghdr c = *m;
-    struct sockaddr_storage b;
-    socklen_t len = c.msg_namelen;
-    c.msg_name = (void *)remote(fd, m->msg_name, &len, &b);
-    if (!c.msg_name) {
-        return -1;
-    }
-    c.msg_namelen = len;
-    return sendmsg(fd, &c, flags);
+    return send_to(fd, m, flags, plain_sendmsg);
 }
 INTERPOSE(fws_sendmsg, sendmsg);
 
@@ -3236,7 +3692,10 @@ static int fws_accept(int fd, struct sockaddr *sa, socklen_t *len) {
     int c = accept(fd, (struct sockaddr *)&k, &kn);
     if (c >= 0) {
         set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
-        if (c < NET_FDS && fd < NET_FDS) net_port[c] = net_port[fd];
+        if (c < NET_FDS && fd < NET_FDS) {
+            net_port[c] = net_port[fd];
+            set_name(unix_names, c, unix_names[fd]);
+        }
         present(c, &k, kn, sa, len, 0);
     }
     return c;
@@ -3353,6 +3812,8 @@ static void copy_state(int from, int to) {
         net_peer[to] = net_peer[from];
         net_dport[to] = net_dport[from];
         net_cmsg[to] = net_cmsg[from];
+        set_name(unix_names, to, unix_names[from]);
+        set_name(unix_peers, to, unix_peers[from]);
     }
 }
 
@@ -3360,7 +3821,11 @@ static void copy_state(int from, int to) {
 // to take it is none of the library's.
 static void forget(int fd) {
     set_state(fd, 0);
-    if (fd >= 0 && fd < NET_FDS) net_cmsg[fd] = 0;
+    if (fd >= 0 && fd < NET_FDS) {
+        net_cmsg[fd] = 0;
+        set_name(unix_names, fd, NULL);
+        set_name(unix_peers, fd, NULL);
+    }
 }
 
 static int fws_close(int fd) {
@@ -3401,12 +3866,17 @@ static ssize_t fws_sendto_nocancel(int fd, const void *buf, size_t n, int flags,
         struct iovec v = {(void *)buf, n};
         return dgram_send(fd, &v, 1, flags, sa, len, nocancel_sendmsg);
     }
-    struct sockaddr_storage b;
-    const struct sockaddr *to = remote(fd, sa, &len, &b);
-    if (sa && !to) {
-        return -1;
+    if (!sa) {
+        return sendto_nocancel(fd, buf, n, flags, sa, len);
     }
-    return sendto_nocancel(fd, buf, n, flags, to, len);
+    struct iovec v = {(void *)buf, n};
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    m.msg_name = (void *)sa;
+    m.msg_namelen = len;
+    m.msg_iov = &v;
+    m.msg_iovlen = 1;
+    return send_to(fd, &m, flags, nocancel_sendmsg);
 }
 INTERPOSE(fws_sendto_nocancel, sendto_nocancel);
 
@@ -3420,15 +3890,7 @@ static ssize_t fws_sendmsg_nocancel(int fd, const struct msghdr *m, int flags) {
     if (!m || !m->msg_name) {
         return sendmsg_nocancel(fd, m, flags);
     }
-    struct msghdr c = *m;
-    struct sockaddr_storage b;
-    socklen_t len = c.msg_namelen;
-    c.msg_name = (void *)remote(fd, m->msg_name, &len, &b);
-    if (!c.msg_name) {
-        return -1;
-    }
-    c.msg_namelen = len;
-    return sendmsg_nocancel(fd, &c, flags);
+    return send_to(fd, m, flags, nocancel_sendmsg);
 }
 INTERPOSE(fws_sendmsg_nocancel, sendmsg_nocancel);
 
@@ -3492,7 +3954,10 @@ static int fws_accept_nocancel(int fd, struct sockaddr *sa, socklen_t *len) {
     int c = accept_nocancel(fd, (struct sockaddr *)&k, &kn);
     if (c >= 0) {
         set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
-        if (c < NET_FDS && fd < NET_FDS) net_port[c] = net_port[fd];
+        if (c < NET_FDS && fd < NET_FDS) {
+            net_port[c] = net_port[fd];
+            set_name(unix_names, c, unix_names[fd]);
+        }
         present(c, &k, kn, sa, len, 0);
     }
     return c;

@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,9 +15,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/jackc/pgx/v5"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/testcontainers/testcontainers-go"
 	tcmemcached "github.com/testcontainers/testcontainers-go/modules/memcached"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	tcrabbitmq "github.com/testcontainers/testcontainers-go/modules/rabbitmq"
+	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	tcvalkey "github.com/testcontainers/testcontainers-go/modules/valkey"
 )
 
@@ -33,7 +42,7 @@ func TestMySQL(t *testing.T) {
 		"-v", conf+":/etc/mysql/conf.d:ro", "-v", initdb+":/docker-entrypoint-initdb.d:ro", "fws/mysql:8.4")
 	defer docker(t, "rm", "-f", "-v", name)
 	waitHealthy(t, name, since)
-	if logs := mustDocker(t, "logs", name); !strings.Contains(logs, "port: 3306") {
+	if logs := containerLogs(t, name); !strings.Contains(logs, "port: 3306") {
 		t.Errorf("the server's log names no container port 3306:\n%s", logs)
 	}
 	addr := strings.TrimSpace(mustDocker(t, "port", name, "3306"))
@@ -193,4 +202,97 @@ func TestNATS(t *testing.T) {
 	if body := httpGet(t, "http://"+strings.TrimSpace(mustDocker(t, "port", name, "8222"))+"/healthz"); !strings.Contains(body, `"status":"ok"`) {
 		t.Errorf("/healthz reads %q", body)
 	}
+}
+
+// SeaweedFS runs every component in one process by default, mini, which
+// advertises the address of the container's eth0 it finds among its
+// interfaces; an S3 client stores an object through it.
+func TestSeaweedFS(t *testing.T) {
+	const name = "fws-e2e-seaweedfs"
+	mustDocker(t, "run", "-d", "--name", name, "-p", "127.0.0.1::8333", "fws/seaweedfs:4.36")
+	defer docker(t, "rm", "-f", "-v", name)
+	waitLog(t, name, "All enabled components are running and ready to use")
+	ctx := context.Background()
+	client := s3.New(s3.Options{
+		Region: "us-east-1", BaseEndpoint: aws.String("http://" + strings.TrimSpace(mustDocker(t, "port", name, "8333"))), UsePathStyle: true,
+		Credentials: credentials.NewStaticCredentialsProvider("any", "any", ""),
+	})
+	if _, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String("notes")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("notes"), Key: aws.String("note.txt"), Body: strings.NewReader("kept")}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String("notes"), Key: aws.String("note.txt")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Body.Close()
+	if b, _ := io.ReadAll(got.Body); string(b) != "kept" {
+		t.Fatalf("the object reads %q", b)
+	}
+}
+
+// Testcontainers' own modules run the catalog's older images: their log
+// waits, and the port check they run inside the container with nc.
+func TestTestcontainersModules(t *testing.T) {
+	ctx := context.Background()
+	t.Run("postgres", func(t *testing.T) {
+		c, err := tcpostgres.Run(ctx, "fws/postgres:18", tcpostgres.WithDatabase("app"), tcpostgres.WithUsername("app"), tcpostgres.WithPassword("apppw"),
+			tcpostgres.BasicWaitStrategies())
+		testcontainers.CleanupContainer(t, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dsn, err := c.ConnectionString(ctx, "sslmode=disable")
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, err := pgx.Connect(ctx, dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close(ctx)
+		var fsync string
+		if err := conn.QueryRow(ctx, "SHOW fsync").Scan(&fsync); err != nil || fsync != "off" {
+			t.Fatalf("fsync is %q, %v: the module's -c fsync=off did not reach the server", fsync, err)
+		}
+	})
+	t.Run("redis", func(t *testing.T) {
+		c, err := tcredis.Run(ctx, "fws/redis:8")
+		testcontainers.CleanupContainer(t, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		uri, err := c.ConnectionString(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, err := net.DialTimeout("tcp", strings.TrimPrefix(uri, "redis://"), 10*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(10 * time.Second))
+		fmt.Fprint(conn, "PING\r\n")
+		if line, _ := bufio.NewReader(conn).ReadString('\n'); strings.TrimSpace(line) != "+PONG" {
+			t.Fatalf("PING answered %q", line)
+		}
+	})
+	t.Run("rabbitmq", func(t *testing.T) {
+		c, err := tcrabbitmq.Run(ctx, "fws/rabbitmq:4", tcrabbitmq.WithAdminUsername("tc-admin"), tcrabbitmq.WithAdminPassword("tc-pass"))
+		testcontainers.CleanupContainer(t, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		url, err := c.AmqpURL(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, err := amqp.Dial(url)
+		if err != nil {
+			t.Fatalf("%s: %v", url, err)
+		}
+		conn.Close()
+	})
 }

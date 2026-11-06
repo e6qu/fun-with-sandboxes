@@ -97,9 +97,9 @@ A Nix-built catalog for `aarch64-darwin`/`x86_64-darwin`, converted to OCI
 layers with a `darwin/<arch>` platform entry: `bun`, `dynamodb`, `gitea`,
 `lambda`, `mariadb`, `memcached`, `mysql`, `nats`, `nginx`, `node`,
 `playwright`, `postgres`, `python`, `rabbitmq`, `redis`, `ryuk`
-(Testcontainers' reaper), `toolbox` and `valkey`. Nixpkgs marks MinIO
-insecure, abandoned upstream with unfixed vulnerabilities, so the catalog
-has no S3 server. Compose
+(Testcontainers' reaper), `seaweedfs`, `toolbox` and `valkey`. SeaweedFS
+is the catalog's S3 server: nixpkgs marks MinIO insecure, abandoned
+upstream with unfixed vulnerabilities. Compose
 files name these images explicitly; the engine never silently substitutes an
 image name.
 

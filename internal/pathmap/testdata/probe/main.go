@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -75,6 +76,30 @@ func run(check string) string {
 	case "hostname":
 		h, err := os.Hostname()
 		return result(h, err)
+	case "interfaces":
+		ifs, err := net.Interfaces()
+		if err != nil {
+			return result("", err)
+		}
+		var out []string
+		for _, i := range ifs {
+			addrs, err := i.Addrs()
+			if err != nil {
+				return result("", err)
+			}
+			var v4 []string
+			for _, a := range addrs {
+				if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil {
+					v4 = append(v4, n.String())
+				}
+			}
+			loop := ""
+			if i.Flags&net.FlagLoopback != 0 {
+				loop = "loopback "
+			}
+			out = append(out, fmt.Sprintf("%s(%s%s %s)", i.Name, loop, strings.Join(v4, " "), i.HardwareAddr))
+		}
+		return strings.Join(out, ",")
 	case "mount":
 		fi, err := os.Lstat("/data")
 		if err != nil {
