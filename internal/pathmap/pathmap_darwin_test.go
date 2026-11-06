@@ -311,31 +311,34 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(portDir) })
 	got := run("DYLD_INSERT_LIBRARIES="+lib, "SANDBOX_ROOT="+root, ports, NetworkVar+"="+network, AddressVar+"=127.88.0.2", PortDirVar+"="+portDir, RouterVar+"=1")
 	for k, want := range map[string]string{
-		"listen6":  "[::]:8080",
-		"client4":  "127.0.0.1:8080",
-		"accepted": "v6",
-		"client6":  "[::ffff:127.0.0.1]:8080",
-		"lo6":      "[::1]:8080 own-v6",
-		"only6":    "[::1]:8083",
-		"listen4":  "0.0.0.0:8081",
-		"udp":      "[::]",
-		"member":   "127.88.0.3:5432",
-		"alias":    "127.88.0.3:5432",
-		"hidden":   "unknown",
-		"hosts":    "10.1.2.3:80 extra.local",
-		"hostent":  "10.1.2.3",
-		"direct":   "127.0.0.1:8082",
-		"ifaddrs":  "lo0=127.0.0.1,eth0=127.88.0.2",
-		"ifindex":  "eth0",
-		"ifreq":    "127.88.0.2 en0-hidden",
-		"unix":     "/probe.sock",
+		"listen6":   "[::]:8080",
+		"client4":   "127.0.0.1:8080",
+		"accepted":  "v6",
+		"client6":   "[::ffff:127.0.0.1]:8080",
+		"lo6":       "[::1]:8080 own-v6",
+		"only6":     "[::1]:8083",
+		"listen4":   "0.0.0.0:8081",
+		"udp":       "[::]",
+		"member":    "127.88.0.3:5432",
+		"alias":     "127.88.0.3:5432",
+		"hidden":    "unknown",
+		"hosts":     "10.1.2.3:80 extra.local",
+		"hostent":   "10.1.2.3",
+		"direct":    "127.0.0.1:8082",
+		"ifaddrs":   "lo0=127.0.0.1,eth0=127.88.0.2",
+		"ifindex":   "eth0",
+		"ifreq":     "127.88.0.2 en0-hidden",
+		"unix":      "/probe.sock",
+		"unix-deep": "/a-directory-whose-name-is-long-enough-to-take-the-host-path-past-the-socket-address-cap/s.sock peer-same",
 	} {
 		if got[k] != want {
 			t.Errorf("%s: %q, want %q (all: %v)", k, got[k], want, got)
 		}
 	}
-	if fi, err := os.Stat(filepath.Join(root, "probe.sock")); err != nil || fi.Mode()&os.ModeSocket == 0 {
-		t.Errorf("the socket is not in the container's root: %v", err)
+	for _, p := range []string{"probe.sock", "a-directory-whose-name-is-long-enough-to-take-the-host-path-past-the-socket-address-cap/s.sock"} {
+		if fi, err := os.Stat(filepath.Join(root, p)); err != nil || fi.Mode()&os.ModeSocket == 0 {
+			t.Errorf("the socket is not in the container's root: %v", err)
+		}
 	}
 }
 

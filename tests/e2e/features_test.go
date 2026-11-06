@@ -835,7 +835,7 @@ func waitLog(t *testing.T, name, text string) {
 			return
 		}
 	}
-	t.Fatalf("%s's log ended without %q", name, text)
+	t.Fatalf("%s's log ended without %q:\n%s", name, text, containerLogs(t, name))
 }
 
 // containerLogs returns a container's log, both its streams.

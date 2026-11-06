@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 int sandbox_init(const char *profile, uint64_t flags, char **err);
@@ -263,5 +264,29 @@ int main(int argc, char **argv) {
     memset(&named, 0, sizeof named);
     getsockname(ul, (void *)&named, &nl);
     printf("unix=%s\n", named.sun_path);
+
+    // A Unix socket whose path fits the container's address but whose
+    // host path, under the root, does not.
+    const char *deep = "/a-directory-whose-name-is-long-enough-to-take-the-host-path-past-the-socket-address-cap";
+    mkdir(deep, 0755);
+    int dl = socket(AF_UNIX, SOCK_STREAM, 0);
+    memset(&un, 0, sizeof un);
+    un.sun_family = AF_UNIX;
+    snprintf(un.sun_path, sizeof un.sun_path, "%s/s.sock", deep);
+    un.sun_len = (unsigned char)SUN_LEN(&un);
+    if (bind(dl, (void *)&un, un.sun_len) || listen(dl, 1)) fail("unix-deep");
+    int dc = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (connect(dc, (void *)&un, un.sun_len)) fail("unix-deep");
+    int da = accept(dl, NULL, NULL);
+    if (da < 0 || write(dc, "x", 1) != 1) fail("unix-deep");
+    char got;
+    if (read(da, &got, 1) != 1) fail("unix-deep");
+    struct sockaddr_un self, peer;
+    socklen_t sl = sizeof self, pl = sizeof peer;
+    memset(&self, 0, sizeof self);
+    memset(&peer, 0, sizeof peer);
+    getsockname(dl, (void *)&self, &sl);
+    getpeername(dc, (void *)&peer, &pl);
+    printf("unix-deep=%s %s\n", self.sun_path, strcmp(self.sun_path, peer.sun_path) == 0 ? "peer-same" : peer.sun_path);
     return 0;
 }

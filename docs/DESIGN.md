@@ -243,7 +243,9 @@ same knobs, each enforced by a real mechanism or refused:
   loopback interface, and `eth0`, which takes the index after the host's
   highest, with the member address. A Unix socket's address maps as a
   file path does, in `bind`, `connect` and `sendto`, and reads back as the
-  container's path. The library resolves names in `getaddrinfo` and `gethostbyname`
+  container's path. A host path past the address's 104 bytes binds and
+  connects by its last component, relative to its directory, with
+  `bindat` and `connectat`. The library resolves names in `getaddrinfo` and `gethostbyname`
   as a resolver does: from the container's `/etc/hosts` first, which the
   host's resolver never reads, then from those names, and then as the host
   does; it connects to a member's address through the host port
