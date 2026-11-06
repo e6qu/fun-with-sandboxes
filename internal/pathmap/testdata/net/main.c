@@ -58,6 +58,7 @@ static struct sockaddr_in v4(const char *a, unsigned short port) {
 }
 
 static void fail(const char *step) {
+    fprintf(stderr, "%s: %s\n", step, strerror(errno));
     printf("%s=error\n", step);
     exit(0);
 }

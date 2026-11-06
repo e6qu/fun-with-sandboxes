@@ -290,12 +290,16 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A Unix socket's path is capped at 104 bytes, which a socket in a
-	// root under the test's temporary directory exceeds.
+	// root under the test's temporary directory exceeds. Seatbelt matches
+	// the socket's path as given, so the root is resolved, as the engine's.
 	root, err := os.MkdirTemp("/tmp", "fwsr")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
+	if root, err = filepath.EvalSymlinks(root); err != nil {
+		t.Fatal(err)
+	}
 	os.MkdirAll(filepath.Join(root, "etc"), 0o755)
 	if err := os.WriteFile(filepath.Join(root, "etc", "hosts"), []byte("127.0.0.1\tlocalhost\n# 10.9.9.9 extra.local\n10.1.2.3\textra.local other  # --add-host\n"), 0o644); err != nil {
 		t.Fatal(err)

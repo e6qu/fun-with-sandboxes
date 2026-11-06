@@ -2445,8 +2445,6 @@ static int to_ipv4(int fd, int type) {
     return 0;
 }
 
-// local returns the address a bind to sa binds, in out, converting fd first
-// where an IPv4 address goes through an IPv6 socket.
 // unix_host maps a Unix socket address's container path to the host path
 // it names, as the file calls map paths; follow says whether a link its
 // last component names is followed. A path whose host path does not fit
@@ -2480,6 +2478,8 @@ static const struct sockaddr *unix_host(const struct sockaddr *sa, socklen_t *le
     return (const struct sockaddr *)out;
 }
 
+// local returns the address a bind to sa binds, in out, converting fd first
+// where an IPv4 address goes through an IPv6 socket.
 static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out, unsigned char *any) {
     *any = 0;
     if (!sa) {
