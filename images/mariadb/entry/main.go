@@ -1,6 +1,7 @@
 // Command entry initialises and runs MariaDB inside a fwsd container,
-// configured from the environment the way the official image is, with the
-// listen port and paths the engine assigned.
+// configured from the environment the way the official image is. The
+// server listens on the container's port 3306, which the container library
+// puts on its host port.
 //
 // It initialises a data directory as mariadb-install-db does, by feeding
 // the server's own system table scripts to mariadbd --bootstrap: the
@@ -35,12 +36,8 @@ import (
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("entry: ")
-	port, err := sandboxenv.Port("3306")
-	if err != nil {
-		log.Fatal(err)
-	}
 	if len(os.Args) > 1 && os.Args[1] == "health" {
-		if err := handshake("127.0.0.1:" + port); err != nil {
+		if err := handshake("127.0.0.1:3306"); err != nil {
 			log.Print(err)
 			os.Exit(1)
 		}
@@ -82,7 +79,7 @@ func main() {
 		args = args[1:]
 	}
 	argv := append([]string{"mariadbd"}, common...)
-	argv = append(argv, "--port="+port, "--bind-address=127.0.0.1", "--skip-name-resolve")
+	argv = append(argv, "--skip-name-resolve")
 	log.Fatal(syscall.Exec(server, append(argv, args...), os.Environ()))
 }
 

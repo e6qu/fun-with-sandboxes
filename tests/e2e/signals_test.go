@@ -60,9 +60,10 @@ func TestPsListsTheContainersProcesses(t *testing.T) {
 	}
 }
 
-// On the host's PID namespace a container lists and signals every process
-// of the engine's user, by host pid, its own main process too; its pids
-// limit still counts its own processes alone.
+// On the host's PID namespace a container lists every host process by its
+// host pid, its own main process too, with launchd as pid 1, and signals the
+// engine's other containers; its pids limit still counts its own processes
+// alone.
 func TestPidHost(t *testing.T) {
 	const host, other = "fws-e2e-pid-host", "fws-e2e-pid-other"
 	mustDocker(t, "run", "-d", "--name", other, "fws/toolbox:1", "hold")
@@ -74,14 +75,14 @@ func TestPidHost(t *testing.T) {
 	}
 	pidHost := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.Pid}}", host))
 	pidOther := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.Pid}}", other))
-	listed := map[string]bool{}
+	listed := map[string]string{}
 	out := mustDocker(t, "exec", host, "/toolbox", "ps")
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		pid, _, _ := strings.Cut(line, " ")
-		listed[pid] = true
+		pid, name, _ := strings.Cut(strings.TrimSpace(line), " ")
+		listed[pid] = name
 	}
-	if !listed[pidHost] || !listed[pidOther] || listed["1"] && pidHost != "1" {
-		t.Errorf("want both main processes by their host pids, %s and %s, and no presented pid 1:\n%s", pidHost, pidOther, out)
+	if listed[pidHost] != "toolbox" || listed[pidOther] != "toolbox" || listed["1"] != "launchd" {
+		t.Errorf("want both main processes by their host pids, %s and %s, and launchd as pid 1:\n%s", pidHost, pidOther, out)
 	}
 	if out, err := docker(t, "exec", host, "/toolbox", "signal", pidOther); err != nil {
 		t.Errorf("a container on the host's PID namespace could not signal process %s: %v\n%s", pidOther, err, out)
