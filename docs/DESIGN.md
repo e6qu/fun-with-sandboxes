@@ -484,7 +484,10 @@ it; it tells services their assignment through the environment.
   port or flow port, as a published UDP port's proxy does. A relay port
   lies in the stack's block, where every member may send; the router takes
   a datagram only from its container's own ports, its UDP host ports and
-  flow ports, the ports its sockets send from.
+  flow ports, the ports its sockets send from. A UDP socket no program
+  bound, which the kernel would bind to an ephemeral port on its first
+  datagram, the library binds to an ephemeral port of the container's own
+  before its first datagram to a foreign member, so the relay takes it.
 - **Egress.** Seatbelt can allow loopback ports or every destination, nothing
   in between, so containers reach the internet through a proxy the engine
   runs for each stack on a port of the stack's block (`internal/egress`): an

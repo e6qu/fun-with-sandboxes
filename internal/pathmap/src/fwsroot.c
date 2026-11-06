@@ -2631,7 +2631,7 @@ INTERPOSE(fws_sem_unlink, sem_unlink);
 //     as one IPv4 socket whose loopback addresses the program sees as ::1.
 
 static int member_block(in_addr_t a);
-static int own(in_addr_t a);
+static int own_addr(in_addr_t a);
 static in_addr_t own_seen_by(in_addr_t from);
 static unsigned short member_route(in_addr_t addr, int type, unsigned short cport, int *member, unsigned short *router);
 static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, unsigned short *cport);
@@ -2911,7 +2911,7 @@ static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t
     if (sa->sa_family == AF_INET && *len >= (socklen_t)sizeof(struct sockaddr_in)) {
         const struct sockaddr_in *a = (const void *)sa;
         // The container's own member address is one of loopback's.
-        in_addr_t at = own(a->sin_addr.s_addr) ? htonl(INADDR_LOOPBACK) : a->sin_addr.s_addr;
+        in_addr_t at = own_addr(a->sin_addr.s_addr) ? htonl(INADDR_LOOPBACK) : a->sin_addr.s_addr;
         if (!v4_local(at)) {
             return sa;
         }
@@ -2931,7 +2931,7 @@ static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t
         getsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, &n);
         if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr) || (wild && !v6only)) {
             in_addr_t v4 = wild ? htonl(INADDR_ANY) : mapped_v4(&a->sin6_addr);
-            if (own(v4)) v4 = htonl(INADDR_LOOPBACK);
+            if (own_addr(v4)) v4 = htonl(INADDR_LOOPBACK);
             if (!v4_local(v4) || to_ipv4(fd, type) == -1) {
                 return sa;
             }
@@ -3355,7 +3355,7 @@ static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len,
     } else {
         return 0;
     }
-    if (own(a)) a = htonl(INADDR_LOOPBACK);
+    if (own_addr(a)) a = htonl(INADDR_LOOPBACK);
     if (!v4_local(a)) {
         return 0;
     }
@@ -3560,7 +3560,7 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
     if (!port) {
         return 0;
     }
-    if (member_block(a) && !own(a)) {
+    if (member_block(a) && !own_addr(a)) {
         int member;
         unsigned short router = 0;
         unsigned short h = member_route(a, SOCK_STREAM, port, &member, &router);
@@ -3575,7 +3575,7 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         *r = route(fd, a, router, port, v6, 0);
         return 1;
     }
-    if ((v4_local(a) || own(a)) && router_port && !host_port(SOCK_STREAM, port)) {
+    if ((v4_local(a) || own_addr(a)) && router_port && !host_port(SOCK_STREAM, port)) {
         // Loopback reaches the container's own listener when it has one;
         // any other loopback port is the host's.
         struct sockaddr_un u;
@@ -3583,7 +3583,7 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         if (port_path(SOCK_STREAM, port, &u) == -1 || stat(u.sun_path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
             return 0;
         }
-        *r = route(fd, own(a) ? a : htonl(INADDR_LOOPBACK), router_port, port, v6, 0);
+        *r = route(fd, own_addr(a) ? a : htonl(INADDR_LOOPBACK), router_port, port, v6, 0);
         if (*r == 0 && v6 && IN6_IS_ADDR_LOOPBACK(&((const struct sockaddr_in6 *)sa)->sin6_addr)) {
             set_state(fd, state_of(fd) | NET_LO6);
         }
@@ -3595,7 +3595,46 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
 static int dgram_unix(int fd);
 static int dgram_connect(int fd, const struct sockaddr *sa, socklen_t len);
 
+static int dgram_dest(const struct sockaddr *sa, socklen_t len, in_addr_t *v4, unsigned short *port);
+
+// relay_bind binds an unbound UDP socket about to reach another stack's
+// member to an ephemeral port of the container's own, where the kernel
+// would bind one of its own on the first datagram: the router's relay to
+// the member takes datagrams from the container's ports alone.
+static int relay_bind(int fd, const struct sockaddr *sa, socklen_t len) {
+    if (!sa || !router_port || (state_of(fd) & NET_UNIX) || sock_type(fd) != SOCK_DGRAM) {
+        return 0;
+    }
+    int e = errno;
+    in_addr_t v4;
+    unsigned short port, router = 0;
+    int member = 0;
+    if (dgram_dest(sa, len, &v4, &port) == 0 && member_block(v4)) member_route(v4, SOCK_DGRAM, port, &member, &router);
+    if (member != 2) {
+        errno = e;
+        return 0;
+    }
+    struct sockaddr_storage b;
+    socklen_t n = sizeof b;
+    if (getsockname(fd, (struct sockaddr *)&b, &n) != 0) {
+        return -1;
+    }
+    unsigned short bound = b.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&b)->sin6_port : ((struct sockaddr_in *)&b)->sin_port;
+    if (bound) {
+        errno = e;
+        return 0;
+    }
+    if (listen_ephemeral(fd, 1, b.ss_family == AF_INET6) != 0) {
+        return -1;
+    }
+    errno = e;
+    return 0;
+}
+
 static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
+    if (relay_bind(fd, sa, len) != 0) {
+        return -1;
+    }
     if (dgram_unix(fd)) {
         return dgram_connect(fd, sa, len);
     }
@@ -3616,6 +3655,9 @@ INTERPOSE(fws_connect, connect);
 
 extern int connect_nocancel(int, const struct sockaddr *, socklen_t) __asm("_connect$NOCANCEL") __attribute__((weak_import));
 static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len) {
+    if (relay_bind(fd, sa, len) != 0) {
+        return -1;
+    }
     if (dgram_unix(fd)) {
         return dgram_connect(fd, sa, len);
     }
@@ -3817,7 +3859,7 @@ static ssize_t dgram_recv(int fd, const struct iovec *iov, int iovlen, int flags
 
 static int fws_getsockname(int fd, struct sockaddr *sa, socklen_t *len);
 static int member_block(in_addr_t a);
-static int own(in_addr_t a);
+static int own_addr(in_addr_t a);
 static in_addr_t own_seen_by(in_addr_t from);
 
 // v4_of is the IPv4 address of an IPv4 or IPv4-mapped IPv6 address, with
@@ -3861,7 +3903,7 @@ static void dgram_control(int fd, struct msghdr *m, const struct sockaddr_storag
         dst = v4_of(&self);
     } else if (want) {
         in_addr_t from = v4_of(src);
-        if (own_address && member_block(from) && !own(from)) dst = own_seen_by(from);
+        if (own_address && member_block(from) && !own_addr(from)) dst = own_seen_by(from);
     }
     static unsigned int lo0;
     if (want && !lo0) lo0 = if_nametoindex("lo0");
@@ -3911,6 +3953,9 @@ static ssize_t plain_sendmsg(int fd, const struct msghdr *m, int flags) { return
 static ssize_t plain_recvmsg(int fd, struct msghdr *m, int flags) { return recvmsg(fd, m, flags); }
 
 static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
+    if (relay_bind(fd, sa, len) != 0) {
+        return -1;
+    }
     if (dgram_unix(fd)) {
         struct iovec v = {(void *)buf, n};
         return dgram_send(fd, &v, 1, flags, sa, len, plain_sendmsg);
@@ -3930,6 +3975,9 @@ static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const st
 INTERPOSE(fws_sendto, sendto);
 
 static ssize_t fws_sendmsg(int fd, const struct msghdr *m, int flags) {
+    if (m && relay_bind(fd, m->msg_name, m->msg_namelen) != 0) {
+        return -1;
+    }
     if (m && dgram_unix(fd)) {
         return dgram_send(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_namelen, plain_sendmsg);
     }
@@ -4217,6 +4265,9 @@ static ssize_t nocancel_sendmsg(int fd, const struct msghdr *m, int flags);
 static ssize_t nocancel_recvmsg(int fd, struct msghdr *m, int flags);
 
 static ssize_t fws_sendto_nocancel(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
+    if (relay_bind(fd, sa, len) != 0) {
+        return -1;
+    }
     if (dgram_unix(fd)) {
         struct iovec v = {(void *)buf, n};
         return dgram_send(fd, &v, 1, flags, sa, len, nocancel_sendmsg);
@@ -4239,6 +4290,9 @@ extern ssize_t sendmsg_nocancel(int, const struct msghdr *, int) __asm("_sendmsg
 static ssize_t nocancel_sendmsg(int fd, const struct msghdr *m, int flags) { return sendmsg_nocancel(fd, m, flags); }
 
 static ssize_t fws_sendmsg_nocancel(int fd, const struct msghdr *m, int flags) {
+    if (m && relay_bind(fd, m->msg_name, m->msg_namelen) != 0) {
+        return -1;
+    }
     if (m && dgram_unix(fd)) {
         return dgram_send(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_namelen, nocancel_sendmsg);
     }
@@ -4593,7 +4647,7 @@ static int sees(const struct member *m, const struct member *me, int have_me) {
 }
 
 // own reports whether a is one of the container's own addresses.
-static int own(in_addr_t a) {
+static int own_addr(in_addr_t a) {
     if (!own_address) return 0;
     if (a == own_address) return 1;
     pthread_mutex_lock(&members_lock);
