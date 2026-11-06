@@ -126,6 +126,15 @@ func TestNetworkAddresses(t *testing.T) {
 	if es := c.endpoint("plain"); es.IPAddress.String() != "127.88.0.9" || es.IPPrefixLen != 16 || es.Gateway.String() != memberGateway {
 		t.Errorf("endpoint on plain: %+v", es)
 	}
+	// A stopped container lists its endpoints without addresses.
+	for _, s := range e.List(ListOptions{All: true}) {
+		if s.ID != "a" {
+			continue
+		}
+		if es := s.NetworkSettings.Networks["front"]; es == nil || es.IPAddress.IsValid() {
+			t.Errorf("a stopped container listed %+v on front", es)
+		}
+	}
 }
 
 // The network file names each member's address on a network with a

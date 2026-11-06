@@ -81,9 +81,10 @@ func (e *Engine) execsFor(id string) map[string]*Exec {
 
 // endpoints are the container's endpoints as Docker reports them: with
 // their addresses while the container runs, and without once it stops.
+// The caller holds c.mu.
 func (c *Container) endpoints() map[string]*network.EndpointSettings {
 	out := map[string]*network.EndpointSettings{}
-	running := c.isRunning()
+	running := c.rec.State.Status == container.StateRunning
 	for name := range c.rec.Networks {
 		es := c.endpoint(name)
 		if !running {
