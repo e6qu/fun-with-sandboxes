@@ -809,7 +809,6 @@ func dockerIn(t *testing.T, stdin string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// waitLog follows a container's log until a line holds text.
 // waitLog follows a container's log, both its streams, until a line holds
 // text.
 func waitLog(t *testing.T, name, text string) {
@@ -828,7 +827,8 @@ func waitLog(t *testing.T, name, text string) {
 		w.Close()
 		close(done)
 	}()
-	defer func() { cancel(); <-done }()
+	// Closing r fails exec's copy into w, which cmd.Wait waits on.
+	defer func() { cancel(); r.Close(); <-done }()
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		if strings.Contains(sc.Text(), text) {

@@ -64,13 +64,14 @@ func main() {
 	if err := initialise(pgdata, user, port, sockets, args); err != nil {
 		log.Fatal(err)
 	}
-	server := append([]string{"postgres"}, serverArgs(pgdata, "127.0.0.1", port, sockets)...)
-	log.Fatal(syscall.Exec(bin("postgres"), append(server, args...), os.Environ()))
+	postgres := bin("postgres")
+	server := append([]string{postgres}, serverArgs(pgdata, "127.0.0.1", port, sockets)...)
+	log.Fatal(syscall.Exec(postgres, append(server, args...), os.Environ()))
 }
 
 // bin returns the real path of a PostgreSQL program. PostgreSQL finds its
-// share and lib directories relative to the path it was started from, so it
-// must not start from the /bin symlink.
+// share and lib directories relative to its argv[0], looked up on PATH when
+// bare, so argv[0] must be this path and not the /bin symlink.
 func bin(name string) string {
 	p, err := exec.LookPath(name)
 	if err != nil {
@@ -145,7 +146,6 @@ func initialise(pgdata, user, port, sockets string, extra []string) error {
 	// its socket alone, as the official image's entrypoint runs it, with
 	// the server's own arguments.
 	temp := exec.Command(bin("postgres"), append(serverArgs(pgdata, "", port, sockets), extra...)...)
-	temp.Args[0] = "postgres"
 	temp.Stdout = os.Stdout
 	logs, err := temp.StderrPipe()
 	if err != nil {
