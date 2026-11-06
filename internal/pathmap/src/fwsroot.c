@@ -2023,7 +2023,7 @@ static int eth0_ioctl(unsigned long req, struct ifreq *r) {
     struct sockaddr_in a;
     switch (req) {
     case SIOCGIFFLAGS:
-        r->ifr_flags = IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_SIMPLEX | IFF_MULTICAST;
+        r->ifr_flags = (short)(IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_SIMPLEX | IFF_MULTICAST);
         return 0;
     case SIOCGIFMTU:
         r->ifr_mtu = ETH0_MTU;
