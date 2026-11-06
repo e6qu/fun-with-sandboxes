@@ -303,6 +303,8 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer hosted.Close()
+	var hmu sync.Mutex
+	var heard []string
 	go func() {
 		buf := make([]byte, 128)
 		for {
@@ -310,6 +312,9 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 			if err != nil {
 				return
 			}
+			hmu.Lock()
+			heard = append(heard, string(buf[:n]))
+			hmu.Unlock()
 			hosted.WriteToUDP(append([]byte("hosted "), buf[:n]...), from)
 		}
 	}()
@@ -339,9 +344,14 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 	}
 	defer theirs.Close()
 
+	client, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
 	file := filepath.Join(portDir(t), "network")
 	ms := []members.Member{
-		{Address: "127.88.0.2", Names: []string{"app"}, Networks: []string{"shared"}},
+		{Address: "127.88.0.2", Names: []string{"app"}, Ports: map[string]int{"9000/udp": client.LocalAddr().(*net.UDPAddr).Port}, Networks: []string{"shared"}},
 		{Address: "127.88.0.3", Names: []string{"dns"}, Ports: map[string]int{"53/udp": hosted.LocalAddr().(*net.UDPAddr).Port}, Router: theirs.Addr().Port, Networks: []string{"shared"}, Foreign: true, Stack: "theirs"},
 		{Address: "127.88.0.4", Names: []string{"db"}, Ports: map[string]int{"53/udp": hosted.LocalAddr().(*net.UDPAddr).Port}, Networks: []string{"theirs"}, Foreign: true, Stack: "theirs"},
 	}
@@ -364,11 +374,6 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 	defer mine.Close()
 	key := readKey(t, myDir)
 
-	client, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
 	for port, want := range map[int]string{53: "hosted hi", 5353: "unhosted hi"} {
 		f, err := lookupForeign(mine.Addr().String(), key, netip.MustParseAddr("127.88.0.3"), port)
 		if err != nil {
@@ -391,8 +396,60 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 			t.Errorf("port %d answered %q from %v, want %q from the relay", port, buf[:n], from, want)
 		}
 	}
+	f, err := lookupForeign(mine.Addr().String(), key, netip.MustParseAddr("127.88.0.3"), 53)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(f))
+
+	// A socket of the container on a port without a host port sends
+	// through the router, from the port's flow port.
+	own, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: UDPSocketPath(myDir, 7000), Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer own.Close()
+	dgram := make([]byte, Header, Header+2)
+	copy(dgram, relay.Addr().AsSlice())
+	binary.BigEndian.PutUint16(dgram[4:], relay.Port())
+	if _, err := own.WriteToUnix(append(dgram, "yo"...), &net.UnixAddr{Name: UDPRouterPath(myDir), Net: "unixgram"}); err != nil {
+		t.Fatal(err)
+	}
+	own.SetReadDeadline(time.Now().Add(10 * time.Second))
+	buf := make([]byte, 128)
+	if n, _, err := own.ReadFromUnix(buf); err != nil || string(buf[Header:n]) != "hosted yo" {
+		t.Errorf("the relay answered the container's flow port with %q, %v", buf[:max(n, 0)], err)
+	}
+
+	// Another member of the stack reaches the relay's port, but the relay
+	// takes no datagram from it.
+	other, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if _, err := other.WriteToUDPAddrPort([]byte("intruder"), relay); err != nil {
+		t.Fatal(err)
+	}
+	// The relay takes datagrams in order, so once the container's next one
+	// is answered, the other member's was relayed already or never.
+	if _, err := client.WriteToUDPAddrPort([]byte("after"), relay); err != nil {
+		t.Fatal(err)
+	}
+	client.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if n, _, err := client.ReadFromUDP(buf); err != nil || string(buf[:n]) != "hosted after" {
+		t.Fatalf("the relay answered the container with %q, %v", buf[:max(n, 0)], err)
+	}
+	hmu.Lock()
+	for _, h := range heard {
+		if h == "intruder" {
+			t.Error("the relay took a datagram from another member's socket")
+		}
+	}
+	hmu.Unlock()
+
 	smu.Lock()
-	if len(stacks) != 2 || stacks[0] != "theirs" || stacks[1] != "theirs" {
+	if len(stacks) != 3 || stacks[0] != "theirs" || stacks[1] != "theirs" || stacks[2] != "theirs" {
 		t.Errorf("the relays sent from the blocks of %q", stacks)
 	}
 	smu.Unlock()

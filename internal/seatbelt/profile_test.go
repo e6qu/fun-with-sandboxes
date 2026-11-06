@@ -237,3 +237,19 @@ func TestHostPIDs(t *testing.T) {
 		t.Errorf("a host PID namespace's profile confines processes to the sandbox:\n%s", p)
 	}
 }
+
+// A container reaches its shim's process socket, by its path alone.
+func TestProcsSocketIsReachable(t *testing.T) {
+	s := spec()
+	s.ProcsSocket = "/Users/u/.fws/run/c1.procs"
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p, `(allow network-outbound (remote unix-socket (path-literal "/Users/u/.fws/run/c1.procs")))`) {
+		t.Errorf("profile does not reach the process socket:\n%s", p)
+	}
+	if strings.Contains(p, `(subpath "/Users/u/.fws/run")`) {
+		t.Errorf("profile grants the run directory:\n%s", p)
+	}
+}

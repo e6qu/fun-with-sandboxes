@@ -109,9 +109,13 @@ machine — and from what macOS offers an unprivileged process under them.
   it. `--pid host` lifts the process confinement: the container lists and
   signals every process of the engine's user, by host pid, with no
   presented pid 1, and its pids limit still counts its own processes.
-  `--pid container:` would put one container's processes in another's
-  sandbox, which a container with a sandbox of its own cannot join, and is
-  refused, as `--userns` is.
+  `--pid container:` shares the other container's PID namespace through
+  the two containers' shims: each lists the other's processes, signals
+  them and reads their process information, and the other's main process
+  is pid 1 to both; when it ends, so does every container that joined it.
+  The shim carries only the calls Seatbelt refuses and the library knows,
+  so a program that loads no library sees its own container's processes
+  alone. `--userns` is refused.
 - **Capabilities grant nothing to drop.** Containers run as the engine's
   unprivileged user, so `--cap-drop` changes nothing; `--cap-add` beyond
   Docker's default set needs root and is refused. AppArmor, SELinux and
@@ -168,9 +172,10 @@ machine — and from what macOS offers an unprivileged process under them.
     senders already using it, until 90 seconds pass without traffic.
   - A program that loads no library cannot reach the other stack's members,
     and its stack's egress proxy reaches them for any member of its stack.
-  - A relay's UDP port lies in its stack's block, so any member of the
-    stack that finds it can send through it; asking a router for a relay
-    takes the relay key in its container's port directory.
+  - A relay's UDP port lies in its stack's block, where any member of the
+    stack may send, but the relay takes datagrams only from its
+    container's ports, and asking a router for a relay takes the relay key
+    in its container's port directory.
 - **Legacy links reach across stacks the same way.** A `--link` on the
   default bridge network, from one `docker run` container to another, each
   its own stack, gives the linking container Docker's variables and
@@ -232,9 +237,11 @@ machine — and from what macOS offers an unprivileged process under them.
 - **Unix socket paths are capped at 104 bytes** on macOS, as the
   container sees them. A Unix socket at a container path,
   `/var/run/mysqld/mysqld.sock` say, binds, connects and takes datagrams
-  at its host path in the container's root, by its directory where that
-  path is longer. A datagram from a socket bound at such a path reads as
-  sent from its last component, unless the receiver connected to it.
+  at its host path in the container's root, by its path below the root,
+  or the mount that holds it, where the host path is longer. A datagram
+  from a socket bound at such a path reads as sent from its container
+  path, found as the socket of that path below a mount or the root, so
+  one path held by two of them reads as the mount's.
 
 ## Resources and identity
 

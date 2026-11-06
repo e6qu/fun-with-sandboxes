@@ -92,8 +92,71 @@ func TestPidHost(t *testing.T) {
 	mustDocker(t, "run", "-d", "--name", limited, "--pid", "host", "--pids-limit", "6", "fws/toolbox:1", "forkmany", "20")
 	t.Cleanup(func() { docker(t, "rm", "-f", limited) })
 	waitLog(t, limited, "fork 6 failed")
+}
 
-	if _, err := docker(t, "run", "--rm", "--pid", "container:"+other, "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "is not supported") {
-		t.Errorf("--pid container: %v", err)
+// listing reads /toolbox ps of a container: names by pid.
+func listing(t *testing.T, name string) (map[string]string, string) {
+	t.Helper()
+	out := mustDocker(t, "exec", name, "/toolbox", "ps")
+	listed := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		pid, comm, _ := strings.Cut(strings.TrimSpace(line), " ")
+		listed[pid] = comm
+	}
+	return listed, out
+}
+
+// A container on another's PID namespace lists and signals that one's
+// processes, whose main process is its pid 1, and that one lists its
+// processes too; the namespace's processes end with its pid 1.
+func TestPidContainer(t *testing.T) {
+	const owner, joiner, outsider = "fws-e2e-pidns-owner", "fws-e2e-pidns-joiner", "fws-e2e-pidns-outsider"
+	if _, err := docker(t, "run", "--rm", "--pid", "container:"+owner, "fws/toolbox:1", "echo"); err == nil {
+		t.Error("a container joined the PID namespace of a container that does not exist")
+	}
+	mustDocker(t, "create", "--name", owner, "fws/toolbox:1", "hold")
+	t.Cleanup(func() { docker(t, "rm", "-f", owner) })
+	if _, err := docker(t, "run", "--rm", "--pid", "container:"+owner, "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "non running container") {
+		t.Errorf("joining the PID namespace of a container that is not running: %v", err)
+	}
+	mustDocker(t, "start", owner)
+	mustDocker(t, "run", "-d", "--name", outsider, "fws/toolbox:1", "hold")
+	t.Cleanup(func() { docker(t, "rm", "-f", outsider) })
+	mustDocker(t, "run", "-d", "--name", joiner, "--pid", "container:"+owner, "fws/toolbox:1", "hold")
+	t.Cleanup(func() { docker(t, "rm", "-f", joiner) })
+	if mode := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.PidMode}}", joiner)); mode != "container:"+owner {
+		t.Errorf("inspect reports PID mode %q", mode)
+	}
+	pidJoiner := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.Pid}}", joiner))
+	pidOutsider := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.Pid}}", outsider))
+
+	listed, out := listing(t, joiner)
+	if listed["1"] != "toolbox" || listed[pidJoiner] != "toolbox" || listed[pidOutsider] != "" {
+		t.Errorf("the joiner should list the owner's main process as pid 1 and its own as %s, and not the outsider's %s:\n%s", pidJoiner, pidOutsider, out)
+	}
+	listed, out = listing(t, owner)
+	if listed["1"] != "toolbox" || listed[pidJoiner] != "toolbox" || listed[pidOutsider] != "" {
+		t.Errorf("the owner should list its main process as pid 1 and the joiner's as %s, and not the outsider's %s:\n%s", pidJoiner, pidOutsider, out)
+	}
+	if out, err := docker(t, "exec", owner, "/toolbox", "signal", pidJoiner); err != nil {
+		t.Errorf("the owner could not signal the joiner's main process %s: %v\n%s", pidJoiner, err, out)
+	}
+	if out, err := docker(t, "exec", outsider, "/toolbox", "signal", pidJoiner); err == nil {
+		t.Errorf("a container outside the namespace signalled its process %s:\n%s", pidJoiner, out)
+	}
+
+	// SIGTERM to pid 1 from the joiner ends the owner, and the namespace's
+	// other processes with it.
+	if out, err := docker(t, "exec", joiner, "/toolbox", "term", "1"); err != nil {
+		t.Fatalf("the joiner could not signal pid 1: %v\n%s", err, out)
+	}
+	if code := strings.TrimSpace(mustDocker(t, "wait", owner)); code != "143" {
+		t.Errorf("the owner exited %s, want 143", code)
+	}
+	if code := strings.TrimSpace(mustDocker(t, "wait", joiner)); code != "137" {
+		t.Errorf("the joiner exited %s, want 137 as its namespace's pid 1 ended", code)
+	}
+	if mustDocker(t, "inspect", "-f", "{{.State.Status}}", outsider) != "running\n" {
+		t.Error("the outsider ended with the namespace")
 	}
 }

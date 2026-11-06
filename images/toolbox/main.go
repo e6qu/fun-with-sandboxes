@@ -317,6 +317,13 @@ func run(op, arg string) error {
 			return err
 		}
 		return syscall.Kill(pid, 0)
+	case "term":
+		// Send SIGTERM to process arg.
+		pid, err := strconv.Atoi(arg)
+		if err != nil {
+			return err
+		}
+		return syscall.Kill(pid, syscall.SIGTERM)
 	case "exec":
 		return syscall.Exec(arg, []string{arg}, nil)
 	}

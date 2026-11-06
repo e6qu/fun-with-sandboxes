@@ -94,6 +94,12 @@ static pid_t init_pid;
 // tags the container's processes with, tells the container's apart.
 static int host_pids;
 static char root_tag[PATH_MAX + 16];
+// A PID namespace's file (FWS_PIDNSFILE), which lists the containers that
+// share it, and the socket of the container's shim (FWS_PROCS), which
+// lists, signals and reads the processes of the others' sandboxes, which
+// Seatbelt keeps from this one (package pidns).
+static char pidns_file[PATH_MAX];
+static char procs_path[104];
 // The engine's helper binary's name (FWS_HELPER), which the container's
 // exec anchor runs as.
 static char helper_comm[MAXCOMLEN + 1];
@@ -282,7 +288,7 @@ static void parse_network(const char *path, const char *address) {
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", "FWS_PIDNS", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", "FWS_PIDNS", "FWS_PIDNSFILE", "FWS_PROCS", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
 __attribute__((constructor)) static void fwsroot_init(void) {
@@ -298,7 +304,24 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     fake_gid = fake_egid = (gid_t)env_number("FWS_GID");
     const char *ns = getenv("FWS_PIDNS");
     host_pids = ns && strcmp(ns, "host") == 0;
-    init_pid = host_pids ? 0 : (pid_t)env_number("FWS_INIT");
+    // On another container's PID namespace, FWS_PIDNS is its pid 1.
+    unsigned long nsinit;
+    const char *nse;
+    if (host_pids) {
+        init_pid = 0;
+    } else if (ns && (nse = num(ns, &nsinit)) && !*nse && nsinit > 0) {
+        init_pid = (pid_t)nsinit;
+    } else {
+        init_pid = (pid_t)env_number("FWS_INIT");
+    }
+    const char *nf = getenv("FWS_PIDNSFILE");
+    if (nf && nf[0] == '/') {
+        strlcpy(pidns_file, nf, sizeof pidns_file);
+    }
+    const char *pp = getenv("FWS_PROCS");
+    if (pp && pp[0] == '/' && strlen(pp) < sizeof procs_path) {
+        strcpy(procs_path, pp);
+    }
     const char *pm = getenv("FWS_PIDS");
     if (pm && pm[0] == '/') {
         strlcpy(pids_path, pm, sizeof pids_path);
@@ -1623,6 +1646,120 @@ static int fws_uname(struct utsname *u) {
 }
 INTERPOSE(fws_uname, uname);
 
+// The shim's operations (package pidns).
+enum { NS_LIST = 1, NS_KILL = 2, NS_INFO = 3, NS_PATH = 4, NS_ARGS = 5 };
+
+struct ns_request {
+    int32_t op, pid, a, size;
+    uint64_t b;
+};
+
+// ns_shared reports whether other containers share the PID namespace: its
+// file lists more containers than this one.
+static int ns_shared(void) {
+    if (host_pids || !pidns_file[0] || !procs_path[0]) return 0;
+    int fd = open(pidns_file, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    char b[4096];
+    int lines = 0;
+    ssize_t n;
+    while (lines < 2 && (n = read(fd, b, sizeof b)) > 0) {
+        for (ssize_t i = 0; i < n; i++) lines += b[i] == '\n';
+    }
+    close(fd);
+    return lines > 1;
+}
+
+static int io_all(int fd, void *b, size_t n, int out) {
+    char *p = b;
+    while (n > 0) {
+        ssize_t r = out ? write(fd, p, n) : read(fd, p, n);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) {
+            if (r == 0) errno = EIO;
+            return 0;
+        }
+        p += r;
+        n -= (size_t)r;
+    }
+    return 1;
+}
+
+// ns_call asks the shim, and reads the data of its answer into buf, of cap
+// bytes. It returns the answer's result, or -1 with errno set.
+static int ns_call(int32_t op, int32_t pid, int32_t a, int32_t size, uint64_t b, void *buf, size_t cap) {
+    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s < 0) return -1;
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    struct sockaddr_un u;
+    memset(&u, 0, sizeof u);
+    u.sun_family = AF_UNIX;
+    strlcpy(u.sun_path, procs_path, sizeof u.sun_path);
+    u.sun_len = (unsigned char)SUN_LEN(&u);
+    struct ns_request q = {op, pid, a, size, b};
+    int32_t rep[2];
+    if (connect(s, (struct sockaddr *)&u, u.sun_len) != 0 || !io_all(s, &q, sizeof q, 1) || !io_all(s, rep, sizeof rep, 0)) {
+        int e = errno;
+        close(s);
+        errno = e;
+        return -1;
+    }
+    if (rep[0] < 0) {
+        close(s);
+        errno = rep[1];
+        return -1;
+    }
+    size_t data = op == NS_KILL ? 0 : op == NS_LIST ? (size_t)rep[0] * sizeof(int32_t) : (size_t)rep[0];
+    if (data > cap) data = cap;
+    int ok = !data || io_all(s, buf, data, 0);
+    int e = errno;
+    close(s);
+    if (!ok) {
+        errno = e;
+        return -1;
+    }
+    return rep[0];
+}
+
+// ns_members returns the host pids of the shared namespace's processes, in
+// a buffer the caller frees, and their count in *n; NULL where the
+// namespace is the container's alone.
+static pid_t *ns_members(int *n) {
+    *n = 0;
+    if (!ns_shared()) return NULL;
+    size_t cap = 1024;
+    for (int tries = 0; tries < 4; tries++) {
+        pid_t *p = malloc(cap * sizeof *p);
+        if (!p) return NULL;
+        int r = ns_call(NS_LIST, 0, 0, 0, 0, p, cap * sizeof *p);
+        if (r < 0) {
+            free(p);
+            return NULL;
+        }
+        if ((size_t)r <= cap) {
+            *n = r;
+            return p;
+        }
+        free(p);
+        cap = (size_t)r + 64;
+    }
+    return NULL;
+}
+
+static int ns_has(const pid_t *set, int n, pid_t p) {
+    for (int i = 0; i < n; i++) {
+        if (set[i] == p) return 1;
+    }
+    return 0;
+}
+
+// ns_kill signals the shared namespace's processes, host pid hp, a group
+// below -1, or -1 for all but the caller and pid 1, as kill does.
+static int ns_kill(pid_t hp, int sig) {
+    return ns_call(NS_KILL, hp, sig, init_pid, (uint64_t)getpid(), NULL, 0) < 0 ? -1 : 0;
+}
+
 // Pid 1. The container's main process (FWS_INIT, its host pid) is pid 1 to
 // the container, as in a PID namespace, so a program that checks it runs
 // as init does, and `kill -HUP 1` reaches it; every other process keeps
@@ -1638,15 +1775,29 @@ INTERPOSE(fws_getpid, getpid);
 static pid_t fws_getppid(void) { return init_pid && getpid() == init_pid ? 0 : to_container(getppid()); }
 INTERPOSE(fws_getppid, getppid);
 
+// A signal to a process of a namespace's other container, which Seatbelt
+// refuses, goes through the shim; on a shared namespace, so does one to
+// every process.
 static int fws_kill(pid_t pid, int sig) {
-    if (pid < -1) {
-        return kill(-to_host(-pid), sig);
+    if (pid == -1 && ns_shared()) {
+        return ns_kill(-1, sig);
     }
-    return kill(pid == -1 ? pid : to_host(pid), sig);
+    pid_t hp = pid < -1 ? -to_host(-pid) : pid == -1 ? pid : to_host(pid);
+    int r = kill(hp, sig);
+    if (r == -1 && errno == EPERM && hp != 0 && ns_shared()) {
+        return ns_kill(hp, sig);
+    }
+    return r;
 }
 INTERPOSE(fws_kill, kill);
 
-static int fws_killpg(pid_t pgrp, int sig) { return killpg(to_host(pgrp), sig); }
+static int fws_killpg(pid_t pgrp, int sig) {
+    int r = killpg(to_host(pgrp), sig);
+    if (r == -1 && errno == EPERM && pgrp > 1 && ns_shared()) {
+        return ns_kill(-to_host(pgrp), sig);
+    }
+    return r;
+}
 INTERPOSE(fws_killpg, killpg);
 
 static pid_t fws_getpgrp(void) { return to_container(getpgrp()); }
@@ -1669,6 +1820,14 @@ INTERPOSE(fws_setpgid, setpgid);
 
 static int fws_proc_pidinfo(int pid, int flavor, uint64_t arg, void *buf, int size) {
     int r = proc_pidinfo(to_host(pid), flavor, arg, buf, size);
+    if (r <= 0 && errno == EPERM && buf && size > 0 && ns_shared()) {
+        int e = errno;
+        r = ns_call(NS_INFO, to_host(pid), flavor, size, arg, buf, (size_t)size);
+        if (r < 0) {
+            errno = e;
+            r = 0;
+        }
+    }
     if (flavor == PROC_PIDTBSDINFO && r == (int)sizeof(struct proc_bsdinfo)) {
         struct proc_bsdinfo *b = buf;
         b->pbi_ppid = (uint32_t)(b->pbi_pid == (uint32_t)init_pid && init_pid ? 0 : to_container((pid_t)b->pbi_ppid));
@@ -1684,10 +1843,35 @@ static int fws_proc_pidinfo(int pid, int flavor, uint64_t arg, void *buf, int si
 }
 INTERPOSE(fws_proc_pidinfo, proc_pidinfo);
 
-static int fws_proc_pidpath(int pid, void *buf, uint32_t size) { return proc_pidpath(to_host(pid), buf, size); }
+static int fws_proc_pidpath(int pid, void *buf, uint32_t size) {
+    int r = proc_pidpath(to_host(pid), buf, size);
+    if (r <= 0 && errno == EPERM && buf && size > 1 && ns_shared()) {
+        int e = errno;
+        r = ns_call(NS_PATH, to_host(pid), 0, 0, 0, buf, size - 1);
+        if (r < 0 || (uint32_t)r >= size) {
+            errno = r < 0 ? e : ENOMEM;
+            return 0;
+        }
+        ((char *)buf)[r] = 0;
+    }
+    return r;
+}
 INTERPOSE(fws_proc_pidpath, proc_pidpath);
 
-static int fws_proc_name(int pid, void *buf, uint32_t size) { return proc_name(to_host(pid), buf, size); }
+static int fws_proc_name(int pid, void *buf, uint32_t size) {
+    int r = proc_name(to_host(pid), buf, size);
+    if (r <= 0 && errno == EPERM && buf && size > 0 && ns_shared()) {
+        struct proc_bsdinfo info;
+        if (ns_call(NS_INFO, to_host(pid), PROC_PIDTBSDINFO, sizeof info, 0, &info, sizeof info) != (int)sizeof info) {
+            errno = EPERM;
+            return 0;
+        }
+        const char *name = info.pbi_name[0] ? info.pbi_name : info.pbi_comm;
+        r = (int)strlcpy(buf, name, size);
+        if ((uint32_t)r >= size) r = (int)size - 1;
+    }
+    return r;
+}
 INTERPOSE(fws_proc_name, proc_name);
 
 static int fws_proc_pid_rusage(int pid, int flavor, rusage_info_t *buf) { return proc_pid_rusage(to_host(pid), flavor, buf); }
@@ -1707,6 +1891,14 @@ static int visible(pid_t pid, const char *comm) {
     }
     struct proc_bsdshortinfo info;
     return proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &info, sizeof info) == (int)sizeof info;
+}
+
+// listed reports whether a listing holds pid: one of the container's
+// processes, or of the shared namespace's, ns, n long.
+static int listed(pid_t pid, const char *comm, const pid_t *ns, int n) {
+    if (visible(pid, comm)) return 1;
+    if (helper_comm[0] && strncmp(comm, helper_comm, MAXCOMLEN) == 0) return 0;
+    return ns && ns_has(ns, n, pid);
 }
 
 // tagged reports whether pid started with the container's root in its
@@ -1800,8 +1992,10 @@ INTERPOSE(fws_fork, fork);
 // bytes, in place, and returns its new size.
 static size_t own_procs(struct kinfo_proc *kp, size_t n) {
     size_t count = n / sizeof *kp, kept = 0;
+    int nn;
+    pid_t *ns = ns_members(&nn);
     for (size_t i = 0; i < count; i++) {
-        if (visible(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm)) {
+        if (listed(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm, ns, nn)) {
             if (kept != i) memmove(&kp[kept], &kp[i], sizeof *kp);
             struct kinfo_proc *k = &kp[kept];
             k->kp_eproc.e_ppid = init_pid && k->kp_proc.p_pid == init_pid ? 0 : to_container(k->kp_eproc.e_ppid);
@@ -1810,6 +2004,7 @@ static size_t own_procs(struct kinfo_proc *kp, size_t n) {
             kept++;
         }
     }
+    free(ns);
     return kept * sizeof *kp;
 }
 
@@ -1839,11 +2034,13 @@ static int list_pids(int op, int arg, pid_t ppid, pid_t *buf, int size) {
         free(kp);
         return -1;
     }
-    int n = 0, cap = size / (int)sizeof(pid_t);
+    int n = 0, cap = size / (int)sizeof(pid_t), nn;
+    pid_t *ns = ns_members(&nn);
     for (size_t i = 0; i < len / sizeof *kp && n < cap; i++) {
         if (ppid > 0 && kp[i].kp_eproc.e_ppid != to_host(ppid)) continue;
-        if (visible(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm)) buf[n++] = to_container(kp[i].kp_proc.p_pid);
+        if (listed(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm, ns, nn)) buf[n++] = to_container(kp[i].kp_proc.p_pid);
     }
+    free(ns);
     free(kp);
     return n;
 }
@@ -2127,14 +2324,53 @@ static int fws_ioctl(int fd, unsigned long req, ...) {
 }
 INTERPOSE(fws_ioctl, ioctl);
 
+// ns_procargs reads kern.procargs2 of a namespace's other container's
+// process, hp, through the shim, or kern.procargs, which leaves out its
+// argument count, as sysctl does.
+static int ns_procargs(pid_t hp, int two, void *old, size_t *oldlen) {
+    size_t cap = 1 << 20;
+    char *b = malloc(cap);
+    if (!b) {
+        errno = ENOMEM;
+        return -1;
+    }
+    int r = ns_call(NS_ARGS, hp, 0, 0, 0, b, cap);
+    if (r < 0) {
+        int e = errno;
+        free(b);
+        errno = e == ESRCH ? EINVAL : e;
+        return -1;
+    }
+    size_t skip = two || r < (int)sizeof(int) ? 0 : sizeof(int), n = (size_t)r - skip;
+    if (!old) {
+        *oldlen = n;
+        free(b);
+        return 0;
+    }
+    if (*oldlen < n) {
+        memcpy(old, b + skip, *oldlen);
+        free(b);
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(old, b + skip, n);
+    *oldlen = n;
+    free(b);
+    return 0;
+}
+
 static int fws_sysctl(int *name, u_int namelen, void *old, size_t *oldlen, void *new, size_t newlen) {
     if (namelen == 6 && name[0] == CTL_NET && name[1] == PF_ROUTE && name[2] == 0 &&
         (name[4] == NET_RT_IFLIST || name[4] == NET_RT_IFLIST2) && oldlen && !new) {
         return iflist(name, old, oldlen);
     }
-    if (namelen == 3 && name[0] == CTL_KERN && (name[1] == KERN_PROCARGS || name[1] == KERN_PROCARGS2) && init_pid) {
+    if (namelen == 3 && name[0] == CTL_KERN && (name[1] == KERN_PROCARGS || name[1] == KERN_PROCARGS2) && !new && oldlen) {
         int mib[3] = {name[0], name[1], to_host(name[2])};
-        return sysctl(mib, 3, old, oldlen, new, newlen);
+        int r = sysctl(mib, 3, old, oldlen, new, newlen);
+        if (r == 0 || errno != EPERM || !ns_shared()) {
+            return r;
+        }
+        return ns_procargs(mib[2], name[1] == KERN_PROCARGS2, old, oldlen);
     }
     if (namelen >= 3 && name[0] == CTL_KERN && name[1] == KERN_PROC && old && oldlen && !new) {
         // A listing of one process, group or session names it as the
@@ -2425,8 +2661,8 @@ static int cmsg_flag(int level, int name) {
 }
 
 // unix_names and unix_peers hold the container paths of Unix sockets
-// bound, or connected, relative to their directories, whose addresses
-// hold only the last component.
+// bound, or connected, by relative names, whose addresses hold only the
+// path below their mount or the root.
 static char *unix_names[NET_FDS], *unix_peers[NET_FDS];
 
 static void set_name(char **table, int fd, const char *name) {
@@ -2551,11 +2787,42 @@ static int in_dir(int dir, int (*op)(int, const struct sockaddr *, socklen_t), i
     return r;
 }
 
+// unix_base returns the length of the directory a host path longer than a
+// Unix socket address holds is named relative to: the source of the mount
+// that holds it, in unmap's order, or the root. The rest of the path is
+// then the container's path below the mount or the root, which fits when
+// the container's does, and which unix_relative finds again from a
+// datagram's source. It returns 0 for a path in neither.
+static size_t unix_base(const char *host) {
+    for (size_t i = 0; i < nmounts; i++) {
+        if (under(host, mounts[i].src, mounts[i].srclen)) return mounts[i].srclen;
+    }
+    return in_root(host) ? rootlen : 0;
+}
+
+// unix_relative turns the relative path a socket bound by unix_host's
+// relative name reports, in place, into its container path: below the
+// mount, or the root, where a socket of that path is.
+static void unix_relative(char *p, size_t size) {
+    char host[PATH_MAX], cpath[PATH_MAX];
+    struct stat st;
+    for (size_t i = 0; i < nmounts; i++) {
+        if (join(host, sizeof host, mounts[i].src, "/", p) && stat(host, &st) == 0 && S_ISSOCK(st.st_mode) &&
+            join(cpath, sizeof cpath, mounts[i].dest, "/", p)) {
+            strlcpy(p, cpath, size);
+            return;
+        }
+    }
+    if (join(host, sizeof host, root, "/", p) && stat(host, &st) == 0 && S_ISSOCK(st.st_mode) && join(cpath, sizeof cpath, "", "/", p)) {
+        strlcpy(p, cpath, size);
+    }
+}
+
 // unix_host maps a Unix socket address's container path to the host path
 // it names, as the file calls map paths; follow says whether a link its
 // last component names is followed. A host path longer than a Unix socket
 // address holds, as a root's deep path makes one the container's fits,
-// becomes its last component, relative to its directory opened in *dir,
+// is named relative to its mount's source or the root, opened in *dir,
 // for in_dir; without dir, it fails with ENAMETOOLONG.
 static const struct sockaddr *unix_host(const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out, int follow, int *dir) {
     size_t at = offsetof(struct sockaddr_un, sun_path);
@@ -2577,24 +2844,19 @@ static const struct sockaddr *unix_host(const struct sockaddr *sa, socklen_t *le
     struct sockaddr_un *u = (struct sockaddr_un *)out;
     memset(u, 0, sizeof *u);
     if (strlcpy(u->sun_path, host, sizeof u->sun_path) >= sizeof u->sun_path) {
-        const char *base = strrchr(host, '/');
-        if (!dir || !base || strlen(base + 1) >= sizeof u->sun_path || !pthread_fchdir_np) {
+        size_t bn = unix_base(host);
+        if (!dir || !bn || host[bn] != '/' || strlen(host + bn + 1) >= sizeof u->sun_path || !pthread_fchdir_np) {
             errno = ENAMETOOLONG;
             return NULL;
         }
-        char parent[PATH_MAX];
-        size_t pn = base == host ? 1 : (size_t)(base - host);
-        if (pn >= sizeof parent) {
-            errno = ENAMETOOLONG;
-            return NULL;
-        }
-        memcpy(parent, host, pn);
-        parent[pn] = 0;
-        if ((*dir = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1) {
+        char base[PATH_MAX];
+        memcpy(base, host, bn);
+        base[bn] = 0;
+        if ((*dir = open(base, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) == -1) {
             return NULL;
         }
         memset(u->sun_path, 0, sizeof u->sun_path);
-        strlcpy(u->sun_path, base + 1, sizeof u->sun_path);
+        strlcpy(u->sun_path, host + bn + 1, sizeof u->sun_path);
     }
     u->sun_family = AF_UNIX;
     u->sun_len = (unsigned char)SUN_LEN(u);
@@ -2949,6 +3211,8 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
         char *name = fd >= 0 && fd < NET_FDS ? (own ? unix_names : unix_peers)[fd] : NULL;
         if (name && u->sun_path[0] && u->sun_path[0] != '/') {
             strlcpy(u->sun_path, name, sizeof u->sun_path);
+        } else if (u->sun_path[0] && u->sun_path[0] != '/') {
+            unix_relative(u->sun_path, sizeof u->sun_path);
         } else {
             unmap(u->sun_path, sizeof u->sun_path);
         }

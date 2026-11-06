@@ -15,7 +15,14 @@ import (
 // process keeps its tag when it leaves its process group or session, and a
 // call to unsetenv leaves the environment it started with as it was, so
 // only one that executes a program with a cleared environment sheds it.
-func Tagged(tag string) ([]int, error) {
+func Tagged(tag string) ([]int, error) { return TaggedAny([]string{tag}) }
+
+// TaggedAny lists this user's processes holding any of tags, as Tagged does.
+func TaggedAny(tags []string) ([]int, error) {
+	want := map[string]bool{}
+	for _, t := range tags {
+		want[t] = true
+	}
 	live, err := Own()
 	if err != nil {
 		return nil, err
@@ -34,7 +41,7 @@ func Tagged(tag string) ([]int, error) {
 			continue
 		}
 		for _, kv := range env {
-			if kv == tag {
+			if want[kv] {
 				out = append(out, pid)
 				break
 			}

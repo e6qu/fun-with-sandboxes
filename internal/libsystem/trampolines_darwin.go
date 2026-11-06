@@ -84,3 +84,11 @@ var libsandbox_sandbox_init_with_parameters_trampoline_addr uintptr
 var libsandbox_sandbox_free_error_trampoline_addr uintptr
 
 //go:cgo_import_dynamic libsandbox_sandbox_free_error sandbox_free_error "/usr/lib/libSystem.B.dylib"
+
+var libc_proc_pidinfo_trampoline_addr uintptr
+
+//go:cgo_import_dynamic libc_proc_pidinfo proc_pidinfo "/usr/lib/libSystem.B.dylib"
+
+var libc_proc_pidpath_trampoline_addr uintptr
+
+//go:cgo_import_dynamic libc_proc_pidpath proc_pidpath "/usr/lib/libSystem.B.dylib"

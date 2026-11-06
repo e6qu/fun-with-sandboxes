@@ -19,6 +19,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
 	"github.com/e6qu/fun-with-sandboxes/internal/logfile"
 	"github.com/e6qu/fun-with-sandboxes/internal/netstat"
+	"github.com/e6qu/fun-with-sandboxes/internal/pidns"
 	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
@@ -84,6 +85,17 @@ func (s *server) run(report func(Ready)) (int, error) {
 	}
 	defer os.Remove(cfg.Socket)
 	defer l.Close()
+	if cfg.Procs != "" {
+		os.Remove(cfg.Procs)
+		pl, err := net.Listen("unix", cfg.Procs)
+		if err != nil {
+			report(Ready{Error: err.Error()})
+			return 1, err
+		}
+		defer os.Remove(cfg.Procs)
+		defer pl.Close()
+		go pidns.Serve(pl, cfg.PidNamespace)
+	}
 	logs, err := logfile.Open(cfg.LogPath)
 	if err != nil {
 		report(Ready{Error: err.Error()})
@@ -244,6 +256,15 @@ func (s *server) run(report func(Ready)) (int, error) {
 	proc.KillAll()
 	if err := procs.KillTagged(cfg.Tag); err != nil {
 		log.Printf("container %s: %v", cfg.ID, err)
+	}
+	// The namespace's other containers end with its pid 1, as a PID
+	// namespace's processes do with its init.
+	if tags, err := pidns.Tags(cfg.PidNamespace); cfg.PidNamespace != "" && err == nil && len(tags) > 0 && tags[0] == cfg.Tag {
+		for _, t := range tags[1:] {
+			if err := procs.KillTagged(t); err != nil {
+				log.Printf("container %s: %v", cfg.ID, err)
+			}
+		}
 	}
 	proc.DrainIO(outputDrain)
 	select {

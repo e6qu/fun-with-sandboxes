@@ -93,7 +93,7 @@ container using anything it was not handed.
 | Filesystem read of host | Seatbelt `(deny file-read*)` + allow system frameworks and the container root | No read of `$HOME`, other stacks' roots, or user data | System libs/frameworks readable (needed) |
 | Cross-stack visibility | Per-stack directory tree + per-stack Seatbelt path allowances | Stack A's profile names only A's paths; A cannot read or write B | — |
 | Ports | Engine allocates a disjoint range per stack; Seatbelt `(deny network-bind)` except the assigned ports | Two stacks never clash; a container binds only its grants | Host sees all listening sockets globally |
-| Process signalling | Seatbelt `(deny signal)` and `(deny process-info*)` except same-sandbox; execs start in the container's sandbox; the container library lists the sandbox's processes alone. `--pid host` allows both, and the library lists every process (`FWS_PIDNS=host`) | A cannot `kill`, inspect or list B's processes | pids are the host's (no PID namespace) |
+| Process signalling | Seatbelt `(deny signal)` and `(deny process-info*)` except same-sandbox; execs start in the container's sandbox; the container library lists the sandbox's processes alone. `--pid host` allows both, and the library lists every process (`FWS_PIDNS=host`). `--pid container:` shares a namespace through the containers' shims (below) | A cannot `kill`, inspect or list B's processes | pids are the host's (no PID namespace) |
 | Default deny | Seatbelt `(deny default)` on Apple's `system.sb` baseline, each operation class re-allowed by name | A container gets no IOKit, Mach registration, preferences, AppleEvents, kernel control sockets or anything else the profile does not name | — |
 | IPC | Seatbelt `ipc-posix-name-prefix` filters; the container library's per-container System V keys | POSIX shared memory and semaphores confined to a per-container name prefix (`--ipc` private); System V keys hashed with it; `none` denies all IPC | a System V key is presented, not confined: a guessed hashed key reaches another container's object |
 | Resource limits | Per-container supervisor (§3a); `setrlimit` through a spawn helper | Memory, CPU, pids caps, `--ulimit`, priority and disk I/O tiers | Enforced by ending, stopping or killing processes, not by refusing allocations; the container library refuses forks at the pids limit |
@@ -140,6 +140,26 @@ same knobs, each enforced by a real mechanism or refused:
     that process as pid 1.
   - The profile lets the sandbox execute `fws-shim` for it, and nothing
     else beyond the root, its volumes and the system shells.
+- **Shared PID namespaces.** A running container's sandbox takes in no
+  process of another's, so `--pid container:<name>` shares a namespace
+  through the shims, outside the sandboxes:
+  - The engine keeps the namespace's file in its owner's state, where no
+    container writes: the `SANDBOX_ROOT` tags of the owner and of each
+    container that joined it while the owner ran, which the engine takes
+    out as each ends.
+  - Each container's shim answers its library on a Unix socket in
+    `<root>/run` that the container's profile reaches by its path alone
+    (package `pidns`): it lists the namespace's processes, found by their
+    tags, signals them and reads their `proc_pidinfo`, `proc_pidpath` and
+    `kern.procargs2`, and refuses every other process with `ESRCH`.
+  - The library reads the file (`FWS_PIDNSFILE`); while it lists other
+    containers, the library's listings take in the namespace's processes,
+    and a signal or a read Seatbelt refuses with `EPERM` goes through the
+    shim (`FWS_PROCS`). A joining container's library presents the
+    owner's main process as pid 1 (`FWS_PIDNS=<its host pid>`).
+  - When the owner's main process ends, its shim kills the processes of
+    every container the file lists, as a PID namespace's processes end
+    with its init.
 - **Supervisor.** Each container runs under a shim, `fws-shim` in its
   supervisor role and a session of its own; each stack's egress proxy is
   `fws-shim` too. The shim owns the container's
@@ -244,8 +264,11 @@ same knobs, each enforced by a real mechanism or refused:
   highest, with the member address. A Unix socket's address maps as a
   file path does, in `bind`, `connect` and `sendto`, and reads back as the
   container's path. A host path past the address's 104 bytes binds,
-  connects and sends by its last component, from its directory as the
-  calling thread's working directory (`pthread_fchdir_np`). The library resolves names in `getaddrinfo` and `gethostbyname`
+  connects and sends by its path below the root, or below the source of
+  the mount that holds it, from that directory as the calling thread's
+  working directory (`pthread_fchdir_np`); a receiver reads such a
+  datagram's relative source as the container path below the mount or the
+  root where a socket of that path is. The library resolves names in `getaddrinfo` and `gethostbyname`
   as a resolver does: from the container's `/etc/hosts` first, which the
   host's resolver never reads, then from those names, and then as the host
   does; it connects to a member's address through the host port
@@ -445,7 +468,10 @@ it; it tells services their assignment through the environment.
   reports replies from as the member's address and port. The router
   sends each socket's datagrams on from its own socket, leased from the
   member's stack's block so the member may answer, to the member's host
-  port or flow port, as a published UDP port's proxy does.
+  port or flow port, as a published UDP port's proxy does. A relay port
+  lies in the stack's block, where every member may send; the router takes
+  a datagram only from its container's own ports, its UDP host ports and
+  flow ports, the ports its sockets send from.
 - **Egress.** Seatbelt can allow loopback ports or every destination, nothing
   in between, so containers reach the internet through a proxy the engine
   runs for each stack on a port of the stack's block (`internal/egress`): an

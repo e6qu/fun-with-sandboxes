@@ -105,6 +105,9 @@ type Spec struct {
 	// HostPIDs lets the container signal and inspect every process the
 	// engine's user may, as on the host's PID namespace.
 	HostPIDs bool
+	// ProcsSocket is where the container's shim answers it about its PID
+	// namespace (package pidns).
+	ProcsSocket string
 }
 
 // IPCMode is a container's IPC confinement.
@@ -154,6 +157,9 @@ func Render(s Spec) (string, error) {
 	extra := append(append([]string{}, s.Libraries...), s.ReadFiles...)
 	if s.Helper != "" {
 		extra = append(extra, s.Helper)
+	}
+	if s.ProcsSocket != "" {
+		extra = append(extra, s.ProcsSocket)
 	}
 	for _, l := range extra {
 		if err := checkPath(l); err != nil {
@@ -303,6 +309,9 @@ func Render(s Spec) (string, error) {
 	}
 	for _, v := range s.Volumes {
 		w("(allow network-outbound (remote unix-socket (subpath %q)))", v.Path)
+	}
+	if s.ProcsSocket != "" {
+		w("(allow network-outbound (remote unix-socket (path-literal %q)))", s.ProcsSocket)
 	}
 	w("(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/syslog\")))")
 	for _, p := range uniq(s.ConnectPorts) {

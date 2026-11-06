@@ -41,8 +41,12 @@ type Config struct {
 	ExitPath    string
 	// Tag is the environment entry every process of the container starts
 	// with.
-	Tag     string
-	Publish []Binding `json:",omitempty"`
+	Tag string
+	// Procs is where the shim answers its container's library about the
+	// PID namespace whose file is PidNamespace (package pidns).
+	Procs        string    `json:",omitempty"`
+	PidNamespace string    `json:",omitempty"`
+	Publish      []Binding `json:",omitempty"`
 	// AllocRoot and Stack locate the stack's port block, from which UDP
 	// flows send.
 	AllocRoot string

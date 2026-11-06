@@ -309,5 +309,21 @@ int main(int argc, char **argv) {
     char g[2];
     if (recv(gr, &g[0], 1, 0) != 1 || recv(gr, &g[1], 1, 0) != 1) fail("unix-dgram-deep");
     printf("unix-dgram-deep=%.2s\n", g);
+
+    // A datagram from a socket bound at such a path reads as sent from its
+    // container path.
+    int gb = socket(AF_UNIX, SOCK_DGRAM, 0);
+    struct sockaddr_un from;
+    memset(&from, 0, sizeof from);
+    from.sun_family = AF_UNIX;
+    snprintf(from.sun_path, sizeof from.sun_path, "%s/from.sock", deep);
+    from.sun_len = (unsigned char)SUN_LEN(&from);
+    if (bind(gb, (void *)&from, from.sun_len)) fail("unix-dgram-deep-from");
+    if (sendto(gb, "c", 1, 0, (void *)&un, un.sun_len) != 1) fail("unix-dgram-deep-from");
+    struct sockaddr_un src;
+    socklen_t srcl = sizeof src;
+    memset(&src, 0, sizeof src);
+    if (recvfrom(gr, &g[0], 1, 0, (void *)&src, &srcl) != 1) fail("unix-dgram-deep-from");
+    printf("unix-dgram-deep-from=%s\n", src.sun_path);
     return 0;
 }

@@ -40,8 +40,17 @@ const (
 const PidsVar = "FWS_PIDS"
 
 // PidNSVar is "host" for a container on the host's PID namespace: the
-// library presents no pid 1 and lists every process the host does.
+// library presents no pid 1 and lists every process the host does. For a
+// container on another's PID namespace it is the host pid of that
+// namespace's pid 1.
 const PidNSVar = "FWS_PIDNS"
+
+// PidNSFileVar names the file of the container's PID namespace, and
+// ProcsVar the socket its shim answers on about it (package pidns).
+const (
+	PidNSFileVar = "FWS_PIDNSFILE"
+	ProcsVar     = "FWS_PROCS"
+)
 
 // HelperVar names the engine's helper binary, as a process listing shows
 // it: the library leaves the container's exec anchor out of listings.
