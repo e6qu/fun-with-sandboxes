@@ -2463,17 +2463,30 @@ static int to_ipv4(int fd, int type) {
     return 0;
 }
 
-// libSystem exports bindat and connectat, which the SDK's headers leave
-// undeclared.
-extern int bindat(int, int, const struct sockaddr *, socklen_t) __attribute__((weak_import));
-extern int connectat(int, int, const struct sockaddr *, socklen_t) __attribute__((weak_import));
+// in_dir runs a bind or connect of fd to a Unix socket named relative to
+// dir, which it closes, from dir as the calling thread's working
+// directory alone.
+extern int pthread_fchdir_np(int) __attribute__((weak_import));
+static int in_dir(int dir, int (*op)(int, const struct sockaddr *, socklen_t), int fd, const struct sockaddr *to, socklen_t len) {
+    int r = pthread_fchdir_np(dir);
+    if (r == 0) {
+        r = op(fd, to, len);
+        int e = errno;
+        pthread_fchdir_np(-1);
+        errno = e;
+    }
+    int e = errno;
+    close(dir);
+    errno = e;
+    return r;
+}
 
 // unix_host maps a Unix socket address's container path to the host path
 // it names, as the file calls map paths; follow says whether a link its
 // last component names is followed. A host path longer than a Unix socket
 // address holds, as a root's deep path makes one the container's fits,
 // becomes its last component, relative to its directory opened in *dir,
-// for bindat or connectat; without dir, it fails with ENAMETOOLONG.
+// for in_dir; without dir, it fails with ENAMETOOLONG.
 static const struct sockaddr *unix_host(const struct sockaddr *sa, socklen_t *len, struct sockaddr_storage *out, int follow, int *dir) {
     size_t at = offsetof(struct sockaddr_un, sun_path);
     if (!rootlen || *len <= (socklen_t)at) {
@@ -2495,7 +2508,7 @@ static const struct sockaddr *unix_host(const struct sockaddr *sa, socklen_t *le
     memset(u, 0, sizeof *u);
     if (strlcpy(u->sun_path, host, sizeof u->sun_path) >= sizeof u->sun_path) {
         const char *base = strrchr(host, '/');
-        if (!dir || !base || strlen(base + 1) >= sizeof u->sun_path || !bindat || !connectat) {
+        if (!dir || !base || strlen(base + 1) >= sizeof u->sun_path || !pthread_fchdir_np) {
             errno = ENAMETOOLONG;
             return NULL;
         }
@@ -3048,8 +3061,7 @@ static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
         return -1;
     }
     if (dir != -1) {
-        int r = bindat(dir, fd, to, len), e = errno;
-        close(dir);
+        int r = in_dir(dir, bind, fd, to, len), e = errno;
         if (r == 0) name_unix(unix_names, fd, sa, given);
         errno = e;
         return r;
@@ -3063,8 +3075,7 @@ INTERPOSE(fws_bind, bind);
 // connect_dir connects fd to a Unix socket named relative to dir, which
 // it closes; sa and given are the address the caller gave.
 static int connect_dir(int dir, int fd, const struct sockaddr *sa, socklen_t given, const struct sockaddr *to, socklen_t len) {
-    int r = connectat(dir, fd, to, len), e = errno;
-    close(dir);
+    int r = in_dir(dir, connect, fd, to, len), e = errno;
     if (r == 0) name_unix(unix_peers, fd, sa, given);
     errno = e;
     return r;
