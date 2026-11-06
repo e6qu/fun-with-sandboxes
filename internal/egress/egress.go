@@ -17,11 +17,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/members"
@@ -287,7 +289,13 @@ func (p *Proxy) dial(ctx context.Context, client, addr string) (net.Conn, error)
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("egress: %s has no addresses", host)
 	}
+	subnets := p.members()
 	for _, ip := range ips {
+		// A network's subnet is the stack's, where an address no member
+		// the client sees holds reaches no host.
+		if a, ok := netip.AddrFromSlice(ip); ok && members.InSubnet(subnets, a.Unmap()) {
+			return nil, fmt.Errorf("egress: %s: %w", ip, syscall.EHOSTUNREACH)
+		}
 		if p.policy.Deny(ip) {
 			return nil, fmt.Errorf("%w: %s resolves to %s", ErrDenied, host, ip)
 		}
@@ -304,15 +312,23 @@ func (p *Proxy) dial(ctx context.Context, client, addr string) (net.Conn, error)
 	return nil, last
 }
 
+// members reads the stack's network file, nil without one.
+func (p *Proxy) members() []members.Member {
+	if p.policy.Members == "" {
+		return nil
+	}
+	b, err := os.ReadFile(p.policy.Members)
+	if err != nil {
+		return nil
+	}
+	return members.Parse(b)
+}
+
 // member connects to a port of a member client sees, at the host port
 // behind it or through the member's router, and reports whether host is a
 // member client sees at all.
 func (p *Proxy) member(ctx context.Context, client, host, port string) (net.Conn, bool, error) {
-	b, err := os.ReadFile(p.policy.Members)
-	if err != nil {
-		return nil, false, nil
-	}
-	m, ok := members.Lookup(members.Parse(b), client, strings.Trim(host, "[]"))
+	m, ok := members.Lookup(p.members(), client, strings.Trim(host, "[]"))
 	if !ok {
 		return nil, false, nil
 	}

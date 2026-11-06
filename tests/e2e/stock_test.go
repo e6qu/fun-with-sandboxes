@@ -540,3 +540,87 @@ networks:
 		t.Errorf("a client without the proxy credentials printed %q, want %q", out, want)
 	}
 }
+
+// A Compose network with a subnet of its own gives its services addresses
+// in it, the ones they name or the lowest free, which inspect reports,
+// their names resolve to and their interfaces hold, as on Docker.
+func TestNetworkSubnets(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(`services:
+  api:
+    image: fws/python:3.14
+    command: ["python3", "-m", "http.server", "8000"]
+    expose: ["8000"]
+    networks:
+      lan: {ipv4_address: 172.30.5.10}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000')"]
+      interval: 1s
+      start_interval: 200ms
+      start_period: 30s
+  client:
+    image: fws/python:3.14
+    command: ["python3", "-c", "import time; time.sleep(600)"]
+    networks: [lan, other]
+    depends_on:
+      api: {condition: service_healthy}
+networks:
+  lan:
+    ipam:
+      config:
+        - subnet: 172.30.5.0/24
+          gateway: 172.30.5.254
+  other: {}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "docker-compose", append([]string{"-p", "e2e-ipam", "-f", filepath.Join(dir, "compose.yaml")}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("docker-compose %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	defer run("down", "-t", "0")
+	run("up", "-d", "--wait")
+	const lan = "e2e-ipam_lan"
+	if got := strings.TrimSpace(mustDocker(t, "inspect", "-f", `{{with index .NetworkSettings.Networks "`+lan+`"}}{{.IPAddress}}/{{.IPPrefixLen}} {{.Gateway}} {{.MacAddress}}{{end}}`, "e2e-ipam-api-1")); got != "172.30.5.10/24 172.30.5.254 02:42:ac:1e:05:0a" {
+		t.Errorf("the api's endpoint on %s: %q", lan, got)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "inspect", "-f", `{{with index .NetworkSettings.Networks "`+lan+`"}}{{.IPAddress}}{{end}} {{with index .NetworkSettings.Networks "e2e-ipam_other"}}{{.IPAddress}}/{{.IPPrefixLen}}{{end}}`, "e2e-ipam-client-1")); !strings.HasPrefix(got, "172.30.5.1 127.88.") || !strings.HasSuffix(got, "/16") {
+		t.Errorf("the client's endpoints: %q", got)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "network", "inspect", "-f", `{{range .IPAM.Config}}{{.Subnet}} {{.Gateway}}{{end}} {{range .Containers}}{{if eq .Name "e2e-ipam-api-1"}}{{.IPv4Address}}{{end}}{{end}}`, lan)); got != "172.30.5.0/24 172.30.5.254 172.30.5.10/24" {
+		t.Errorf("network inspect of %s: %q", lan, got)
+	}
+	out := run("exec", "-T", "client", "python3", "-c", `import fcntl, socket, struct
+def addr(name):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    return socket.inet_ntoa(fcntl.ioctl(s.fileno(), 0xc0206921, struct.pack("256s", name.encode()))[20:24])
+names = [n for _, n in socket.if_nameindex() if n.startswith("eth")]
+print(socket.gethostbyname("api"), " ".join(n + "=" + addr(n) for n in names))`)
+	if fields := strings.Fields(out); len(fields) != 3 || fields[0] != "172.30.5.10" || fields[1] != "eth0=172.30.5.1" || !strings.HasPrefix(fields[2], "eth1=127.88.") {
+		t.Errorf("the client resolved and listed %q", out)
+	}
+	out = run("exec", "-T", "client", "python3", "-c", sharedClient, "api:8000", "172.30.5.10:8000", "172.30.5.99:8000")
+	if want := "api:8000 HTTP/1.0 200 OK\n172.30.5.10:8000 HTTP/1.0 200 OK\n172.30.5.99:8000 OSError\n"; out != want {
+		t.Errorf("the client connected: %q, want %q", out, want)
+	}
+	out = run("exec", "-T", "client", "python3", "-c", proxiedClient, "http://api:8000/", "http://172.30.5.10:8000/", "http://172.30.5.99:8000/")
+	if want := "http://api:8000/ 200\nhttp://172.30.5.10:8000/ 200\nhttp://172.30.5.99:8000/ 502\n"; out != want {
+		t.Errorf("the client fetched through the proxy: %q, want %q", out, want)
+	}
+	if _, err := docker(t, "run", "--rm", "--network", lan, "--ip", "172.30.5.10", "fws/python:3.14", "true"); err == nil || !strings.Contains(err.Error(), "Address already in use") {
+		t.Errorf("a taken address: %v", err)
+	}
+	if _, err := docker(t, "run", "--rm", "--network", "e2e-ipam_other", "--ip", "172.30.5.20", "fws/python:3.14", "true"); err == nil || !strings.Contains(err.Error(), "user specified IP address is supported only") {
+		t.Errorf("an address on a network without a subnet: %v", err)
+	}
+	if _, err := docker(t, "network", "create", "--subnet", "172.30.5.128/25", "e2e-ipam-overlap"); err == nil || !strings.Contains(err.Error(), "Pool overlaps") {
+		docker(t, "network", "rm", "e2e-ipam-overlap")
+		t.Errorf("an overlapping subnet: %v", err)
+	}
+}

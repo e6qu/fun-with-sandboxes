@@ -401,14 +401,14 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			return container.CreateResponse{}, err
 		}
 	}
-	hostname, extraHosts, hostAddress := cfg.Hostname, req.HostConfig.ExtraHosts, address
+	hostname, extraHosts, hostAddress := cfg.Hostname, req.HostConfig.ExtraHosts, firstAddress(address, networks)
 	if req.HostConfig.NetworkMode == "none" {
 		hostAddress = ""
 	}
 	if net != nil {
 		// A container on another's network has its hostname and hosts, as
 		// it would its UTS namespace's files in Docker.
-		hostname, extraHosts, hostAddress = hostnameOf(net), net.rec.HostConfig.ExtraHosts, net.rec.Address
+		hostname, extraHosts, hostAddress = hostnameOf(net), net.rec.HostConfig.ExtraHosts, firstAddress(net.rec.Address, net.rec.Networks)
 		cfg.Hostname = hostname
 	}
 	if hostname == "" {
@@ -721,6 +721,9 @@ func (e *Engine) resolveNetworksLocked(stack, name, service string, req containe
 		}
 		if n.Name != "bridge" && n.Name != "none" {
 			s.DNSNames = uniqStrings(names)
+		}
+		if err := e.assignNetAddressLocked(n, "", s); err != nil {
+			return err
 		}
 		out[n.Name] = s
 		return nil

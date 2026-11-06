@@ -1,8 +1,9 @@
 // Package members reads and writes a stack's network file: a line per
 // member of the stack, of its member address, the names it answers to, the
 // host ports behind its ports, its router's port, the networks it is on,
-// whether it belongs to another stack, that stack, and the aliases links
-// give it, tab-separated. The engine writes it;
+// whether it belongs to another stack, that stack, the aliases links give
+// it, and its addresses on networks with subnets of their own,
+// tab-separated. The engine writes it;
 // the container library, the container's router and the stack's egress
 // proxy read it.
 package members
@@ -10,6 +11,7 @@ package members
 import (
 	"bytes"
 	"fmt"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +39,65 @@ type Member struct {
 	// a container's links name others; a legacy link also lets the member
 	// that makes it reach this one where they share no network.
 	Links []Link
+	// Subnets are the member's addresses on the networks it is on that
+	// have subnets of their own, each with its subnet's length; on every
+	// other network the member is at Address.
+	Subnets []NetAddress
+}
+
+// NetAddress is a member's address on a network with a subnet.
+type NetAddress struct {
+	Network string
+	Address netip.Prefix
+}
+
+// Has reports whether a is one of the member's addresses.
+func (m Member) Has(a string) bool {
+	if m.Address == a {
+		return true
+	}
+	for _, s := range m.Subnets {
+		if s.Address.Addr().String() == a {
+			return true
+		}
+	}
+	return false
+}
+
+// On is the member's address on network.
+func (m Member) On(network string) string {
+	for _, s := range m.Subnets {
+		if s.Network == network {
+			return s.Address.Addr().String()
+		}
+	}
+	return m.Address
+}
+
+// SeenBy is the member's address as viewer reaches it: on the first of
+// its networks the viewer is on too, else its member address.
+func (m Member) SeenBy(viewer Member) string {
+	for _, n := range m.Networks {
+		for _, o := range viewer.Networks {
+			if n == o {
+				return m.On(n)
+			}
+		}
+	}
+	return m.Address
+}
+
+// InSubnet reports whether ip lies in the subnet of a network the members
+// are on.
+func InSubnet(ms []Member, ip netip.Addr) bool {
+	for _, m := range ms {
+		for _, s := range m.Subnets {
+			if s.Address.Masked().Contains(ip) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Link is an alias the member at Viewer knows another member by.
@@ -64,7 +125,15 @@ func Format(ms []Member) []byte {
 		for i, l := range m.Links {
 			links[i] = l.Viewer + "/" + l.Alias
 		}
-		fmt.Fprintf(&b, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n", m.Address, strings.Join(m.Names, " "), strings.Join(ports, ","), m.Router, strings.Join(m.Networks, " "), foreign, m.Stack, strings.Join(links, " "))
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s", m.Address, strings.Join(m.Names, " "), strings.Join(ports, ","), m.Router, strings.Join(m.Networks, " "), foreign, m.Stack, strings.Join(links, " "))
+		if len(m.Subnets) > 0 {
+			subnets := make([]string, len(m.Subnets))
+			for i, s := range m.Subnets {
+				subnets[i] = s.Network + "=" + s.Address.String()
+			}
+			fmt.Fprintf(&b, "\t%s", strings.Join(subnets, " "))
+		}
+		b.WriteByte('\n')
 	}
 	return b.Bytes()
 }
@@ -74,14 +143,22 @@ func Parse(b []byte) []Member {
 	var out []Member
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) < 6 || len(f) > 8 || f[0] == "" {
+		if len(f) < 6 || len(f) > 9 || f[0] == "" {
 			continue
 		}
 		m := Member{Address: f[0], Names: strings.Fields(f[1]), Ports: map[string]int{}, Networks: strings.Fields(f[4]), Foreign: f[5] == "1"}
 		if len(f) >= 7 {
 			m.Stack = f[6]
 		}
-		if len(f) == 8 {
+		if len(f) == 9 {
+			for _, t := range strings.Fields(f[8]) {
+				n, a, ok := strings.Cut(t, "=")
+				if p, err := netip.ParsePrefix(a); ok && n != "" && err == nil && p.Addr().Is4() {
+					m.Subnets = append(m.Subnets, NetAddress{Network: n, Address: p})
+				}
+			}
+		}
+		if len(f) >= 8 {
 			for _, t := range strings.Fields(f[7]) {
 				if v, a, ok := strings.Cut(t, "/"); ok && v != "" && a != "" {
 					m.Links = append(m.Links, Link{Viewer: v, Alias: a})
@@ -104,13 +181,14 @@ func Parse(b []byte) []Member {
 }
 
 // Find returns the member host names, as DNS compares names: in any case,
-// with or without a final dot; or the member whose address host is. A
+// with or without a final dot; or the member one of whose addresses host
+// is. A
 // name no member answers to may be an alias a link gives one, for
 // whichever member makes the link.
 func Find(ms []Member, host string) (Member, bool) {
 	name := strings.TrimSuffix(host, ".")
 	for _, m := range ms {
-		if m.Address == host {
+		if m.Has(host) {
 			return m, true
 		}
 		for _, n := range m.Names {
@@ -158,7 +236,7 @@ func Share(a, b Member) bool {
 // Lookup finds the member host names as the member at self sees it, as the
 // container library resolves names: a member self sees that answers to
 // host, as DNS compares names, or an alias one of self's links gives it, or
-// the member whose address host is, when self sees it.
+// the member one of whose addresses host is, when self sees it.
 func Lookup(ms []Member, self, host string) (Member, bool) {
 	me, ok := Find(ms, self)
 	if !ok || me.Address != self {
@@ -169,7 +247,7 @@ func Lookup(ms []Member, self, host string) (Member, bool) {
 		if !Sees(me, m) && m.Address != me.Address {
 			continue
 		}
-		if m.Address == host {
+		if m.Has(host) {
 			return m, true
 		}
 		for _, n := range m.Names {

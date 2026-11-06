@@ -1,7 +1,9 @@
 package members
 
 import (
+	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -68,5 +70,43 @@ func TestLookupFromAViewer(t *testing.T) {
 		if ok != (c.want != "") || m.Address != c.want {
 			t.Errorf("Lookup from %s of %q: %q, %v; want %q", c.self, c.host, m.Address, ok, c.want)
 		}
+	}
+}
+
+// A member's addresses on networks with subnets of their own read back,
+// name it, and are the ones a viewer on such a network reaches it at.
+func TestSubnetAddresses(t *testing.T) {
+	ms := []Member{
+		{Address: "127.88.0.2", Names: []string{"api"}, Networks: []string{"back", "front"}, Subnets: []NetAddress{{"back", netip.MustParsePrefix("172.28.0.5/16")}}},
+		{Address: "127.88.0.3", Names: []string{"db"}, Networks: []string{"back"}, Subnets: []NetAddress{{"back", netip.MustParsePrefix("172.28.0.6/16")}}},
+		{Address: "127.88.0.4", Names: []string{"web"}, Networks: []string{"front"}},
+	}
+	b := Format(ms)
+	if want := "127.88.0.2\tapi\t\t0\tback front\t0\t\t\tback=172.28.0.5/16\n"; !strings.HasPrefix(string(b), want) {
+		t.Fatalf("Format:\n%s\nwant a first line of:\n%s", b, want)
+	}
+	if !strings.Contains(string(b), "127.88.0.4\tweb\t\t0\tfront\t0\t\t\n") {
+		t.Errorf("a member on no subnet gets a ninth field:\n%s", b)
+	}
+	got := Parse(b)
+	if !reflect.DeepEqual(got[0].Subnets, ms[0].Subnets) || len(got[2].Subnets) != 0 {
+		t.Fatalf("Parse: %+v", got)
+	}
+	if m, ok := Find(got, "172.28.0.6"); !ok || m.Address != "127.88.0.3" {
+		t.Errorf("Find by a subnet address: %+v, %v", m, ok)
+	}
+	if m, ok := Lookup(got, "127.88.0.3", "172.28.0.5"); !ok || m.Address != "127.88.0.2" {
+		t.Errorf("Lookup by a subnet address: %+v, %v", m, ok)
+	}
+	for _, c := range []struct {
+		m, viewer int
+		want      string
+	}{{0, 1, "172.28.0.5"}, {0, 2, "127.88.0.2"}, {1, 0, "172.28.0.6"}, {2, 1, "127.88.0.4"}} {
+		if a := got[c.m].SeenBy(got[c.viewer]); a != c.want {
+			t.Errorf("%s seen by %s at %s, want %s", got[c.m].Names[0], got[c.viewer].Names[0], a, c.want)
+		}
+	}
+	if !InSubnet(got, netip.MustParseAddr("172.28.9.9")) || InSubnet(got, netip.MustParseAddr("172.29.0.1")) {
+		t.Error("InSubnet misreads the members' subnets")
 	}
 }

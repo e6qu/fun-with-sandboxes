@@ -82,6 +82,27 @@ func TestInterfaces(t *testing.T) {
 	}
 }
 
+// On networks with subnets of their own, a container has an interface for
+// each of its addresses, and reaches each member at its address on the
+// first network they share.
+func TestInterfacesOnSubnets(t *testing.T) {
+	root := containerRoot(t)
+	network := filepath.Join(t.TempDir(), "network")
+	if err := os.WriteFile(network, []byte("127.88.0.2\tapp\t\t0\tback front\t0\t\t\tback=172.28.0.5/16\n"+
+		"127.88.0.3\tdb\t\t0\tback\t0\t\t\tback=172.28.0.6/16\n"+
+		"127.88.0.4\tweb\t\t0\tfront\t0\n"+
+		"127.88.0.5\tunseen.invalid\t\t0\telsewhere\t0\t\t\telsewhere=10.9.0.2/24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := probe(t, root, []string{NetworkVar + "=" + network, AddressVar + "=127.88.0.2", "PROBE_NAMES=db,web,unseen.invalid,app"}, "interfaces", "resolve")
+	if want := "lo0(loopback 127.0.0.1/8 ),eth0(172.28.0.5/16 02:42:ac:1c:00:05),eth1(127.88.0.2/16 02:42:7f:58:00:02)"; got["interfaces"] != want {
+		t.Errorf("interfaces: %q, want %q", got["interfaces"], want)
+	}
+	if want := "db:172.28.0.6 web:127.88.0.4 unseen.invalid:none app:172.28.0.5"; got["resolve"] != want {
+		t.Errorf("resolve: %q, want %q", got["resolve"], want)
+	}
+}
+
 func TestIdentityAndOwnership(t *testing.T) {
 	root := containerRoot(t)
 	got := probe(t, root, []string{"FWS_HOSTNAME=web-1"}, "ids", "user", "owner", "chown", "hostname")

@@ -136,24 +136,37 @@ machine — and from what macOS offers an unprivileged process under them.
 - **ICMP reaches nothing.** A container's traffic is held to its stack's TCP
   and UDP ports; `ping` opens its socket but sends nowhere.
 - **Container addresses are presented, not routed.** Each member of a stack
-  has an address in `127.88.0.0/16` that the container library resolves its
-  names to and reaches its ports through, so a client connects to `db:5432`
-  as on a Compose network. The kernel never sees those addresses:
+  has an address in `127.88.0.0/16`, and on a network created with a
+  subnet (Compose's `ipam`, `docker network create --subnet`) an address
+  of that subnet, the one `ipv4_address` or `--ip` names or the lowest
+  free one. The container library resolves a member's names to its
+  address on the first network the two share, and reaches its ports
+  through any of its addresses, so a client connects to `db:5432` as on a
+  Compose network. The kernel never sees those addresses:
   - A program that loads no library resolves no member name; it uses
     `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
   - A server sees its clients connect from `127.0.0.1`, not from their
     member addresses.
   - A member's port without a host port is reached through its router,
     whose connections and datagrams its server sees come from `127.0.0.1`.
+  - A network takes one IPv4 subnet of the default IPAM driver, outside
+    `127.0.0.0/8` and every other network's subnet; IPv6 subnets and
+    addresses, and `enable_ipv6`, are refused. A container keeps its
+    addresses while it exists, where Docker gives a stopped container's
+    back to the pool; `docker inspect` reports none for a stopped one, as
+    Docker does. A network without a subnet reports `127.88.0.0/16`, the
+    member addresses' block, which every such network shares.
 - **A container's interfaces are presented.** `getifaddrs`, `if_nameindex`,
   the `SIOCGIF*` ioctls and the routing sysctl Go's `net.Interfaces` reads
-  list the loopback interface and, on a network, `eth0` with the member
-  address in `127.88.0.0/16` and a MAC address of Docker's form, where the
+  list the loopback interface and, on a network, `eth0` onwards, one for
+  each of the container's addresses in the order of its networks' names,
+  with its subnet's mask and a MAC address of Docker's form, where the
   host's interfaces are. The kernel knows no `eth0`: binding a socket to
   its index, or joining a multicast group on it, fails.
   The member address is a loopback address, so a program that advertises
-  its first non-loopback address finds none: SeaweedFS advertises
-  `localhost`, where on Docker it advertises the container's address.
+  its first non-loopback address finds none on a network without a
+  subnet: SeaweedFS advertises `localhost`, where on Docker it advertises
+  the container's address.
 - **A stack's block is one reachability domain.** Seatbelt lets a container
   reach every port in its stack's block and nothing else, so within a stack
   network membership is presented, not enforced: the container library
