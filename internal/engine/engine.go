@@ -52,6 +52,9 @@ type Engine struct {
 	egressMu sync.Mutex
 	egress   map[string]*egressProc
 
+	// pidnsMu orders changes to PID namespaces' files.
+	pidnsMu sync.Mutex
+
 	// detach closes when the engine leaves its containers running as it
 	// stops.
 	detach chan struct{}

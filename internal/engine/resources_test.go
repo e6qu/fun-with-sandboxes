@@ -81,14 +81,14 @@ func TestContainerLimitsRefuse(t *testing.T) {
 	}
 }
 
-// The host's PID namespace is presented; another container's is not.
+// The host's PID namespace and another container's are presented.
 func TestPidModes(t *testing.T) {
 	for mode, want := range map[container.PidMode]Kind{
 		"":                  0,
 		"host":              0,
-		"container:db":      KindUnsupported,
+		"container:db":      0,
 		"bogus":             KindInvalid,
-		"container:":        KindUnsupported,
+		"container:":        KindInvalid,
 		"host:with-a-colon": KindInvalid,
 	} {
 		err := checkHostConfig(&container.HostConfig{PidMode: mode})

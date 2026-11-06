@@ -79,6 +79,7 @@ internal/portproxy/   # published host ports, TCP and UDP
 internal/egress/      # the per-stack HTTP and SOCKS5 proxy to the internet
 internal/netstat/     # per-socket network counters for docker stats
 internal/procs/       # the host process table, for top and stats
+internal/pidns/       # PID namespaces containers share, through their shims
 internal/logfile/     # json-file logs
 internal/dockerfile/  # Dockerfile parsing and variable expansion
 internal/buildkit/    # embedded BuildKit with a darwin worker

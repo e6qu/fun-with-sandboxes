@@ -142,7 +142,7 @@ func Listen(proto string, ip netip.Addr, lo, hi int, upstream string, dial FlowD
 		if proto == "udp" {
 			var pc net.PacketConn
 			if pc, err = net.ListenPacket("udp", addr); err == nil {
-				return ServeUDP(pc, upstream, dial), pc.LocalAddr().(*net.UDPAddr).Port, nil
+				return ServeUDP(pc, upstream, dial, nil), pc.LocalAddr().(*net.UDPAddr).Port, nil
 			}
 		} else {
 			var l net.Listener
@@ -163,6 +163,8 @@ func Listen(proto string, ip netip.Addr, lo, hi int, upstream string, dial FlowD
 // userland proxy keeps its flows.
 const udpIdleTimeout = 90 * time.Second
 
+var errRefusedClient = errors.New("datagram from a refused client")
+
 // udpProxy forwards datagrams between a published UDP port and the
 // container's loopback port, keeping one upstream socket per client so
 // replies reach the client that asked. The container's profile lets it send
@@ -172,6 +174,7 @@ type udpProxy struct {
 	pc       net.PacketConn
 	upstream string
 	dial     FlowDialer
+	accept   func(*net.UDPAddr) bool
 	mu       sync.Mutex
 	flows    map[string]net.Conn
 	closed   bool
@@ -179,9 +182,11 @@ type udpProxy struct {
 }
 
 // ServeUDP forwards the datagrams pc receives to upstream, from a socket
-// dial opens for each client, and the replies back to the client.
-func ServeUDP(pc net.PacketConn, upstream string, dial FlowDialer) io.Closer {
+// dial opens for each client, and the replies back to the client. With
+// accept, it drops a datagram from a client accept refuses.
+func ServeUDP(pc net.PacketConn, upstream string, dial FlowDialer, accept func(*net.UDPAddr) bool) io.Closer {
 	px := newUDPProxy(pc, upstream, dial)
+	px.accept = accept
 	go px.serve()
 	return px
 }
@@ -217,6 +222,9 @@ func (p *udpProxy) flow(client net.Addr) (net.Conn, error) {
 	}
 	if up, ok := p.flows[client.String()]; ok {
 		return up, nil
+	}
+	if ua, ok := client.(*net.UDPAddr); p.accept != nil && (!ok || !p.accept(ua)) {
+		return nil, errRefusedClient
 	}
 	raddr, err := net.ResolveUDPAddr("udp", p.upstream)
 	if err != nil {

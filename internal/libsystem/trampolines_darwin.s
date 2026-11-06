@@ -108,3 +108,13 @@ TEXT libsandbox_sandbox_free_error_trampoline<>(SB),NOSPLIT,$0-0
 	JMP	libsandbox_sandbox_free_error(SB)
 GLOBL	·libsandbox_sandbox_free_error_trampoline_addr(SB), RODATA, $8
 DATA	·libsandbox_sandbox_free_error_trampoline_addr(SB)/8, $libsandbox_sandbox_free_error_trampoline<>(SB)
+
+TEXT libc_proc_pidinfo_trampoline<>(SB),NOSPLIT,$0-0
+	JMP	libc_proc_pidinfo(SB)
+GLOBL	·libc_proc_pidinfo_trampoline_addr(SB), RODATA, $8
+DATA	·libc_proc_pidinfo_trampoline_addr(SB)/8, $libc_proc_pidinfo_trampoline<>(SB)
+
+TEXT libc_proc_pidpath_trampoline<>(SB),NOSPLIT,$0-0
+	JMP	libc_proc_pidpath(SB)
+GLOBL	·libc_proc_pidpath_trampoline_addr(SB), RODATA, $8
+DATA	·libc_proc_pidpath_trampoline_addr(SB)/8, $libc_proc_pidpath_trampoline<>(SB)

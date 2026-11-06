@@ -282,3 +282,33 @@ func goString(p *byte) string {
 	}
 	return string(unsafe.Slice(p, n))
 }
+
+// ProcPidinfo is proc_pidinfo: it fills buf with pid's information of
+// flavor and returns how many bytes it wrote.
+func ProcPidinfo(pid, flavor int, arg uint64, buf []byte) (int, error) {
+	var p unsafe.Pointer
+	if len(buf) > 0 {
+		p = unsafe.Pointer(&buf[0])
+	}
+	r, _, errno := syscall_syscall6(libc_proc_pidinfo_trampoline_addr, uintptr(pid), uintptr(flavor), uintptr(arg), uintptr(p), uintptr(len(buf)), 0)
+	if n := int(int32(r)); n > 0 {
+		return n, nil
+	}
+	if errno == 0 {
+		errno = syscall.ESRCH
+	}
+	return 0, errno
+}
+
+// ProcPidpath is proc_pidpath: the path of pid's executable.
+func ProcPidpath(pid int) (string, error) {
+	buf := make([]byte, 4*1024)
+	r, _, errno := syscall_syscall(libc_proc_pidpath_trampoline_addr, uintptr(pid), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if n := int(int32(r)); n > 0 {
+		return string(buf[:n]), nil
+	}
+	if errno == 0 {
+		errno = syscall.ESRCH
+	}
+	return "", errno
+}

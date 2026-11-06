@@ -372,7 +372,8 @@ type relayKey struct {
 // datagrams go on to the member's host port or flow port from a socket on
 // a port of the member's stack's block, which the member may answer, one
 // for each of the container's sockets. A socket's first datagram checks
-// again that the member shares a network with the container.
+// again that the member shares a network with the container; the relay
+// takes datagrams from the container's own ports alone.
 func (r *Router) relay(addr netip.Addr, port int) (int, error) {
 	to, err := r.peer(addr)
 	if err != nil {
@@ -407,10 +408,45 @@ func (r *Router) relay(addr netip.Addr, port int) (int, error) {
 			return nil, err
 		}
 		return r.net.DialFlow(stack, raddr)
-	})
+	}, r.sends)
 	r.relays[key] = pc
 	r.relayClosers = append(r.relayClosers, px)
 	return pc.LocalAddr().(*net.UDPAddr).Port, nil
+}
+
+// sends reports whether a datagram from port of loopback came from the
+// router's container: from one of its UDP host ports or flow ports, the
+// ports its sockets send from. Another member of the stack, which can
+// reach the relay's port, sends from ports of its own.
+func (r *Router) sends(from *net.UDPAddr) bool {
+	if !from.IP.IsLoopback() {
+		return false
+	}
+	r.umu.Lock()
+	for _, c := range r.flows {
+		if c.LocalAddr().(*net.UDPAddr).Port == from.Port {
+			r.umu.Unlock()
+			return true
+		}
+	}
+	r.umu.Unlock()
+	if r.net.File == "" {
+		return false
+	}
+	b, err := os.ReadFile(r.net.File)
+	if err != nil {
+		return false
+	}
+	self, ok := members.Find(members.Parse(b), r.net.Address)
+	if !ok {
+		return false
+	}
+	for p, hp := range self.Ports {
+		if strings.HasSuffix(p, "/udp") && hp == from.Port {
+			return true
+		}
+	}
+	return false
 }
 
 // lookup answers a UDP lookup with the port's flow port.

@@ -491,9 +491,11 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	if c.rec.HostConfig.UTSMode != "host" {
 		env = append(env, pathmap.HostnameVar+"="+host)
 	}
-	if c.rec.HostConfig.PidMode.IsHost() {
-		env = append(env, pathmap.PidNSVar+"=host")
+	pv, err := e.pidnsEnv(c)
+	if err != nil {
+		return nil, err
 	}
+	env = append(env, pv...)
 	var ms []pathmap.Mount
 	for _, m := range c.rec.Mounts {
 		ms = append(ms, pathmap.Mount{Dest: m.Destination, Source: m.Source})
@@ -505,12 +507,12 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	if mv != "" {
 		env = append(env, mv)
 	}
-	pv, err := pathmap.PortsVar(net.rec.Ports)
+	ports, err := pathmap.PortsVar(net.rec.Ports)
 	if err != nil {
 		return nil, err
 	}
-	if pv != "" {
-		env = append(env, pv)
+	if ports != "" {
+		env = append(env, ports)
 	}
 	if helper, err := roles.Binary(); err == nil {
 		env = append(env, pathmap.HelperVar+"="+filepath.Base(helper))
@@ -577,9 +579,7 @@ func checkHostConfig(hc *container.HostConfig) error {
 		return err
 	}
 	switch pid := string(hc.PidMode); {
-	case pid == "", pid == "private", pid == "host":
-	case strings.HasPrefix(pid, "container:"):
-		return unsupported("PID mode %q is not supported: a container's processes are those of its own sandbox, which no other container's processes join", pid)
+	case pid == "", pid == "private", pid == "host", strings.HasPrefix(pid, "container:") && len(pid) > len("container:"):
 	default:
 		return invalid("invalid PID mode: %q", pid)
 	}
@@ -1192,7 +1192,14 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	spec := seatbelt.Spec{
 		Root: c.root(), StateRoot: e.cfg.Root, ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
 		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath()},
-		HostPIDs: c.rec.HostConfig.PidMode.IsHost(),
+	}
+	owner, err := e.pidOwner(c)
+	if err != nil {
+		return seatbelt.Spec{}, err
+	}
+	if spec.HostPIDs = owner.rec.HostConfig.PidMode.IsHost(); !spec.HostPIDs {
+		spec.ReadFiles = append(spec.ReadFiles, e.pidnsFile(owner))
+		spec.ProcsSocket = e.procsSocket(c)
 	}
 	for _, m := range c.rec.Mounts {
 		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW})
@@ -1314,6 +1321,10 @@ func (c *Container) start(e *Engine) error {
 	if err != nil {
 		return err
 	}
+	nsFile, _, err := e.joinPIDNamespace(c)
+	if err != nil {
+		return err
+	}
 	env, err := e.processEnv(c, nil, c.rec.Config.User, c.rec.Config.Tty)
 	if err != nil {
 		if KindOf(err) != KindInternal {
@@ -1331,6 +1342,9 @@ func (c *Container) start(e *Engine) error {
 		LogPath: c.logs.path, Socket: e.shimSocket(c), Anchor: e.anchorSocket(c), ExitPath: c.exitPath(),
 		Router: c.rec.RouterPort, PortDir: e.portDir(c),
 		Tag: c.tag(), AllocRoot: e.cfg.Root, Stack: c.rec.Stack, Resources: res,
+	}
+	if nsFile != "" {
+		cfg.Procs, cfg.PidNamespace = e.procsSocket(c), nsFile
 	}
 	if c.rec.RouterPort != 0 {
 		if cfg.NetworkFile, err = e.networkFile(c.rec.Stack); err != nil {
@@ -1504,6 +1518,9 @@ func (e *Engine) ended(c *Container, exit shim.Exit, done chan struct{}) {
 	c.rec.State.Pid = 0
 	manual := c.rec.State.ManualStop
 	policy := c.rec.HostConfig.RestartPolicy
+	if err := e.leavePIDNamespace(c); err != nil {
+		log.Printf("container %s: %v", c.rec.ID[:12], err)
+	}
 	restarts := c.rec.State.RestartCount
 	runFor := c.rec.State.FinishedAt.Sub(c.rec.State.StartedAt)
 	c.save()
