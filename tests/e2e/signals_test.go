@@ -59,3 +59,41 @@ func TestPsListsTheContainersProcesses(t *testing.T) {
 		}
 	}
 }
+
+// On the host's PID namespace a container lists every host process by its
+// host pid, its own main process too, with launchd as pid 1, and signals the
+// engine's other containers; its pids limit still counts its own processes
+// alone.
+func TestPidHost(t *testing.T) {
+	const host, other = "fws-e2e-pid-host", "fws-e2e-pid-other"
+	mustDocker(t, "run", "-d", "--name", other, "fws/toolbox:1", "hold")
+	t.Cleanup(func() { docker(t, "rm", "-f", other) })
+	mustDocker(t, "run", "-d", "--name", host, "--pid", "host", "fws/toolbox:1", "hold")
+	t.Cleanup(func() { docker(t, "rm", "-f", host) })
+	if mode := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.PidMode}}", host)); mode != "host" {
+		t.Errorf("inspect reports PID mode %q", mode)
+	}
+	pidHost := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.Pid}}", host))
+	pidOther := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.Pid}}", other))
+	listed := map[string]string{}
+	out := mustDocker(t, "exec", host, "/toolbox", "ps")
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		pid, name, _ := strings.Cut(strings.TrimSpace(line), " ")
+		listed[pid] = name
+	}
+	if listed[pidHost] != "toolbox" || listed[pidOther] != "toolbox" || listed["1"] != "launchd" {
+		t.Errorf("want both main processes by their host pids, %s and %s, and launchd as pid 1:\n%s", pidHost, pidOther, out)
+	}
+	if out, err := docker(t, "exec", host, "/toolbox", "signal", pidOther); err != nil {
+		t.Errorf("a container on the host's PID namespace could not signal process %s: %v\n%s", pidOther, err, out)
+	}
+
+	const limited = "fws-e2e-pid-host-limit"
+	mustDocker(t, "run", "-d", "--name", limited, "--pid", "host", "--pids-limit", "6", "fws/toolbox:1", "forkmany", "20")
+	t.Cleanup(func() { docker(t, "rm", "-f", limited) })
+	waitLog(t, limited, "fork 6 failed")
+
+	if _, err := docker(t, "run", "--rm", "--pid", "container:"+other, "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "is not supported") {
+		t.Errorf("--pid container: %v", err)
+	}
+}

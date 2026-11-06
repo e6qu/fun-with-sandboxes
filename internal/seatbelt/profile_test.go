@@ -218,3 +218,22 @@ func TestPortDirForUnixListeners(t *testing.T) {
 		t.Errorf("the port directory is not readable and writable:\n%s", p)
 	}
 }
+
+// On the host's PID namespace a container signals and inspects any
+// process; otherwise its own sandbox's alone.
+func TestHostPIDs(t *testing.T) {
+	s := spec()
+	s.HostPIDs = true
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"(allow signal)\n", "(allow process-info*)\n"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("profile missing %s\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "(target same-sandbox)") || strings.Contains(p, "(deny signal)") {
+		t.Errorf("a host PID namespace's profile confines processes to the sandbox:\n%s", p)
+	}
+}

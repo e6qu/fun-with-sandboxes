@@ -57,7 +57,50 @@ jobs:
       - name: unit tests
         run: go test -race -count=3 ./...
 
+  # Nix builds MySQL and MariaDB from source, with their vendors'
+  # compilation comment (images/servers.nix), which no binary cache holds.
+  # Each server's build is kept in the Actions cache, keyed by its
+  # derivation, so it is built again only when it changes.
+  servers:
+    runs-on: macos-15
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [mysql, mariadb]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # A sandboxed build, as Hydra's: MySQL's CMake otherwise takes
+      # OpenSSL from the runner's Homebrew.
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            trusted-users = root runner
+            sandbox = true
+      - name: derivation
+        id: drv
+        run: echo "key=server-${{ matrix.server }}-$(scripts/build-images.sh --server-derivations ${{ matrix.server }} | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: ~/fws-servers/${{ matrix.server }}
+          key: ${{ steps.drv.outputs.key }}
+          lookup-only: true
+      - name: build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          paths=$(scripts/build-images.sh --servers ${{ matrix.server }})
+          nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-servers/${{ matrix.server }}" $paths
+      - uses: actions/cache/save@v4
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/fws-servers/${{ matrix.server }}
+          key: ${{ steps.drv.outputs.key }}
+
   e2e:
+    needs: servers
     runs-on: macos-15
     timeout-minutes: 120
     steps:
@@ -68,6 +111,24 @@ jobs:
         with:
           go-version-file: go.mod
       - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: trusted-users = root runner
+      - name: database server derivations
+        id: drv
+        run: |
+          for s in mysql mariadb; do
+            echo "$s=server-$s-$(scripts/build-images.sh --server-derivations $s | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          done
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/fws-servers/mysql
+          key: ${{ steps.drv.outputs.mysql }}
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/fws-servers/mariadb
+          key: ${{ steps.drv.outputs.mariadb }}
+          fail-on-cache-miss: true
       - name: install the Docker CLI, Docker Compose and buildx
         run: |
           brew install docker docker-compose docker-buildx
@@ -75,7 +136,9 @@ jobs:
           echo "{\"cliPluginsExtraDirs\": [\"$(brew --prefix)/lib/docker/cli-plugins\"]}" > ~/.docker/config.json
           docker buildx version
       - name: build images
-        run: scripts/build-images.sh "$RUNNER_TEMP/images"
+        run: |
+          export NIX_CONFIG="extra-substituters = file://$HOME/fws-servers/mysql?trusted=1 file://$HOME/fws-servers/mariadb?trusted=1"
+          scripts/build-images.sh "$RUNNER_TEMP/images"
       - name: publish images to a local registry
         run: |
           crane="go run github.com/google/go-containerregistry/cmd/crane@v0.22.1"

@@ -102,6 +102,9 @@ type Spec struct {
 	// PortDir is where the container listens, with Unix sockets, on its TCP
 	// ports that have no host port.
 	PortDir string
+	// HostPIDs lets the container signal and inspect every process the
+	// engine's user may, as on the host's PID namespace.
+	HostPIDs bool
 }
 
 // IPCMode is a container's IPC confinement.
@@ -330,10 +333,15 @@ func Render(s Spec) (string, error) {
 		w("(deny ipc-posix-shm* ipc-posix-sem* ipc-sysv*)")
 	}
 
-	w("(deny signal)")
-	w("(allow signal (target same-sandbox))")
-	w("(deny process-info*)")
-	w("(allow process-info* (target same-sandbox))")
+	if s.HostPIDs {
+		w("(allow signal)")
+		w("(allow process-info*)")
+	} else {
+		w("(deny signal)")
+		w("(allow signal (target same-sandbox))")
+		w("(deny process-info*)")
+		w("(allow process-info* (target same-sandbox))")
+	}
 
 	return b.String(), nil
 }

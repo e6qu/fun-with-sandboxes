@@ -1,12 +1,32 @@
 #!/usr/bin/env bash
 # Build the darwin image archives of the catalog into $1.
 # Needs macOS (install_name_tool, codesign) and Nix.
+#
+# build-images.sh --server-derivations [NAME...] prints the derivations of
+# the database servers Nix builds from source (images/servers.nix), and
+# build-images.sh --servers [NAME...] builds them and prints their outputs,
+# so CI can keep them between runs.
 set -euo pipefail
 
-out=${1:?usage: build-images.sh OUTPUT_DIR}
 # nixos-26.05, pinned, so a rebuild makes the same images.
 nixpkgs=${NIXPKGS:-github:NixOS/nixpkgs/9bb52223f4f6a0cc606fd0852d8784f896c137d5}
 here=$(cd "$(dirname "$0")/.." && pwd)
+nix=(nix --extra-experimental-features 'nix-command flakes')
+servers=(--impure -f "$here/images/servers.nix" --argstr nixpkgs "$nixpkgs")
+case "${1:-}" in
+--server-derivations | --servers)
+  mode=$1
+  shift
+  [ $# -gt 0 ] || set -- mysql mariadb
+  if [ "$mode" = --servers ]; then
+    "${nix[@]}" build --no-link --print-out-paths "${servers[@]}" "$@"
+  else
+    "${nix[@]}" path-info --derivation "${servers[@]}" "$@"
+  fi
+  exit
+  ;;
+esac
+out=${1:?usage: build-images.sh OUTPUT_DIR | --server-derivations | --servers}
 build=$(mktemp -d)
 trap 'rm -rf "$build"' EXIT
 mkdir -p "$out"
@@ -29,19 +49,26 @@ go build -o "$build/seaweedfs-entry" ./images/seaweedfs/entry
 go build -o "$build/memcached-entry" ./images/memcached/entry
 go build -o "$build/nc" ./images/nc
 
-# pkg_with ATTR BINARY prints the output of ATTR that holds bin/BINARY.
-# Unfree packages, such as DynamoDB Local, build too.
-pkg_with() {
-  local p
-  for p in $(NIXPKGS_ALLOW_UNFREE=1 nix --extra-experimental-features 'nix-command flakes' build --impure --no-link --print-out-paths "$nixpkgs#$1"); do
-    if [ -x "$p/bin/$2" ]; then
+# output_with BINARY INSTALLABLE... builds INSTALLABLE and prints its
+# output that holds bin/BINARY. Unfree packages, such as DynamoDB Local,
+# build too.
+output_with() {
+  local bin=$1 p
+  shift
+  for p in $(NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" build --impure --no-link --print-out-paths "$@"); do
+    if [ -x "$p/bin/$bin" ]; then
       echo "$p"
       return
     fi
   done
-  echo "no output of $1 holds bin/$2" >&2
+  echo "no output of $* holds bin/$bin" >&2
   exit 1
 }
+
+# pkg_with ATTR BINARY prints the output of nixpkgs' ATTR that holds
+# bin/BINARY; server_with ATTR BINARY that of images/servers.nix's ATTR.
+pkg_with() { output_with "$2" "$nixpkgs#$1"; }
+server_with() { output_with "$2" "${servers[@]}" "$1"; }
 
 # Every catalog image carries a shell of its own at /bin/sh: the loader
 # drops the container library from Apple's shells, and with it from what
@@ -49,7 +76,7 @@ pkg_with() {
 dash=$(pkg_with dash dash)
 # The network databases a C library reads, which Debian-based official
 # images carry in netbase.
-iana=$(nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths "$nixpkgs#iana-etc")
+iana=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#iana-etc")
 closure() { nix-store -qR "$@" "$dash" | sort -u; }
 # /bin/nc answers the in-container port check Testcontainers runs, which
 # reads /proc/net/tcp on Linux.
@@ -92,12 +119,12 @@ closure "$nginx" > "$build/nginx.closure"
 mkimage $(accounts nginx nginx 101 101 /nonexistent) -spec images/nginx/image.json -closure "$build/nginx.closure" -pkg "$nginx" \
   -file "/entry=$build/nginx-entry" -file "/usr/share/nginx/html/index.html=$nginx/html/index.html" -out "$out/nginx.tar"
 
-mariadb=$(pkg_with mariadb mariadbd)
+mariadb=$(server_with mariadb mariadbd)
 closure "$mariadb" > "$build/mariadb.closure"
 mkimage $(accounts mariadb mysql 999 999 /var/lib/mysql) -spec images/mariadb/image.json -closure "$build/mariadb.closure" -pkg "$mariadb" \
   -file "/entry=$build/mariadb-entry" -out "$out/mariadb.tar"
 
-mysql=$(pkg_with mysql84 mysqld)
+mysql=$(server_with mysql mysqld)
 closure "$mysql" > "$build/mysql.closure"
 mkimage $(accounts mysql mysql 999 999 /var/lib/mysql) -spec images/mysql/image.json -closure "$build/mysql.closure" -pkg "$mysql" \
   -file "/entry=$build/mysql-entry" -file "/etc/my.cnf=images/mysql/my.cnf" -out "$out/mysql.tar"
@@ -140,7 +167,7 @@ closure "$bun" > "$build/bun.closure"
 mkimage $(accounts bun bun 1000 1000 /home/bun) -spec images/bun/image.json -closure "$build/bun.closure" -pkg "$bun" -out "$out/bun.tar"
 
 gitea=$(pkg_with gitea gitea)
-gitea_data=$(NIXPKGS_ALLOW_UNFREE=1 nix --extra-experimental-features 'nix-command flakes' build --impure --no-link --print-out-paths "$nixpkgs#gitea.data")
+gitea_data=$(NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" build --impure --no-link --print-out-paths "$nixpkgs#gitea.data")
 git=$(pkg_with git git)
 # Gitea's repository hooks are bash scripts, as in the official image.
 bash=$(pkg_with bash bash)

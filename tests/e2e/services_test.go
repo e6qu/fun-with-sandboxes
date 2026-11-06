@@ -21,7 +21,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/testcontainers/testcontainers-go"
+	tcmariadb "github.com/testcontainers/testcontainers-go/modules/mariadb"
 	tcmemcached "github.com/testcontainers/testcontainers-go/modules/memcached"
+	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	tcrabbitmq "github.com/testcontainers/testcontainers-go/modules/rabbitmq"
@@ -294,5 +296,43 @@ func TestTestcontainersModules(t *testing.T) {
 			t.Fatalf("%s: %v", url, err)
 		}
 		conn.Close()
+	})
+	// The modules wait for the server's "ready for connections" line to
+	// end in the vendor build's compilation comment.
+	versionComment := func(t *testing.T, dsn, want string) {
+		t.Helper()
+		db, err := sql.Open("mysql", dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		var got string
+		if err := db.QueryRow("SELECT @@version_comment").Scan(&got); err != nil || got != want {
+			t.Fatalf("version_comment is %q, %v, want %q", got, err, want)
+		}
+	}
+	t.Run("mysql", func(t *testing.T) {
+		c, err := tcmysql.Run(ctx, "fws/mysql:8.4")
+		testcontainers.CleanupContainer(t, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dsn, err := c.ConnectionString(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		versionComment(t, dsn, "MySQL Community Server - GPL")
+	})
+	t.Run("mariadb", func(t *testing.T) {
+		c, err := tcmariadb.Run(ctx, "fws/mariadb:11")
+		testcontainers.CleanupContainer(t, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dsn, err := c.ConnectionString(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		versionComment(t, dsn, "mariadb.org binary distribution")
 	})
 }

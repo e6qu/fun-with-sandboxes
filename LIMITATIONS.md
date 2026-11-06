@@ -12,11 +12,9 @@ machine — and from what macOS offers an unprivileged process under them.
   library, or reads them from `SANDBOX_*` variables (see the README).
   Software the library cannot load into needs an entrypoint that configures
   it from the variables.
-- **Catalog images are built from source by Nix.** Their builds differ from
-  the vendors' binaries where the build records itself: `fws/mysql:8.4`'s
-  `version_comment` reads `Source distribution`, so its "ready for
-  connections" line lacks the `MySQL Community Server` that Testcontainers'
-  MySQL module waits for; wait for the log line `port: 3306` instead.
+- **Catalog images are built by Nix**, not taken from the vendors'
+  binaries. Where a build records itself, as MySQL's and MariaDB's
+  compilation comment does, the catalog builds it as the vendor does.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
@@ -108,7 +106,12 @@ machine — and from what macOS offers an unprivileged process under them.
   address, hostname and stack, so its listeners answer on the other's
   ports. When that container stops, so does the router behind its ports
   without host ports, and the joining container's listeners there go with
-  it. `--pid` and `--userns` need kernel namespaces and are refused.
+  it. `--pid host` lifts the process confinement: the container lists and
+  signals every process of the engine's user, by host pid, with no
+  presented pid 1, and its pids limit still counts its own processes.
+  `--pid container:` would put one container's processes in another's
+  sandbox, which a container with a sandbox of its own cannot join, and is
+  refused, as `--userns` is.
 - **Capabilities grant nothing to drop.** Containers run as the engine's
   unprivileged user, so `--cap-drop` changes nothing; `--cap-add` beyond
   Docker's default set needs root and is refused. AppArmor, SELinux and
