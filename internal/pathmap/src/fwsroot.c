@@ -2463,6 +2463,11 @@ static int to_ipv4(int fd, int type) {
     return 0;
 }
 
+// libSystem exports bindat and connectat, which the SDK's headers leave
+// undeclared.
+extern int bindat(int, int, const struct sockaddr *, socklen_t) __attribute__((weak_import));
+extern int connectat(int, int, const struct sockaddr *, socklen_t) __attribute__((weak_import));
+
 // unix_host maps a Unix socket address's container path to the host path
 // it names, as the file calls map paths; follow says whether a link its
 // last component names is followed. A host path longer than a Unix socket
@@ -2490,7 +2495,7 @@ static const struct sockaddr *unix_host(const struct sockaddr *sa, socklen_t *le
     memset(u, 0, sizeof *u);
     if (strlcpy(u->sun_path, host, sizeof u->sun_path) >= sizeof u->sun_path) {
         const char *base = strrchr(host, '/');
-        if (!dir || !base || strlen(base + 1) >= sizeof u->sun_path) {
+        if (!dir || !base || strlen(base + 1) >= sizeof u->sun_path || !bindat || !connectat) {
             errno = ENAMETOOLONG;
             return NULL;
         }
