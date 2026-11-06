@@ -12,11 +12,9 @@ machine — and from what macOS offers an unprivileged process under them.
   library, or reads them from `SANDBOX_*` variables (see the README).
   Software the library cannot load into needs an entrypoint that configures
   it from the variables.
-- **Catalog images are built from source by Nix.** Their builds differ from
-  the vendors' binaries where the build records itself: `fws/mysql:8.4`'s
-  `version_comment` reads `Source distribution`, so its "ready for
-  connections" line lacks the `MySQL Community Server` that Testcontainers'
-  MySQL module waits for; wait for the log line `port: 3306` instead.
+- **Catalog images are built by Nix**, not taken from the vendors'
+  binaries. Where a build records itself, as MySQL's and MariaDB's
+  compilation comment does, the catalog builds it as the vendor does.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
