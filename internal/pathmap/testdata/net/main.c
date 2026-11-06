@@ -288,5 +288,26 @@ int main(int argc, char **argv) {
     getsockname(dl, (void *)&self, &sl);
     getpeername(dc, (void *)&peer, &pl);
     printf("unix-deep=%s %s\n", self.sun_path, strcmp(self.sun_path, peer.sun_path) == 0 ? "peer-same" : peer.sun_path);
+
+    // Datagrams to a Unix socket at such a path, by sendto and sendmsg.
+    int gr = socket(AF_UNIX, SOCK_DGRAM, 0);
+    memset(&un, 0, sizeof un);
+    un.sun_family = AF_UNIX;
+    snprintf(un.sun_path, sizeof un.sun_path, "%s/d.sock", deep);
+    un.sun_len = (unsigned char)SUN_LEN(&un);
+    if (bind(gr, (void *)&un, un.sun_len)) fail("unix-dgram-deep");
+    int gs = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (sendto(gs, "a", 1, 0, (void *)&un, un.sun_len) != 1) fail("unix-dgram-deep");
+    struct iovec gv = {"b", 1};
+    struct msghdr gm;
+    memset(&gm, 0, sizeof gm);
+    gm.msg_name = &un;
+    gm.msg_namelen = un.sun_len;
+    gm.msg_iov = &gv;
+    gm.msg_iovlen = 1;
+    if (sendmsg(gs, &gm, 0) != 1) fail("unix-dgram-deep");
+    char g[2];
+    if (recv(gr, &g[0], 1, 0) != 1 || recv(gr, &g[1], 1, 0) != 1) fail("unix-dgram-deep");
+    printf("unix-dgram-deep=%.2s\n", g);
     return 0;
 }

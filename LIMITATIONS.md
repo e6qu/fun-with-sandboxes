@@ -165,9 +165,9 @@ machine — and from what macOS offers an unprivileged process under them.
     senders already using it, until 90 seconds pass without traffic.
   - A program that loads no library cannot reach the other stack's members,
     and its stack's egress proxy reaches them for any member of its stack.
-  - Any member of a stack can ask another member's router for a relay, so
-    a member off the shared network can reach the other stack's members
-    on it through a member on it.
+  - A relay's UDP port lies in its stack's block, so any member of the
+    stack that finds it can send through it; asking a router for a relay
+    takes the relay key in its container's port directory.
 - **Legacy links reach across stacks the same way.** A `--link` on the
   default bridge network, from one `docker run` container to another, each
   its own stack, gives the linking container Docker's variables and
@@ -228,10 +228,10 @@ machine — and from what macOS offers an unprivileged process under them.
   - Programs that load no library, as Apple's do not, see the host ports.
 - **Unix socket paths are capped at 104 bytes** on macOS, as the
   container sees them. A Unix socket at a container path,
-  `/var/run/mysqld/mysqld.sock` say, binds and connects at its host path in
-  the container's root, by its directory where that path is longer; but
-  `sendto` and `sendmsg` to a Unix datagram socket take its host path,
-  which must fit.
+  `/var/run/mysqld/mysqld.sock` say, binds, connects and takes datagrams
+  at its host path in the container's root, by its directory where that
+  path is longer. A datagram from a socket bound at such a path reads as
+  sent from its last component, unless the receiver connected to it.
 
 ## Resources and identity
 

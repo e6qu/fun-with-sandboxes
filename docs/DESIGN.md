@@ -243,9 +243,9 @@ same knobs, each enforced by a real mechanism or refused:
   loopback interface, and `eth0`, which takes the index after the host's
   highest, with the member address. A Unix socket's address maps as a
   file path does, in `bind`, `connect` and `sendto`, and reads back as the
-  container's path. A host path past the address's 104 bytes binds and
-  connects by its last component, from its directory as the calling
-  thread's working directory (`pthread_fchdir_np`). The library resolves names in `getaddrinfo` and `gethostbyname`
+  container's path. A host path past the address's 104 bytes binds,
+  connects and sends by its last component, from its directory as the
+  calling thread's working directory (`pthread_fchdir_np`). The library resolves names in `getaddrinfo` and `gethostbyname`
   as a resolver does: from the container's `/etc/hosts` first, which the
   host's resolver never reads, then from those names, and then as the host
   does; it connects to a member's address through the host port
@@ -432,6 +432,9 @@ it; it tells services their assignment through the environment.
   networks. The library resolves and reaches only the members its
   container shares a network with or links to, and connects to a foreign one through
   its own router with a relay request of the member's address and port.
+  The request carries the router's relay key, which the router keeps in
+  the container's port directory, where no other member's sandbox reads,
+  so a member reaches the router's relays only as its own container.
   The router reads the network file, checks that the member shares a
   network with its container or is linked to from it, and joins the connection to the member's
   host port, or to its router for a port without one. A UDP lookup of a

@@ -2463,21 +2463,35 @@ static int to_ipv4(int fd, int type) {
     return 0;
 }
 
-// in_dir runs a bind or connect of fd to a Unix socket named relative to
-// dir, which it closes, from dir as the calling thread's working
-// directory alone.
+// enter_dir makes dir the calling thread's working directory alone, for
+// a Unix socket named relative to it; leave_dir restores the process's
+// and closes dir, which enter_dir also closes when it fails.
 extern int pthread_fchdir_np(int) __attribute__((weak_import));
-static int in_dir(int dir, int (*op)(int, const struct sockaddr *, socklen_t), int fd, const struct sockaddr *to, socklen_t len) {
+static int enter_dir(int dir) {
     int r = pthread_fchdir_np(dir);
-    if (r == 0) {
-        r = op(fd, to, len);
+    if (r != 0) {
         int e = errno;
-        pthread_fchdir_np(-1);
+        close(dir);
         errno = e;
     }
+    return r;
+}
+
+static void leave_dir(int dir) {
     int e = errno;
+    pthread_fchdir_np(-1);
     close(dir);
     errno = e;
+}
+
+// in_dir runs a bind or connect of fd to a Unix socket named relative to
+// dir, which it closes.
+static int in_dir(int dir, int (*op)(int, const struct sockaddr *, socklen_t), int fd, const struct sockaddr *to, socklen_t len) {
+    if (enter_dir(dir) != 0) {
+        return -1;
+    }
+    int r = op(fd, to, len);
+    leave_dir(dir);
     return r;
 }
 
@@ -2602,6 +2616,35 @@ static struct flow {
 } flows[MAX_FLOWS];
 static int nflows;
 
+// relay_key reads the relay key a request for a relay carries, which the
+// container's router keeps in the port directory for the container's life.
+#define RELAY_KEY 16
+static unsigned char relay_key_bytes[RELAY_KEY];
+static int relay_key_read;
+
+static const unsigned char *relay_key(void) {
+    if (__atomic_load_n(&relay_key_read, __ATOMIC_ACQUIRE)) {
+        return relay_key_bytes;
+    }
+    char p[PATH_MAX];
+    if (!join(p, sizeof p, port_dir, "/relay-key", "")) {
+        return NULL;
+    }
+    int f = open(p, O_RDONLY | O_CLOEXEC);
+    if (f < 0) {
+        return NULL;
+    }
+    unsigned char k[RELAY_KEY];
+    ssize_t n = read(f, k, sizeof k);
+    close(f);
+    if (n != RELAY_KEY) {
+        return NULL;
+    }
+    memcpy(relay_key_bytes, k, sizeof k);
+    __atomic_store_n(&relay_key_read, 1, __ATOMIC_RELEASE);
+    return relay_key_bytes;
+}
+
 // ask_router asks the router at loopback port router for UDP port port's
 // flow port, or with foreign set, the container's own router for its relay
 // to UDP port port of another stack's member at addr.
@@ -2611,14 +2654,20 @@ static unsigned short ask_router(unsigned short router, unsigned short port, in_
         return 0;
     }
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
-    unsigned char req[10] = {0, 0, (unsigned char)(port >> 8), (unsigned char)port}, ans[3] = {1, 0, 0};
+    unsigned char req[4 + RELAY_KEY + 6] = {0, 0, (unsigned char)(port >> 8), (unsigned char)port}, ans[3] = {1, 0, 0};
     ssize_t n = 4;
     if (foreign) {
+        const unsigned char *key = relay_key();
+        if (!key) {
+            close(s);
+            return 0;
+        }
         req[2] = req[3] = 0xff;
-        memcpy(req + 4, &addr, 4);
-        req[8] = (unsigned char)(port >> 8);
-        req[9] = (unsigned char)port;
-        n = 10;
+        memcpy(req + 4, key, RELAY_KEY);
+        memcpy(req + 4 + RELAY_KEY, &addr, 4);
+        req[8 + RELAY_KEY] = (unsigned char)(port >> 8);
+        req[9 + RELAY_KEY] = (unsigned char)port;
+        n = (ssize_t)sizeof req;
     }
     int ok = connect(s, (struct sockaddr *)&r, sizeof r) == 0 && write(s, req, (size_t)n) == n && read(s, ans, 1) == 1 && ans[0] == 0 &&
              read(s, ans + 1, 2) == 2;
@@ -3093,14 +3142,21 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
     int fl = fcntl(fd, F_GETFL);
     if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
-    unsigned char req[8] = {(unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
+    unsigned char req[2 + RELAY_KEY + 6] = {(unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
     size_t n = 2;
     if (foreign) {
+        const unsigned char *key = relay_key();
+        if (!key) {
+            if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl);
+            errno = ECONNREFUSED;
+            return -1;
+        }
         req[0] = req[1] = 0xff;
-        memcpy(req + 2, &addr, 4);
-        req[6] = (unsigned char)(port >> 8);
-        req[7] = (unsigned char)port;
-        n = 8;
+        memcpy(req + 2, key, RELAY_KEY);
+        memcpy(req + 2 + RELAY_KEY, &addr, 4);
+        req[6 + RELAY_KEY] = (unsigned char)(port >> 8);
+        req[7 + RELAY_KEY] = (unsigned char)port;
+        n = sizeof req;
     }
     int ok = connect(fd, (struct sockaddr *)&r, sizeof r) == 0 && write(fd, req, n) == (ssize_t)n && read(fd, &ans, 1) == 1;
     int e = errno;
@@ -3231,6 +3287,29 @@ INTERPOSE(fws_connect_nocancel, connect_nocancel);
 static int dgram_unix(int fd) { return (state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_DGRAM; }
 
 typedef ssize_t (*sendmsg_fn)(int, const struct msghdr *, int);
+
+// send_to sends m to its address as remote maps it, from the address's
+// directory where the host path is longer than the address holds.
+static ssize_t send_to(int fd, const struct msghdr *m, int flags, sendmsg_fn send) {
+    struct msghdr c = *m;
+    struct sockaddr_storage b;
+    socklen_t len = c.msg_namelen;
+    int dir = -1;
+    c.msg_name = (void *)remote(fd, m->msg_name, &len, &b, &dir);
+    if (!c.msg_name) {
+        return -1;
+    }
+    c.msg_namelen = len;
+    if (dir == -1) {
+        return send(fd, &c, flags);
+    }
+    if (enter_dir(dir) != 0) {
+        return -1;
+    }
+    ssize_t r = send(fd, &c, flags);
+    leave_dir(dir);
+    return r;
+}
 typedef ssize_t (*recvmsg_fn)(int, struct msghdr *, int);
 
 // dgram_dest reads a datagram's destination as an IPv4 address and port.
@@ -3481,12 +3560,17 @@ static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const st
         struct iovec v = {(void *)buf, n};
         return dgram_send(fd, &v, 1, flags, sa, len, plain_sendmsg);
     }
-    struct sockaddr_storage b;
-    const struct sockaddr *to = remote(fd, sa, &len, &b, NULL);
-    if (sa && !to) {
-        return -1;
+    if (!sa) {
+        return sendto(fd, buf, n, flags, sa, len);
     }
-    return sendto(fd, buf, n, flags, to, len);
+    struct iovec v = {(void *)buf, n};
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    m.msg_name = (void *)sa;
+    m.msg_namelen = len;
+    m.msg_iov = &v;
+    m.msg_iovlen = 1;
+    return send_to(fd, &m, flags, plain_sendmsg);
 }
 INTERPOSE(fws_sendto, sendto);
 
@@ -3497,15 +3581,7 @@ static ssize_t fws_sendmsg(int fd, const struct msghdr *m, int flags) {
     if (!m || !m->msg_name) {
         return sendmsg(fd, m, flags);
     }
-    struct msghdr c = *m;
-    struct sockaddr_storage b;
-    socklen_t len = c.msg_namelen;
-    c.msg_name = (void *)remote(fd, m->msg_name, &len, &b, NULL);
-    if (!c.msg_name) {
-        return -1;
-    }
-    c.msg_namelen = len;
-    return sendmsg(fd, &c, flags);
+    return send_to(fd, m, flags, plain_sendmsg);
 }
 INTERPOSE(fws_sendmsg, sendmsg);
 
@@ -3790,12 +3866,17 @@ static ssize_t fws_sendto_nocancel(int fd, const void *buf, size_t n, int flags,
         struct iovec v = {(void *)buf, n};
         return dgram_send(fd, &v, 1, flags, sa, len, nocancel_sendmsg);
     }
-    struct sockaddr_storage b;
-    const struct sockaddr *to = remote(fd, sa, &len, &b, NULL);
-    if (sa && !to) {
-        return -1;
+    if (!sa) {
+        return sendto_nocancel(fd, buf, n, flags, sa, len);
     }
-    return sendto_nocancel(fd, buf, n, flags, to, len);
+    struct iovec v = {(void *)buf, n};
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    m.msg_name = (void *)sa;
+    m.msg_namelen = len;
+    m.msg_iov = &v;
+    m.msg_iovlen = 1;
+    return send_to(fd, &m, flags, nocancel_sendmsg);
 }
 INTERPOSE(fws_sendto_nocancel, sendto_nocancel);
 
@@ -3809,15 +3890,7 @@ static ssize_t fws_sendmsg_nocancel(int fd, const struct msghdr *m, int flags) {
     if (!m || !m->msg_name) {
         return sendmsg_nocancel(fd, m, flags);
     }
-    struct msghdr c = *m;
-    struct sockaddr_storage b;
-    socklen_t len = c.msg_namelen;
-    c.msg_name = (void *)remote(fd, m->msg_name, &len, &b, NULL);
-    if (!c.msg_name) {
-        return -1;
-    }
-    c.msg_namelen = len;
-    return sendmsg_nocancel(fd, &c, flags);
+    return send_to(fd, m, flags, nocancel_sendmsg);
 }
 INTERPOSE(fws_sendmsg_nocancel, sendmsg_nocancel);
 
