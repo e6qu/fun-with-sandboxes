@@ -154,3 +154,34 @@ func Share(a, b Member) bool {
 	}
 	return false
 }
+
+// Lookup finds the member host names as the member at self sees it, as the
+// container library resolves names: a member self sees that answers to
+// host, as DNS compares names, or an alias one of self's links gives it, or
+// the member whose address host is, when self sees it.
+func Lookup(ms []Member, self, host string) (Member, bool) {
+	me, ok := Find(ms, self)
+	if !ok || me.Address != self {
+		return Member{}, false
+	}
+	name := strings.TrimSuffix(host, ".")
+	for _, m := range ms {
+		if !Sees(me, m) && m.Address != me.Address {
+			continue
+		}
+		if m.Address == host {
+			return m, true
+		}
+		for _, n := range m.Names {
+			if strings.EqualFold(n, name) {
+				return m, true
+			}
+		}
+		for _, l := range m.Links {
+			if l.Viewer == me.Address && strings.EqualFold(l.Alias, name) {
+				return m, true
+			}
+		}
+	}
+	return Member{}, false
+}

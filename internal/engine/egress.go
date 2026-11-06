@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"crypto/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -45,10 +46,30 @@ type egressProc struct {
 	Port  int   `json:"port"`
 	// Members is the network file the proxy reaches the stack's members by.
 	Members string `json:"members"`
+	// Key is the file of the key that signs the members' credentials.
+	Key string `json:"key"`
 }
 
 func (e *Engine) egressFile(stack string) string {
 	return filepath.Join(e.cfg.Root, "run", "egress-"+stack+".json")
+}
+
+// egressKeyFile holds the key the stack's proxy signs its members'
+// credentials with, in the engine's state, which no container reads.
+func (e *Engine) egressKeyFile(stack string) string {
+	return filepath.Join(e.cfg.Root, "run", "egress-"+stack+".key")
+}
+
+// egressCredentials are the proxy credentials of the member at address.
+func (e *Engine) egressCredentials(stack, address string) (string, string, error) {
+	if address == "" {
+		return "", "", nil
+	}
+	key, err := os.ReadFile(e.egressKeyFile(stack))
+	if err != nil {
+		return "", "", err
+	}
+	return address, egress.Password(key, address), nil
 }
 
 func processStart(pid int) (int64, bool) {
@@ -82,14 +103,15 @@ func (e *Engine) ensureEgress(stack string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if p, ok := e.egress[stack]; ok && p.Port == port && p.Members == nf && p.alive() {
+	kf := e.egressKeyFile(stack)
+	if p, ok := e.egress[stack]; ok && p.Port == port && p.Members == nf && p.Key == kf && p.alive() {
 		return port, nil
 	}
 	// A proxy an earlier engine left running keeps serving unless it
-	// predates the network file, which it would not know.
+	// predates the network file or the key, which it would not know.
 	var left egressProc
 	if ok, _ := readJSON(e.egressFile(stack), &left); ok && left.Port == port && left.alive() {
-		if left.Members == nf {
+		if left.Members == nf && left.Key == kf {
 			e.egress[stack] = &left
 			return port, nil
 		}
@@ -100,12 +122,25 @@ func (e *Engine) ensureEgress(stack string) (int, error) {
 		return 0, err
 	}
 	defer logf.Close()
-	proc, err := egress.Start(net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nf, logf)
+	// A proxy that replaces one keeps its key, which running members'
+	// credentials carry.
+	if k, err := os.ReadFile(kf); err != nil || len(k) == 0 {
+		key := make([]byte, 32)
+		rand.Read(key)
+		tmp := kf + ".tmp"
+		if err := os.WriteFile(tmp, key, 0o600); err != nil {
+			return 0, err
+		}
+		if err := os.Rename(tmp, kf); err != nil {
+			return 0, err
+		}
+	}
+	proc, err := egress.Start(net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nf, kf, logf)
 	if err != nil {
 		return 0, err
 	}
 	start, _ := processStart(proc.Pid)
-	p := &egressProc{Pid: proc.Pid, Start: start, Port: port, Members: nf}
+	p := &egressProc{Pid: proc.Pid, Start: start, Port: port, Members: nf, Key: kf}
 	if err := writeJSON(e.egressFile(stack), p); err != nil {
 		stopProcess(p)
 		return 0, err
@@ -152,6 +187,7 @@ func (e *Engine) closeEgressLocked(stack string) {
 	}
 	delete(e.egress, stack)
 	os.Remove(e.egressFile(stack))
+	os.Remove(e.egressKeyFile(stack))
 }
 
 // closeAllEgress stops every stack's proxy, this engine's and any an

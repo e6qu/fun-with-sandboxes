@@ -121,7 +121,8 @@ the engine also tells the container where its things are:
 
 `PATH` entries in the image config are mapped into the root. Containers with
 a network also get `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5, for
-any TCP) and `NO_PROXY` pointing at their stack's egress proxy; `network_mode: none` and `internal: true`
+any TCP) and `NO_PROXY` pointing at their stack's egress proxy, with
+credentials that name the container to it; `network_mode: none` and `internal: true`
 networks get none, as in Docker. Volumes and bind
 mounts appear at their destination inside the root. As Docker does, the engine writes
 the container's `/etc/hosts` as it starts, with `localhost`, its

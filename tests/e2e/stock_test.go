@@ -467,3 +467,76 @@ func TestComposeLinks(t *testing.T) {
 		t.Errorf("another service printed %q", out)
 	}
 }
+
+// proxiedClient fetches each argument's URL through the stack's egress
+// proxy, as urllib does with HTTP_PROXY, and prints its status or error.
+const proxiedClient = `import sys, urllib.request, urllib.error
+for url in sys.argv[1:]:
+    try:
+        print(url, urllib.request.urlopen(url, timeout=10).status)
+    except urllib.error.HTTPError as e:
+        print(url, e.code)
+    except Exception as e:
+        print(url, type(e).__name__)`
+
+// The egress proxy reaches, for a client that sends a stack's own traffic
+// through it, the members on the client's networks alone, as the container
+// library does, and the aliases the client's own links give them.
+func TestProxyReachesMembersOnTheClientsNetworks(t *testing.T) {
+	dir := t.TempDir()
+	server := func(port string, networks string) string {
+		return `    image: fws/python:3.14
+    command: ["python3", "-m", "http.server", "` + port + `"]
+    expose: ["` + port + `"]
+    networks: ` + networks + `
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:` + port + `')"]
+      interval: 1s
+      start_interval: 200ms
+      start_period: 30s
+`
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(`services:
+  api:
+`+server("8000", "[front]")+`  db:
+`+server("8001", "[back]")+`  client:
+    image: fws/python:3.14
+    command: ["python3", "-c", "import time; time.sleep(600)"]
+    networks: [front]
+    links: ["api:frontend"]
+    depends_on:
+      api: {condition: service_healthy}
+      db: {condition: service_healthy}
+networks:
+  front: {}
+  back: {}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "docker-compose", append([]string{"-p", "e2e-proxy-nets", "-f", filepath.Join(dir, "compose.yaml")}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("docker-compose %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	defer run("down", "-t", "0")
+	run("up", "-d", "--wait")
+	out := run("exec", "-T", "client", "python3", "-c", proxiedClient, "http://api:8000/", "http://frontend:8000/", "http://db:8001/")
+	if want := "http://api:8000/ 200\nhttp://frontend:8000/ 200\nhttp://db:8001/ 502\n"; out != want {
+		t.Errorf("a client on the front network printed %q, want %q", out, want)
+	}
+	// A link's alias is the linking service's alone, and a client that
+	// names no member to the proxy reaches none.
+	out = run("exec", "-T", "db", "python3", "-c", proxiedClient, "http://db:8001/", "http://frontend:8000/", "http://api:8000/")
+	if want := "http://db:8001/ 200\nhttp://frontend:8000/ 502\nhttp://api:8000/ 502\n"; out != want {
+		t.Errorf("a client on the back network printed %q, want %q", out, want)
+	}
+	out = run("exec", "-T", "client", "sh", "-c", `http_proxy="http://${http_proxy#*@}" HTTP_PROXY="http://${HTTP_PROXY#*@}" exec python3 -c "$0" http://api:8000/`, proxiedClient)
+	if want := "http://api:8000/ 502\n"; out != want {
+		t.Errorf("a client without the proxy credentials printed %q, want %q", out, want)
+	}
+}

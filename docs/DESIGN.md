@@ -311,10 +311,11 @@ same knobs, each enforced by a real mechanism or refused:
   file, port directory and router, and its stack's egress proxy, in the
   container library's variables and the Seatbelt profile alike, so its
   processes bind and reach what that container's do. The stack's egress
-  proxy reads the same file and reaches a member as the library does, so a
-  client that sends even its stack's traffic through `HTTP_PROXY`, as
-  Python's `urllib` does for a name `NO_PROXY` leaves out, reaches the
-  member too.
+  proxy reads the same file and reaches a member as the library does, for
+  the container the client's credentials name, so a client that sends even
+  its stack's traffic through `HTTP_PROXY`, as Python's `urllib` does for
+  a name `NO_PROXY` leaves out, reaches the members that container sees,
+  and the aliases its own links give them.
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would
@@ -475,8 +476,15 @@ it; it tells services their assignment through the environment.
 - **Egress.** Seatbelt can allow loopback ports or every destination, nothing
   in between, so containers reach the internet through a proxy the engine
   runs for each stack on a port of the stack's block (`internal/egress`): an
-  HTTP proxy, and on the same port a SOCKS5 one (RFC 1928, CONNECT only, no
-  authentication) for any TCP, told apart by the first byte a client sends.
+  HTTP proxy, and on the same port a SOCKS5 one (RFC 1928, CONNECT only) for
+  any TCP, told apart by the first byte a client sends. A container's proxy
+  URLs carry its member address as the user and, as the password, an
+  HMAC-SHA256 of the address under a key the engine draws for the stack and
+  keeps in its state, which no container reads; the proxy checks them
+  (`Proxy-Authorization: Basic`, or RFC 1929 for SOCKS5) and answers a
+  wrong pair with 407, or SOCKS5's failure status. They name the member
+  whose view of the stack the proxy resolves members in; a client with no
+  credentials, a build step's, reaches no member.
   Containers, classic `RUN` steps and BuildKit steps receive `HTTP_PROXY`,
   `HTTPS_PROXY`, `ALL_PROXY` (`socks5h://`, so the proxy resolves names) and
   `NO_PROXY`, which leaves loopback and the member block to the container

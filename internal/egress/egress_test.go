@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/net/proxy"
+
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
 
@@ -131,9 +133,15 @@ func TestIsHostAddress(t *testing.T) {
 	}
 }
 
+func memberClient(p *Proxy, member, password string) *http.Client {
+	u := &url.URL{Scheme: "http", User: url.UserPassword(member, password), Host: p.Addr().String()}
+	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(u)}}
+}
+
 // A stack's members are reached at the host ports behind their ports, by
 // name or member address, though the policy denies loopback: a client that
-// sends the stack's own traffic through the proxy reaches the stack.
+// names itself a member, and sends the stack's own traffic through the
+// proxy, reaches the members it sees.
 func TestReachesStackMembers(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "member "+r.Host) }))
 	defer up.Close()
@@ -158,32 +166,79 @@ func TestReachesStackMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rt.Close()
-	os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tweb proj-web-1\t8000/tcp=%s\t%d\tproj_default\t0\n", port, rt.Addr().Port)), 0o644)
+	os.WriteFile(network, []byte(fmt.Sprintf(
+		"127.88.0.2\tweb proj-web-1\t8000/tcp=%s\t%d\tproj_default\t0\t\t127.88.0.3/front\n"+
+			"127.88.0.3\tapp\t\t0\tproj_default\t0\n"+
+			"127.88.0.4\tdb\t5432/tcp=%[1]s\t0\tproj_back\t0\n", port, rt.Addr().Port)), 0o644)
 	policy := testPolicy()
 	policy.Deny = func(net.IP) bool { return true }
 	policy.Members = network
+	policy.Key = []byte("stack key")
 	p, err := Listen("127.0.0.1:0", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	for _, url := range []string{"http://web:8000/", "http://PROJ-WEB-1:8000/", "http://127.88.0.2:8000/", "http://web:9000/"} {
-		res, err := client(p).Get(url)
+	app := memberClient(p, "127.88.0.3", Password(policy.Key, "127.88.0.3"))
+	get := func(c *http.Client, url string) (int, string) {
+		t.Helper()
+		res, err := c.Get(url)
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer res.Body.Close()
 		b, _ := io.ReadAll(res.Body)
-		res.Body.Close()
-		if res.StatusCode != 200 || !strings.HasPrefix(string(b), "member ") {
-			t.Errorf("GET %s: %d %q", url, res.StatusCode, b)
+		return res.StatusCode, string(b)
+	}
+	for _, url := range []string{"http://web:8000/", "http://PROJ-WEB-1:8000/", "http://127.88.0.2:8000/", "http://web:9000/", "http://front:8000/"} {
+		if code, b := get(app, url); code != 200 || !strings.HasPrefix(b, "member ") {
+			t.Errorf("GET %s: %d %q", url, code, b)
 		}
 	}
-	res, err := client(p).Get("http://web:9999/")
-	if err != nil {
-		t.Fatal(err)
+	if code, _ := get(app, "http://web:9999/"); code != http.StatusBadGateway {
+		t.Errorf("a port the member does not expose: %d, want 502", code)
 	}
-	res.Body.Close()
-	if res.StatusCode != http.StatusBadGateway {
-		t.Errorf("a port the member does not expose: %d, want 502", res.StatusCode)
+	// A member on no network the client is on is no member to it, and a
+	// client that names no member reaches none.
+	for _, url := range []string{"http://db:5432/", "http://127.88.0.4:5432/"} {
+		if code, _ := get(app, url); code == 200 {
+			t.Errorf("GET %s from a member on another network: %d", url, code)
+		}
+	}
+	web := memberClient(p, "127.88.0.2", Password(policy.Key, "127.88.0.2"))
+	if code, _ := get(web, "http://front:8000/"); code == 200 {
+		t.Error("a link's alias resolved for a member that does not make the link")
+	}
+	for _, url := range []string{"http://web:8000/", "http://127.88.0.2:8000/"} {
+		if code, _ := get(client(p), url); code == 200 {
+			t.Errorf("GET %s from a client that names no member: %d", url, code)
+		}
+	}
+	for name, c := range map[string]*http.Client{
+		"a wrong password":         memberClient(p, "127.88.0.3", Password(policy.Key, "127.88.0.2")),
+		"another stack's password": memberClient(p, "127.88.0.3", Password([]byte("other key"), "127.88.0.3")),
+	} {
+		if code, _ := get(c, "http://web:8000/"); code != http.StatusProxyAuthRequired {
+			t.Errorf("%s: %d, want 407", name, code)
+		}
+	}
+	// The SOCKS5 side takes the same credentials (RFC 1929).
+	for user, want := range map[string]bool{"127.88.0.3": true, "127.88.0.4": false} {
+		d, err := proxy.SOCKS5("tcp", p.Addr().String(), &proxy.Auth{User: user, Password: Password(policy.Key, user)}, proxy.Direct)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := d.Dial("tcp", "web:8000")
+		if err == nil {
+			c.Close()
+		}
+		if (err == nil) != want {
+			t.Errorf("SOCKS5 to web:8000 as %s: %v", user, err)
+		}
+	}
+	d, _ := proxy.SOCKS5("tcp", p.Addr().String(), &proxy.Auth{User: "127.88.0.3", Password: "guess"}, proxy.Direct)
+	if c, err := d.Dial("tcp", "web:8000"); err == nil {
+		c.Close()
+		t.Error("SOCKS5 took a wrong password")
 	}
 }

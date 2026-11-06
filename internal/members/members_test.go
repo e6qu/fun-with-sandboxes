@@ -38,3 +38,35 @@ func TestFormatParseFind(t *testing.T) {
 		t.Error("a name no member answers to was found")
 	}
 }
+
+// A member resolves the names of the members it sees alone, and the
+// aliases its own links give them.
+func TestLookupFromAViewer(t *testing.T) {
+	ms := []Member{
+		{Address: "127.88.0.2", Names: []string{"api"}, Networks: []string{"front"}},
+		{Address: "127.88.0.3", Names: []string{"db"}, Networks: []string{"back"}, Links: []Link{{"127.88.0.4", "database"}}},
+		{Address: "127.88.0.4", Names: []string{"worker"}, Networks: []string{"front"}},
+		{Address: "127.88.0.5", Names: []string{"cache"}, Networks: []string{"front"}, Foreign: true, Stack: "other"},
+	}
+	for _, c := range []struct {
+		self, host, want string
+	}{
+		{"127.88.0.2", "worker", "127.88.0.4"},
+		{"127.88.0.2", "API.", "127.88.0.2"},
+		{"127.88.0.2", "cache", "127.88.0.5"},
+		{"127.88.0.2", "db", ""},
+		{"127.88.0.2", "127.88.0.3", ""},
+		{"127.88.0.2", "database", ""},
+		{"127.88.0.4", "database", "127.88.0.3"},
+		{"127.88.0.4", "db", "127.88.0.3"},
+		{"127.88.0.3", "api", ""},
+		{"127.88.0.9", "api", ""},
+		{"", "api", ""},
+		{"api", "api", ""},
+	} {
+		m, ok := Lookup(ms, c.self, c.host)
+		if ok != (c.want != "") || m.Address != c.want {
+			t.Errorf("Lookup from %s of %q: %q, %v; want %q", c.self, c.host, m.Address, ok, c.want)
+		}
+	}
+}

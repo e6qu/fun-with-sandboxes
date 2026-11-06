@@ -21,17 +21,27 @@ const Role = "egress"
 const roleVar = roles.Var
 
 func init() {
-	if os.Getenv(roleVar) == Role && len(os.Args) > 2 {
-		os.Exit(serveRole(os.Args[len(os.Args)-1], os.Args[len(os.Args)-2]))
+	if os.Getenv(roleVar) == Role && len(os.Args) > 3 {
+		os.Exit(serveRole(os.Args[len(os.Args)-1], os.Args[len(os.Args)-2], os.Args[len(os.Args)-3]))
 	}
 }
 
 // serveRole runs the proxy on addr for the stack whose network file is
-// network until SIGTERM, after reporting on descriptor 3 that it listens.
-func serveRole(addr, network string) int {
+// network, and whose members' credentials the file key signs, until
+// SIGTERM, after reporting on descriptor 3 that it listens.
+func serveRole(addr, network, key string) int {
 	ready := os.NewFile(3, "ready")
 	policy := HostPolicy()
 	policy.Members = network
+	k, err := os.ReadFile(key)
+	if err == nil && len(k) == 0 {
+		err = fmt.Errorf("%s is empty", key)
+	}
+	if err != nil {
+		json.NewEncoder(ready).Encode(map[string]string{"error": err.Error()})
+		return 1
+	}
+	policy.Key = k
 	p, err := Listen(addr, policy)
 	if err != nil {
 		json.NewEncoder(ready).Encode(map[string]string{"error": err.Error()})
@@ -47,8 +57,9 @@ func serveRole(addr, network string) int {
 }
 
 // Start runs a proxy process on addr for the stack whose network file is
-// network, logging to log, and returns its pid once it listens.
-func Start(addr, network string, log *os.File) (*os.Process, error) {
+// network, and whose members' credentials the file key signs, logging to
+// log, and returns its pid once it listens.
+func Start(addr, network, key string, log *os.File) (*os.Process, error) {
 	self, err := roles.Binary()
 	if err != nil {
 		return nil, err
@@ -58,7 +69,7 @@ func Start(addr, network string, log *os.File) (*os.Process, error) {
 		return nil, err
 	}
 	defer r.Close()
-	cmd := exec.Command(self, "egress", network, addr)
+	cmd := exec.Command(self, "egress", key, network, addr)
 	env := []string{roleVar + "=" + Role}
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, roleVar+"=") {
