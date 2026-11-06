@@ -212,9 +212,6 @@ func TestSeaweedFS(t *testing.T) {
 	mustDocker(t, "run", "-d", "--name", name, "-p", "127.0.0.1::8333", "fws/seaweedfs:4.36")
 	defer docker(t, "rm", "-f", "-v", name)
 	waitLog(t, name, "All enabled components are running and ready to use")
-	if logs := containerLogs(t, name); !strings.Contains(logs, "S3 Endpoint:     http://127.88.") {
-		t.Errorf("SeaweedFS advertises no member address:\n%s", logs)
-	}
 	ctx := context.Background()
 	client := s3.New(s3.Options{
 		Region: "us-east-1", BaseEndpoint: aws.String("http://" + strings.TrimSpace(mustDocker(t, "port", name, "8333"))), UsePathStyle: true,

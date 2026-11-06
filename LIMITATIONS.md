@@ -144,6 +144,9 @@ machine — and from what macOS offers an unprivileged process under them.
   address in `127.88.0.0/16` and a MAC address of Docker's form, where the
   host's interfaces are. The kernel knows no `eth0`: binding a socket to
   its index, or joining a multicast group on it, fails.
+  The member address is a loopback address, so a program that advertises
+  its first non-loopback address finds none: SeaweedFS advertises
+  `localhost`, where on Docker it advertises the container's address.
 - **A stack's block is one reachability domain.** Seatbelt lets a container
   reach every port in its stack's block and nothing else, so within a stack
   network membership is presented, not enforced: the container library
