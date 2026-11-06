@@ -105,10 +105,8 @@ accounts() {
 for v in 16 18; do
   pg=$(pkg_with "postgresql_$v" postgres)
   closure "$pg" > "$build/pg$v.closure"
-  # nixpkgs' clients look for the server's socket in /run/postgresql,
-  # which is /var/run/postgresql on Debian.
   mkimage $(accounts postgres postgres 999 999 /var/lib/postgresql) -spec images/postgres/image.json -tag "fws/postgres:$v" -closure "$build/pg$v.closure" -pkg "$pg" \
-    -link /run/postgresql=../var/run/postgresql -file "/entry=$build/postgres-entry" -out "$out/postgres-$v.tar"
+    -file "/entry=$build/postgres-entry" -out "$out/postgres-$v.tar"
 done
 
 redis=$(pkg_with redis redis-server)

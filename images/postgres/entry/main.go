@@ -1,7 +1,8 @@
 // Command entry initialises and runs PostgreSQL inside a fwsd container,
 // configured from the environment the way the official image is. The
 // server listens on the container's port 5432, which the container library
-// puts on its host port, and on its socket in /var/run/postgresql.
+// puts on its host port, and on its sockets in /var/run/postgresql, as the
+// official image's, and in /tmp, where the image's own libpq looks.
 package main
 
 import (
@@ -62,7 +63,9 @@ func main() {
 		log.Fatal(err)
 	}
 	postgres := bin("postgres")
-	server := append([]string{postgres}, serverArgs(pgdata, "*", sockets)...)
+	// nixpkgs builds libpq with /tmp as its default socket directory, so
+	// the image's psql finds the server there with no host named.
+	server := append([]string{postgres}, serverArgs(pgdata, "*", sockets+","+sandboxenv.Path("/tmp"))...)
 	log.Fatal(syscall.Exec(postgres, append(server, args...), os.Environ()))
 }
 
@@ -247,7 +250,7 @@ func relay(r io.Reader, ready chan<- struct{}) {
 func ident(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
 // serverArgs are the server's arguments: its data directory, the address
-// it listens on ("" for its socket alone), its socket directory,
+// it listens on ("" for its sockets alone), its socket directories,
 // and the settings macOS's limits ask for.
 func serverArgs(pgdata, listen, sockets string) []string {
 	args := []string{"-D", pgdata, "-c", "listen_addresses=" + listen, "-c", "unix_socket_directories=" + sockets}
