@@ -1,6 +1,7 @@
 // Command entry runs Gitea inside a fwsd container. It writes app.ini on
 // first start, with every path under /data and its HTTP and SSH servers on
-// the ports the engine assigned to 3000 and 22, and applies GITEA__ variables
+// the container's ports 3000 and 22, which the container library puts on
+// their host ports, and applies GITEA__ variables
 // on each start, as the official image's environment-to-ini does.
 package main
 
@@ -22,13 +23,9 @@ import (
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("entry: ")
-	httpPort, err := sandboxenv.Port("3000")
-	if err != nil {
-		log.Fatal(err)
-	}
 	if len(os.Args) > 1 && os.Args[1] == "health" {
 		c := http.Client{Timeout: 2 * time.Second}
-		res, err := c.Get("http://127.0.0.1:" + httpPort + "/api/healthz")
+		res, err := c.Get("http://127.0.0.1:3000/api/healthz")
 		if err != nil {
 			log.Print(err)
 			os.Exit(1)
@@ -39,10 +36,6 @@ func main() {
 			os.Exit(1)
 		}
 		return
-	}
-	sshPort, err := sandboxenv.Port("22")
-	if err != nil {
-		log.Fatal(err)
 	}
 	data := sandboxenv.Path("/data/gitea")
 	conf := filepath.Join(data, "conf", "app.ini")
@@ -59,7 +52,7 @@ func main() {
 		log.Fatal(err)
 	}
 	if len(ini.order) == 0 {
-		defaults(ini, data, httpPort, sshPort)
+		defaults(ini, data)
 	}
 	applyEnv(ini, os.Environ())
 	if err := ini.write(conf); err != nil {
@@ -93,21 +86,21 @@ func main() {
 	log.Fatal(syscall.Exec(bin, args, env))
 }
 
-func defaults(ini *iniFile, data, httpPort, sshPort string) {
+func defaults(ini *iniFile, data string) {
 	ini.set("", "APP_NAME", "Gitea: Git with a cup of tea")
 	ini.set("", "RUN_MODE", "prod")
 	ini.set("", "WORK_PATH", data)
 	ini.set("server", "HTTP_ADDR", "127.0.0.1")
-	ini.set("server", "HTTP_PORT", httpPort)
+	ini.set("server", "HTTP_PORT", "3000")
 	ini.set("server", "DOMAIN", "localhost")
-	ini.set("server", "ROOT_URL", "http://localhost:"+httpPort+"/")
+	ini.set("server", "ROOT_URL", "http://localhost:3000/")
 	ini.set("server", "APP_DATA_PATH", data)
 	ini.set("server", "STATIC_ROOT_PATH", sandboxenv.Path(os.Getenv("GITEA_DATA")))
 	ini.set("server", "DISABLE_SSH", "false")
 	ini.set("server", "START_SSH_SERVER", "true")
 	ini.set("server", "SSH_LISTEN_HOST", "127.0.0.1")
-	ini.set("server", "SSH_LISTEN_PORT", sshPort)
-	ini.set("server", "SSH_PORT", sshPort)
+	ini.set("server", "SSH_LISTEN_PORT", "22")
+	ini.set("server", "SSH_PORT", "22")
 	ini.set("server", "LFS_START_SERVER", "true")
 	ini.set("database", "DB_TYPE", "sqlite3")
 	ini.set("database", "PATH", filepath.Join(data, "gitea.db"))

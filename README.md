@@ -60,10 +60,10 @@ carry (`images/servers.nix`), so the first build compiles them:
 | `fws/memcached:1.6` | arguments to `memcached` |
 | `fws/seaweedfs:4.36` | the subcommand and its flags, as `mini` (the default: master, volume, filer, S3 on 8333, WebDAV and the admin UI), `server`, `master`, `volume`, `filer`, `s3` or `shell`; `/data` |
 | `fws/nats:2.14` | arguments to `nats-server`; `/nats-server.conf` serves clients on 4222, monitoring on 8222 and routes on 6222 |
-| `fws/rabbitmq:4` | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`; AMQP on 5672, the Erlang port mapper and distribution on their own assigned ports |
+| `fws/rabbitmq:4` | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`; AMQP on 5672, the Erlang port mapper on 4369 and distribution on 25672 |
 | `fws/dynamodb-local:2` | arguments to DynamoDB Local (default `-sharedDb -dbPath /home/dynamodblocal/data`); port 8000 |
 | `fws/gitea:1` | `GITEA__section__KEY` variables, written into `/data/gitea/conf/app.ini`; HTTP on 3000, SSH on 22 |
-| `fws/nginx:1` | `/usr/share/nginx/html`, and `/etc/nginx/templates/*.template`, rendered into `conf.d` with environment variables substituted: a server listens on `127.0.0.1:${SANDBOX_PORT_80}` |
+| `fws/nginx:1` | `/usr/share/nginx/html`, and `/etc/nginx/templates/*.template`, rendered into `conf.d` with environment variables substituted; the default server listens on 80 |
 | `fws/python:3.14`, `fws/node:26`, `fws/bun:1` | the language and its package manager (`python3 -m ensurepip` for pip) |
 | `fws/lambda/python:3.14`, `fws/lambda/nodejs:24`, `fws/lambda/java:17` | the handler as the command; functions in `/var/task`, invoked at `POST /2015-03-31/functions/function/invocations` on port 8080 through AWS's Runtime Interface Emulator |
 | `fws/playwright:1.59` | Node.js 24 with `playwright` and its Chromium headless shell |
@@ -113,7 +113,7 @@ the engine also tells the container where its things are:
 | Variable | Meaning |
 |---|---|
 | `SANDBOX_ROOT` | the container's root directory on the host; image paths live under it |
-| `SANDBOX_PORT_<n>` | the loopback host port to listen on for container port `<n>` |
+| `SANDBOX_PORT_<n>` | the loopback host port of container port `<n>`, for a program that loads no library |
 | `SANDBOX_<SERVICE>_PORT_<n>` | the host port of stack peer `<service>`'s port `<n>` |
 | `SANDBOX_<SERVICE>_HOST` | the host to reach that peer on (`127.0.0.1`); through the container library a peer is reachable by name too |
 | `SANDBOX_STACK` | the stack (Compose project) name |
@@ -127,9 +127,9 @@ mounts appear at their destination inside the root. As Docker does, the engine w
 the container's `/etc/hosts` as it starts, with `localhost`, its
 `--add-host` entries, its hostname at its member address and its legacy
 links, and its `/etc/hostname`; the container library resolves the names
-it lists before any other. An image's entrypoint
-reads these variables and configures its service — see
-`images/postgres/entry` and `internal/sandboxenv`.
+it lists before any other. A catalog image's entrypoint configures its
+service as the official image's does, on its container ports and paths —
+see `images/postgres/entry` and `internal/sandboxenv`.
 
 ## What a container can and cannot do
 

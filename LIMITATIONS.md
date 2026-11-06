@@ -296,10 +296,9 @@ machine — and from what macOS offers an unprivileged process under them.
 - **`docker cp` copies the container's view**, mounts included, but refuses
   paths that resolve outside the container's root and mounts.
 - **Testcontainers' reaper runs from the catalog's darwin build of Ryuk**,
-  tagged under the name Testcontainers runs (see the README). The build
-  listens on loopback, as the container contract asks, and its image's `nc`
-  checks a container port through its assigned host port for Testcontainers'
-  in-container port check.
+  tagged under the name Testcontainers runs (see the README). Its image's
+  `nc` checks a container port for Testcontainers' in-container port check,
+  which on Linux reads `/proc/net/tcp`.
 - **tmpfs mounts are directories** under the container's state, emptied at
   each start, not memory-backed. A tmpfs volume (`--opt type=tmpfs`) is a
   directory too, emptied when a container first mounts it; size and

@@ -1,8 +1,7 @@
-// Command entry runs RabbitMQ inside a fwsd container. Every port it opens
-// goes on loopback, on the ports the engine assigned: AMQP on 5672, the
-// Erlang port mapper on 4369 and Erlang distribution on 25672, which RabbitMQ
-// otherwise takes on every interface and at fixed numbers that stacks would
-// share. Its data and cookie live under /var/lib/rabbitmq.
+// Command entry runs RabbitMQ inside a fwsd container, on loopback at the
+// container's ports: AMQP on 5672, the Erlang port mapper on 4369 and Erlang
+// distribution on 25672, which the container library puts on their host
+// ports. Its data and cookie live under /var/lib/rabbitmq.
 package main
 
 import (
@@ -22,24 +21,12 @@ import (
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("entry: ")
-	amqp, err := sandboxenv.Port("5672")
-	if err != nil {
-		log.Fatal(err)
-	}
 	if len(os.Args) > 1 && os.Args[1] == "health" {
-		if err := handshake("127.0.0.1:" + amqp); err != nil {
+		if err := handshake("127.0.0.1:5672"); err != nil {
 			log.Print(err)
 			os.Exit(1)
 		}
 		return
-	}
-	epmd, err := sandboxenv.Port("4369")
-	if err != nil {
-		log.Fatal(err)
-	}
-	dist, err := sandboxenv.Port("25672")
-	if err != nil {
-		log.Fatal(err)
 	}
 	home := sandboxenv.Path("/var/lib/rabbitmq")
 	etc := sandboxenv.Path("/etc/rabbitmq")
@@ -57,16 +44,13 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	// The engine's ports and paths, for whatever the environment leaves
+	// The image's paths and loopback, for whatever the environment leaves
 	// unset, as the official image's defaults are.
 	env := os.Environ()
 	for _, kv := range []string{
 		"HOME=" + home,
 		"RABBITMQ_NODENAME=rabbit@localhost",
 		"RABBITMQ_NODE_IP_ADDRESS=127.0.0.1",
-		"RABBITMQ_NODE_PORT=" + amqp,
-		"RABBITMQ_DIST_PORT=" + dist,
-		"ERL_EPMD_PORT=" + epmd,
 		"ERL_EPMD_ADDRESS=127.0.0.1",
 		"RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-kernel inet_dist_use_interface {127,0,0,1}",
 		"RABBITMQ_MNESIA_BASE=" + filepath.Join(home, "mnesia"),

@@ -182,13 +182,9 @@ for p in $(nix-store -qR "$dynamodb"); do
   if [ -x "$p/bin/java" ]; then jre=$p; fi
 done
 [ -n "$jre" ] || { echo "DynamoDB Local's closure holds no Java runtime" >&2; exit 1; }
-jdk=$(pkg_with jdk_headless javac)
-mkdir -p "$build/dynamodb-launcher"
-"$jdk/bin/javac" --release 17 -d "$build/dynamodb-launcher" images/dynamodb/launcher/Launcher.java
 closure "$dynamodb" > "$build/dynamodb.closure"
 mkimage $(accounts dynamodb dynamodblocal 1000 1000 /home/dynamodblocal) -spec images/dynamodb/image.json -closure "$build/dynamodb.closure" -pkg "$jre" \
-  -env "DYNAMODB_HOME=$dynamodb/share/dynamodb-local" -file "/entry=$build/dynamodb-entry" \
-  -file "/opt/fws=$build/dynamodb-launcher" -out "$out/dynamodb.tar"
+  -env "DYNAMODB_HOME=$dynamodb/share/dynamodb-local" -file "/entry=$build/dynamodb-entry" -out "$out/dynamodb.tar"
 
 rabbitmq=$(pkg_with rabbitmq-server rabbitmq-server)
 # RabbitMQ's scripts run the POSIX tools from PATH.
@@ -271,17 +267,13 @@ mkimage $(accounts playwright pwuser 1000 1000 /home/pwuser) -spec images/playwr
 
 "$build/fws-mkimage" -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"
 
-# Ryuk, Testcontainers' reaper, built from its 0.14.0 release with
-# images/ryuk/listen-loopback.patch, so it listens on loopback as the
-# container contract asks.
+# Ryuk, Testcontainers' reaper, built from its 0.14.0 release.
 ryuk_commit=b3726afd6cc2c36628abcc08e9cabac43f587384
 ryuk_src=$(GOFLAGS=-mod=mod go mod download -json "github.com/testcontainers/moby-ryuk@$ryuk_commit" | sed -n 's/.*"Dir": "\(.*\)",/\1/p')
 cp -R "$ryuk_src" "$build/ryuk-src"
 chmod -R u+w "$build/ryuk-src"
-patch -s -d "$build/ryuk-src" -p1 < images/ryuk/listen-loopback.patch
 (cd "$build/ryuk-src" && GOFLAGS=-mod=mod go build -o "$build/ryuk" .)
-go build -o "$build/ryuk-entry" ./images/ryuk/entry
-"$build/fws-mkimage" -spec images/ryuk/image.json -file "/entry=$build/ryuk-entry" -file "/ryuk=$build/ryuk" \
+"$build/fws-mkimage" -spec images/ryuk/image.json -file "/bin/ryuk=$build/ryuk" \
   -file "/bin/nc=$build/nc" -out "$out/ryuk.tar"
 
 ls -l "$out"
