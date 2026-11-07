@@ -4246,6 +4246,78 @@ static ssize_t fws_read(int fd, void *buf, size_t n) {
 }
 INTERPOSE(fws_read, read);
 
+// put writes the n bytes at p to the stream s, adding what it writes to
+// *sent.
+static int put(int s, const char *p, size_t n, off_t *sent) {
+    while (n) {
+        ssize_t w = write(s, p, n);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        p += w;
+        n -= (size_t)w;
+        *sent += w;
+    }
+    return 0;
+}
+
+// The kernel's sendfile fails with EPERM under a container's profile, and
+// Java's FileChannel.transferTo, with which Kafka answers a fetch, takes
+// that for an I/O error, so the library copies the file to the stream
+// itself, with sendfile's contract: headers and file data up to *len bytes,
+// or to the file's end when *len is 0, then the trailers, and *len set to
+// what it wrote, also when a non-blocking stream fills.
+static int fws_sendfile(int fd, int s, off_t offset, off_t *len, struct sf_hdtr *hdtr, int flags) {
+    (void)flags;
+    if (!len || offset < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    off_t budget = *len, sent = 0;
+    *len = 0;
+    struct stat st;
+    if (fstat(fd, &st)) return -1;
+    if (!S_ISREG(st.st_mode)) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    int type;
+    socklen_t tn = sizeof type;
+    if (getsockopt(s, SOL_SOCKET, SO_TYPE, &type, &tn)) return -1;
+    if (type != SOCK_STREAM) {
+        errno = EINVAL;
+        return -1;
+    }
+    int r = 0;
+    for (int i = 0; hdtr && r == 0 && i < hdtr->hdr_cnt; i++) {
+        size_t n = hdtr->headers[i].iov_len;
+        if (budget && (off_t)n > budget - sent) n = (size_t)(budget - sent);
+        r = put(s, hdtr->headers[i].iov_base, n, &sent);
+    }
+    char buf[32768];
+    while (r == 0 && (!budget || sent < budget)) {
+        size_t n = sizeof buf;
+        if (budget && (off_t)n > budget - sent) n = (size_t)(budget - sent);
+        ssize_t got = pread(fd, buf, n, offset);
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            r = -1;
+            break;
+        }
+        if (got == 0) break;
+        off_t before = sent;
+        r = put(s, buf, (size_t)got, &sent);
+        offset += sent - before;
+    }
+    for (int i = 0; hdtr && r == 0 && i < hdtr->trl_cnt; i++) {
+        r = put(s, hdtr->trailers[i].iov_base, hdtr->trailers[i].iov_len, &sent);
+    }
+    *len = sent;
+    return r;
+}
+INTERPOSE(fws_sendfile, sendfile);
+
 // take_client reads the client's address and port, which the router
 // writes before the stream of a connection it makes to a listener on a port
 // without a host port, and reports whether c carried them: the library's

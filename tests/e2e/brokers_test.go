@@ -27,10 +27,7 @@ import (
 func TestKafka(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	k, err := tckafka.Run(ctx, "fws/kafka:4.2", tckafka.WithClusterID("kraftCluster"),
-		testcontainers.WithEnv(map[string]string{
-			"KAFKA_LOG4J_LOGGERS": "kafka.request.logger=DEBUG,org.apache.kafka.common.network.Selector=DEBUG",
-		}))
+	k, err := tckafka.Run(ctx, "fws/kafka:4.2", tckafka.WithClusterID("kraftCluster"))
 	testcontainers.CleanupContainer(t, k)
 	if err != nil {
 		t.Fatal(err)
