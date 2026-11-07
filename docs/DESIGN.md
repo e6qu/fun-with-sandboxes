@@ -334,7 +334,9 @@ same knobs, each enforced by a real mechanism or refused:
   address for a member's datagram and loopback for its own container's,
   on `lo0`. The library also copies a file to a stream for `sendfile`,
   which the kernel refuses with `EPERM` under a container's profile and
-  Java's `FileChannel.transferTo` calls to answer a Kafka fetch. A client asks the router for the flow
+  Java's `FileChannel.transferTo` calls to answer a Kafka fetch, and it names
+  the container's `/tmp` for `confstr`'s per-user directories, which Rust's
+  `std::env::temp_dir` asks for when `TMPDIR` is unset. A client asks the router for the flow
   port once (a request for port 0, then the UDP port) and the library
   caches it, sends the client's datagrams to it as to a host port, and
   reports datagrams from it as the member's address and port. A container

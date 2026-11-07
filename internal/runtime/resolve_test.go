@@ -32,3 +32,17 @@ func TestResolve(t *testing.T) {
 		}
 	}
 }
+
+func TestFromWorkDir(t *testing.T) {
+	for _, c := range [][3]string{
+		{"/qdrant", "./entrypoint.sh", "/qdrant/entrypoint.sh"},
+		{"", "bin/tool", "/bin/tool"},
+		{"/app", "../bin/tool", "/bin/tool"},
+		{"/app", "/bin/tool", "/bin/tool"},
+		{"/app", "tool", "tool"},
+	} {
+		if got := FromWorkDir(c[0], c[1]); got != c[2] {
+			t.Errorf("FromWorkDir(%q, %q) = %q, want %q", c[0], c[1], got, c[2])
+		}
+	}
+}

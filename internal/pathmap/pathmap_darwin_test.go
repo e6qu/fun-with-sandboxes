@@ -569,3 +569,30 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
+
+// A program asking for the user's temporary directory, as Rust's
+// std::env::temp_dir does when TMPDIR is unset, gets the container's /tmp.
+func TestUserDirectoriesAreTheContainersTmp(t *testing.T) {
+	root := containerRoot(t)
+	os.MkdirAll(filepath.Join(root, "tmp"), 0o1777)
+	bin := filepath.Join(root, "bin", "tempdir")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", bin, "testdata/tempdir/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin)
+	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_ROOT=" + root}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("tempdir: %v\n%s", err, out)
+	}
+	if want := "temp=/tmp/ cache=/tmp/ user=/tmp/ made=yes\n"; string(out) != want {
+		t.Errorf("got %q, want %q", out, want)
+	}
+	if made, _ := filepath.Glob(filepath.Join(root, "tmp", "probe.*")); len(made) != 1 {
+		t.Errorf("the container's /tmp holds %v", made)
+	}
+}

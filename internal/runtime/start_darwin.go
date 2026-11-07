@@ -136,7 +136,7 @@ func Start(s Spec) (*Process, error) {
 	if len(s.Argv) == 0 {
 		return nil, errors.New("no command specified")
 	}
-	exe, err := Resolve(s.Root, s.Argv[0], s.Env)
+	exe, err := Resolve(s.Root, FromWorkDir(s.WorkDir, s.Argv[0]), s.Env)
 	if err != nil {
 		return nil, err
 	}
