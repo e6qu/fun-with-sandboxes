@@ -556,6 +556,19 @@ func writeArchive(stage string, spec Spec, storePaths []string, out, arch string
 	if err != nil {
 		return err
 	}
+	// go-containerregistry's config has no field for the health check's
+	// start interval.
+	var health struct {
+		Healthcheck *struct{ StartInterval time.Duration }
+	}
+	if err := json.Unmarshal(spec.Config, &health); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	if health.Healthcheck != nil && health.Healthcheck.StartInterval > 0 {
+		if img, err = image.WithStartInterval(img, health.Healthcheck.StartInterval); err != nil {
+			return err
+		}
+	}
 	f, err := os.Create(out)
 	if err != nil {
 		return err

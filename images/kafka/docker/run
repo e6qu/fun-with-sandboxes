@@ -1,0 +1,23 @@
+#!/bin/bash
+# Configure, check and launch Kafka, as Confluent's images do. Arguments
+# of the form NAME=VALUE set environment variables first.
+. /etc/confluent/docker/bash-config
+
+if [ $# -ne 0 ]; then
+  echo "===> Overriding env params with args ..."
+  for var in "$@"; do
+    export "$var"
+  done
+fi
+
+echo "===> User"
+id
+
+echo "===> Configuring ..."
+/etc/confluent/docker/configure
+
+echo "===> Running preflight checks ... "
+/etc/confluent/docker/ensure
+
+echo "===> Launching ... "
+exec /etc/confluent/docker/launch

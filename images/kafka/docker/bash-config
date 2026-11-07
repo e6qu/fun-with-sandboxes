@@ -1,0 +1,9 @@
+# Sourced by the scripts in /etc/confluent/docker.
+set -o nounset \
+    -o errexit
+
+# TRACE=true traces the scripts, which prints the credentials they handle.
+if [ "${TRACE:-}" == "true" ]; then
+  set -o verbose \
+      -o xtrace
+fi

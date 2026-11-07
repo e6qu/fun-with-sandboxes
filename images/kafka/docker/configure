@@ -1,0 +1,42 @@
+#!/bin/bash
+# Write /etc/kafka/kafka.properties from the KAFKA_ environment.
+. /etc/confluent/docker/bash-config
+
+ub ensure KAFKA_PROCESS_ROLES
+if [[ ",$KAFKA_PROCESS_ROLES," == *,broker,* ]]; then
+  ub ensure KAFKA_ADVERTISED_LISTENERS
+fi
+
+# A broker without listeners of its own listens on every address, at the
+# ports it advertises.
+if [[ -z "${KAFKA_LISTENERS-}" && -n "${KAFKA_ADVERTISED_LISTENERS-}" ]]; then
+  export KAFKA_LISTENERS
+  KAFKA_LISTENERS=$(echo "$KAFKA_ADVERTISED_LISTENERS" | sed -e 's|://[^:]*:|://0.0.0.0:|g')
+fi
+
+ub path /etc/kafka/ writable
+
+if [[ -z "${KAFKA_LOG_DIRS-}" ]]; then
+  export KAFKA_LOG_DIRS
+  KAFKA_LOG_DIRS="/var/lib/kafka/data"
+fi
+
+ub render-properties /etc/confluent/docker/kafka-propertiesSpec.json > /etc/kafka/kafka.properties
+
+# Kafka logs to standard output alone, at KAFKA_LOG4J_ROOT_LOGLEVEL, and
+# the loggers KAFKA_LOG4J_LOGGERS lists as name=LEVEL,... at theirs.
+{
+  echo "appender.stdout.type = Console"
+  echo "appender.stdout.name = STDOUT"
+  echo "appender.stdout.layout.type = PatternLayout"
+  echo "appender.stdout.layout.pattern = [%d] %p %m (%c)%n"
+  echo "rootLogger.level = ${KAFKA_LOG4J_ROOT_LOGLEVEL:-INFO}"
+  echo "rootLogger.appenderRef.stdout.ref = STDOUT"
+  i=0
+  IFS=',' read -ra loggers <<< "${KAFKA_LOG4J_LOGGERS-}"
+  for l in "${loggers[@]}"; do
+    i=$((i + 1))
+    echo "logger.l$i.name = ${l%%=*}"
+    echo "logger.l$i.level = ${l#*=}"
+  done
+} > /etc/kafka/log4j2.properties

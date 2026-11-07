@@ -1,0 +1,9 @@
+#!/bin/bash
+. /etc/confluent/docker/bash-config
+
+if [[ -z "${KAFKA_LOG4J_OPTS-}" ]]; then
+  export KAFKA_LOG4J_OPTS="-Dlog4j2.configurationFile=/etc/kafka/log4j2.properties"
+fi
+
+echo "===> Launching kafka ... "
+exec kafka-server-start /etc/kafka/kafka.properties

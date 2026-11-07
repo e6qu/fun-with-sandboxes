@@ -31,9 +31,9 @@ func healthStartInterval(raw []byte) time.Duration {
 	return c.Config.Healthcheck.StartInterval
 }
 
-// withStartInterval returns img with its config's health check carrying
+// WithStartInterval returns img with its config's health check carrying
 // the start interval d.
-func withStartInterval(img v1.Image, d time.Duration) (v1.Image, error) {
+func WithStartInterval(img v1.Image, d time.Duration) (v1.Image, error) {
 	raw, err := img.RawConfigFile()
 	if err != nil {
 		return nil, err

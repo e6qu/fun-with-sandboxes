@@ -17,6 +17,13 @@ machine — and from what macOS offers an unprivileged process under them.
   MariaDB's compilation comment does, the catalog builds it as the vendor
   does. MongoDB and Vault are the vendors' own macOS builds, which nixpkgs
   packages as they are.
+- **`fws/kafka` is Apache Kafka in Confluent's layout.** It carries the
+  `/etc/confluent/docker` scripts, their `ub` and Kafka's tools without
+  their `.sh`, which Testcontainers' module and Compose files written for
+  Confluent's images rely on, and none of Confluent's own components, such
+  as the REST Proxy `confluentinc/confluent-local` runs. Kafka's tools log
+  through Kafka's own `tools-log4j2.yaml`, so `KAFKA_TOOLS_LOG4J_LOGLEVEL`
+  sets nothing; their level is the warning level Confluent's default is.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
