@@ -1,0 +1,22 @@
+{
+  "tag": "fws/toxiproxy:2.12",
+  "files": {},
+  "dirs": [],
+  "config": {
+    "Env": [
+      "LOG_LEVEL=info"
+    ],
+    "Entrypoint": [
+      "/toxiproxy"
+    ],
+    "Cmd": [
+      "-host=0.0.0.0"
+    ],
+    "ExposedPorts": {
+      "8474/tcp": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

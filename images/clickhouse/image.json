@@ -1,0 +1,35 @@
+{
+  "tag": "fws/clickhouse:26.5",
+  "files": {},
+  "dirs": [
+    "/tmp",
+    "/docker-entrypoint-initdb.d",
+    "/var/lib/clickhouse",
+    "/var/log/clickhouse-server",
+    "/etc/clickhouse-server/config.d",
+    "/etc/clickhouse-server/users.d",
+    "/etc/clickhouse-client"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/usr/bin:/bin",
+      "LANG=en_US.UTF-8",
+      "TZ=UTC",
+      "CLICKHOUSE_CONFIG=/etc/clickhouse-server/config.xml"
+    ],
+    "Entrypoint": [
+      "/entrypoint.sh"
+    ],
+    "ExposedPorts": {
+      "8123/tcp": {},
+      "9000/tcp": {},
+      "9009/tcp": {}
+    },
+    "Volumes": {
+      "/var/lib/clickhouse": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

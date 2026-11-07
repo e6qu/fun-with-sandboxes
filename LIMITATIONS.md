@@ -36,6 +36,14 @@ machine — and from what macOS offers an unprivileged process under them.
   `EXTENSION_SCRIPT` runs in bash, whose environment the server then
   inherits, as when the official script sources it. The image is not
   Debian-based, so it prints no warning about Debian releases.
+- **`fws/influxdb`'s entrypoint is reimplemented in Go.** The official
+  script needs `gosu`, which nixpkgs builds only for Linux, and `dasel` 2,
+  whose successor in nixpkgs reads other arguments; the Go entrypoint does
+  what the script does, and still runs the user's scripts with `run-parts`.
+- **`fws/opensearch` runs nixpkgs' JDK.** The official image runs the JDK
+  bundled for Linux; the catalog links nixpkgs' at the bundled JDK's path,
+  `/usr/share/opensearch/jdk`. Plugins with Linux-only native libraries,
+  such as k-NN's engines, cannot load those libraries.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents

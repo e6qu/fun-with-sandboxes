@@ -1,0 +1,36 @@
+{
+  "tag": "fws/influxdb:2.7",
+  "files": {},
+  "dirs": [
+    "/tmp",
+    "/docker-entrypoint-initdb.d",
+    "/var/lib/influxdb2",
+    "/etc/influxdb2",
+    "/home/influxdb"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/usr/local/bin:/usr/bin:/bin",
+      "INFLUX_CONFIGS_PATH=/etc/influxdb2/influx-configs",
+      "INFLUXD_INIT_PORT=9999",
+      "INFLUXD_INIT_PING_ATTEMPTS=600",
+      "DOCKER_INFLUXDB_INIT_CLI_CONFIG_NAME=default"
+    ],
+    "Entrypoint": [
+      "/entrypoint.sh"
+    ],
+    "Cmd": [
+      "influxd"
+    ],
+    "ExposedPorts": {
+      "8086/tcp": {}
+    },
+    "Volumes": {
+      "/etc/influxdb2": {},
+      "/var/lib/influxdb2": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}
