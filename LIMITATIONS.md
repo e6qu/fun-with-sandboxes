@@ -241,8 +241,9 @@ machine — and from what macOS offers an unprivileged process under them.
   after 90 seconds without traffic, as with Docker's userland proxy. SCTP
   ports cannot be published.
 - **A container's ports are its loopback host ports, presented.** The
-  container library binds a program's wildcard or loopback listener on a
-  container port to that port's host port on `127.0.0.1`, connects a
+  container library binds a program's wildcard listener, or its listener
+  on the container's own address, on a container port to that port's host
+  port on `127.0.0.1`, connects a
   `localhost` client of a container port to its host port, and reports the
   container's addresses back; a dual-stack IPv6 socket used for IPv4 becomes
   an IPv4 socket that reads as IPv6, because Seatbelt matches loopback as
@@ -270,6 +271,16 @@ machine — and from what macOS offers an unprivileged process under them.
     both its ends as `::1`, but the server sees that client as
     `::ffff:127.0.0.1`. An IPv4-only listener takes a client of `::1` too,
     where Docker would refuse it.
+  - A TCP listener on loopback alone listens on a Unix socket, as on a
+    port without a host port, so that, as in Docker, the container reaches
+    it on `localhost` and its published port does not: an entrypoint's
+    setup server on `127.0.0.1` stays out of reach of a client waiting for
+    the real server. Beside a listener on the container's own address it
+    is refused with `EADDRINUSE`, where Linux would let the two coexist. A
+    UDP socket on loopback alone still takes the host port.
+  - A stack member reaches a listener on loopback alone on a port without
+    a host port through the container's router, where Docker would refuse
+    it: the router cannot tell the container's own clients from members'.
   - Programs that load no library, as Apple's do not, see the host ports.
 - **Unix socket paths are capped at 104 bytes** on macOS, as the
   container sees them. A Unix socket at a container path,

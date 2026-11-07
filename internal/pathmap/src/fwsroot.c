@@ -3413,17 +3413,20 @@ static int port_path(int type, unsigned short port, struct sockaddr_un *u) {
 
 // unbacked reports the TCP or UDP port sa names, on loopback, the wildcard
 // or the container's own address, when it has no host port and the
-// container can listen on it with a Unix socket; any is whether sa is the
-// wildcard, and zero whether sa asks for any port, which unbacked reports
-// as 0.
-static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len, int *any, int *v6, int *zero) {
+// container can listen on it with a Unix socket, and the TCP port sa names
+// on loopback alone, which the host port would publish; any is whether sa
+// is the wildcard, zero whether sa asks for any port, which unbacked
+// reports as 0, and lo whether sa is loopback on a port with a host port.
+static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len, int *any, int *v6, int *zero, int *lo) {
     *zero = 0;
+    *lo = 0;
     int type = sa && port_dir[0] ? sock_type(fd) : 0;
     if (type != SOCK_STREAM && type != SOCK_DGRAM) {
         return 0;
     }
     in_addr_t a;
     unsigned short port;
+    int own = 0;
     *v6 = sa->sa_family == AF_INET6;
     if (sa->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
         const struct sockaddr_in *s4 = (const void *)sa;
@@ -3435,6 +3438,7 @@ static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len,
         if (IN6_IS_ADDR_UNSPECIFIED(&s6->sin6_addr)) {
             a = htonl(INADDR_ANY);
         } else if (IN6_IS_ADDR_LOOPBACK(&s6->sin6_addr) || own_addr6(&s6->sin6_addr)) {
+            own = !IN6_IS_ADDR_LOOPBACK(&s6->sin6_addr);
             a = htonl(INADDR_LOOPBACK);
         } else if (IN6_IS_ADDR_V4MAPPED(&s6->sin6_addr)) {
             a = mapped_v4(&s6->sin6_addr);
@@ -3444,7 +3448,10 @@ static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len,
     } else {
         return 0;
     }
-    if (own_addr(a)) a = htonl(INADDR_LOOPBACK);
+    if (own_addr(a)) {
+        own = 1;
+        a = htonl(INADDR_LOOPBACK);
+    }
     if (!v4_local(a)) {
         return 0;
     }
@@ -3453,12 +3460,53 @@ static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len,
         *zero = 1;
         return 0;
     }
+    // A container's published port forwards to its own address, never to
+    // its loopback, so a listener on loopback alone stays the container's.
+    if (type == SOCK_STREAM && host_port(type, port) && !*any && !own) {
+        *lo = 1;
+        return port;
+    }
     // A container port with a host port binds it, and so does a program
     // that binds the host port itself, as the container contract has it.
     if (host_port(type, port) || container_port(type, port)) {
         return 0;
     }
     return port;
+}
+
+// loopback_held reports whether a listener on loopback alone holds TCP
+// container port port, where its host port could not be bound beside it,
+// and removes the socket of one that ended.
+static int loopback_held(unsigned short port) {
+    struct sockaddr_un u;
+    struct stat st;
+    if (!port_dir[0] || port_path(SOCK_STREAM, port, &u) == -1 || stat(u.sun_path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
+        return 0;
+    }
+    int t = socket(AF_UNIX, SOCK_STREAM, 0);
+    int live = t >= 0 && connect(t, (struct sockaddr *)&u, u.sun_len) == 0;
+    if (t >= 0) close(t);
+    if (!live) unlink(u.sun_path);
+    return live;
+}
+
+// host_held reports whether a socket holds host port port on the loopback
+// address sa names, by trying to bind it, which no listener sees.
+static int host_held(const struct sockaddr *sa, unsigned short port) {
+    if (sa->sa_family == AF_INET6 && IN6_IS_ADDR_LOOPBACK(&((const struct sockaddr_in6 *)sa)->sin6_addr)) {
+        return bound_v6(SOCK_STREAM, port);
+    }
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) {
+        return 1;
+    }
+    int on = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
+    in_addr_t a = sa->sa_family == AF_INET ? ((const struct sockaddr_in *)sa)->sin_addr.s_addr : mapped_v4(&((const struct sockaddr_in6 *)sa)->sin6_addr);
+    struct sockaddr_in b = v4_addr(a, port);
+    int r = bind(s, (struct sockaddr *)&b, sizeof b), e = errno;
+    close(s);
+    return r == -1 && e == EADDRINUSE;
 }
 
 // listen_unix puts a Unix socket of fd's type in its place and binds it
@@ -3535,8 +3583,12 @@ static int listen_ephemeral(int fd, int any, int v6) {
 }
 
 static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
-    int uany, uv6, zero;
-    unsigned short uport = unbacked(fd, sa, len, &uany, &uv6, &zero);
+    int uany, uv6, zero, lo;
+    unsigned short uport = unbacked(fd, sa, len, &uany, &uv6, &zero, &lo);
+    if (lo && host_held(sa, host_port(SOCK_STREAM, uport))) {
+        errno = EADDRINUSE;
+        return -1;
+    }
     if (uport || zero) {
         int r = uport ? listen_unix(fd, uport, uany, uv6, 1) : listen_ephemeral(fd, uany, uv6);
         if (r == 0) set_state(fd, state_of(fd) | dest_p6(sa));
@@ -3548,6 +3600,10 @@ static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
     socklen_t given = len;
     const struct sockaddr *to = local(fd, sa, &len, &b, &any, &dir);
     if (sa && !to) {
+        return -1;
+    }
+    if (any && sock_type(fd) == SOCK_STREAM && loopback_held(sa->sa_family == AF_INET ? ntohs(((const struct sockaddr_in *)sa)->sin_port) : ntohs(((const struct sockaddr_in6 *)sa)->sin6_port))) {
+        errno = EADDRINUSE;
         return -1;
     }
     if (dir != -1) {
@@ -3665,8 +3721,9 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         if (*r == 0 && p6) set_state(fd, state_of(fd) | NET_P6);
         return 1;
     }
-    if ((v4_local(a) || own_addr(a)) && router_port && !host_port(SOCK_STREAM, port)) {
-        // Loopback reaches the container's own listener when it has one;
+    if ((v4_local(a) || own_addr(a)) && router_port && !(host_port(SOCK_STREAM, port) && own_addr(a))) {
+        // Loopback reaches the container's own listener when it has one,
+        // and on a port with a host port, its listener on loopback alone;
         // any other loopback port is the host's.
         struct sockaddr_un u;
         struct stat st;

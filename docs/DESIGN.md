@@ -239,9 +239,11 @@ same knobs, each enforced by a real mechanism or refused:
   memory and semaphore names get the prefix the same way, so a program
   names them as it would on a host of its own. The engine lists the
   container's ports and their host ports in `FWS_PORTS`: a bind to the
-  wildcard or loopback address on a container port binds the host port on
-  `127.0.0.1`, a `localhost` connection or datagram to a container port
-  reaches its host port, and `getsockname`, `getpeername`, `accept` and
+  wildcard or the container's own address on a container port binds the
+  host port on `127.0.0.1`, a TCP bind to loopback alone listens on a Unix
+  socket instead, out of the published port's reach, as a port without a
+  host port does, a `localhost` connection or datagram to a container port
+  reaches that listener or else its host port, and `getsockname`, `getpeername`, `accept` and
   `recvfrom` report container ports and the wildcard the program bound. An
   IPv6 socket bound or connected to an IPv4 address, or bound to the
   dual-stack wildcard, gets an IPv4 socket with its settings in the same

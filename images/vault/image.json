@@ -3,6 +3,7 @@
   "files": {},
   "dirs": [
     "/tmp",
+    "/home/vault",
     "/vault/config",
     "/vault/logs",
     "/vault/file"

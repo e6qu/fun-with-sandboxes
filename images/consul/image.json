@@ -3,6 +3,7 @@
   "files": {},
   "dirs": [
     "/tmp",
+    "/home/consul",
     "/consul/data",
     "/consul/config"
   ],

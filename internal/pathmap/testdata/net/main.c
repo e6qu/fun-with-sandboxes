@@ -126,11 +126,11 @@ int main(int argc, char **argv) {
     getsockname(c6lo, (void *)&s, &n);
     printf("lo6=%s %s\n", peer6, strncmp(addr(&s), "[::1]:", 6) == 0 ? "own-v6" : addr(&s));
 
-    // An IPv6-only listener on ::1 takes its clients on IPv6.
+    // An IPv6-only listener on the IPv6 wildcard takes its clients on ::1.
     int l6 = socket(AF_INET6, SOCK_STREAM, 0), on = 1;
     setsockopt(l6, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof on);
-    struct sockaddr_in6 lo6only = v6("::1", 8083);
-    if (bind(l6, (void *)&lo6only, sizeof lo6only) || listen(l6, 4)) fail("only6");
+    struct sockaddr_in6 any6only = v6("::", 8083), lo6only = v6("::1", 8083);
+    if (bind(l6, (void *)&any6only, sizeof any6only) || listen(l6, 4)) fail("only6");
     int c6only = socket(AF_INET6, SOCK_STREAM, 0);
     if (connect(c6only, (void *)&lo6only, sizeof lo6only)) fail("only6");
     n = sizeof s;

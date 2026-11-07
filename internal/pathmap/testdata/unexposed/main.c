@@ -2,7 +2,9 @@
 // dual-stack IPv6 socket, TCP and UDP, and reaches it on loopback, then
 // reaches port 7100 of stack member peer, TCP and UDP, in a sandbox that
 // lets it bind Unix sockets in its port directory and reach its router and
-// the two flow ports it gives the UDP ports alone, as a container's does.
+// the two flow ports it gives the UDP ports alone, as a container's does,
+// and listens on published port 7200, whose host port the sandbox lets it
+// bind and reach.
 // It asks UDP sockets for their datagrams' destinations, as IPv6 and IPv4
 // control messages. It reports each step.
 #define __APPLE_USE_RFC_3542
@@ -47,9 +49,9 @@ int main(int argc, char **argv) {
     char profile[1024];
     snprintf(profile, sizeof profile,
              "(version 1)(allow default)(deny network-bind)(deny network-outbound)"
-             "(allow network-bind (local unix-socket (subpath \"%s\")))"
-             "(allow network-outbound (remote unix-socket (subpath \"%s\")) (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
-             argv[1], argv[1], argv[2], argv[3], argv[4], argv[5]);
+             "(allow network-bind (local unix-socket (subpath \"%s\")) (local ip \"localhost:%s\"))"
+             "(allow network-outbound (remote unix-socket (subpath \"%s\")) (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
+             argv[1], argv[6], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]);
     char *err = NULL;
     if (sandbox_init(profile, 0, &err) != 0) {
         fprintf(stderr, "sandbox_init: %s\n", err);
@@ -258,5 +260,42 @@ int main(int argc, char **argv) {
     n = sizeof s;
     if (recvfrom(up, buf, sizeof buf, 0, (void *)&s, &n) != 5) fail("udp-peer");
     printf("udp-peer=%s %s\n", buf, addr(&s));
+
+    // A listener on loopback alone on published port 7200 stays the
+    // container's: loopback reaches it, the container's own address and
+    // so the host port do not, and the wildcard binds beside it only once
+    // it has closed.
+    int pl = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in pub = lo;
+    pub.sin_port = htons(7200);
+    if (bind(pl, (void *)&pub, sizeof pub) || listen(pl, 4)) fail("loopback-only");
+    n = sizeof s;
+    getsockname(pl, (void *)&s, &n);
+    printf("loopback-only=%s", addr(&s));
+    int pc = socket(AF_INET, SOCK_STREAM, 0);
+    if (connect(pc, (void *)&pub, sizeof pub)) fail("loopback-only");
+    int pk = accept(pl, NULL, NULL);
+    memset(buf, 0, sizeof buf);
+    if (pk < 0 || write(pc, "ping", 4) != 4 || read(pk, buf, 4) != 4) fail("loopback-only");
+    printf(" %s", buf);
+    struct sockaddr_in mine = pub;
+    inet_pton(AF_INET, "127.88.0.2", &mine.sin_addr);
+    int po = socket(AF_INET, SOCK_STREAM, 0);
+    int orr = connect(po, (void *)&mine, sizeof mine);
+    printf(" own=%s", orr == -1 && errno == ECONNREFUSED ? "refused" : "reached");
+    struct sockaddr_in wild = pub;
+    wild.sin_addr.s_addr = htonl(INADDR_ANY);
+    int pw = socket(AF_INET, SOCK_STREAM, 0);
+    int wr = bind(pw, (void *)&wild, sizeof wild);
+    printf(" wildcard=%s", wr == -1 && errno == EADDRINUSE ? "EADDRINUSE" : "bound");
+    close(pk);
+    close(pc);
+    close(pl);
+    close(pw);
+    pw = socket(AF_INET, SOCK_STREAM, 0);
+    if (bind(pw, (void *)&wild, sizeof wild) || listen(pw, 4)) fail("loopback-only");
+    n = sizeof s;
+    getsockname(pw, (void *)&s, &n);
+    printf(" then=%s\n", addr(&s));
     return 0;
 }

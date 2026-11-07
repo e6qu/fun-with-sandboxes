@@ -17,6 +17,7 @@ import (
 	tcetcd "github.com/testcontainers/testcontainers-go/modules/etcd"
 	tcmongodb "github.com/testcontainers/testcontainers-go/modules/mongodb"
 	tcvault "github.com/testcontainers/testcontainers-go/modules/vault"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -43,9 +44,11 @@ func httpDo(t *testing.T, method, url, body string, header map[string]string) (i
 
 // etcd serves its key-value API on the container's client port, alone and
 // as a cluster of three, whose members, each in a stack of its own, reach
-// one another by name on the network they share.
+// one another by name on the network they share. The module waits for
+// nothing, so each node waits for its client port to listen.
 func TestEtcd(t *testing.T) {
 	ctx := context.Background()
+	listening := testcontainers.WithWaitStrategy(wait.ForListeningPort("2379/tcp"))
 	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 	put := func(endpoint, key, value string) {
 		t.Helper()
@@ -64,7 +67,7 @@ func TestEtcd(t *testing.T) {
 		return string(v)
 	}
 
-	single, err := tcetcd.Run(ctx, "fws/etcd:3.6")
+	single, err := tcetcd.Run(ctx, "fws/etcd:3.6", listening)
 	testcontainers.CleanupContainer(t, single)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +81,7 @@ func TestEtcd(t *testing.T) {
 		t.Errorf("a single node read %q", v)
 	}
 
-	cluster, err := tcetcd.Run(ctx, "fws/etcd:3.6", tcetcd.WithNodes("etcd-1", "etcd-2", "etcd-3"))
+	cluster, err := tcetcd.Run(ctx, "fws/etcd:3.6", listening, tcetcd.WithNodes("etcd-1", "etcd-2", "etcd-3"))
 	testcontainers.CleanupContainer(t, cluster)
 	if err != nil {
 		t.Fatal(err)
