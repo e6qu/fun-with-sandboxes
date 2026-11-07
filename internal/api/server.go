@@ -627,6 +627,7 @@ func (s *Server) networkCreate(w http.ResponseWriter, r *http.Request) {
 		Driver     string
 		Internal   bool
 		Attachable bool
+		EnableIPv4 *bool
 		EnableIPv6 *bool
 		IPAM       *network.IPAM
 		Options    map[string]string
@@ -637,7 +638,7 @@ func (s *Server) networkCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.e.NetworkCreate(engine.NetworkCreate{
 		Name: req.Name, Driver: req.Driver, Internal: req.Internal, Attachable: req.Attachable,
-		EnableIPv6: req.EnableIPv6, IPAM: req.IPAM, Options: req.Options, Labels: req.Labels,
+		EnableIPv4: req.EnableIPv4, EnableIPv6: req.EnableIPv6, IPAM: req.IPAM, Options: req.Options, Labels: req.Labels,
 	})
 	respondCode(w, http.StatusCreated, res, err)
 }

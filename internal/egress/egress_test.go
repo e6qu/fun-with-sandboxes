@@ -168,7 +168,7 @@ func TestReachesStackMembers(t *testing.T) {
 	}
 	defer rt.Close()
 	os.WriteFile(network, []byte(fmt.Sprintf(
-		"127.88.0.2\tweb proj-web-1\t8000/tcp=%s\t%d\tproj_default\t0\t\t127.88.0.3/front\tproj_default=10.9.0.2/24\n"+
+		"127.88.0.2\tweb proj-web-1\t8000/tcp=%s\t%d\tproj_default\t0\t\t127.88.0.3/front\tproj_default=10.9.0.2/24 proj_default=fd00:9::2/64\n"+
 			"127.88.0.3\tapp\t\t0\tproj_default\t0\t\t\tproj_default=10.9.0.3/24\n"+
 			"127.88.0.4\tdb\t5432/tcp=%[1]s\t0\tproj_back\t0\n", port, rt.Addr().Port)), 0o644)
 	policy := testPolicy()
@@ -191,7 +191,7 @@ func TestReachesStackMembers(t *testing.T) {
 		b, _ := io.ReadAll(res.Body)
 		return res.StatusCode, string(b)
 	}
-	for _, url := range []string{"http://web:8000/", "http://PROJ-WEB-1:8000/", "http://127.88.0.2:8000/", "http://10.9.0.2:8000/", "http://web:9000/", "http://front:8000/"} {
+	for _, url := range []string{"http://web:8000/", "http://PROJ-WEB-1:8000/", "http://127.88.0.2:8000/", "http://10.9.0.2:8000/", "http://[fd00:9::2]:8000/", "http://web:9000/", "http://front:8000/"} {
 		if code, b := get(app, url); code != 200 || !strings.HasPrefix(b, "member ") {
 			t.Errorf("GET %s: %d %q", url, code, b)
 		}
@@ -202,8 +202,10 @@ func TestReachesStackMembers(t *testing.T) {
 	// An address of the network's subnet no member holds reaches nothing,
 	// for a client that names no member too.
 	for _, c := range []*http.Client{app, client(p)} {
-		if code, b := get(c, "http://10.9.0.77:8000/"); code != http.StatusBadGateway || !strings.Contains(b, syscall.EHOSTUNREACH.Error()) {
-			t.Errorf("an address of the subnet no member holds: %d %q", code, b)
+		for _, url := range []string{"http://10.9.0.77:8000/", "http://[fd00:9::77]:8000/"} {
+			if code, b := get(c, url); code != http.StatusBadGateway || !strings.Contains(b, syscall.EHOSTUNREACH.Error()) {
+				t.Errorf("%s, an address of a subnet no member holds: %d %q", url, code, b)
+			}
 		}
 	}
 	// A member on no network the client is on is no member to it, and a

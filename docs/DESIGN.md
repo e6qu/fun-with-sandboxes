@@ -258,22 +258,35 @@ same knobs, each enforced by a real mechanism or refused:
   gives each endpoint an address of it too: the one its IPAM configuration
   names, or the lowest of the range that no endpoint, the gateway or an
   auxiliary address holds, recorded in the endpoint and reported by
-  inspect while the container runs. The engine keeps a network file per
+  inspect while the container runs. A network with IPv6 holds an IPv6
+  subnet beside it, its own or the lowest free `/64` of a unique local
+  `/48` the engine derives from a hash of its state directory, as dockerd
+  derives its default pool from its identity, and gives each endpoint an
+  IPv6 address of it the same way; a container names one only in a subnet
+  the network was created with. The engine keeps a network file per
   stack, rewritten as members come, go, are renamed or change networks,
   of each member's address, the names it answers to (its container name,
   service, hostname, DNS names and aliases), its ports' host ports, and
-  its addresses on networks with subnets, `network=address/bits`; the
+  its addresses on networks with subnets, IPv4 and IPv6,
+  `network=address/bits`; the
   container reads it (`FWS_NETWORK`) and nothing else of the engine's
   state. The library resolves a member's names to its address on the
   first network the two share, by name, takes any of a member's addresses
   as the member's, any of its own as its own, and an address of a
-  network's subnet that no member holds as unreachable. It presents the
+  network's subnet that no member holds as unreachable. A member's IPv6
+  address maps to its member address, through an IPv4 socket in the IPv6
+  one's place, as an IPv4-mapped address does; the socket records that
+  it reached a member over IPv6, and reads members, and its own end, at
+  their IPv6 addresses on the network it shares with its peer. Over IPv6
+  `getaddrinfo` and `gethostbyname2` answer a member's IPv6 address, and
+  for any family, sort a unique local one after IPv4 and a global one
+  before. It presents the
   container's interfaces where a program lists them, in the routing
   sysctl (`NET_RT_IFLIST`, `NET_RT_IFLIST2`) that `getifaddrs` and Go read
   and in the `SIOCGIF*` ioctls: the host's loopback interface, and `eth0`
   onwards, which take the indexes after the host's highest, one for each
   of the container's addresses on its networks, in their order, with its
-  subnet's mask. A Unix socket's address maps as a
+  subnet's mask and, on a network with IPv6, its IPv6 address there. A Unix socket's address maps as a
   file path does, in `bind`, `connect` and `sendto`, and reads back as the
   container's path. A host path past the address's 104 bytes binds,
   connects and sends by its path below the root, or below the source of
@@ -610,8 +623,8 @@ policies follow Docker's back-off.
 Requests the engine cannot honour return an error rather than being
 accepted: `501` for memory, CPU, PID, ulimit and device limits; privileged
 mode; capabilities; non-default users; `host` networking; non-`bridge`
-network drivers; IPAM drivers other than the default, IPv6 and more than
-one subnet; SCTP publishing; and resource updates.
+network drivers; IPAM drivers other than the default, more than one subnet
+of a family and IPv6-only networks; SCTP publishing; and resource updates.
 
 `POST /grpc` and `POST /session` serve an embedded BuildKit
 (`internal/buildkit`), as dockerd does, so buildx's docker driver, `docker

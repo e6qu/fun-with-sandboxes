@@ -22,39 +22,46 @@ func (e *Engine) writeHosts(c *Container) error {
 	if err != nil {
 		return err
 	}
-	address := ""
+	var addresses []string
 	if onNetwork(net) {
-		address = firstAddress(net.rec.Address, net.rec.Networks)
+		addresses = firstAddresses(net.rec.Address, net.rec.Networks)
 	}
-	return writeHostsFiles(c.root(), hostnameOf(net), address, net.rec.HostConfig.ExtraHosts, linkHosts(links), c.rec.Mounts)
+	return writeHostsFiles(c.root(), hostnameOf(net), addresses, net.rec.HostConfig.ExtraHosts, linkHosts(links), c.rec.Mounts)
 }
 
-// firstAddress is the address a container at member address holds on the
-// first of its networks, by name: its own there on a network with a
-// subnet, else its member address. Its hostname names it.
-func firstAddress(address string, nets map[string]*network.EndpointSettings) string {
+// firstAddresses are the addresses a container at member address holds
+// on the first of its networks, by name: its own there on a network with
+// a subnet, else its member address, and its IPv6 address there on a
+// network with IPv6. Its hostname names them.
+func firstAddresses(address string, nets map[string]*network.EndpointSettings) []string {
 	names := make([]string, 0, len(nets))
 	for n := range nets {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		if es := nets[n]; es != nil && es.IPAddress.IsValid() {
-			return es.IPAddress.String()
+		es := nets[n]
+		if n == "none" || es == nil {
+			continue
 		}
-		if n != "none" {
-			break
+		out := []string{address}
+		if es.IPAddress.IsValid() {
+			out[0] = es.IPAddress.String()
 		}
+		if es.GlobalIPv6Address.IsValid() {
+			out = append(out, es.GlobalIPv6Address.String())
+		}
+		return out
 	}
-	return address
+	return []string{address}
 }
 
 // writeHostsFiles writes the container's /etc/hosts and /etc/hostname, as
 // Docker does: localhost, its --add-host entries, where host-gateway names
-// the host, on loopback here, the container's hostname at its member
-// address, or on loopback for a container on no network, and its links.
-// A mount at either path stands instead.
-func writeHostsFiles(root, hostname, address string, extra, links []string, mounts []mountRec) error {
+// the host, on loopback here, the container's hostname at its addresses,
+// or on loopback for a container on no network, and its links. A mount
+// at either path stands instead.
+func writeHostsFiles(root, hostname string, addresses, extra, links []string, mounts []mountRec) error {
 	mounted := map[string]bool{}
 	for _, m := range mounts {
 		mounted[filepath.Clean(m.Destination)] = true
@@ -71,10 +78,12 @@ func writeHostsFiles(root, hostname, address string, extra, links []string, moun
 		}
 		fmt.Fprintf(&b, "%s\t%s\n", ip, name)
 	}
-	if address == "" {
-		address = "127.0.0.1"
+	if len(addresses) == 0 || addresses[0] == "" {
+		addresses = []string{"127.0.0.1"}
 	}
-	fmt.Fprintf(&b, "%s\t%s\n", address, hostname)
+	for _, a := range addresses {
+		fmt.Fprintf(&b, "%s\t%s\n", a, hostname)
+	}
 	for _, l := range links {
 		b.WriteString(l + "\n")
 	}

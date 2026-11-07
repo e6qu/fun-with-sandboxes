@@ -2099,8 +2099,11 @@ INTERPOSE(fws_proc_listchildpids, proc_listchildpids);
 #define MAX_IFACES 16
 #define RT_ROUNDUP(a) ((a) > 0 ? (1 + (((a) - 1) | (sizeof(uint32_t) - 1))) : sizeof(uint32_t))
 
+// An interface has an IPv4 address, and an IPv6 one where bits6 is not 0.
 struct iface {
     in_addr_t addr, mask;
+    struct in6_addr addr6;
+    int bits6;
 };
 static int own_ifaces(struct iface *out);
 
@@ -2182,6 +2185,33 @@ static size_t eth_addr(char *out, unsigned short index, const struct iface *f) {
     return n;
 }
 
+// eth_addr6 writes at out the message of an interface's IPv6 address and
+// returns its length.
+static size_t eth_addr6(char *out, unsigned short index, const struct iface *f) {
+    struct ifa_msghdr h;
+    memset(&h, 0, sizeof h);
+    h.ifam_version = RTM_VERSION;
+    h.ifam_type = RTM_NEWADDR;
+    h.ifam_addrs = RTA_NETMASK | RTA_IFA;
+    h.ifam_index = index;
+    struct sockaddr_in6 sa[2];
+    memset(sa, 0, sizeof sa);
+    for (int i = 0; i < 2; i++) {
+        sa[i].sin6_len = sizeof sa[i];
+        sa[i].sin6_family = AF_INET6;
+    }
+    for (int b = 0; b < f->bits6; b++) sa[0].sin6_addr.s6_addr[b / 8] |= (unsigned char)(0x80 >> (b % 8));
+    sa[1].sin6_addr = f->addr6;
+    size_t n = sizeof h;
+    for (int i = 0; i < 2; i++) {
+        memcpy(out + n, &sa[i], sizeof sa[i]);
+        n += RT_ROUNDUP(sizeof sa[i]);
+    }
+    h.ifam_msglen = (unsigned short)n;
+    memcpy(out, &h, sizeof h);
+    return n;
+}
+
 // iflist answers a routing sysctl of interfaces, NET_RT_IFLIST or
 // NET_RT_IFLIST2, as the container's network namespace would: the host's
 // messages of its loopback interfaces, then the container's, for the
@@ -2241,6 +2271,7 @@ static int iflist(const int *name, void *old, size_t *oldlen) {
         if (want && want != index) continue;
         more += eth_info(extra + more, mib[4] == NET_RT_IFLIST2 ? RTM_IFINFO2 : RTM_IFINFO, index, i, ifs[i].addr);
         if (af == 0 || af == AF_INET) more += eth_addr(extra + more, index, &ifs[i]);
+        if ((af == 0 || af == AF_INET6) && ifs[i].bits6) more += eth_addr6(extra + more, index, &ifs[i]);
     }
     memcpy(buf + out, extra, more);
     out += more;
@@ -2633,6 +2664,9 @@ INTERPOSE(fws_sem_unlink, sem_unlink);
 static int member_block(in_addr_t a);
 static int own_addr(in_addr_t a);
 static in_addr_t own_seen_by(in_addr_t from);
+static int member_of6(const struct in6_addr *a, in_addr_t *out);
+static int member_v6(in_addr_t a, in_addr_t peer, struct in6_addr *out);
+static int own_addr6(const struct in6_addr *a);
 static unsigned short member_route(in_addr_t addr, int type, unsigned short cport, int *member, unsigned short *router);
 static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, unsigned short *cport);
 
@@ -2664,6 +2698,9 @@ static unsigned short container_port(int type, unsigned short hport) {
 // NET_DCONN: a UDP socket on a port without a host port connected to
 // net_peer and net_dport, the peer as reach finds it.
 #define NET_DCONN 32
+// NET_P6: an IPv6 socket that reached a member at an IPv6 address, whose
+// members' addresses read as theirs on IPv6.
+#define NET_P6 64
 // What the router puts before a datagram on a Unix one: the IPv4 address
 // and port it came from, or goes to.
 #define DGRAM_HEADER 6
@@ -2742,6 +2779,38 @@ static struct sockaddr_in v4_addr(in_addr_t a, unsigned short port) {
     s.sin_port = htons(port);
     s.sin_addr.s_addr = a;
     return s;
+}
+
+// member6 reports whether a is an IPv6 address the library maps to IPv4,
+// none of loopback, the wildcard and IPv4-mapped's, which have their own.
+static int member6(const struct in6_addr *a) {
+    return !IN6_IS_ADDR_V4MAPPED(a) && !IN6_IS_ADDR_LOOPBACK(a) && !IN6_IS_ADDR_UNSPECIFIED(a);
+}
+
+// dest_p6 is NET_P6 for an address that is a member's IPv6 one, the
+// container's own included.
+static unsigned char dest_p6(const struct sockaddr *sa) {
+    return sa && sa->sa_family == AF_INET6 && member6(&((const struct sockaddr_in6 *)sa)->sin6_addr) ? NET_P6 : 0;
+}
+
+// v6_target maps member6 address a to the IPv4 address the library
+// routes it by, the member address of the member the container sees that
+// holds it, and reports whether one does. Where a lies in a subnet of the
+// members' networks that no member it sees holds, it fails with errno
+// EHOSTUNREACH, as an address on a network no host answers at would.
+static int v6_target(const struct in6_addr *a, in_addr_t *v4) {
+    int r = member_of6(a, v4);
+    if (r == -1) errno = EHOSTUNREACH;
+    return r;
+}
+
+// p6_addr finds the IPv6 address a member's IPv4 address a reads as on
+// fd, a NET_P6 socket: its member's, or with own set, the container's
+// own, on a network it shares with the socket's peer.
+static int p6_addr(int fd, in_addr_t a, int own, struct in6_addr *out) {
+    if (!(state_of(fd) & NET_P6)) return 0;
+    if (own ? a != htonl(INADDR_LOOPBACK) && !own_addr(a) : !member_block(a)) return 0;
+    return member_v6(own ? htonl(INADDR_LOOPBACK) : a, fd < NET_FDS ? net_peer[fd] : 0, out);
 }
 
 // to_ipv4 puts an IPv4 socket of fd's type, with its settings, in its place.
@@ -2929,12 +2998,16 @@ static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t
         int v6only = 0;
         socklen_t n = sizeof v6only;
         getsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, &n);
-        if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr) || (wild && !v6only)) {
-            in_addr_t v4 = wild ? htonl(INADDR_ANY) : mapped_v4(&a->sin6_addr);
+        // The container's own IPv6 address is one of loopback's, as its
+        // IPv4 one is.
+        int mine = !wild && member6(&a->sin6_addr) && own_addr6(&a->sin6_addr);
+        if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr) || (wild && !v6only) || mine) {
+            in_addr_t v4 = wild ? htonl(INADDR_ANY) : mine ? htonl(INADDR_LOOPBACK) : mapped_v4(&a->sin6_addr);
             if (own_addr(v4)) v4 = htonl(INADDR_LOOPBACK);
             if (!v4_local(v4) || to_ipv4(fd, type) == -1) {
                 return sa;
             }
+            if (mine) set_state(fd, state_of(fd) | NET_P6);
             *any = v4 == htonl(INADDR_ANY);
             struct sockaddr_in b = v4_addr(*any ? htonl(INADDR_LOOPBACK) : v4, h ? h : port);
             memcpy(out, &b, sizeof b);
@@ -3142,7 +3215,19 @@ static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_
     } else if (sa->sa_family == AF_INET6 && *len >= (socklen_t)sizeof(struct sockaddr_in6)) {
         const struct sockaddr_in6 *a = (const void *)sa;
         port = ntohs(a->sin6_port);
-        if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr) || (state_of(fd) & NET_V6)) {
+        int t = member6(&a->sin6_addr) ? v6_target(&a->sin6_addr, &v4) : 0;
+        if (t == -1) {
+            return NULL;
+        }
+        if (t == 1) {
+            // A member's IPv6 address is its IPv4 one, through the IPv4
+            // socket in the IPv6 one's place.
+            if (!(state_of(fd) & NET_V6) && to_ipv4(fd, type) == -1) {
+                return NULL;
+            }
+            set_state(fd, state_of(fd) | NET_P6);
+            if (fd < NET_FDS && !(state_of(fd) & (NET_ROUTED | NET_DCONN))) net_peer[fd] = v4;
+        } else if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr) || (state_of(fd) & NET_V6)) {
             // The IPv4 socket in an IPv6 one's place reaches ::1 as 127.0.0.1.
             v4 = IN6_IS_ADDR_V4MAPPED(&a->sin6_addr) ? mapped_v4(&a->sin6_addr)
                  : IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) ? htonl(INADDR_LOOPBACK)
@@ -3189,8 +3274,10 @@ static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_
 // address, the wildcard it bound.
 // present_inet writes address a, port port to the program's buffer, as
 // IPv4 or, on a socket it made for IPv6, IPv4-mapped IPv6, with IPv4's
-// wildcard as IPv6's.
-static void present_inet(unsigned char st, in_addr_t a, unsigned short port, struct sockaddr *out, socklen_t *outlen) {
+// wildcard as IPv6's, and a member's address as its IPv6 one on a
+// NET_P6 socket. own marks the socket's own address.
+static void present_inet(int fd, in_addr_t a, unsigned short port, int own, struct sockaddr *out, socklen_t *outlen) {
+    unsigned char st = state_of(fd);
     struct sockaddr_storage v;
     socklen_t vn;
     memset(&v, 0, sizeof v);
@@ -3199,9 +3286,10 @@ static void present_inet(unsigned char st, in_addr_t a, unsigned short port, str
         b->sin6_len = sizeof *b;
         b->sin6_family = AF_INET6;
         b->sin6_port = htons(port);
-        if ((st & NET_LO6) && a == htonl(INADDR_LOOPBACK)) {
+        int p6 = p6_addr(fd, a, own, &b->sin6_addr);
+        if (!p6 && (st & NET_LO6) && a == htonl(INADDR_LOOPBACK)) {
             b->sin6_addr = in6addr_loopback;
-        } else if (a != htonl(INADDR_ANY)) {
+        } else if (!p6 && a != htonl(INADDR_ANY)) {
             b->sin6_addr.s6_addr[10] = 0xff;
             b->sin6_addr.s6_addr[11] = 0xff;
             memcpy(&b->sin6_addr.s6_addr[12], &a, 4);
@@ -3226,11 +3314,11 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
         // A listener on a port without a host port, or a connection it
         // accepted, whose clients came through a router from loopback.
         in_addr_t a = own ? ((st & NET_ANY) ? htonl(INADDR_ANY) : htonl(INADDR_LOOPBACK)) : htonl(INADDR_LOOPBACK);
-        present_inet(st, a, own ? net_port[fd] : 0, out, outlen);
+        present_inet(fd, a, own ? net_port[fd] : 0, own, out, outlen);
         return;
     }
     if ((st & NET_ROUTED) && !own) {
-        present_inet(st, net_peer[fd], net_port[fd], out, outlen);
+        present_inet(fd, net_peer[fd], net_port[fd], 0, out, outlen);
         return;
     }
     struct sockaddr_storage v;
@@ -3275,9 +3363,10 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
             b.sin6_family = AF_INET6;
             b.sin6_port = a->sin_port;
             // IPv4's wildcard reads as IPv6's, not as ::ffff:0.0.0.0.
-            if ((st & NET_LO6) && a->sin_addr.s_addr == htonl(INADDR_LOOPBACK)) {
+            int wild = own && (st & NET_ANY), p6 = !wild && p6_addr(fd, a->sin_addr.s_addr, own, &b.sin6_addr);
+            if (!p6 && (st & NET_LO6) && a->sin_addr.s_addr == htonl(INADDR_LOOPBACK)) {
                 b.sin6_addr = in6addr_loopback;
-            } else if (!(own && (st & NET_ANY)) && a->sin_addr.s_addr != htonl(INADDR_ANY)) {
+            } else if (!p6 && !wild && a->sin_addr.s_addr != htonl(INADDR_ANY)) {
                 b.sin6_addr.s6_addr[10] = 0xff;
                 b.sin6_addr.s6_addr[11] = 0xff;
                 memcpy(&b.sin6_addr.s6_addr[12], &a->sin_addr.s_addr, 4);
@@ -3345,7 +3434,7 @@ static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len,
         port = ntohs(s6->sin6_port);
         if (IN6_IS_ADDR_UNSPECIFIED(&s6->sin6_addr)) {
             a = htonl(INADDR_ANY);
-        } else if (IN6_IS_ADDR_LOOPBACK(&s6->sin6_addr)) {
+        } else if (IN6_IS_ADDR_LOOPBACK(&s6->sin6_addr) || own_addr6(&s6->sin6_addr)) {
             a = htonl(INADDR_LOOPBACK);
         } else if (IN6_IS_ADDR_V4MAPPED(&s6->sin6_addr)) {
             a = mapped_v4(&s6->sin6_addr);
@@ -3448,11 +3537,10 @@ static int listen_ephemeral(int fd, int any, int v6) {
 static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
     int uany, uv6, zero;
     unsigned short uport = unbacked(fd, sa, len, &uany, &uv6, &zero);
-    if (uport) {
-        return listen_unix(fd, uport, uany, uv6, 1);
-    }
-    if (zero) {
-        return listen_ephemeral(fd, uany, uv6);
+    if (uport || zero) {
+        int r = uport ? listen_unix(fd, uport, uany, uv6, 1) : listen_ephemeral(fd, uany, uv6);
+        if (r == 0) set_state(fd, state_of(fd) | dest_p6(sa));
+        return r;
     }
     struct sockaddr_storage b;
     unsigned char any;
@@ -3539,7 +3627,7 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
     }
     in_addr_t a;
     unsigned short port;
-    int v6 = sa->sa_family == AF_INET6;
+    int v6 = sa->sa_family == AF_INET6, p6 = 0;
     if (sa->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
         const struct sockaddr_in *s4 = (const void *)sa;
         a = s4->sin_addr.s_addr;
@@ -3551,6 +3639,8 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
             a = mapped_v4(&s6->sin6_addr);
         } else if (IN6_IS_ADDR_LOOPBACK(&s6->sin6_addr)) {
             a = htonl(INADDR_LOOPBACK);
+        } else if (member6(&s6->sin6_addr) && port && v6_target(&s6->sin6_addr, &a) == 1) {
+            p6 = 1;
         } else {
             return 0;
         }
@@ -3567,12 +3657,12 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         if (member == 2) {
             if (!router_port) return 0;
             *r = route(fd, a, router_port, port, v6, 1);
-            return 1;
-        }
-        if (h || !member || !router) {
+        } else if (h || !member || !router) {
             return 0;
+        } else {
+            *r = route(fd, a, router, port, v6, 0);
         }
-        *r = route(fd, a, router, port, v6, 0);
+        if (*r == 0 && p6) set_state(fd, state_of(fd) | NET_P6);
         return 1;
     }
     if ((v4_local(a) || own_addr(a)) && router_port && !host_port(SOCK_STREAM, port)) {
@@ -3587,6 +3677,7 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         if (*r == 0 && v6 && IN6_IS_ADDR_LOOPBACK(&((const struct sockaddr_in6 *)sa)->sin6_addr)) {
             set_state(fd, state_of(fd) | NET_LO6);
         }
+        if (*r == 0 && p6) set_state(fd, state_of(fd) | NET_P6);
         return 1;
     }
     return 0;
@@ -3722,8 +3813,8 @@ static int dgram_dest(const struct sockaddr *sa, socklen_t len, in_addr_t *v4, u
             *v4 = mapped_v4(&a->sin6_addr);
         } else if (IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) || IN6_IS_ADDR_UNSPECIFIED(&a->sin6_addr)) {
             *v4 = htonl(INADDR_LOOPBACK);
-        } else {
-            errno = ENETUNREACH;
+        } else if (v6_target(&a->sin6_addr, v4) != 1) {
+            if (errno != EHOSTUNREACH) errno = ENETUNREACH;
             return -1;
         }
         return 0;
@@ -3755,9 +3846,10 @@ static int dgram_connect(int fd, const struct sockaddr *sa, socklen_t len) {
     }
     net_peer[fd] = ra;
     net_dport[fd] = rp;
-    set_state(fd, state_of(fd) | NET_DCONN);
+    set_state(fd, state_of(fd) | NET_DCONN | dest_p6(sa));
     return 0;
 }
+
 
 static ssize_t dgram_send(int fd, const struct iovec *iov, int iovlen, int flags, const struct sockaddr *sa, socklen_t len, sendmsg_fn send) {
     int connected = state_of(fd) & NET_DCONN;
@@ -3784,6 +3876,7 @@ static ssize_t dgram_send(int fd, const struct iovec *iov, int iovlen, int flags
         if (dgram_dest(sa, len, &v4, &port) == -1 || reach(SOCK_DGRAM, v4, port, &ra, &rp) == -1) {
             return -1;
         }
+        set_state(fd, state_of(fd) | dest_p6(sa));
     }
     unsigned char hdr[DGRAM_HEADER];
     memcpy(hdr, &ra, 4);
@@ -4676,8 +4769,155 @@ static in_addr_t own_seen_by(in_addr_t from) {
     return a;
 }
 
+// next_sub6 reads at p, before end, a member's IPv6 address on a network
+// with an IPv6 subnet, net=x:y::z/bits, and returns where the next one
+// starts, or NULL when none is left.
+static const char *next_sub6(const char *p, const char *end, const char **net, size_t *netlen, struct in6_addr *addr, int *bits) {
+    while (p < end) {
+        const char *e = memchr(p, ' ', (size_t)(end - p));
+        if (!e) e = end;
+        const char *eq = memchr(p, '=', (size_t)(e - p));
+        const char *sl = eq ? memchr(eq, '/', (size_t)(e - eq)) : NULL;
+        char text[INET6_ADDRSTRLEN];
+        unsigned long b;
+        if (eq && eq > p && sl && (size_t)(sl - eq - 1) < sizeof text && memchr(eq + 1, ':', (size_t)(sl - eq - 1))) {
+            memcpy(text, eq + 1, (size_t)(sl - eq - 1));
+            text[sl - eq - 1] = 0;
+            if (inet_pton(AF_INET6, text, addr) == 1 && num(sl + 1, &b) == e && b <= 128) {
+                *net = p;
+                *netlen = (size_t)(eq - p);
+                *bits = (int)b;
+                return e + 1;
+            }
+        }
+        p = e + 1;
+    }
+    return NULL;
+}
+
+// member_on6 finds the member's IPv6 address on the network of len bytes
+// at net, with its subnet's length.
+static int member_on6(const struct member *m, const char *net, size_t len, struct in6_addr *out, int *bits) {
+    const char *n;
+    size_t nl;
+    struct in6_addr a;
+    int b;
+    for (const char *p = m->subs; (p = next_sub6(p, m->subs_end, &n, &nl, &a, &b));) {
+        if (nl == len && memcmp(n, net, len) == 0) {
+            if (out) *out = a;
+            if (bits) *bits = b;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// member_has6 reports whether a is one of the member's IPv6 addresses.
+static int member_has6(const struct member *m, const struct in6_addr *a) {
+    const char *n;
+    size_t nl;
+    struct in6_addr b;
+    int k;
+    for (const char *p = m->subs; (p = next_sub6(p, m->subs_end, &n, &nl, &b, &k));) {
+        if (IN6_ARE_ADDR_EQUAL(&b, a)) return 1;
+    }
+    return 0;
+}
+
+// seen_addr6 finds member m's IPv6 address as viewer reaches it: on the
+// first of its networks the viewer is on too that gives it one.
+static int seen_addr6(const struct member *m, const struct member *viewer, int have_viewer, struct in6_addr *out) {
+    for (const char *p = m->nets; p < m->nets_end;) {
+        const char *e = memchr(p, ' ', (size_t)(m->nets_end - p));
+        if (!e) e = m->nets_end;
+        if (e > p && (!have_viewer || on_net(viewer, p, (size_t)(e - p))) && member_on6(m, p, (size_t)(e - p), out, NULL)) return 1;
+        p = e + 1;
+    }
+    return 0;
+}
+
+// in_prefix6 reports whether a lies in the bits-long prefix of b.
+static int in_prefix6(const struct in6_addr *a, const struct in6_addr *b, int bits) {
+    int whole = bits / 8, rest = bits % 8;
+    if (memcmp(a->s6_addr, b->s6_addr, (size_t)whole) != 0) return 0;
+    if (!rest) return 1;
+    unsigned char mask = (unsigned char)(0xff << (8 - rest));
+    return (a->s6_addr[whole] & mask) == (b->s6_addr[whole] & mask);
+}
+
+// member_of6 finds the member address of the member the container sees
+// that holds IPv6 address a, its own included. It reports -1 where a lies
+// in a subnet of a network the members are on and no member it sees
+// holds it, and 0 where a lies in none.
+static int member_of6(const struct in6_addr *a, in_addr_t *out) {
+    int r = 0;
+    pthread_mutex_lock(&members_lock);
+    struct member m, me;
+    const char *text = members_text();
+    int have_me = find_self(text, &me);
+    for (const char *p = text; text && (p = next_member(p, &m));) {
+        const char *n;
+        size_t nl;
+        struct in6_addr b;
+        int bits;
+        for (const char *q = m.subs; (q = next_sub6(q, m.subs_end, &n, &nl, &b, &bits));) {
+            if (IN6_ARE_ADDR_EQUAL(&b, a) && sees(&m, &me, have_me)) {
+                *out = m.addr;
+                r = 1;
+                break;
+            }
+            if (in_prefix6(a, &b, bits)) r = -1;
+        }
+        if (r == 1) break;
+    }
+    pthread_mutex_unlock(&members_lock);
+    return r;
+}
+
+// member_v6 finds the IPv6 address, as the container reaches it, of the
+// member that holds IPv4 address a, its member address or one of its
+// subnets'. The container's own is the one the member at peer reaches it
+// at, else its first.
+static int member_v6(in_addr_t a, in_addr_t peer, struct in6_addr *out) {
+    int r = 0;
+    pthread_mutex_lock(&members_lock);
+    struct member m, me;
+    const char *text = members_text();
+    int have_me = find_self(text, &me);
+    if (have_me && (a == htonl(INADDR_LOOPBACK) || member_has(&me, a))) {
+        for (const char *p = text; peer && (p = next_member(p, &m));) {
+            if (member_has(&m, peer)) {
+                r = seen_addr6(&me, &m, 1, out);
+                break;
+            }
+        }
+        if (!r) r = seen_addr6(&me, &me, 0, out);
+    } else {
+        for (const char *p = text; text && (p = next_member(p, &m));) {
+            if (member_has(&m, a) && sees(&m, &me, have_me)) {
+                r = seen_addr6(&m, &me, have_me, out);
+                break;
+            }
+        }
+    }
+    pthread_mutex_unlock(&members_lock);
+    return r;
+}
+
+// own_addr6 reports whether a is one of the container's own IPv6
+// addresses.
+static int own_addr6(const struct in6_addr *a) {
+    if (!own_address) return 0;
+    pthread_mutex_lock(&members_lock);
+    struct member me;
+    int r = find_self(members_text(), &me) && member_has6(&me, a);
+    pthread_mutex_unlock(&members_lock);
+    return r;
+}
+
 // own_ifaces lists the container's interfaces, an address and its mask
-// each: its addresses on its networks, in their order, once each.
+// each, and an IPv6 address on a network with IPv6: its addresses on its
+// networks, in their order, once each.
 static int own_ifaces(struct iface *out) {
     int n = 0;
     if (!own_address) return 0;
@@ -4688,16 +4928,26 @@ static int own_ifaces(struct iface *out) {
             const char *e = memchr(p, ' ', (size_t)(me.nets_end - p));
             if (!e) e = me.nets_end;
             if (e > p) {
-                in_addr_t mask, a = member_on(&me, p, (size_t)(e - p), &mask);
-                int seen = 0;
-                for (int i = 0; i < n; i++) seen |= out[i].addr == a;
-                if (!seen) out[n++] = (struct iface){a, mask};
+                struct iface f;
+                memset(&f, 0, sizeof f);
+                f.addr = member_on(&me, p, (size_t)(e - p), &f.mask);
+                int has6 = member_on6(&me, p, (size_t)(e - p), &f.addr6, &f.bits6);
+                // Networks without IPv4 subnets share the member address,
+                // on one interface while they give no more IPv6 ones.
+                int i = 0;
+                while (i < n && !(out[i].addr == f.addr && (!has6 || !out[i].bits6))) i++;
+                if (i == n) {
+                    out[n++] = f;
+                } else if (has6) {
+                    out[i].addr6 = f.addr6;
+                    out[i].bits6 = f.bits6;
+                }
             }
             p = e + 1;
         }
     }
     pthread_mutex_unlock(&members_lock);
-    if (n == 0) out[n++] = (struct iface){own_address, htonl(MEMBER_MASK)};
+    if (n == 0) out[n++] = (struct iface){own_address, htonl(MEMBER_MASK), IN6ADDR_ANY_INIT, 0};
     return n;
 }
 
@@ -4711,6 +4961,24 @@ static int member_address(const char *name, in_addr_t *out) {
         if (sees(&m, &me, have_me) && answers(&m, name)) {
             *out = seen_addr(&m, &me, have_me);
             found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&members_lock);
+    return found;
+}
+
+// member_address6 finds the IPv6 address, as the container reaches it,
+// of the member that answers to name, where it holds one.
+static int member_address6(const char *name, struct in6_addr *out) {
+    int found = 0;
+    pthread_mutex_lock(&members_lock);
+    struct member m, me;
+    const char *text = members_text();
+    int have_me = find_self(text, &me);
+    for (const char *p = text; (p = next_member(p, &m));) {
+        if (sees(&m, &me, have_me) && answers(&m, name)) {
+            found = seen_addr6(&m, &me, have_me, out);
             break;
         }
     }
@@ -4761,7 +5029,9 @@ static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, 
     return found;
 }
 
-static struct addrinfo *member_info(in_addr_t a, int family, int type, unsigned short port) {
+// member_info is an entry of a member's address: IPv4 address a, as
+// itself or mapped into IPv6 by family, or IPv6 address a6 where given.
+static struct addrinfo *member_info(in_addr_t a, const struct in6_addr *a6, int family, int type, unsigned short port) {
     size_t alen = family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
     // freeaddrinfo frees each entry, its address and its canonical name.
     struct addrinfo *ai = calloc(1, sizeof *ai);
@@ -4786,9 +5056,13 @@ static struct addrinfo *member_info(in_addr_t a, int family, int type, unsigned 
         s.sin6_len = sizeof s;
         s.sin6_family = AF_INET6;
         s.sin6_port = port;
-        s.sin6_addr.s6_addr[10] = 0xff;
-        s.sin6_addr.s6_addr[11] = 0xff;
-        memcpy(&s.sin6_addr.s6_addr[12], &a, 4);
+        if (a6) {
+            s.sin6_addr = *a6;
+        } else {
+            s.sin6_addr.s6_addr[10] = 0xff;
+            s.sin6_addr.s6_addr[11] = 0xff;
+            memcpy(&s.sin6_addr.s6_addr[12], &a, 4);
+        }
         memcpy(ai->ai_addr, &s, sizeof s);
     }
     return ai;
@@ -4896,14 +5170,29 @@ static int fws_getaddrinfo(const char *node, const char *service, const struct a
     if (!member_address(node, &a)) {
         return getaddrinfo(node, service, hints, res);
     }
-    int family = hints ? hints->ai_family : AF_UNSPEC;
+    struct in6_addr a6;
+    int has6 = member_address6(node, &a6);
+    // The member's addresses, in the order RFC 6724 sorts them: a global
+    // IPv6 address before IPv4, a unique local one after. An IPv6 caller
+    // takes the IPv4 one mapped, when it asks to.
+    struct maddr {
+        int family;
+        const struct in6_addr *a6;
+    } addrs[2];
+    int naddrs = 0, family = hints ? hints->ai_family : AF_UNSPEC;
+    int global = has6 && (a6.s6_addr[0] & 0xe0) == 0x20;
     if (family == AF_UNSPEC) {
-        family = AF_INET;
+        if (global) addrs[naddrs++].family = AF_INET6;
+        addrs[naddrs++].family = AF_INET;
+        if (has6 && !global) addrs[naddrs++].family = AF_INET6;
+        for (int i = 0; i < naddrs; i++) addrs[i].a6 = addrs[i].family == AF_INET6 ? &a6 : NULL;
     } else if (family == AF_INET6) {
-        // Members have IPv4 addresses alone, which an IPv6 caller takes
-        // mapped only when it asks to.
-        if (!(flags & AI_V4MAPPED)) return EAI_NONAME;
-    } else if (family != AF_INET) {
+        if (has6) addrs[naddrs++] = (struct maddr){AF_INET6, &a6};
+        if ((flags & AI_V4MAPPED) && (!has6 || (flags & AI_ALL))) addrs[naddrs++] = (struct maddr){AF_INET6, NULL};
+        if (!naddrs) return EAI_NONAME;
+    } else if (family == AF_INET) {
+        addrs[naddrs++] = (struct maddr){AF_INET, NULL};
+    } else {
         return EAI_FAMILY;
     }
     unsigned short port = 0;
@@ -4926,14 +5215,16 @@ static int fws_getaddrinfo(const char *node, const char *service, const struct a
         ntypes = 1;
     }
     struct addrinfo *head = NULL, **tail = &head;
-    for (int i = 0; i < ntypes; i++) {
-        struct addrinfo *ai = member_info(a, family, types[i], port);
-        if (!ai) {
-            freeaddrinfo(head);
-            return EAI_MEMORY;
+    for (int k = 0; k < naddrs; k++) {
+        for (int i = 0; i < ntypes; i++) {
+            struct addrinfo *ai = member_info(a, addrs[k].a6, addrs[k].family, types[i], port);
+            if (!ai) {
+                freeaddrinfo(head);
+                return EAI_MEMORY;
+            }
+            *tail = ai;
+            tail = &ai->ai_next;
         }
-        *tail = ai;
-        tail = &ai->ai_next;
     }
     if (flags & AI_CANONNAME) {
         head->ai_canonname = strdup(node);
@@ -4949,28 +5240,32 @@ INTERPOSE(fws_getaddrinfo, getaddrinfo);
 
 static struct hostent member_host;
 static char member_host_name[256];
-static char member_host_addr[4];
+static char member_host_addr[16];
 static char *member_host_addrs[2];
 static char *member_host_aliases[1];
 
-static struct hostent *member_hostent(const char *name, in_addr_t a) {
+static struct hostent *member_hostent(const char *name, int af, const void *a) {
+    int len = af == AF_INET6 ? 16 : 4;
     strlcpy(member_host_name, name, sizeof member_host_name);
-    memcpy(member_host_addr, &a, 4);
+    memcpy(member_host_addr, a, (size_t)len);
     member_host_addrs[0] = member_host_addr;
     member_host_addrs[1] = NULL;
     member_host_aliases[0] = NULL;
-    member_host = (struct hostent){member_host_name, member_host_aliases, AF_INET, 4, member_host_addrs};
+    member_host = (struct hostent){member_host_name, member_host_aliases, af, len, member_host_addrs};
     return &member_host;
 }
 
 static struct hostent *fws_gethostbyname(const char *name) {
     in_addr_t a;
-    return name && (hosts_v4(name, &a) || member_address(name, &a)) ? member_hostent(name, a) : gethostbyname(name);
+    return name && (hosts_v4(name, &a) || member_address(name, &a)) ? member_hostent(name, AF_INET, &a) : gethostbyname(name);
 }
 INTERPOSE(fws_gethostbyname, gethostbyname);
 
 static struct hostent *fws_gethostbyname2(const char *name, int af) {
     in_addr_t a;
-    return af == AF_INET && name && (hosts_v4(name, &a) || member_address(name, &a)) ? member_hostent(name, a) : gethostbyname2(name, af);
+    struct in6_addr a6;
+    if (af == AF_INET && name && (hosts_v4(name, &a) || member_address(name, &a))) return member_hostent(name, AF_INET, &a);
+    if (af == AF_INET6 && name && member_address6(name, &a6)) return member_hostent(name, AF_INET6, &a6);
+    return gethostbyname2(name, af);
 }
 INTERPOSE(fws_gethostbyname2, gethostbyname2);

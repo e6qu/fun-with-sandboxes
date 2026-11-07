@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -88,6 +89,40 @@ func run(check string) string {
 			out = append(out, n+":"+addrs[0])
 		}
 		return strings.Join(out, " ")
+	case "resolve6":
+		// The IPv6 addresses of the names PROBE_NAMES lists, each its first.
+		var out []string
+		for _, n := range strings.Split(os.Getenv("PROBE_NAMES"), ",") {
+			ips, err := net.DefaultResolver.LookupIP(context.Background(), "ip6", n)
+			if err != nil || len(ips) == 0 {
+				out = append(out, n+":none")
+				continue
+			}
+			out = append(out, n+":"+ips[0].String())
+		}
+		return strings.Join(out, " ")
+	case "interfaces6":
+		// The IPv6 addresses of the interfaces other than loopback.
+		ifs, err := net.Interfaces()
+		if err != nil {
+			return result("", err)
+		}
+		var out []string
+		for _, i := range ifs {
+			if i.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, err := i.Addrs()
+			if err != nil {
+				return result("", err)
+			}
+			for _, a := range addrs {
+				if n, ok := a.(*net.IPNet); ok && n.IP.To4() == nil {
+					out = append(out, i.Name+"("+n.String()+")")
+				}
+			}
+		}
+		return strings.Join(out, ",")
 	case "interfaces":
 		ifs, err := net.Interfaces()
 		if err != nil {

@@ -89,6 +89,7 @@ func (c *Container) endpoints() map[string]*network.EndpointSettings {
 		es := c.endpoint(name)
 		if !running {
 			es.IPAddress, es.IPPrefixLen, es.Gateway, es.MacAddress = netip.Addr{}, 0, netip.Addr{}, nil
+			es.GlobalIPv6Address, es.GlobalIPv6PrefixLen, es.IPv6Gateway = netip.Addr{}, 0, netip.Addr{}
 		}
 		out[name] = es
 	}

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,8 +41,8 @@ type Member struct {
 	// that makes it reach this one where they share no network.
 	Links []Link
 	// Subnets are the member's addresses on the networks it is on that
-	// have subnets of their own, each with its subnet's length; on every
-	// other network the member is at Address.
+	// have subnets of their own, IPv4 and IPv6, each with its subnet's
+	// length; on every other network the member is at Address.
 	Subnets []NetAddress
 }
 
@@ -56,35 +57,60 @@ func (m Member) Has(a string) bool {
 	if m.Address == a {
 		return true
 	}
+	ip, err := netip.ParseAddr(a)
+	if err != nil {
+		return false
+	}
 	for _, s := range m.Subnets {
-		if s.Address.Addr().String() == a {
+		if s.Address.Addr() == ip {
 			return true
 		}
 	}
 	return false
 }
 
-// On is the member's address on network.
+// On is the member's IPv4 address on network.
 func (m Member) On(network string) string {
 	for _, s := range m.Subnets {
-		if s.Network == network {
+		if s.Network == network && s.Address.Addr().Is4() {
 			return s.Address.Addr().String()
 		}
 	}
 	return m.Address
 }
 
+// On6 is the member's IPv6 address on network, if it holds one.
+func (m Member) On6(network string) (netip.Addr, bool) {
+	for _, s := range m.Subnets {
+		if s.Network == network && s.Address.Addr().Is6() {
+			return s.Address.Addr(), true
+		}
+	}
+	return netip.Addr{}, false
+}
+
 // SeenBy is the member's address as viewer reaches it: on the first of
 // its networks the viewer is on too, else its member address.
 func (m Member) SeenBy(viewer Member) string {
 	for _, n := range m.Networks {
-		for _, o := range viewer.Networks {
-			if n == o {
-				return m.On(n)
-			}
+		if slices.Contains(viewer.Networks, n) {
+			return m.On(n)
 		}
 	}
 	return m.Address
+}
+
+// SeenBy6 is the member's IPv6 address as viewer reaches it: on the
+// first of its networks the viewer is on too that gives it one.
+func (m Member) SeenBy6(viewer Member) (netip.Addr, bool) {
+	for _, n := range m.Networks {
+		if slices.Contains(viewer.Networks, n) {
+			if a, ok := m.On6(n); ok {
+				return a, true
+			}
+		}
+	}
+	return netip.Addr{}, false
 }
 
 // InSubnet reports whether ip lies in the subnet of a network the members
@@ -153,7 +179,7 @@ func Parse(b []byte) []Member {
 		if len(f) == 9 {
 			for _, t := range strings.Fields(f[8]) {
 				n, a, ok := strings.Cut(t, "=")
-				if p, err := netip.ParsePrefix(a); ok && n != "" && err == nil && p.Addr().Is4() {
+				if p, err := netip.ParsePrefix(a); ok && n != "" && err == nil {
 					m.Subnets = append(m.Subnets, NetAddress{Network: n, Address: p})
 				}
 			}

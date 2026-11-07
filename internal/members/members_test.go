@@ -110,3 +110,41 @@ func TestSubnetAddresses(t *testing.T) {
 		t.Error("InSubnet misreads the members' subnets")
 	}
 }
+
+// A member's IPv6 addresses ride beside its IPv4 ones: found by any
+// spelling, seen on the first shared network that gives one.
+func TestIPv6Addresses(t *testing.T) {
+	ms := []Member{
+		{Address: "127.88.0.2", Names: []string{"api"}, Networks: []string{"back", "front"}, Subnets: []NetAddress{
+			{"back", netip.MustParsePrefix("172.28.0.5/16")}, {"front", netip.MustParsePrefix("fd00:f::5/64")},
+		}},
+		{Address: "127.88.0.3", Names: []string{"db"}, Networks: []string{"back"}, Subnets: []NetAddress{{"back", netip.MustParsePrefix("172.28.0.6/16")}}},
+		{Address: "127.88.0.4", Names: []string{"web"}, Networks: []string{"front"}, Subnets: []NetAddress{{"front", netip.MustParsePrefix("fd00:f::7/64")}}},
+	}
+	b := Format(ms)
+	if !strings.HasPrefix(string(b), "127.88.0.2\tapi\t\t0\tback front\t0\t\t\tback=172.28.0.5/16 front=fd00:f::5/64\n") {
+		t.Fatalf("Format:\n%s", b)
+	}
+	got := Parse(b)
+	if !reflect.DeepEqual(got[0].Subnets, ms[0].Subnets) {
+		t.Fatalf("Parse: %+v", got[0].Subnets)
+	}
+	if m, ok := Find(got, "fd00:f:0::7"); !ok || m.Address != "127.88.0.4" {
+		t.Errorf("Find by an IPv6 address: %+v, %v", m, ok)
+	}
+	if m, ok := Lookup(got, "127.88.0.4", "fd00:f::5"); !ok || m.Address != "127.88.0.2" {
+		t.Errorf("Lookup by an IPv6 address: %+v, %v", m, ok)
+	}
+	if got[0].On("front") != "127.88.0.2" || got[0].SeenBy(got[2]) != "127.88.0.2" {
+		t.Errorf("an IPv6 address read as IPv4: %s", got[0].SeenBy(got[2]))
+	}
+	if a, ok := got[0].SeenBy6(got[2]); !ok || a.String() != "fd00:f::5" {
+		t.Errorf("api seen by web over IPv6: %s, %v", a, ok)
+	}
+	if _, ok := got[0].SeenBy6(got[1]); ok {
+		t.Error("api has an IPv6 address on back")
+	}
+	if !InSubnet(got, netip.MustParseAddr("fd00:f::99")) || InSubnet(got, netip.MustParseAddr("fd00:e::1")) {
+		t.Error("InSubnet misreads the members' IPv6 subnets")
+	}
+}
