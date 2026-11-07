@@ -139,19 +139,34 @@ machine — and from what macOS offers an unprivileged process under them.
   has an address in `127.88.0.0/16`, and on a network created with a
   subnet (Compose's `ipam`, `docker network create --subnet`) an address
   of that subnet, the one `ipv4_address` or `--ip` names or the lowest
-  free one. The container library resolves a member's names to its
-  address on the first network the two share, and reaches its ports
-  through any of its addresses, so a client connects to `db:5432` as on a
-  Compose network. The kernel never sees those addresses:
+  free one. On a network with IPv6 (`enable_ipv6`, `--ipv6`) it holds an
+  IPv6 address too, of the network's IPv6 subnet, or of a `/64` the
+  engine takes from a unique local `/48` of its own, as dockerd does,
+  where the network names none; `ipv6_address` or `--ip6` names one in a
+  subnet the network was created with. The container library resolves a
+  member's names to its address on the first network the two share, and
+  over IPv6 to its IPv6 address on the first such network that gives one,
+  sorting a unique local IPv6 address after IPv4, as RFC 6724 does. It
+  reaches a member's ports through any of its addresses, so a client
+  connects to `db:5432` as on a Compose network. The kernel never sees
+  those addresses:
   - A program that loads no library resolves no member name; it uses
     `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
   - A server sees its clients connect from `127.0.0.1`, not from their
     member addresses.
   - A member's port without a host port is reached through its router,
     whose connections and datagrams its server sees come from `127.0.0.1`.
+  - A socket that reached a member at its IPv6 address reads that member,
+    and its own end, at their IPv6 addresses. A UDP server sees a client
+    that sent over IPv6 at the client's IPv4-mapped address, as the
+    router relays datagrams over IPv4.
   - A network takes one IPv4 subnet of the default IPAM driver, outside
-    `127.0.0.0/8` and every other network's subnet; IPv6 subnets and
-    addresses, and `enable_ipv6`, are refused. A container keeps its
+    `127.0.0.0/8` and every other network's subnet, and with IPv6 one
+    IPv6 subnet, outside loopback, link-local, multicast and IPv4-mapped
+    addresses; more than one of either, and IPv6-only networks
+    (`enable_ipv4: false`), are refused: the library reaches every member
+    at an IPv4 address. A container has no link-local IPv6 address. A
+    container keeps its
     addresses while it exists, where Docker gives a stopped container's
     back to the pool; `docker inspect` reports none for a stopped one, as
     Docker does. A network without a subnet reports `127.88.0.0/16`, the
@@ -160,8 +175,9 @@ machine — and from what macOS offers an unprivileged process under them.
   the `SIOCGIF*` ioctls and the routing sysctl Go's `net.Interfaces` reads
   list the loopback interface and, on a network, `eth0` onwards, one for
   each of the container's addresses in the order of its networks' names,
-  with its subnet's mask and a MAC address of Docker's form, where the
-  host's interfaces are. The kernel knows no `eth0`: binding a socket to
+  with its subnet's mask and a MAC address of Docker's form, and its IPv6
+  address on that network, where the host's interfaces are. The `SIOCGIF*`
+  ioctls answer for IPv4 alone. The kernel knows no `eth0`: binding a socket to
   its index, or joining a multicast group on it, fails.
   The member address is a loopback address, so a program that advertises
   its first non-loopback address finds none on a network without a

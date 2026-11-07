@@ -88,18 +88,25 @@ func TestInterfaces(t *testing.T) {
 func TestInterfacesOnSubnets(t *testing.T) {
 	root := containerRoot(t)
 	network := filepath.Join(t.TempDir(), "network")
-	if err := os.WriteFile(network, []byte("127.88.0.2\tapp\t\t0\tback front\t0\t\t\tback=172.28.0.5/16\n"+
+	if err := os.WriteFile(network, []byte("127.88.0.2\tapp\t\t0\tback front\t0\t\t\tback=172.28.0.5/16 front=fd00:f::5/64\n"+
 		"127.88.0.3\tdb\t\t0\tback\t0\t\t\tback=172.28.0.6/16\n"+
-		"127.88.0.4\tweb\t\t0\tfront\t0\n"+
-		"127.88.0.5\tunseen.invalid\t\t0\telsewhere\t0\t\t\telsewhere=10.9.0.2/24\n"), 0o644); err != nil {
+		"127.88.0.4\tweb\t\t0\tfront\t0\t\t\tfront=fd00:f::7/64\n"+
+		"127.88.0.5\tunseen.invalid\t\t0\telsewhere\t0\t\t\telsewhere=10.9.0.2/24 elsewhere=fd00:e::2/64\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := probe(t, root, []string{NetworkVar + "=" + network, AddressVar + "=127.88.0.2", "PROBE_NAMES=db,web,unseen.invalid,app"}, "interfaces", "resolve")
+	got := probe(t, root, []string{NetworkVar + "=" + network, AddressVar + "=127.88.0.2", "PROBE_NAMES=db,web,unseen.invalid,app"}, "interfaces", "interfaces6", "resolve", "resolve6")
 	if want := "lo0(loopback 127.0.0.1/8 ),eth0(172.28.0.5/16 02:42:ac:1c:00:05),eth1(127.88.0.2/16 02:42:7f:58:00:02)"; got["interfaces"] != want {
 		t.Errorf("interfaces: %q, want %q", got["interfaces"], want)
 	}
+	if want := "eth1(fd00:f::5/64)"; got["interfaces6"] != want {
+		t.Errorf("IPv6 interfaces: %q, want %q", got["interfaces6"], want)
+	}
+	// A unique local IPv6 address sorts after IPv4, as RFC 6724 has it.
 	if want := "db:172.28.0.6 web:127.88.0.4 unseen.invalid:none app:172.28.0.5"; got["resolve"] != want {
 		t.Errorf("resolve: %q, want %q", got["resolve"], want)
+	}
+	if want := "db:none web:fd00:f::7 unseen.invalid:none app:fd00:f::5"; got["resolve6"] != want {
+		t.Errorf("resolve over IPv6: %q, want %q", got["resolve6"], want)
 	}
 }
 
@@ -322,7 +329,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.MkdirAll(filepath.Join(root, "etc"), 0o755)
-	if err := os.WriteFile(filepath.Join(root, "etc", "hosts"), []byte("127.0.0.1\tlocalhost\n# 10.9.9.9 extra.local\n10.1.2.3\textra.local other  # --add-host\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "etc", "hosts"), []byte("127.0.0.1\tlocalhost\n# 10.9.9.9 extra.local\n10.1.2.3\textra.local other  # --add-host\nfd00:5::9\textra.local\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	portDir, err := os.MkdirTemp("/tmp", "fwsp")
@@ -345,6 +352,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		"hidden":               "unknown",
 		"hosts":                "10.1.2.3:80 extra.local",
 		"hostent":              "10.1.2.3",
+		"hostent6":             "fd00:5::9",
 		"direct":               "127.0.0.1:8082",
 		"ifaddrs":              "lo0=127.0.0.1,eth0=127.88.0.2",
 		"ifindex":              "eth0",

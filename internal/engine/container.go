@@ -401,14 +401,14 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			return container.CreateResponse{}, err
 		}
 	}
-	hostname, extraHosts, hostAddress := cfg.Hostname, req.HostConfig.ExtraHosts, firstAddress(address, networks)
+	hostname, extraHosts, hostAddress := cfg.Hostname, req.HostConfig.ExtraHosts, firstAddresses(address, networks)
 	if req.HostConfig.NetworkMode == "none" {
-		hostAddress = ""
+		hostAddress = nil
 	}
 	if net != nil {
 		// A container on another's network has its hostname and hosts, as
 		// it would its UTS namespace's files in Docker.
-		hostname, extraHosts, hostAddress = hostnameOf(net), net.rec.HostConfig.ExtraHosts, firstAddress(net.rec.Address, net.rec.Networks)
+		hostname, extraHosts, hostAddress = hostnameOf(net), net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks)
 		cfg.Hostname = hostname
 	}
 	if hostname == "" {

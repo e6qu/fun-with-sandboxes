@@ -470,6 +470,117 @@ func TestComposeLinks(t *testing.T) {
 
 // proxiedClient fetches each argument's URL through the stack's egress
 // proxy, as urllib does with HTTP_PROXY, and prints its status or error.
+// A Compose network with IPv6 gives its services IPv6 addresses beside
+// their IPv4 ones, from its own subnet or from the engine's ULA prefix,
+// which inspect reports, their names resolve to over IPv6 and their
+// clients reach over TCP, UDP and the egress proxy, as on Docker.
+func TestIPv6Networks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(`services:
+  api:
+    image: fws/python:3.14
+    command:
+      - python3
+      - -c
+      - |
+        import http.server, socket, threading
+        u = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        u.bind(("::", 9053))
+        def echo():
+            while True:
+                d, a = u.recvfrom(512)
+                u.sendto(d.upper(), a)
+        threading.Thread(target=echo, daemon=True).start()
+        http.server.ThreadingHTTPServer.address_family = socket.AF_INET6
+        http.server.ThreadingHTTPServer(("::", 8000), http.server.SimpleHTTPRequestHandler).serve_forever()
+    expose: ["8000"]
+    networks:
+      lan: {ipv4_address: 172.30.6.10, ipv6_address: "fd00:30:6::10"}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000')"]
+      interval: 1s
+      start_interval: 200ms
+      start_period: 30s
+  client:
+    image: fws/python:3.14
+    command: ["python3", "-c", "import time; time.sleep(600)"]
+    networks: [lan, auto6]
+    depends_on:
+      api: {condition: service_healthy}
+networks:
+  lan:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 172.30.6.0/24
+        - subnet: "fd00:30:6::/64"
+  auto6:
+    enable_ipv6: true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "docker-compose", append([]string{"-p", "e2e-ipv6", "-f", filepath.Join(dir, "compose.yaml")}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("docker-compose %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	defer run("down", "-t", "0")
+	run("up", "-d", "--wait")
+	const lan, auto6 = "e2e-ipv6_lan", "e2e-ipv6_auto6"
+	if got := strings.TrimSpace(mustDocker(t, "inspect", "-f", `{{with index .NetworkSettings.Networks "`+lan+`"}}{{.IPAddress}} {{.GlobalIPv6Address}}/{{.GlobalIPv6PrefixLen}} {{.IPv6Gateway}}{{end}}`, "e2e-ipv6-api-1")); got != "172.30.6.10 fd00:30:6::10/64 fd00:30:6::1" {
+		t.Errorf("the api's endpoint on %s: %q", lan, got)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "inspect", "-f", `{{with index .NetworkSettings.Networks "`+lan+`"}}{{.GlobalIPv6Address}}{{end}} {{with index .NetworkSettings.Networks "`+auto6+`"}}{{.GlobalIPv6Address}}/{{.GlobalIPv6PrefixLen}}{{end}}`, "e2e-ipv6-client-1")); !strings.HasPrefix(got, "fd00:30:6::2 fd") || !strings.HasSuffix(got, "::2/64") {
+		t.Errorf("the client's IPv6 endpoints: %q", got)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "network", "inspect", "-f", `{{.EnableIPv6}} {{range .IPAM.Config}}{{.Subnet}} {{end}}{{range .Containers}}{{if eq .Name "e2e-ipv6-api-1"}}{{.IPv6Address}}{{end}}{{end}}`, lan)); got != "true 172.30.6.0/24 fd00:30:6::/64 fd00:30:6::10/64" {
+		t.Errorf("network inspect of %s: %q", lan, got)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "network", "inspect", "-f", `{{.EnableIPv6}} {{range .IPAM.Config}}{{.Subnet}} {{end}}`, auto6)); !strings.HasPrefix(got, "true 127.88.0.0/16 fd") || !strings.HasSuffix(got, "::/64") {
+		t.Errorf("network inspect of %s: %q", auto6, got)
+	}
+	if out := run("exec", "-T", "api", "python3", "-c", "print(open('/etc/hosts').read(), end='')"); !strings.Contains(out, "fd00:30:6::10\t") {
+		t.Errorf("the api's /etc/hosts names no IPv6 address:\n%s", out)
+	}
+	out := run("exec", "-T", "client", "python3", "-c", `import socket
+print(socket.getaddrinfo("api", 8000, socket.AF_INET6, socket.SOCK_STREAM)[0][4][0])
+print(socket.getaddrinfo("api", 8000, socket.AF_UNSPEC, socket.SOCK_STREAM)[0][4][0])
+s = socket.create_connection(("fd00:30:6::10", 8000), timeout=10)
+s.sendall(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n")
+print(s.recv(4096).split(b"\r\n", 1)[0].decode(), s.getpeername()[0], s.getpeername()[1], s.getsockname()[0])
+u = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+u.settimeout(10)
+u.sendto(b"ping", ("fd00:30:6::10", 9053))
+d, a = u.recvfrom(512)
+print(d.decode(), a[0], a[1])`)
+	if want := "fd00:30:6::10\n172.30.6.10\nHTTP/1.0 200 OK fd00:30:6::10 8000 fd00:30:6::2\nPING fd00:30:6::10 9053\n"; out != want {
+		t.Errorf("the client reached the api over IPv6:\n%s\nwant:\n%s", out, want)
+	}
+	out = run("exec", "-T", "client", "python3", "-c", sharedClient, "fd00:30:6::99:8000")
+	if want := "fd00:30:6::99:8000 OSError\n"; out != want {
+		t.Errorf("the client connected to an address no member holds: %q, want %q", out, want)
+	}
+	out = run("exec", "-T", "client", "python3", "-c", proxiedClient, "http://[fd00:30:6::10]:8000/", "http://[fd00:30:6::99]:8000/")
+	if want := "http://[fd00:30:6::10]:8000/ 200\nhttp://[fd00:30:6::99]:8000/ 502\n"; out != want {
+		t.Errorf("the client fetched through the proxy: %q, want %q", out, want)
+	}
+	if _, err := docker(t, "run", "--rm", "--network", lan, "--ip6", "fd00:30:6::10", "fws/python:3.14", "true"); err == nil || !strings.Contains(err.Error(), "Address already in use") {
+		t.Errorf("a taken IPv6 address: %v", err)
+	}
+	if _, err := docker(t, "run", "--rm", "--network", auto6, "--ip6", "fd00:30:7::5", "fws/python:3.14", "true"); err == nil || !strings.Contains(err.Error(), "user specified IP address is supported only") {
+		t.Errorf("an IPv6 address on a network the engine chose the subnet of: %v", err)
+	}
+	if _, err := docker(t, "network", "create", "--ipv6", "--subnet", "fd00:30:6::/80", "e2e-ipv6-overlap"); err == nil || !strings.Contains(err.Error(), "Pool overlaps") {
+		docker(t, "network", "rm", "e2e-ipv6-overlap")
+		t.Errorf("an overlapping IPv6 subnet: %v", err)
+	}
+}
+
 const proxiedClient = `import sys, urllib.request, urllib.error
 for url in sys.argv[1:]:
     try:
