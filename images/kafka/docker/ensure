@@ -1,0 +1,8 @@
+#!/bin/bash
+# Format the log directories for the cluster CLUSTER_ID names, unless they
+# already are.
+. /etc/confluent/docker/bash-config
+
+ub ensure CLUSTER_ID
+echo "===> Formatting the log directories for cluster $CLUSTER_ID ..."
+kafka-storage format --ignore-formatted --cluster-id "$CLUSTER_ID" --config /etc/kafka/kafka.properties

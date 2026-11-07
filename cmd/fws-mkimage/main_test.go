@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 )
@@ -86,7 +87,7 @@ func TestWriteArchiveLayersPerStorePath(t *testing.T) {
 	}
 	os.MkdirAll(filepath.Join(stage, "bin"), 0o755)
 	os.Symlink("../nix/store/aaa-tool/bin/tool", filepath.Join(stage, "bin", "tool"))
-	spec := Spec{Tag: "fws/test:1", Config: []byte(`{"Entrypoint":["/entry"]}`)}
+	spec := Spec{Tag: "fws/test:1", Config: []byte(`{"Entrypoint":["/entry"],"Healthcheck":{"Test":["CMD","/entry"],"Interval":15000000000,"StartInterval":1000000000}}`)}
 	out := filepath.Join(t.TempDir(), "img.tar")
 	if err := writeArchive(stage, spec, []string{"/nix/store/bbb-lib", "/nix/store/aaa-tool"}, out, runtime.GOARCH); err != nil {
 		t.Fatal(err)
@@ -108,7 +109,8 @@ func TestWriteArchiveLayersPerStorePath(t *testing.T) {
 	if img.RepoTags[0] != "fws/test:1" || len(img.LayerSizes) != 3 || len(img.Config.History) != 3 {
 		t.Fatalf("loaded %+v", img)
 	}
-	if img.Config.History[0].CreatedBy != "fws-mkimage: /nix/store/aaa-tool" || img.Config.Config.Entrypoint[0] != "/entry" {
+	if img.Config.History[0].CreatedBy != "fws-mkimage: /nix/store/aaa-tool" || img.Config.Config.Entrypoint[0] != "/entry" ||
+		img.HealthStartInterval != time.Second {
 		t.Fatalf("history %+v, config %+v", img.Config.History, img.Config.Config)
 	}
 	root := s.Root(img.ID)

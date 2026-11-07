@@ -51,6 +51,7 @@ go build -o "$build/nc" ./images/nc
 go build -o "$build/consul-entry" ./images/consul/entry
 go build -o "$build/vault-entry" ./images/vault/entry
 go build -o "$build/mongo-entry" ./images/mongo/entry
+go build -o "$build/ub" ./images/kafka/ub
 
 # output_with BINARY INSTALLABLE... builds INSTALLABLE and prints its
 # output that holds bin/BINARY. Unfree packages, such as DynamoDB Local,
@@ -186,6 +187,29 @@ closure "$mongodb" "$mongosh" "$openssl" "$findutils" "$coreutils" "$gnugrep" "$
 mkimage $(accounts mongo mongodb 999 999 /data/db) -spec images/mongo/image.json -closure "$build/mongo.closure" -pkg "$mongodb" -pkg "$mongosh" \
   -pkg "$openssl" -pkg "$findutils" -pkg "$coreutils" -pkg "$gnugrep" -pkg "$bash" \
   -file "/usr/local/bin/docker-entrypoint.sh=$build/mongo-entry" -out "$out/mongo.tar"
+
+# Apache Kafka laid out as Confluent's images lay it out, which
+# Testcontainers' module drives: the scripts in /etc/confluent/docker, the
+# utility belt they run, and Kafka's tools in /usr/bin without their .sh.
+kafka=$(pkg_with apacheKafka kafka-server-start.sh)
+coreutils=$(pkg_with coreutils dirname)
+gnused=$(pkg_with gnused sed)
+bash=$(pkg_with bash bash)
+kafka_links=()
+for f in "$kafka"/bin/kafka-*.sh; do
+  n=$(basename "$f" .sh)
+  kafka_links+=(-link "/usr/bin/$n=../../bin/$n.sh")
+done
+closure "$kafka" "$coreutils" "$gnused" "$bash" > "$build/kafka.closure"
+mkimage $(accounts kafka appuser 1000 1000 /home/appuser) -spec images/kafka/image.json -closure "$build/kafka.closure" -pkg "$kafka" \
+  -pkg "$coreutils" -pkg "$gnused" -pkg "$bash" "${kafka_links[@]}" \
+  -file "/usr/bin/ub=$build/ub" -file "/etc/confluent/docker=images/kafka/docker" -out "$out/kafka.tar"
+
+# Mailpit as its image runs it, from /mailpit.
+mailpit=$(pkg_with mailpit mailpit)
+closure "$mailpit" > "$build/mailpit.closure"
+mkimage $(accounts mailpit) -spec images/mailpit/image.json -closure "$build/mailpit.closure" -pkg "$mailpit" \
+  -link /mailpit=bin/mailpit -out "$out/mailpit.tar"
 
 python=$(pkg_with python314 python3.14)
 closure "$python" > "$build/python.closure"

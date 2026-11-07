@@ -1,0 +1,34 @@
+{
+  "tag": "fws/mailpit:1.32",
+  "files": {},
+  "dirs": [
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/bin",
+      "TZ=UTC"
+    ],
+    "Entrypoint": [
+      "/mailpit"
+    ],
+    "ExposedPorts": {
+      "1025/tcp": {},
+      "1110/tcp": {},
+      "8025/tcp": {}
+    },
+    "Healthcheck": {
+      "Test": [
+        "CMD",
+        "/mailpit",
+        "readyz"
+      ],
+      "Interval": 15000000000,
+      "StartPeriod": 10000000000,
+      "StartInterval": 1000000000
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

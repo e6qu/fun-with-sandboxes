@@ -96,7 +96,7 @@ tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite
 
 A Nix-built catalog for `aarch64-darwin`/`x86_64-darwin`, converted to OCI
 layers with a `darwin/<arch>` platform entry: `bun`, `consul`, `dynamodb`,
-`etcd`, `gitea`, `lambda`, `mariadb`, `memcached`, `mongo`, `mysql`, `nats`,
+`etcd`, `gitea`, `kafka`, `lambda`, `mailpit`, `mariadb`, `memcached`, `mongo`, `mysql`, `nats`,
 `nginx`, `node`, `playwright`, `postgres`, `python`, `rabbitmq`, `redis`,
 `ryuk` (Testcontainers' reaper), `seaweedfs`, `toolbox`, `valkey` and
 `vault`. SeaweedFS is the catalog's S3 server: nixpkgs marks MinIO insecure,

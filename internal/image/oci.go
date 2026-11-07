@@ -232,7 +232,7 @@ func (s *Store) Extend(base string, diffs []string, root string, config Config, 
 		return Image{}, err
 	}
 	if config.HealthStartInterval > 0 {
-		if img, err = withStartInterval(img, config.HealthStartInterval); err != nil {
+		if img, err = WithStartInterval(img, config.HealthStartInterval); err != nil {
 			return Image{}, err
 		}
 	}
