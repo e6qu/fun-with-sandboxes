@@ -18,6 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -43,6 +45,33 @@ static const char *addr(const struct sockaddr_storage *a) {
 static void fail(const char *step) {
     printf("%s=error\n", step);
     exit(0);
+}
+
+// sent sends a file's 4096 bytes from one end of a stream to the other
+// with sendfile, as Java's FileChannel.transferTo does, and writes into out
+// what sendfile returned and whether the bytes arrived.
+static void sent(int from, int to, char *out, size_t cap) {
+    char data[4096], got[4096];
+    for (size_t i = 0; i < sizeof data; i++) data[i] = (char)('a' + i % 26);
+    FILE *f = tmpfile();
+    if (!f || fwrite(data, 1, sizeof data, f) != sizeof data || fflush(f)) {
+        snprintf(out, cap, "no-file");
+        return;
+    }
+    struct timeval tv = {5, 0};
+    setsockopt(to, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    off_t len = sizeof data;
+    int r = sendfile(fileno(f), from, 0, &len, NULL, 0);
+    int e = errno;
+    size_t have = 0;
+    while (have < (size_t)len) {
+        ssize_t m = read(to, got + have, sizeof got - have);
+        if (m <= 0) break;
+        have += (size_t)m;
+    }
+    snprintf(out, cap, "%d %lld %s %s", r, (long long)len, r ? strerror(e) : "-",
+             have == sizeof data && memcmp(got, data, sizeof data) == 0 ? "arrived" : "lost");
+    fclose(f);
 }
 
 int main(int argc, char **argv) {
@@ -104,6 +133,9 @@ int main(int argc, char **argv) {
     n = sizeof s;
     getpeername(c, (void *)&s, &n);
     printf("local=%s %s\n", buf, addr(&s));
+    char sf[128];
+    sent(k, c, sf, sizeof sf);
+    printf("sendfile-unix=%s\n", sf);
 
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof hints);
@@ -292,6 +324,7 @@ int main(int argc, char **argv) {
     memset(buf, 0, sizeof buf);
     if (pk < 0 || write(pc, "ping", 4) != 4 || read(pk, buf, 4) != 4) fail("loopback-only");
     printf(" %s", buf);
+    sent(pk, pc, sf, sizeof sf);
     struct sockaddr_in mine = pub;
     inet_pton(AF_INET, "127.88.0.2", &mine.sin_addr);
     int po = socket(AF_INET, SOCK_STREAM, 0);
@@ -311,5 +344,6 @@ int main(int argc, char **argv) {
     n = sizeof s;
     getsockname(pw, (void *)&s, &n);
     printf(" then=%s\n", addr(&s));
+    printf("sendfile-tcp=%s\n", sf);
     return 0;
 }

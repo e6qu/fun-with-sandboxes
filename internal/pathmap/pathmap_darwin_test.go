@@ -558,13 +558,13 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexposed: %v\n%s", err, out)
 	}
-	want := "listen=[::]:7000\nclient=its-own\nlocal=ping 127.0.0.1:7000\npeer=hello 127.88.0.3:7100\nrefused=-1\n" +
+	want := "listen=[::]:7000\nclient=its-own\nlocal=ping 127.0.0.1:7000\nsendfile-unix=0 4096 - arrived\npeer=hello 127.88.0.3:7100\nrefused=-1\n" +
 		"ephemeral=ping in-range\nudp-ephemeral=in-range\n" +
 		"udp-listen=[::]:7000\nudp-local=ping from-loopback\nudp-reply=pong 127.0.0.1:7000\n" +
 		"udp-connect=0 peer-is-client\nudp-connected-send=send writ wriv\nudp-isconn=-1 EISCONN\nudp-filter=mine\n" +
 		"udp-disconnect=0 ENOTCONN\nudp-disconnected=ot hr\nudp-pktinfo6=1 pk6 ::ffff:127.0.0.1\n" +
 		"udp-dstaddr=127.0.0.1 pktinfo=127.0.0.1 truncated=yes\nudp-peer=hello 127.88.0.3:7100\n" +
-		"loopback-only=127.0.0.1:7200 ping own=refused wildcard=EADDRINUSE then=0.0.0.0:7200\n"
+		"loopback-only=127.0.0.1:7200 ping own=refused wildcard=EADDRINUSE then=0.0.0.0:7200\nsendfile-tcp=0 4096 - arrived\n"
 	if string(out) != want {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}

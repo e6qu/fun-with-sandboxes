@@ -27,11 +27,15 @@ import (
 func TestKafka(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	k, err := tckafka.Run(ctx, "fws/kafka:4.2", tckafka.WithClusterID("kraftCluster"))
+	k, err := tckafka.Run(ctx, "fws/kafka:4.2", tckafka.WithClusterID("kraftCluster"),
+		testcontainers.WithEnv(map[string]string{
+			"KAFKA_LOG4J_LOGGERS": "kafka.request.logger=DEBUG,org.apache.kafka.common.network.Selector=DEBUG",
+		}))
 	testcontainers.CleanupContainer(t, k)
 	if err != nil {
 		t.Fatal(err)
 	}
+	logsOnFailure(t, k)
 	if k.ClusterID != "kraftCluster" {
 		t.Errorf("the module read cluster ID %q", k.ClusterID)
 	}
@@ -86,13 +90,14 @@ func TestKafkaOnANetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	logsOnFailure(t, broker)
 	const script = `set -e
 kafka-topics --bootstrap-server kafka:9092 --create --topic notes --partitions 1 --replication-factor 1
 echo kept | kafka-console-producer --bootstrap-server kafka:9092 --topic notes
 kafka-console-consumer --bootstrap-server kafka:9092 --topic notes --from-beginning --max-messages 1 --timeout-ms 60000 | sed 's/^/consumed /'`
 	client, err := testcontainers.Run(ctx, "fws/kafka:4.2",
 		testcontainers.WithCmd("sh", "-c", script),
-		testcontainers.WithWaitStrategy(wait.ForExit().WithExitTimeout(3*time.Minute)),
+		testcontainers.WithWaitStrategyAndDeadline(3*time.Minute, wait.ForExit()),
 		tcnetwork.WithNetwork(nil, nw))
 	testcontainers.CleanupContainer(t, client)
 	if err != nil {
@@ -129,6 +134,24 @@ kafka-console-consumer --bootstrap-server kafka:9092 --topic notes --from-beginn
 			t.Errorf("kafka.properties lacks %q:\n%s", want, props)
 		}
 	}
+}
+
+// logsOnFailure logs c's output once the test has failed, before c is
+// terminated.
+func logsOnFailure(t *testing.T, c testcontainers.Container) {
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		r, err := c.Logs(context.Background())
+		if err != nil {
+			t.Logf("the container's logs: %v", err)
+			return
+		}
+		defer r.Close()
+		b, _ := io.ReadAll(r)
+		t.Logf("the container's logs:\n%s", b)
+	})
 }
 
 // Mailpit takes mail on its SMTP port, with the credentials the module
