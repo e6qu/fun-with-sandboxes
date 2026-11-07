@@ -544,7 +544,7 @@ networks:
 	if got := strings.TrimSpace(mustDocker(t, "network", "inspect", "-f", `{{.EnableIPv6}} {{range .IPAM.Config}}{{.Subnet}} {{end}}`, auto6)); !strings.HasPrefix(got, "true 127.88.0.0/16 fd") || !strings.HasSuffix(got, "::/64") {
 		t.Errorf("network inspect of %s: %q", auto6, got)
 	}
-	if out := run("exec", "-T", "api", "cat", "/etc/hosts"); !strings.Contains(out, "fd00:30:6::10\t") {
+	if out := run("exec", "-T", "api", "python3", "-c", "print(open('/etc/hosts').read(), end='')"); !strings.Contains(out, "fd00:30:6::10\t") {
 		t.Errorf("the api's /etc/hosts names no IPv6 address:\n%s", out)
 	}
 	out := run("exec", "-T", "client", "python3", "-c", `import socket
