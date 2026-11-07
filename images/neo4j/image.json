@@ -1,0 +1,42 @@
+{
+  "tag": "fws/neo4j:2026.02",
+  "files": {},
+  "dirs": [
+    "/tmp",
+    "/data",
+    "/logs",
+    "/var/lib/neo4j",
+    "/var/lib/neo4j/import",
+    "/var/lib/neo4j/plugins",
+    "/var/lib/neo4j/run",
+    "/var/lib/neo4j/certificates"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/var/lib/neo4j/bin:/usr/bin:/bin",
+      "TZ=UTC",
+      "NEO4J_EDITION=community",
+      "NEO4J_HOME=/var/lib/neo4j",
+      "LANG=C.UTF-8"
+    ],
+    "Entrypoint": [
+      "/startup/docker-entrypoint.sh"
+    ],
+    "Cmd": [
+      "neo4j"
+    ],
+    "WorkingDir": "/var/lib/neo4j",
+    "ExposedPorts": {
+      "7473/tcp": {},
+      "7474/tcp": {},
+      "7687/tcp": {}
+    },
+    "Volumes": {
+      "/data": {},
+      "/logs": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

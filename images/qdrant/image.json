@@ -1,0 +1,26 @@
+{
+  "tag": "fws/qdrant:1.17",
+  "files": {},
+  "dirs": [
+    "/tmp",
+    "/qdrant"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/usr/bin:/bin",
+      "TZ=Etc/UTC",
+      "RUN_MODE=production"
+    ],
+    "Cmd": [
+      "./entrypoint.sh"
+    ],
+    "WorkingDir": "/qdrant",
+    "ExposedPorts": {
+      "6333/tcp": {},
+      "6334/tcp": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

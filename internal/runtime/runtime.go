@@ -84,6 +84,16 @@ func exitCode(ws syscall.WaitStatus) int {
 	return ws.ExitStatus()
 }
 
+// FromWorkDir makes a relative argv[0] with a slash, such as ./run.sh,
+// absolute in the container, as execve resolves it from the working
+// directory.
+func FromWorkDir(workDir, argv0 string) string {
+	if !strings.Contains(argv0, "/") || strings.HasPrefix(argv0, "/") {
+		return argv0
+	}
+	return path.Join("/", workDir, argv0)
+}
+
 // Resolve maps argv[0] to the executable's host path inside root, searching the
 // container's PATH when argv[0] has no slash.
 func Resolve(root, argv0 string, env []string) (string, error) {

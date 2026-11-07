@@ -52,6 +52,7 @@ go build -o "$build/consul-entry" ./images/consul/entry
 go build -o "$build/vault-entry" ./images/vault/entry
 go build -o "$build/mongo-entry" ./images/mongo/entry
 go build -o "$build/ub" ./images/kafka/ub
+go build -o "$build/neo4j-entry" ./images/neo4j/entry
 
 # output_with BINARY INSTALLABLE... builds INSTALLABLE and prints its
 # output that holds bin/BINARY. Unfree packages, such as DynamoDB Local,
@@ -210,6 +211,58 @@ mailpit=$(pkg_with mailpit mailpit)
 closure "$mailpit" > "$build/mailpit.closure"
 mkimage $(accounts mailpit) -spec images/mailpit/image.json -closure "$build/mailpit.closure" -pkg "$mailpit" \
   -link /mailpit=bin/mailpit -out "$out/mailpit.tar"
+
+# Meilisearch as its image runs it: /bin/meilisearch, linked from
+# /meilisearch, in /meili_data.
+meilisearch=$(pkg_with meilisearch meilisearch)
+closure "$meilisearch" > "$build/meilisearch.closure"
+mkimage $(accounts meilisearch) -spec images/meilisearch/image.json -closure "$build/meilisearch.closure" -pkg "$meilisearch" \
+  -link /meilisearch=bin/meilisearch -out "$out/meilisearch.tar"
+
+# Qdrant laid out in /qdrant as its image lays it out: the binary, the
+# configuration and entrypoint script from its source, and the web UI
+# with the API's OpenAPI document, which its sync script adds.
+qdrant=$(pkg_with qdrant qdrant)
+qdrant_src=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#qdrant.src")
+qdrant_ui=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/qdrant/web-ui.nix --argstr nixpkgs "$nixpkgs")
+cp -R "$qdrant_ui" "$build/qdrant-static"
+chmod -R u+w "$build/qdrant-static"
+cp "$qdrant_src/docs/redoc/master/openapi.json" "$build/qdrant-static/openapi.json"
+coreutils=$(pkg_with coreutils dirname)
+bash=$(pkg_with bash bash)
+closure "$qdrant" "$coreutils" "$bash" > "$build/qdrant.closure"
+mkimage $(accounts qdrant) -spec images/qdrant/image.json -closure "$build/qdrant.closure" -pkg "$qdrant" -pkg "$coreutils" -pkg "$bash" \
+  -link /usr/bin/env=../../bin/env -link /qdrant/qdrant=../bin/qdrant -file "/qdrant/config=$qdrant_src/config" \
+  -file "/qdrant/entrypoint.sh=$qdrant_src/tools/entrypoint.sh" -file "/qdrant/static=$build/qdrant-static" -out "$out/qdrant.tar"
+
+# Neo4j laid out as its image lays it out: NEO4J_HOME at /var/lib/neo4j
+# holds the distribution, a writable copy of its configuration, and data
+# and logs linked to the /data and /logs volumes; the entrypoint and the
+# plugins it installs are in /startup.
+neo4j=$(pkg_with neo4j neo4j)
+coreutils=$(pkg_with coreutils dirname)
+bash=$(pkg_with bash bash)
+neo4j_home=$neo4j/share/neo4j
+neo4j_args=()
+for f in "$neo4j_home"/*; do
+  n=$(basename "$f")
+  case $n in
+  bin | conf | data | logs | run | import | plugins | certificates) ;;
+  *) neo4j_args+=(-link "/var/lib/neo4j/$n=../../..$f") ;;
+  esac
+done
+for n in neo4j neo4j-admin cypher-shell; do
+  neo4j_args+=(-link "/var/lib/neo4j/bin/$n=../../../../bin/$n")
+done
+mkdir "$build/neo4j-conf"
+cp "$neo4j_home"/conf/* "$build/neo4j-conf"
+chmod 777 "$build"/neo4j-conf/*
+closure "$neo4j" "$coreutils" "$bash" > "$build/neo4j.closure"
+mkimage $(accounts neo4j neo4j 7474 7474 /var/lib/neo4j) -spec images/neo4j/image.json -closure "$build/neo4j.closure" -pkg "$neo4j" \
+  -pkg "$coreutils" -pkg "$bash" -link /usr/bin/env=../../bin/env "${neo4j_args[@]}" \
+  -link /var/lib/neo4j/data=../../../data -link /var/lib/neo4j/logs=../../../logs -file "/var/lib/neo4j/conf=$build/neo4j-conf" \
+  -file "/startup/docker-entrypoint.sh=$build/neo4j-entry" -file "/startup/neo4j-plugins.json=images/neo4j/neo4j-plugins.json" \
+  -out "$out/neo4j.tar"
 
 python=$(pkg_with python314 python3.14)
 closure "$python" > "$build/python.closure"

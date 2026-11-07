@@ -1554,6 +1554,20 @@ static int fws_getlogin_r(char *buf, size_t size) {
 }
 INTERPOSE(fws_getlogin_r, getlogin_r);
 
+// A container has none of the host user's directories: confstr names the
+// container's /tmp for each, where a Linux program would put its files.
+static size_t fws_confstr(int name, char *buf, size_t len) {
+    if (name == _CS_DARWIN_USER_DIR || name == _CS_DARWIN_USER_TEMP_DIR || name == _CS_DARWIN_USER_CACHE_DIR) {
+        static const char dir[] = "/tmp/";
+        if (buf && len) {
+            strlcpy(buf, dir, len);
+        }
+        return sizeof dir;
+    }
+    return confstr(name, buf, len);
+}
+INTERPOSE(fws_confstr, confstr);
+
 static int copy_passwd(struct passwd *found, struct passwd *out, char *buf, size_t size, struct passwd **result) {
     *result = NULL;
     if (!found) {

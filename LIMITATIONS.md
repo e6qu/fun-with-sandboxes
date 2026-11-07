@@ -24,6 +24,18 @@ machine — and from what macOS offers an unprivileged process under them.
   as the REST Proxy `confluentinc/confluent-local` runs. Kafka's tools log
   through Kafka's own `tools-log4j2.yaml`, so `KAFKA_TOOLS_LOG4J_LOGLEVEL`
   sets nothing; their level is the warning level Confluent's default is.
+- **`fws/meilisearch` serves no mini-dashboard and carries no `meilitool`.**
+  nixpkgs builds Meilisearch without the dashboard, which its build would
+  download, and builds the server alone.
+- **`fws/qdrant` serves a pinned web UI.** Qdrant's image fetches the web
+  UI's latest release when it is built; the catalog pins one release, so
+  rebuilds serve the same dashboard.
+- **`fws/neo4j` is the Community Edition.** Its official entrypoint's
+  behaviour is reimplemented in Go: `NEO4J_PLUGINS` installs APOC from the
+  distribution and downloads the others from their versions files, and
+  `EXTENSION_SCRIPT` runs in bash, whose environment the server then
+  inherits, as when the official script sources it. The image is not
+  Debian-based, so it prints no warning about Debian releases.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
