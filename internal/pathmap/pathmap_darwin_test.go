@@ -329,7 +329,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.MkdirAll(filepath.Join(root, "etc"), 0o755)
-	if err := os.WriteFile(filepath.Join(root, "etc", "hosts"), []byte("127.0.0.1\tlocalhost\n# 10.9.9.9 extra.local\n10.1.2.3\textra.local other  # --add-host\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "etc", "hosts"), []byte("127.0.0.1\tlocalhost\n# 10.9.9.9 extra.local\n10.1.2.3\textra.local other  # --add-host\nfd00:5::9\textra.local\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	portDir, err := os.MkdirTemp("/tmp", "fwsp")
@@ -352,6 +352,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		"hidden":               "unknown",
 		"hosts":                "10.1.2.3:80 extra.local",
 		"hostent":              "10.1.2.3",
+		"hostent6":             "fd00:5::9",
 		"direct":               "127.0.0.1:8082",
 		"ifaddrs":              "lo0=127.0.0.1,eth0=127.88.0.2",
 		"ifindex":              "eth0",

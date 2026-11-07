@@ -79,16 +79,6 @@ func (m Member) On(network string) string {
 	return m.Address
 }
 
-// On6 is the member's IPv6 address on network, if it holds one.
-func (m Member) On6(network string) (netip.Addr, bool) {
-	for _, s := range m.Subnets {
-		if s.Network == network && s.Address.Addr().Is6() {
-			return s.Address.Addr(), true
-		}
-	}
-	return netip.Addr{}, false
-}
-
 // SeenBy is the member's address as viewer reaches it: on the first of
 // its networks the viewer is on too, else its member address.
 func (m Member) SeenBy(viewer Member) string {
@@ -98,19 +88,6 @@ func (m Member) SeenBy(viewer Member) string {
 		}
 	}
 	return m.Address
-}
-
-// SeenBy6 is the member's IPv6 address as viewer reaches it: on the
-// first of its networks the viewer is on too that gives it one.
-func (m Member) SeenBy6(viewer Member) (netip.Addr, bool) {
-	for _, n := range m.Networks {
-		if slices.Contains(viewer.Networks, n) {
-			if a, ok := m.On6(n); ok {
-				return a, true
-			}
-		}
-	}
-	return netip.Addr{}, false
 }
 
 // InSubnet reports whether ip lies in the subnet of a network the members

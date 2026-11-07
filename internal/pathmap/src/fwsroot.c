@@ -3813,9 +3813,12 @@ static int dgram_dest(const struct sockaddr *sa, socklen_t len, in_addr_t *v4, u
             *v4 = mapped_v4(&a->sin6_addr);
         } else if (IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) || IN6_IS_ADDR_UNSPECIFIED(&a->sin6_addr)) {
             *v4 = htonl(INADDR_LOOPBACK);
-        } else if (v6_target(&a->sin6_addr, v4) != 1) {
-            if (errno != EHOSTUNREACH) errno = ENETUNREACH;
-            return -1;
+        } else {
+            int t = v6_target(&a->sin6_addr, v4);
+            if (t != 1) {
+                if (t == 0) errno = ENETUNREACH;
+                return -1;
+            }
         }
         return 0;
     }
@@ -3849,7 +3852,6 @@ static int dgram_connect(int fd, const struct sockaddr *sa, socklen_t len) {
     set_state(fd, state_of(fd) | NET_DCONN | dest_p6(sa));
     return 0;
 }
-
 
 static ssize_t dgram_send(int fd, const struct iovec *iov, int iovlen, int flags, const struct sockaddr *sa, socklen_t len, sendmsg_fn send) {
     int connected = state_of(fd) & NET_DCONN;
@@ -5144,13 +5146,13 @@ static int hosts_addrinfo(const char *node, const char *service, const struct ad
     return 0;
 }
 
-// hosts_v4 finds the first IPv4 address the container's /etc/hosts lists
-// name at.
-static int hosts_v4(const char *name, in_addr_t *out) {
+// hosts_addr finds the first address of family af, IPv4 or IPv6, the
+// container's /etc/hosts lists name at.
+static int hosts_addr(const char *name, int af, void *out) {
     char addrs[HOSTS_MAX][INET6_ADDRSTRLEN], canon[256];
     int n = hosts_lookup(name, addrs, canon, sizeof canon);
     for (int i = 0; i < n; i++) {
-        if (inet_pton(AF_INET, addrs[i], out) == 1) return 1;
+        if (inet_pton(af, addrs[i], out) == 1) return 1;
     }
     return 0;
 }
@@ -5257,15 +5259,15 @@ static struct hostent *member_hostent(const char *name, int af, const void *a) {
 
 static struct hostent *fws_gethostbyname(const char *name) {
     in_addr_t a;
-    return name && (hosts_v4(name, &a) || member_address(name, &a)) ? member_hostent(name, AF_INET, &a) : gethostbyname(name);
+    return name && (hosts_addr(name, AF_INET, &a) || member_address(name, &a)) ? member_hostent(name, AF_INET, &a) : gethostbyname(name);
 }
 INTERPOSE(fws_gethostbyname, gethostbyname);
 
 static struct hostent *fws_gethostbyname2(const char *name, int af) {
     in_addr_t a;
     struct in6_addr a6;
-    if (af == AF_INET && name && (hosts_v4(name, &a) || member_address(name, &a))) return member_hostent(name, AF_INET, &a);
-    if (af == AF_INET6 && name && member_address6(name, &a6)) return member_hostent(name, AF_INET6, &a6);
+    if (af == AF_INET && name && (hosts_addr(name, AF_INET, &a) || member_address(name, &a))) return member_hostent(name, AF_INET, &a);
+    if (af == AF_INET6 && name && (hosts_addr(name, AF_INET6, &a6) || member_address6(name, &a6))) return member_hostent(name, AF_INET6, &a6);
     return gethostbyname2(name, af);
 }
 INTERPOSE(fws_gethostbyname2, gethostbyname2);

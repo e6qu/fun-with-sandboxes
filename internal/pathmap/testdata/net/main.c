@@ -197,6 +197,10 @@ int main(int argc, char **argv) {
     char hb[64];
     if (!he || !inet_ntop(AF_INET, he->h_addr_list[0], hb, sizeof hb)) fail("hostent");
     printf("hostent=%s\n", hb);
+    // Over IPv6, the line of the name's IPv6 address.
+    he = gethostbyname2("extra.local", AF_INET6);
+    if (!he || he->h_length != 16 || !inet_ntop(AF_INET6, he->h_addr_list[0], hb, sizeof hb)) fail("hostent6");
+    printf("hostent6=%s\n", hb);
 
     // UDP: an IPv4 server, an IPv6 client to its IPv4 address.
     int u = socket(AF_INET, SOCK_DGRAM, 0);

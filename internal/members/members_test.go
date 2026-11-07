@@ -111,8 +111,8 @@ func TestSubnetAddresses(t *testing.T) {
 	}
 }
 
-// A member's IPv6 addresses ride beside its IPv4 ones: found by any
-// spelling, seen on the first shared network that gives one.
+// A member's IPv6 addresses ride beside its IPv4 ones, found by any
+// spelling, and leave its IPv4 address on each network as it was.
 func TestIPv6Addresses(t *testing.T) {
 	ms := []Member{
 		{Address: "127.88.0.2", Names: []string{"api"}, Networks: []string{"back", "front"}, Subnets: []NetAddress{
@@ -137,12 +137,6 @@ func TestIPv6Addresses(t *testing.T) {
 	}
 	if got[0].On("front") != "127.88.0.2" || got[0].SeenBy(got[2]) != "127.88.0.2" {
 		t.Errorf("an IPv6 address read as IPv4: %s", got[0].SeenBy(got[2]))
-	}
-	if a, ok := got[0].SeenBy6(got[2]); !ok || a.String() != "fd00:f::5" {
-		t.Errorf("api seen by web over IPv6: %s, %v", a, ok)
-	}
-	if _, ok := got[0].SeenBy6(got[1]); ok {
-		t.Error("api has an IPv6 address on back")
 	}
 	if !InSubnet(got, netip.MustParseAddr("fd00:f::99")) || InSubnet(got, netip.MustParseAddr("fd00:e::1")) {
 		t.Error("InSubnet misreads the members' IPv6 subnets")
