@@ -1,0 +1,28 @@
+{
+  "tag": "fws/meilisearch:1.43",
+  "files": {},
+  "dirs": [
+    "/tmp",
+    "/meili_data"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/usr/bin:/bin",
+      "TZ=UTC",
+      "MEILI_HTTP_ADDR=0.0.0.0:7700",
+      "MEILI_SERVER_PROVIDER=docker"
+    ],
+    "Cmd": [
+      "/bin/sh",
+      "-c",
+      "/bin/meilisearch"
+    ],
+    "WorkingDir": "/meili_data",
+    "ExposedPorts": {
+      "7700/tcp": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}
