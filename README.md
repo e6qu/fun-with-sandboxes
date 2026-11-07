@@ -48,7 +48,8 @@ cannot run without a VM. `scripts/build-images.sh` builds the catalog from
 Nix packages into archives for `docker load`, and `scripts/publish-images.sh`
 pushes them to a registry the engine can pull from. MySQL and MariaDB are
 built from source, with the compilation comment their vendors' builds
-carry (`images/servers.nix`), so the first build compiles them:
+carry (`images/servers.nix`), so the first build compiles them, as it does
+Consul, which no binary cache holds:
 
 | Image | Configured like the official image through |
 |---|---|
@@ -59,6 +60,10 @@ carry (`images/servers.nix`), so the first build compiles them:
 | `fws/valkey:9` | arguments to `valkey-server`, or a `.conf` file |
 | `fws/memcached:1.6` | arguments to `memcached` |
 | `fws/seaweedfs:4.36` | the subcommand and its flags, as `mini` (the default: master, volume, filer, S3 on 8333, WebDAV and the admin UI), `server`, `master`, `volume`, `filer`, `s3` or `shell`; `/data` |
+| `fws/mongo:8.2` | `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD` (or their `_FILE` forms), `MONGO_INITDB_DATABASE`, `/docker-entrypoint-initdb.d/*.js` and `*.sh`, run against a server that listens on loopback alone; arguments to `mongod`, which binds every address unless they or its configuration name some; `mongosh` |
+| `fws/etcd:3.6` | arguments to `etcd`, with `etcdctl` and `etcdutl`; clients on 2379, peers on 2380 |
+| `fws/consul:2.1` | `CONSUL_LOCAL_CONFIG`, `CONSUL_BIND_INTERFACE`, `CONSUL_CLIENT_INTERFACE`; arguments to `consul` (default `agent -dev -client 0.0.0.0`); HTTP on 8500, DNS on 8600 |
+| `fws/vault:2.0` | `VAULT_DEV_ROOT_TOKEN_ID`, `VAULT_DEV_LISTEN_ADDRESS`, `VAULT_LOCAL_CONFIG`, `VAULT_REDIRECT_INTERFACE`, `VAULT_CLUSTER_INTERFACE`; arguments to `vault` (default `server -dev`); port 8200 |
 | `fws/nats:2.14` | arguments to `nats-server`; `/nats-server.conf` serves clients on 4222, monitoring on 8222 and routes on 6222 |
 | `fws/rabbitmq:4` | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`; AMQP on 5672, the Erlang port mapper on 4369 and distribution on 25672 |
 | `fws/dynamodb-local:2` | arguments to DynamoDB Local (default `-sharedDb -dbPath /home/dynamodblocal/data`); port 8000 |

@@ -12,9 +12,11 @@ machine — and from what macOS offers an unprivileged process under them.
   library, or reads them from `SANDBOX_*` variables (see the README).
   Software the library cannot load into needs an entrypoint that configures
   it from the variables.
-- **Catalog images are built by Nix**, not taken from the vendors'
-  binaries. Where a build records itself, as MySQL's and MariaDB's
-  compilation comment does, the catalog builds it as the vendor does.
+- **Catalog images are built by Nix**, mostly from source rather than the
+  vendors' binaries. Where a build records itself, as MySQL's and
+  MariaDB's compilation comment does, the catalog builds it as the vendor
+  does. MongoDB and Vault are the vendors' own macOS builds, which nixpkgs
+  packages as they are.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
@@ -118,7 +120,9 @@ machine — and from what macOS offers an unprivileged process under them.
   alone. `--userns` is refused.
 - **Capabilities grant nothing to drop.** Containers run as the engine's
   unprivileged user, so `--cap-drop` changes nothing; `--cap-add` beyond
-  Docker's default set needs root and is refused. AppArmor, SELinux and
+  Docker's default set needs root and is refused, except `IPC_LOCK`, whose
+  power to lock memory macOS gives every process up to its
+  `RLIMIT_MEMLOCK`. AppArmor, SELinux and
   seccomp options other than `unconfined`/`disable` are refused.
 - **The macOS system tree is readable** (`/System`, `/usr/lib`, `/usr/share`,
   `/bin/sh` and friends): binaries cannot run without it, and it holds no
@@ -237,8 +241,9 @@ machine — and from what macOS offers an unprivileged process under them.
   after 90 seconds without traffic, as with Docker's userland proxy. SCTP
   ports cannot be published.
 - **A container's ports are its loopback host ports, presented.** The
-  container library binds a program's wildcard or loopback listener on a
-  container port to that port's host port on `127.0.0.1`, connects a
+  container library binds a program's wildcard listener, or its listener
+  on the container's own address, on a container port to that port's host
+  port on `127.0.0.1`, connects a
   `localhost` client of a container port to its host port, and reports the
   container's addresses back; a dual-stack IPv6 socket used for IPv4 becomes
   an IPv4 socket that reads as IPv6, because Seatbelt matches loopback as
@@ -266,6 +271,16 @@ machine — and from what macOS offers an unprivileged process under them.
     both its ends as `::1`, but the server sees that client as
     `::ffff:127.0.0.1`. An IPv4-only listener takes a client of `::1` too,
     where Docker would refuse it.
+  - A TCP listener on loopback alone listens on a Unix socket, as on a
+    port without a host port, so that, as in Docker, the container reaches
+    it on `localhost` and its published port does not: an entrypoint's
+    setup server on `127.0.0.1` stays out of reach of a client waiting for
+    the real server. Beside a listener on the container's own address it
+    is refused with `EADDRINUSE`, where Linux would let the two coexist. A
+    UDP socket on loopback alone still takes the host port.
+  - A stack member reaches a listener on loopback alone on a port without
+    a host port through the container's router, where Docker would refuse
+    it: the router cannot tell the container's own clients from members'.
   - Programs that load no library, as Apple's do not, see the host ports.
 - **Unix socket paths are capped at 104 bytes** on macOS, as the
   container sees them. A Unix socket at a container path,

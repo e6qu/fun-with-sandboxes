@@ -237,11 +237,12 @@ func Listen(addr string, policy Policy) (*Proxy, error) {
 // Variables are the environment variables that send a process's traffic
 // through the proxy on port: HTTP and HTTPS through its HTTP side, other
 // TCP, for software that honours ALL_PROXY, through its SOCKS5 side, which
-// resolves names itself (socks5h), and loopback and the member block,
+// resolves names itself (socks5h), and loopback, the unspecified
+// addresses, which a connection reaches as loopback, and the member block,
 // which the container library reaches, around it. A member's process
 // names itself to the proxy with the member's address and password.
 func Variables(port int, member, password string) [][2]string {
-	const noProxy = "localhost,127.0.0.1,::1,127.88.0.0/16"
+	const noProxy = "localhost,127.0.0.1,::1,0.0.0.0,::,127.88.0.0/16"
 	host := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	var user *url.Userinfo
 	if member != "" {

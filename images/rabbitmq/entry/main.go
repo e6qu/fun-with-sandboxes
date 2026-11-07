@@ -1,5 +1,5 @@
-// Command entry runs RabbitMQ inside a fwsd container, on loopback at the
-// container's ports: AMQP on 5672, the Erlang port mapper on 4369 and Erlang
+// Command entry runs RabbitMQ inside a fwsd container, on every address at
+// the container's ports: AMQP on 5672, the Erlang port mapper on 4369 and Erlang
 // distribution on 25672, which the container library puts on their host
 // ports. Its data and cookie live under /var/lib/rabbitmq.
 package main
@@ -44,15 +44,12 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	// The image's paths and loopback, for whatever the environment leaves
-	// unset, as the official image's defaults are.
+	// The image's paths, for whatever the environment leaves unset, as the
+	// official image's defaults are.
 	env := os.Environ()
 	for _, kv := range []string{
 		"HOME=" + home,
 		"RABBITMQ_NODENAME=rabbit@localhost",
-		"RABBITMQ_NODE_IP_ADDRESS=127.0.0.1",
-		"ERL_EPMD_ADDRESS=127.0.0.1",
-		"RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-kernel inet_dist_use_interface {127,0,0,1}",
 		"RABBITMQ_MNESIA_BASE=" + filepath.Join(home, "mnesia"),
 		"RABBITMQ_LOG_BASE=" + filepath.Join(home, "log"),
 		"RABBITMQ_LOGS=-",

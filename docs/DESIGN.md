@@ -239,9 +239,11 @@ same knobs, each enforced by a real mechanism or refused:
   memory and semaphore names get the prefix the same way, so a program
   names them as it would on a host of its own. The engine lists the
   container's ports and their host ports in `FWS_PORTS`: a bind to the
-  wildcard or loopback address on a container port binds the host port on
-  `127.0.0.1`, a `localhost` connection or datagram to a container port
-  reaches its host port, and `getsockname`, `getpeername`, `accept` and
+  wildcard or the container's own address on a container port binds the
+  host port on `127.0.0.1`, a TCP bind to loopback alone listens on a Unix
+  socket instead, out of the published port's reach, as a port without a
+  host port does, a `localhost` connection or datagram to a container port
+  reaches that listener or else its host port, and `getsockname`, `getpeername`, `accept` and
   `recvfrom` report container ports and the wildcard the program bound. An
   IPv6 socket bound or connected to an IPv4 address, or bound to the
   dual-stack wildcard, gets an IPv4 socket with its settings in the same
@@ -310,7 +312,10 @@ same knobs, each enforced by a real mechanism or refused:
   container's shim runs its router, on a port of the stack's block that
   the network file names: a client sends the container port it wants, two
   bytes, and the router joins the connection to that port's socket or
-  refuses it. The library connects a client of a member's port without a
+  refuses it, writing the client's loopback address and port there first,
+  which the library takes on `accept` and reports as the peer, as a TCP
+  server sees its client; a connection that carries none, as the library's
+  own probes of a socket do, the library closes and accepts the next. The library connects a client of a member's port without a
   host port through the member's router, and one of its own container's
   through its own, at once, whether or not the socket blocks, and reports
   the peer as the member's address and port. A UDP socket on such a port
@@ -344,7 +349,8 @@ same knobs, each enforced by a real mechanism or refused:
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would
-  need root, is refused. `no-new-privileges` holds for every container.
+  need root, is refused, but `IPC_LOCK`, which grants what macOS lets every
+  process do already, lock memory up to its `RLIMIT_MEMLOCK`. `no-new-privileges` holds for every container.
 
 ---
 
@@ -517,7 +523,8 @@ it; it tells services their assignment through the environment.
   through the proxy, as it is through the library.
   Containers, classic `RUN` steps and BuildKit steps receive `HTTP_PROXY`,
   `HTTPS_PROXY`, `ALL_PROXY` (`socks5h://`, so the proxy resolves names) and
-  `NO_PROXY`, which leaves loopback and the member block to the container
+  `NO_PROXY`, which leaves loopback, the unspecified addresses, which a
+  connection reaches as loopback, and the member block to the container
   library. The proxy resolves each destination once, refuses it if any
   address is loopback, link-local, multicast, unspecified or assigned to one
   of the host's interfaces, and dials an address it checked, so DNS cannot
