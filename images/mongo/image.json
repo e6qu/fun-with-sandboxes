@@ -1,0 +1,33 @@
+{
+  "tag": "fws/mongo:8.2",
+  "files": {},
+  "dirs": [
+    "/tmp",
+    "/data/db",
+    "/data/configdb",
+    "/docker-entrypoint-initdb.d"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/usr/local/bin:/bin",
+      "TZ=UTC",
+      "HOME=/data/db"
+    ],
+    "Entrypoint": [
+      "/usr/local/bin/docker-entrypoint.sh"
+    ],
+    "Cmd": [
+      "mongod"
+    ],
+    "ExposedPorts": {
+      "27017/tcp": {}
+    },
+    "Volumes": {
+      "/data/db": {},
+      "/data/configdb": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

@@ -12,9 +12,11 @@ machine — and from what macOS offers an unprivileged process under them.
   library, or reads them from `SANDBOX_*` variables (see the README).
   Software the library cannot load into needs an entrypoint that configures
   it from the variables.
-- **Catalog images are built by Nix**, not taken from the vendors'
-  binaries. Where a build records itself, as MySQL's and MariaDB's
-  compilation comment does, the catalog builds it as the vendor does.
+- **Catalog images are built by Nix**, mostly from source rather than the
+  vendors' binaries. Where a build records itself, as MySQL's and
+  MariaDB's compilation comment does, the catalog builds it as the vendor
+  does. MongoDB and Vault are the vendors' own macOS builds, which nixpkgs
+  packages as they are.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
@@ -118,7 +120,9 @@ machine — and from what macOS offers an unprivileged process under them.
   alone. `--userns` is refused.
 - **Capabilities grant nothing to drop.** Containers run as the engine's
   unprivileged user, so `--cap-drop` changes nothing; `--cap-add` beyond
-  Docker's default set needs root and is refused. AppArmor, SELinux and
+  Docker's default set needs root and is refused, except `IPC_LOCK`, whose
+  power to lock memory macOS gives every process up to its
+  `RLIMIT_MEMLOCK`. AppArmor, SELinux and
   seccomp options other than `unconfined`/`disable` are refused.
 - **The macOS system tree is readable** (`/System`, `/usr/lib`, `/usr/share`,
   `/bin/sh` and friends): binaries cannot run without it, and it holds no

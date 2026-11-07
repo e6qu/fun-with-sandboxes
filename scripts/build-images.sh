@@ -48,6 +48,9 @@ go build -o "$build/valkey-entry" ./images/valkey/entry
 go build -o "$build/seaweedfs-entry" ./images/seaweedfs/entry
 go build -o "$build/memcached-entry" ./images/memcached/entry
 go build -o "$build/nc" ./images/nc
+go build -o "$build/consul-entry" ./images/consul/entry
+go build -o "$build/vault-entry" ./images/vault/entry
+go build -o "$build/mongo-entry" ./images/mongo/entry
 
 # output_with BINARY INSTALLABLE... builds INSTALLABLE and prints its
 # output that holds bin/BINARY. Unfree packages, such as DynamoDB Local,
@@ -149,6 +152,40 @@ nats=$(pkg_with nats-server nats-server)
 closure "$nats" > "$build/nats.closure"
 mkimage $(accounts nats) -spec images/nats/image.json -closure "$build/nats.closure" -pkg "$nats" \
   -file "/nats-server.conf=images/nats/nats-server.conf" -out "$out/nats.tar"
+
+# etcd as its release image lays it out: the binaries in /usr/local/bin.
+etcd=$(pkg_with etcd etcd)
+closure "$etcd" > "$build/etcd.closure"
+mkimage $(accounts etcd) -spec images/etcd/image.json -closure "$build/etcd.closure" -pkg "$etcd" \
+  -link /usr/local/bin/etcd=../../../bin/etcd -link /usr/local/bin/etcdctl=../../../bin/etcdctl -link /usr/local/bin/etcdutl=../../../bin/etcdutl \
+  -out "$out/etcd.tar"
+
+# Consul and Vault, as HashiCorp's images run them: the release binary,
+# Vault's as HashiCorp builds it, and an entrypoint at their scripts' path.
+consul=$(pkg_with consul consul)
+closure "$consul" > "$build/consul.closure"
+mkimage $(accounts consul consul 100 1000 /home/consul) -spec images/consul/image.json -closure "$build/consul.closure" -pkg "$consul" \
+  -file "/usr/local/bin/docker-entrypoint.sh=$build/consul-entry" -out "$out/consul.tar"
+
+vault=$(pkg_with vault-bin vault)
+closure "$vault" > "$build/vault.closure"
+mkimage $(accounts vault vault 100 1000 /home/vault) -spec images/vault/image.json -closure "$build/vault.closure" -pkg "$vault" \
+  -file "/usr/local/bin/docker-entrypoint.sh=$build/vault-entry" -out "$out/vault.tar"
+
+# MongoDB's own build of the server, mongosh, and the tools the official
+# image carries that scripts run in it, Testcontainers' among them: bash,
+# openssl and the core utilities.
+mongodb=$(pkg_with mongodb-ce mongod)
+mongosh=$(pkg_with mongosh mongosh)
+openssl=$(pkg_with openssl.bin openssl)
+findutils=$(pkg_with findutils find)
+coreutils=$(pkg_with coreutils dirname)
+gnugrep=$(pkg_with gnugrep grep)
+bash=$(pkg_with bash bash)
+closure "$mongodb" "$mongosh" "$openssl" "$findutils" "$coreutils" "$gnugrep" "$bash" > "$build/mongo.closure"
+mkimage $(accounts mongo mongodb 999 999 /data/db) -spec images/mongo/image.json -closure "$build/mongo.closure" -pkg "$mongodb" -pkg "$mongosh" \
+  -pkg "$openssl" -pkg "$findutils" -pkg "$coreutils" -pkg "$gnugrep" -pkg "$bash" \
+  -file "/usr/local/bin/docker-entrypoint.sh=$build/mongo-entry" -out "$out/mongo.tar"
 
 python=$(pkg_with python314 python3.14)
 closure "$python" > "$build/python.closure"

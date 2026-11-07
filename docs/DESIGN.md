@@ -344,7 +344,8 @@ same knobs, each enforced by a real mechanism or refused:
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would
-  need root, is refused. `no-new-privileges` holds for every container.
+  need root, is refused, but `IPC_LOCK`, which grants what macOS lets every
+  process do already, lock memory up to its `RLIMIT_MEMLOCK`. `no-new-privileges` holds for every container.
 
 ---
 

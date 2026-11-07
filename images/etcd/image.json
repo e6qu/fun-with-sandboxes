@@ -1,0 +1,26 @@
+{
+  "tag": "fws/etcd:3.6",
+  "files": {},
+  "dirs": [
+    "/tmp",
+    "/var/etcd",
+    "/var/lib/etcd"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/usr/local/bin:/bin",
+      "TZ=UTC"
+    ],
+    "Cmd": [
+      "/usr/local/bin/etcd"
+    ],
+    "WorkingDir": "/var/lib/etcd",
+    "ExposedPorts": {
+      "2379/tcp": {},
+      "2380/tcp": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}
