@@ -249,11 +249,13 @@ static int parse_v4(const char *p, const char **end, in_addr_t *out) {
 // The stack's members (FWS_NETWORK): a file the engine rewrites as members
 // come and go, of a line per member holding its address, the names it
 // answers to, its ports as FWS_PORTS lists them, its router's port, the
-// networks it is on, and whether it is another stack's, tab-separated
-// (package members). Its addresses lie in 127.88.0.0/16, which the kernel
-// never sees: the library reaches a member's ports through their host
-// ports, and another stack's member through the container's own router.
-// The container sees the members it shares a network with.
+// networks it is on, whether it is another stack's, that stack, the
+// aliases links give it, and its addresses on networks with subnets of
+// their own, tab-separated (package members). Its addresses lie in
+// 127.88.0.0/16 and those subnets, which the kernel never sees: the
+// library reaches a member's ports through their host ports, and another
+// stack's member through the container's own router. The container sees
+// the members it shares a network with, at their addresses on the network.
 static char network_path[PATH_MAX];
 static in_addr_t own_address;
 
@@ -2085,22 +2087,28 @@ INTERPOSE(fws_proc_listchildpids, proc_listchildpids);
 // Go and other programs read the hostname, and ps the process table,
 // through sysctl.
 // The container's network interfaces, as a container's network namespace
-// holds them: the loopback interface, and on a network, eth0 with the
-// member address in the member block, where the host's interfaces are.
-// libSystem's getifaddrs and if_nameindex, and Go's net.Interfaces, read
-// them from the routing sysctl NET_RT_IFLIST2 or NET_RT_IFLIST.
+// holds them: the loopback interface, and an Ethernet interface, eth0
+// onwards, for each of its addresses: on each network with a subnet, its
+// address there, and on the others its member address in the member
+// block, where the host's interfaces are. libSystem's getifaddrs and
+// if_nameindex, and Go's net.Interfaces, read them from the routing
+// sysctl NET_RT_IFLIST2 or NET_RT_IFLIST.
 
 #define MEMBER_MASK 0xffff0000u
-#define ETH0_MTU 1500
+#define ETH_MTU 1500
+#define MAX_IFACES 16
 #define RT_ROUNDUP(a) ((a) > 0 ? (1 + (((a) - 1) | (sizeof(uint32_t) - 1))) : sizeof(uint32_t))
 
-static const char eth0_name[] = "eth0";
+struct iface {
+    in_addr_t addr, mask;
+};
+static int own_ifaces(struct iface *out);
 
-// eth0_mac is a MAC address of Docker's form, 02:42 and the address.
-static void eth0_mac(unsigned char mac[6]) {
+// eth_mac is a MAC address of Docker's form, 02:42 and the address.
+static void eth_mac(unsigned char mac[6], in_addr_t addr) {
     mac[0] = 0x02;
     mac[1] = 0x42;
-    memcpy(mac + 2, &own_address, 4);
+    memcpy(mac + 2, &addr, 4);
 }
 
 static struct sockaddr_in v4_sockaddr(in_addr_t a) {
@@ -2112,20 +2120,23 @@ static struct sockaddr_in v4_sockaddr(in_addr_t a) {
     return s;
 }
 
-// eth0_info writes at out eth0's interface message of type, RTM_IFINFO
-// or RTM_IFINFO2, and returns its length.
-static size_t eth0_info(char *out, unsigned char type, unsigned short index) {
+// eth_info writes at out the interface message of type, RTM_IFINFO or
+// RTM_IFINFO2, of the container's interface eth<i>, of address addr, and
+// returns its length.
+static size_t eth_info(char *out, unsigned char type, unsigned short index, int i, in_addr_t addr) {
     size_t head = type == RTM_IFINFO2 ? sizeof(struct if_msghdr2) : sizeof(struct if_msghdr);
+    char name[IFNAMSIZ];
+    snprintf(name, sizeof name, "eth%d", i);
     struct sockaddr_dl dl;
     memset(&dl, 0, sizeof dl);
     dl.sdl_len = sizeof dl;
     dl.sdl_family = AF_LINK;
     dl.sdl_index = index;
     dl.sdl_type = IFT_ETHER;
-    dl.sdl_nlen = sizeof eth0_name - 1;
+    dl.sdl_nlen = (unsigned char)strlen(name);
     dl.sdl_alen = 6;
-    memcpy(dl.sdl_data, eth0_name, sizeof eth0_name - 1);
-    eth0_mac((unsigned char *)dl.sdl_data + dl.sdl_nlen);
+    memcpy(dl.sdl_data, name, dl.sdl_nlen);
+    eth_mac((unsigned char *)dl.sdl_data + dl.sdl_nlen, addr);
     memset(out, 0, head);
     struct if_msghdr *m = (struct if_msghdr *)out;
     m->ifm_version = RTM_VERSION;
@@ -2138,12 +2149,12 @@ static size_t eth0_info(char *out, unsigned char type, unsigned short index) {
         m2->ifm_data.ifi_type = IFT_ETHER;
         m2->ifm_data.ifi_addrlen = 6;
         m2->ifm_data.ifi_hdrlen = 14;
-        m2->ifm_data.ifi_mtu = ETH0_MTU;
+        m2->ifm_data.ifi_mtu = ETH_MTU;
     } else {
         m->ifm_data.ifi_type = IFT_ETHER;
         m->ifm_data.ifi_addrlen = 6;
         m->ifm_data.ifi_hdrlen = 14;
-        m->ifm_data.ifi_mtu = ETH0_MTU;
+        m->ifm_data.ifi_mtu = ETH_MTU;
     }
     memcpy(out + head, &dl, sizeof dl);
     size_t n = head + RT_ROUNDUP(sizeof dl);
@@ -2151,17 +2162,16 @@ static size_t eth0_info(char *out, unsigned char type, unsigned short index) {
     return n;
 }
 
-// eth0_addr writes at out the message of eth0's address and returns its
-// length.
-static size_t eth0_addr(char *out, unsigned short index) {
+// eth_addr writes at out the message of an interface's address and
+// returns its length.
+static size_t eth_addr(char *out, unsigned short index, const struct iface *f) {
     struct ifa_msghdr h;
     memset(&h, 0, sizeof h);
     h.ifam_version = RTM_VERSION;
     h.ifam_type = RTM_NEWADDR;
     h.ifam_addrs = RTA_NETMASK | RTA_IFA | RTA_BRD;
     h.ifam_index = index;
-    struct sockaddr_in sa[3] = {v4_sockaddr(htonl(MEMBER_MASK)), v4_sockaddr(own_address),
-                                v4_sockaddr(own_address | htonl(~MEMBER_MASK))};
+    struct sockaddr_in sa[3] = {v4_sockaddr(f->mask), v4_sockaddr(f->addr), v4_sockaddr(f->addr | ~f->mask)};
     size_t n = sizeof h;
     for (int i = 0; i < 3; i++) {
         memcpy(out + n, &sa[i], sizeof sa[i]);
@@ -2174,8 +2184,8 @@ static size_t eth0_addr(char *out, unsigned short index) {
 
 // iflist answers a routing sysctl of interfaces, NET_RT_IFLIST or
 // NET_RT_IFLIST2, as the container's network namespace would: the host's
-// messages of its loopback interfaces, then eth0's, for the interface the
-// request names, or all of them.
+// messages of its loopback interfaces, then the container's, for the
+// interface the request names, or all of them.
 static int iflist(const int *name, void *old, size_t *oldlen) {
     int mib[6];
     memcpy(mib, name, sizeof mib);
@@ -2187,7 +2197,7 @@ static int iflist(const int *name, void *old, size_t *oldlen) {
         if (sysctl(mib, 6, NULL, &n, NULL, 0) == -1) return -1;
         n += n / 4 + 1024;
         free(buf);
-        if (!(buf = malloc(n + 512))) {
+        if (!(buf = malloc(n + MAX_IFACES * 512))) {
             errno = ENOMEM;
             return -1;
         }
@@ -2197,8 +2207,9 @@ static int iflist(const int *name, void *old, size_t *oldlen) {
             return -1;
         }
     }
-    // The loopback interfaces, and the highest index, whose successor
-    // eth0 takes so that no host interface's index names it.
+    // The loopback interfaces, and the highest index, whose successors
+    // the container's interfaces take so that no host interface's index
+    // names one.
     unsigned char loop[65536 / 8] = {0};
     unsigned short top = 0;
     for (size_t off = 0; off + sizeof(struct if_msghdr) <= n;) {
@@ -2210,7 +2221,6 @@ static int iflist(const int *name, void *old, size_t *oldlen) {
         }
         off += m->ifm_msglen;
     }
-    unsigned short eth0 = (unsigned short)(top + 1);
     size_t out = 0;
     for (size_t off = 0; off + sizeof(struct if_msghdr) <= n;) {
         struct if_msghdr *m = (void *)(buf + off);
@@ -2222,11 +2232,15 @@ static int iflist(const int *name, void *old, size_t *oldlen) {
         }
         off += len;
     }
-    char extra[512];
+    struct iface ifs[MAX_IFACES];
+    int nif = own_ifaces(ifs);
+    char extra[MAX_IFACES * 512];
     size_t more = 0;
-    if (own_address && top < 65535 && (!want || want == eth0)) {
-        more = eth0_info(extra, mib[4] == NET_RT_IFLIST2 ? RTM_IFINFO2 : RTM_IFINFO, eth0);
-        if (af == 0 || af == AF_INET) more += eth0_addr(extra + more, eth0);
+    for (int i = 0; i < nif && top + 1 + i <= 65535; i++) {
+        unsigned short index = (unsigned short)(top + 1 + i);
+        if (want && want != index) continue;
+        more += eth_info(extra + more, mib[4] == NET_RT_IFLIST2 ? RTM_IFINFO2 : RTM_IFINFO, index, i, ifs[i].addr);
+        if (af == 0 || af == AF_INET) more += eth_addr(extra + more, index, &ifs[i]);
     }
     memcpy(buf + out, extra, more);
     out += more;
@@ -2271,28 +2285,41 @@ static int ifconf(struct ifconf *c) {
     return 0;
 }
 
-// eth0_ioctl answers a query of eth0's flags, MTU or addresses.
-static int eth0_ioctl(unsigned long req, struct ifreq *r) {
+// eth_ioctl answers a query of a container interface's flags, MTU or
+// addresses.
+static int eth_ioctl(unsigned long req, struct ifreq *r, const struct iface *f) {
     struct sockaddr_in a;
     switch (req) {
     case SIOCGIFFLAGS:
         r->ifr_flags = (short)(IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_SIMPLEX | IFF_MULTICAST);
         return 0;
     case SIOCGIFMTU:
-        r->ifr_mtu = ETH0_MTU;
+        r->ifr_mtu = ETH_MTU;
         return 0;
     case SIOCGIFADDR:
-        a = v4_sockaddr(own_address);
+        a = v4_sockaddr(f->addr);
         break;
     case SIOCGIFNETMASK:
-        a = v4_sockaddr(htonl(MEMBER_MASK));
+        a = v4_sockaddr(f->mask);
         break;
     default:
-        a = v4_sockaddr(own_address | htonl(~MEMBER_MASK));
+        a = v4_sockaddr(f->addr | ~f->mask);
         break;
     }
     memcpy(&r->ifr_addr, &a, sizeof a);
     return 0;
+}
+
+// eth_named finds the container's interface ethN that name names.
+static int eth_named(const char *name, struct iface *out) {
+    unsigned long i;
+    const char *e;
+    if (strncmp(name, "eth", 3) != 0 || !(e = num(name + 3, &i)) || *e || (name[3] == '0' && name[4])) return 0;
+    struct iface ifs[MAX_IFACES];
+    int n = own_ifaces(ifs);
+    if (i >= (unsigned long)n) return 0;
+    *out = ifs[i];
+    return 1;
 }
 
 static int fws_ioctl(int fd, unsigned long req, ...) {
@@ -2311,7 +2338,11 @@ static int fws_ioctl(int fd, unsigned long req, ...) {
     case SIOCGIFBRDADDR: {
         struct ifreq *r = arg;
         if (!r) break;
-        if (own_address && strncmp(r->ifr_name, eth0_name, IFNAMSIZ) == 0) return eth0_ioctl(req, r);
+        char name[IFNAMSIZ + 1];
+        struct iface f;
+        memcpy(name, r->ifr_name, IFNAMSIZ);
+        name[IFNAMSIZ] = 0;
+        if (eth_named(name, &f)) return eth_ioctl(req, r, &f);
         // The host's other interfaces are not the container's.
         if (strncmp(r->ifr_name, "lo", 2) != 0) {
             errno = ENXIO;
@@ -2600,6 +2631,8 @@ INTERPOSE(fws_sem_unlink, sem_unlink);
 //     as one IPv4 socket whose loopback addresses the program sees as ::1.
 
 static int member_block(in_addr_t a);
+static int own_addr(in_addr_t a);
+static in_addr_t own_seen_by(in_addr_t from);
 static unsigned short member_route(in_addr_t addr, int type, unsigned short cport, int *member, unsigned short *router);
 static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, unsigned short *cport);
 
@@ -2878,7 +2911,7 @@ static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t
     if (sa->sa_family == AF_INET && *len >= (socklen_t)sizeof(struct sockaddr_in)) {
         const struct sockaddr_in *a = (const void *)sa;
         // The container's own member address is one of loopback's.
-        in_addr_t at = own_address && a->sin_addr.s_addr == own_address ? htonl(INADDR_LOOPBACK) : a->sin_addr.s_addr;
+        in_addr_t at = own_addr(a->sin_addr.s_addr) ? htonl(INADDR_LOOPBACK) : a->sin_addr.s_addr;
         if (!v4_local(at)) {
             return sa;
         }
@@ -2898,7 +2931,7 @@ static const struct sockaddr *local(int fd, const struct sockaddr *sa, socklen_t
         getsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, &n);
         if (IN6_IS_ADDR_V4MAPPED(&a->sin6_addr) || (wild && !v6only)) {
             in_addr_t v4 = wild ? htonl(INADDR_ANY) : mapped_v4(&a->sin6_addr);
-            if (own_address && v4 == own_address) v4 = htonl(INADDR_LOOPBACK);
+            if (own_addr(v4)) v4 = htonl(INADDR_LOOPBACK);
             if (!v4_local(v4) || to_ipv4(fd, type) == -1) {
                 return sa;
             }
@@ -3322,7 +3355,7 @@ static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len,
     } else {
         return 0;
     }
-    if (own_address && a == own_address) a = htonl(INADDR_LOOPBACK);
+    if (own_addr(a)) a = htonl(INADDR_LOOPBACK);
     if (!v4_local(a)) {
         return 0;
     }
@@ -3527,7 +3560,7 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
     if (!port) {
         return 0;
     }
-    if (member_block(a) && !(own_address && a == own_address)) {
+    if (member_block(a) && !own_addr(a)) {
         int member;
         unsigned short router = 0;
         unsigned short h = member_route(a, SOCK_STREAM, port, &member, &router);
@@ -3542,7 +3575,7 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         *r = route(fd, a, router, port, v6, 0);
         return 1;
     }
-    if ((v4_local(a) || (own_address && a == own_address)) && router_port && !host_port(SOCK_STREAM, port)) {
+    if ((v4_local(a) || own_addr(a)) && router_port && !host_port(SOCK_STREAM, port)) {
         // Loopback reaches the container's own listener when it has one;
         // any other loopback port is the host's.
         struct sockaddr_un u;
@@ -3550,7 +3583,7 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         if (port_path(SOCK_STREAM, port, &u) == -1 || stat(u.sun_path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
             return 0;
         }
-        *r = route(fd, own_address && a == own_address ? a : htonl(INADDR_LOOPBACK), router_port, port, v6, 0);
+        *r = route(fd, own_addr(a) ? a : htonl(INADDR_LOOPBACK), router_port, port, v6, 0);
         if (*r == 0 && v6 && IN6_IS_ADDR_LOOPBACK(&((const struct sockaddr_in6 *)sa)->sin6_addr)) {
             set_state(fd, state_of(fd) | NET_LO6);
         }
@@ -3562,7 +3595,46 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
 static int dgram_unix(int fd);
 static int dgram_connect(int fd, const struct sockaddr *sa, socklen_t len);
 
+static int dgram_dest(const struct sockaddr *sa, socklen_t len, in_addr_t *v4, unsigned short *port);
+
+// relay_bind binds an unbound UDP socket about to reach another stack's
+// member to an ephemeral port of the container's own, where the kernel
+// would bind one of its own on the first datagram: the router's relay to
+// the member takes datagrams from the container's ports alone.
+static int relay_bind(int fd, const struct sockaddr *sa, socklen_t len) {
+    if (!sa || !router_port || (state_of(fd) & NET_UNIX) || sock_type(fd) != SOCK_DGRAM) {
+        return 0;
+    }
+    int e = errno;
+    in_addr_t v4;
+    unsigned short port, router = 0;
+    int member = 0;
+    if (dgram_dest(sa, len, &v4, &port) == 0 && member_block(v4)) member_route(v4, SOCK_DGRAM, port, &member, &router);
+    if (member != 2) {
+        errno = e;
+        return 0;
+    }
+    struct sockaddr_storage b;
+    socklen_t n = sizeof b;
+    if (getsockname(fd, (struct sockaddr *)&b, &n) != 0) {
+        return -1;
+    }
+    unsigned short bound = b.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&b)->sin6_port : ((struct sockaddr_in *)&b)->sin_port;
+    if (bound) {
+        errno = e;
+        return 0;
+    }
+    if (listen_ephemeral(fd, 1, b.ss_family == AF_INET6) != 0) {
+        return -1;
+    }
+    errno = e;
+    return 0;
+}
+
 static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
+    if (relay_bind(fd, sa, len) != 0) {
+        return -1;
+    }
     if (dgram_unix(fd)) {
         return dgram_connect(fd, sa, len);
     }
@@ -3583,6 +3655,9 @@ INTERPOSE(fws_connect, connect);
 
 extern int connect_nocancel(int, const struct sockaddr *, socklen_t) __asm("_connect$NOCANCEL") __attribute__((weak_import));
 static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len) {
+    if (relay_bind(fd, sa, len) != 0) {
+        return -1;
+    }
     if (dgram_unix(fd)) {
         return dgram_connect(fd, sa, len);
     }
@@ -3784,6 +3859,8 @@ static ssize_t dgram_recv(int fd, const struct iovec *iov, int iovlen, int flags
 
 static int fws_getsockname(int fd, struct sockaddr *sa, socklen_t *len);
 static int member_block(in_addr_t a);
+static int own_addr(in_addr_t a);
+static in_addr_t own_seen_by(in_addr_t from);
 
 // v4_of is the IPv4 address of an IPv4 or IPv4-mapped IPv6 address, with
 // IPv6 loopback as IPv4's and any other IPv6 address as the wildcard.
@@ -3826,7 +3903,7 @@ static void dgram_control(int fd, struct msghdr *m, const struct sockaddr_storag
         dst = v4_of(&self);
     } else if (want) {
         in_addr_t from = v4_of(src);
-        if (own_address && member_block(from) && from != own_address) dst = own_address;
+        if (own_address && member_block(from) && !own_addr(from)) dst = own_seen_by(from);
     }
     static unsigned int lo0;
     if (want && !lo0) lo0 = if_nametoindex("lo0");
@@ -3876,6 +3953,9 @@ static ssize_t plain_sendmsg(int fd, const struct msghdr *m, int flags) { return
 static ssize_t plain_recvmsg(int fd, struct msghdr *m, int flags) { return recvmsg(fd, m, flags); }
 
 static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
+    if (relay_bind(fd, sa, len) != 0) {
+        return -1;
+    }
     if (dgram_unix(fd)) {
         struct iovec v = {(void *)buf, n};
         return dgram_send(fd, &v, 1, flags, sa, len, plain_sendmsg);
@@ -3895,6 +3975,9 @@ static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const st
 INTERPOSE(fws_sendto, sendto);
 
 static ssize_t fws_sendmsg(int fd, const struct msghdr *m, int flags) {
+    if (m && relay_bind(fd, m->msg_name, m->msg_namelen) != 0) {
+        return -1;
+    }
     if (m && dgram_unix(fd)) {
         return dgram_send(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_namelen, plain_sendmsg);
     }
@@ -4182,6 +4265,9 @@ static ssize_t nocancel_sendmsg(int fd, const struct msghdr *m, int flags);
 static ssize_t nocancel_recvmsg(int fd, struct msghdr *m, int flags);
 
 static ssize_t fws_sendto_nocancel(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
+    if (relay_bind(fd, sa, len) != 0) {
+        return -1;
+    }
     if (dgram_unix(fd)) {
         struct iovec v = {(void *)buf, n};
         return dgram_send(fd, &v, 1, flags, sa, len, nocancel_sendmsg);
@@ -4204,6 +4290,9 @@ extern ssize_t sendmsg_nocancel(int, const struct msghdr *, int) __asm("_sendmsg
 static ssize_t nocancel_sendmsg(int fd, const struct msghdr *m, int flags) { return sendmsg_nocancel(fd, m, flags); }
 
 static ssize_t fws_sendmsg_nocancel(int fd, const struct msghdr *m, int flags) {
+    if (m && relay_bind(fd, m->msg_name, m->msg_namelen) != 0) {
+        return -1;
+    }
     if (m && dgram_unix(fd)) {
         return dgram_send(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_namelen, nocancel_sendmsg);
     }
@@ -4290,7 +4379,18 @@ static pthread_mutex_t members_lock = PTHREAD_MUTEX_INITIALIZER;
 static char *members;
 static struct stat members_st;
 
-static int member_block(in_addr_t a) { return (ntohl(a) >> 16) == (127u << 8 | 88u); }
+static const char *members_text(void);
+static int in_subnets(const char *text, in_addr_t a);
+
+// member_block reports whether a is an address of the stack's networks:
+// the member block's, or one of a subnet a member's network has.
+static int member_block(in_addr_t a) {
+    if ((ntohl(a) >> 16) == (127u << 8 | 88u)) return 1;
+    pthread_mutex_lock(&members_lock);
+    int in = in_subnets(members_text(), a);
+    pthread_mutex_unlock(&members_lock);
+    return in;
+}
 
 // members_text returns the network file's text, read again when it changed;
 // members_lock is held.
@@ -4323,7 +4423,7 @@ static const char *members_text(void) {
 
 struct member {
     in_addr_t addr;
-    const char *names, *names_end, *ports, *ports_end, *nets, *nets_end, *links, *links_end;
+    const char *names, *names_end, *ports, *ports_end, *nets, *nets_end, *links, *links_end, *subs, *subs_end;
     unsigned short router;
     int foreign;
 };
@@ -4341,6 +4441,7 @@ static const char *next_member(const char *p, struct member *m) {
             const char *t5 = t4 ? memchr(t4 + 1, '\t', (size_t)(end - t4 - 1)) : NULL;
             const char *t6 = t5 ? memchr(t5 + 1, '\t', (size_t)(end - t5 - 1)) : NULL;
             const char *t7 = t6 ? memchr(t6 + 1, '\t', (size_t)(end - t6 - 1)) : NULL;
+            const char *t8 = t7 ? memchr(t7 + 1, '\t', (size_t)(end - t7 - 1)) : NULL;
             unsigned long r = 0;
             m->names = t1 + 1;
             m->names_end = t2;
@@ -4351,7 +4452,9 @@ static const char *next_member(const char *p, struct member *m) {
             m->nets_end = t5 ? t5 : end;
             m->foreign = t5 && t5[1] == '1';
             m->links = t7 ? t7 + 1 : end;
-            m->links_end = end;
+            m->links_end = t8 ? t8 : end;
+            m->subs = t8 ? t8 + 1 : end;
+            m->subs_end = end;
             return nl ? nl + 1 : end;
         }
         p = nl ? nl + 1 : end;
@@ -4435,6 +4538,93 @@ static int shares(const struct member *a, const struct member *b) {
     return 0;
 }
 
+// next_sub reads at p, before end, a member's address on a network with
+// a subnet, net=a.b.c.d/bits, and returns where the next one starts, or
+// NULL when none is left.
+static const char *next_sub(const char *p, const char *end, const char **net, size_t *netlen, in_addr_t *addr, in_addr_t *mask) {
+    while (p < end) {
+        const char *e = memchr(p, ' ', (size_t)(end - p));
+        if (!e) e = end;
+        const char *eq = memchr(p, '=', (size_t)(e - p)), *after;
+        unsigned long bits;
+        if (eq && eq > p && parse_v4(eq + 1, &after, addr) && after < e && *after == '/' && (after = num(after + 1, &bits)) && after == e &&
+            bits <= 32) {
+            *net = p;
+            *netlen = (size_t)(eq - p);
+            *mask = bits ? htonl(~0u << (32 - bits)) : 0;
+            return e + 1;
+        }
+        p = e + 1;
+    }
+    return NULL;
+}
+
+// member_on is the member's address on the network of len bytes at net:
+// its own there on a network with a subnet, else its member address.
+static in_addr_t member_on(const struct member *m, const char *net, size_t len, in_addr_t *mask) {
+    const char *n;
+    size_t nl;
+    in_addr_t a, k;
+    for (const char *p = m->subs; (p = next_sub(p, m->subs_end, &n, &nl, &a, &k));) {
+        if (nl == len && memcmp(n, net, len) == 0) {
+            if (mask) *mask = k;
+            return a;
+        }
+    }
+    if (mask) *mask = htonl(MEMBER_MASK);
+    return m->addr;
+}
+
+// member_has reports whether a is one of the member's addresses.
+static int member_has(const struct member *m, in_addr_t a) {
+    if (m->addr == a) return 1;
+    const char *n;
+    size_t nl;
+    in_addr_t b, k;
+    for (const char *p = m->subs; (p = next_sub(p, m->subs_end, &n, &nl, &b, &k));) {
+        if (b == a) return 1;
+    }
+    return 0;
+}
+
+// on_net reports whether a member is on the network of len bytes at net.
+static int on_net(const struct member *m, const char *net, size_t len) {
+    for (const char *p = m->nets; p < m->nets_end;) {
+        const char *e = memchr(p, ' ', (size_t)(m->nets_end - p));
+        if (!e) e = m->nets_end;
+        if ((size_t)(e - p) == len && memcmp(p, net, len) == 0) return 1;
+        p = e + 1;
+    }
+    return 0;
+}
+
+// seen_addr is member m's address as viewer reaches it: on the first of
+// its networks the viewer is on too, else its member address.
+static in_addr_t seen_addr(const struct member *m, const struct member *viewer, int have_viewer) {
+    if (!have_viewer) return m->addr;
+    for (const char *p = m->nets; p < m->nets_end;) {
+        const char *e = memchr(p, ' ', (size_t)(m->nets_end - p));
+        if (!e) e = m->nets_end;
+        if (e > p && on_net(viewer, p, (size_t)(e - p))) return member_on(m, p, (size_t)(e - p), NULL);
+        p = e + 1;
+    }
+    return m->addr;
+}
+
+// in_subnets reports whether a lies in a subnet a member's network has.
+static int in_subnets(const char *text, in_addr_t a) {
+    struct member m;
+    for (const char *p = text; text && (p = next_member(p, &m));) {
+        const char *n;
+        size_t nl;
+        in_addr_t b, k;
+        for (const char *q = m.subs; (q = next_sub(q, m.subs_end, &n, &nl, &b, &k));) {
+            if ((a & k) == (b & k)) return 1;
+        }
+    }
+    return 0;
+}
+
 // find_self finds the container's own line among the members in text.
 static int find_self(const char *text, struct member *out) {
     struct member m;
@@ -4456,6 +4646,61 @@ static int sees(const struct member *m, const struct member *me, int have_me) {
     return m->addr == me->addr || shares(m, me) || link_of(m, me->addr, NULL);
 }
 
+// own reports whether a is one of the container's own addresses.
+static int own_addr(in_addr_t a) {
+    if (!own_address) return 0;
+    if (a == own_address) return 1;
+    pthread_mutex_lock(&members_lock);
+    struct member me;
+    int r = find_self(members_text(), &me) && member_has(&me, a);
+    pthread_mutex_unlock(&members_lock);
+    return r;
+}
+
+// own_seen_by is the container's address as the member at from reaches
+// it.
+static in_addr_t own_seen_by(in_addr_t from) {
+    in_addr_t a = own_address;
+    pthread_mutex_lock(&members_lock);
+    struct member me, m;
+    const char *text = members_text();
+    if (find_self(text, &me)) {
+        for (const char *p = text; (p = next_member(p, &m));) {
+            if (member_has(&m, from)) {
+                a = seen_addr(&me, &m, 1);
+                break;
+            }
+        }
+    }
+    pthread_mutex_unlock(&members_lock);
+    return a;
+}
+
+// own_ifaces lists the container's interfaces, an address and its mask
+// each: its addresses on its networks, in their order, once each.
+static int own_ifaces(struct iface *out) {
+    int n = 0;
+    if (!own_address) return 0;
+    pthread_mutex_lock(&members_lock);
+    struct member me;
+    if (find_self(members_text(), &me)) {
+        for (const char *p = me.nets; p < me.nets_end && n < MAX_IFACES;) {
+            const char *e = memchr(p, ' ', (size_t)(me.nets_end - p));
+            if (!e) e = me.nets_end;
+            if (e > p) {
+                in_addr_t mask, a = member_on(&me, p, (size_t)(e - p), &mask);
+                int seen = 0;
+                for (int i = 0; i < n; i++) seen |= out[i].addr == a;
+                if (!seen) out[n++] = (struct iface){a, mask};
+            }
+            p = e + 1;
+        }
+    }
+    pthread_mutex_unlock(&members_lock);
+    if (n == 0) out[n++] = (struct iface){own_address, htonl(MEMBER_MASK)};
+    return n;
+}
+
 static int member_address(const char *name, in_addr_t *out) {
     int found = 0;
     pthread_mutex_lock(&members_lock);
@@ -4464,7 +4709,7 @@ static int member_address(const char *name, in_addr_t *out) {
     int have_me = find_self(text, &me);
     for (const char *p = text; (p = next_member(p, &m));) {
         if (sees(&m, &me, have_me) && answers(&m, name)) {
-            *out = m.addr;
+            *out = seen_addr(&m, &me, have_me);
             found = 1;
             break;
         }
@@ -4485,7 +4730,7 @@ static unsigned short member_route(in_addr_t addr, int type, unsigned short cpor
     const char *text = members_text();
     int have_me = find_self(text, &me);
     for (const char *p = text; (p = next_member(p, &m));) {
-        if (m.addr == addr) {
+        if (member_has(&m, addr)) {
             if (!sees(&m, &me, have_me)) break;
             *member = m.foreign ? 2 : 1;
             h = m.foreign ? 0 : member_ports(&m, type, cport, 0);
@@ -4500,11 +4745,13 @@ static unsigned short member_route(in_addr_t addr, int type, unsigned short cpor
 static int member_of_host_port(int type, unsigned short hport, in_addr_t *addr, unsigned short *cport) {
     int found = 0;
     pthread_mutex_lock(&members_lock);
-    struct member m;
-    for (const char *p = members_text(); (p = next_member(p, &m));) {
+    struct member m, me;
+    const char *text = members_text();
+    int have_me = find_self(text, &me);
+    for (const char *p = text; (p = next_member(p, &m));) {
         unsigned short c = m.foreign ? 0 : member_ports(&m, type, hport, 1);
         if (c) {
-            *addr = m.addr;
+            *addr = seen_addr(&m, &me, have_me);
             *cport = c;
             found = 1;
             break;

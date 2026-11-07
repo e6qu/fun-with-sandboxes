@@ -1096,7 +1096,7 @@ func (b *builder) runEnv(s *stage, proxy int) []string {
 	set("SANDBOX_IPC_PREFIX", seatbelt.IPCPrefixFor(s.root))
 	set("SANDBOX_HOST", "127.0.0.1")
 	if proxy != 0 {
-		for _, kv := range egress.Variables(proxy) {
+		for _, kv := range egress.Variables(proxy, "", "") {
 			if _, ok := vars[kv[0]]; !ok {
 				set(kv[0], kv[1])
 			}

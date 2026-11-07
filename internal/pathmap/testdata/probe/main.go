@@ -76,6 +76,18 @@ func run(check string) string {
 	case "hostname":
 		h, err := os.Hostname()
 		return result(h, err)
+	case "resolve":
+		// The names PROBE_NAMES lists, each at its first address.
+		var out []string
+		for _, n := range strings.Split(os.Getenv("PROBE_NAMES"), ",") {
+			addrs, err := net.LookupHost(n)
+			if err != nil || len(addrs) == 0 {
+				out = append(out, n+":none")
+				continue
+			}
+			out = append(out, n+":"+addrs[0])
+		}
+		return strings.Join(out, " ")
 	case "interfaces":
 		ifs, err := net.Interfaces()
 		if err != nil {

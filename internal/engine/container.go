@@ -401,14 +401,14 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			return container.CreateResponse{}, err
 		}
 	}
-	hostname, extraHosts, hostAddress := cfg.Hostname, req.HostConfig.ExtraHosts, address
+	hostname, extraHosts, hostAddress := cfg.Hostname, req.HostConfig.ExtraHosts, firstAddress(address, networks)
 	if req.HostConfig.NetworkMode == "none" {
 		hostAddress = ""
 	}
 	if net != nil {
 		// A container on another's network has its hostname and hosts, as
 		// it would its UTS namespace's files in Docker.
-		hostname, extraHosts, hostAddress = hostnameOf(net), net.rec.HostConfig.ExtraHosts, net.rec.Address
+		hostname, extraHosts, hostAddress = hostnameOf(net), net.rec.HostConfig.ExtraHosts, firstAddress(net.rec.Address, net.rec.Networks)
 		cfg.Hostname = hostname
 	}
 	if hostname == "" {
@@ -483,7 +483,10 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	if err != nil {
 		return nil, err
 	}
-	env := e.environment(c, net, extra, tty, linkEnv(links))
+	env, err := e.environment(c, net, extra, tty, linkEnv(links))
+	if err != nil {
+		return nil, err
+	}
 	host := hostnameOf(c)
 	env = append(env, id.Env()...)
 	// On the host's UTS namespace the library presents no hostname, so the
@@ -718,6 +721,9 @@ func (e *Engine) resolveNetworksLocked(stack, name, service string, req containe
 		}
 		if n.Name != "bridge" && n.Name != "none" {
 			s.DNSNames = uniqStrings(names)
+		}
+		if err := e.assignNetAddressLocked(n, "", s); err != nil {
+			return err
 		}
 		out[n.Name] = s
 		return nil
@@ -1066,7 +1072,7 @@ func envName(s string) string {
 // with PATH mapped into the root, plus the variables through which the
 // service learns its root, its own ports and its peers' ports; net is the
 // container whose network it is on.
-func (e *Engine) environment(c, net *Container, extra []string, tty bool, links []string) []string {
+func (e *Engine) environment(c, net *Container, extra []string, tty bool, links []string) ([]string, error) {
 	root := c.root()
 	vars := map[string]string{}
 	var order []string
@@ -1112,7 +1118,11 @@ func (e *Engine) environment(c, net *Container, extra []string, tty bool, links 
 		set("SANDBOX_IPC_PREFIX=" + prefix)
 	}
 	if port := e.egressPort(c.rec.Stack); port != 0 && e.hasEgress(c) {
-		for _, kv := range egress.Variables(port) {
+		member, password, err := e.egressCredentials(c.rec.Stack, net.rec.Address)
+		if err != nil {
+			return nil, err
+		}
+		for _, kv := range egress.Variables(port, member, password) {
 			if _, ok := vars[kv[0]]; !ok {
 				set(kv[0] + "=" + kv[1])
 			}
@@ -1135,7 +1145,7 @@ func (e *Engine) environment(c, net *Container, extra []string, tty bool, links 
 	for _, k := range order {
 		out = append(out, k+"="+vars[k])
 	}
-	return out
+	return out, nil
 }
 
 // peer is what a container's environment needs of another in its stack.

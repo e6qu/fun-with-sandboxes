@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -114,8 +115,9 @@ func (e *Engine) writeNetworkLocked(stack string) error {
 
 // writeStackNetworkLocked writes the stack's network file: a line per
 // member on a network, of its address, its names, its ports, its router,
-// its networks, whether it is another stack's, that stack, and the
-// aliases the stack's links give it, tab-separated. Another stack's member
+// its networks, whether it is another stack's, that stack, the aliases the
+// stack's links give it, and its addresses on networks with subnets,
+// tab-separated. Another stack's member
 // is listed when it shares a user-defined network with one of the
 // stack's, or one of the stack's links to it.
 func (e *Engine) writeStackNetworkLocked(stack string) error {
@@ -177,6 +179,11 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 				member.Networks = append(member.Networks, n)
 			}
 			sort.Strings(member.Networks)
+		}
+		for _, n := range member.Networks {
+			if es := m.rec.Networks[n]; es != nil && es.IPAddress.IsValid() {
+				member.Subnets = append(member.Subnets, stackmembers.NetAddress{Network: n, Address: netip.PrefixFrom(es.IPAddress, es.IPPrefixLen)})
+			}
 		}
 		ms = append(ms, member)
 	}

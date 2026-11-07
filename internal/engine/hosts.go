@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/moby/moby/api/types/network"
 )
 
 // writeHosts writes c's /etc/hosts and /etc/hostname as it starts, as
@@ -21,9 +24,29 @@ func (e *Engine) writeHosts(c *Container) error {
 	}
 	address := ""
 	if onNetwork(net) {
-		address = net.rec.Address
+		address = firstAddress(net.rec.Address, net.rec.Networks)
 	}
 	return writeHostsFiles(c.root(), hostnameOf(net), address, net.rec.HostConfig.ExtraHosts, linkHosts(links), c.rec.Mounts)
+}
+
+// firstAddress is the address a container at member address holds on the
+// first of its networks, by name: its own there on a network with a
+// subnet, else its member address. Its hostname names it.
+func firstAddress(address string, nets map[string]*network.EndpointSettings) string {
+	names := make([]string, 0, len(nets))
+	for n := range nets {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if es := nets[n]; es != nil && es.IPAddress.IsValid() {
+			return es.IPAddress.String()
+		}
+		if n != "none" {
+			break
+		}
+	}
+	return address
 }
 
 // writeHostsFiles writes the container's /etc/hosts and /etc/hostname, as

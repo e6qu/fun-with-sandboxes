@@ -17,7 +17,9 @@ import (
 const (
 	socksVersion       = 0x05
 	socksNoAuth        = 0x00
+	socksUserPass      = 0x02
 	socksNoMethod      = 0xff
+	userPassVersion    = 0x01
 	socksConnect       = 0x01
 	socksIPv4          = 0x01
 	socksDomain        = 0x03
@@ -101,9 +103,10 @@ type peekedConn struct {
 
 func (c *peekedConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 
-// socks serves one SOCKS5 client: no authentication, as for the HTTP side,
-// and CONNECT alone, through the same dial, so the policy refuses the host
-// as it does for HTTP.
+// socks serves one SOCKS5 client: no authentication, or a member's
+// username and password (RFC 1929), as for the HTTP side, and CONNECT
+// alone, through the same dial, so the policy refuses the host as it does
+// for HTTP.
 func (p *Proxy) socks(c net.Conn) {
 	if !p.track(c) {
 		c.Close()
@@ -111,11 +114,11 @@ func (p *Proxy) socks(c net.Conn) {
 	}
 	defer p.untrack(c)
 	c.SetDeadline(time.Now().Add(greetingTimeout))
-	target, err := socksHandshake(c)
+	target, client, err := p.socksHandshake(c)
 	if err != nil {
 		return
 	}
-	up, err := p.dial(context.Background(), "tcp", target)
+	up, err := p.dial(context.Background(), client, target)
 	if err != nil {
 		socksReply(c, socksCode(err), nil)
 		return
@@ -136,30 +139,74 @@ func (p *Proxy) socks(c net.Conn) {
 	<-done
 }
 
-// socksHandshake reads the greeting and the request, answering what it must
-// refuse, and returns the host:port to connect to.
-func socksHandshake(c net.Conn) (string, error) {
+// socksHandshake reads the greeting, the client's credentials when it
+// offers them, and the request, answering what it must refuse, and returns
+// the host:port to connect to and the member the client is.
+func (p *Proxy) socksHandshake(c net.Conn) (string, string, error) {
 	var hdr [2]byte
 	if _, err := io.ReadFull(c, hdr[:]); err != nil {
-		return "", err
+		return "", "", err
 	}
 	methods := make([]byte, hdr[1])
 	if _, err := io.ReadFull(c, methods); err != nil {
-		return "", err
+		return "", "", err
 	}
-	noAuth := false
+	method := byte(socksNoMethod)
 	for _, m := range methods {
-		if m == socksNoAuth {
-			noAuth = true
+		if m == socksUserPass || (m == socksNoAuth && method == socksNoMethod) {
+			method = m
 		}
 	}
-	if !noAuth {
-		c.Write([]byte{socksVersion, socksNoMethod})
-		return "", errors.New("socks: the client offers no method the proxy takes")
+	if _, err := c.Write([]byte{socksVersion, method}); err != nil || method == socksNoMethod {
+		return "", "", errors.New("socks: the client offers no method the proxy takes")
 	}
-	if _, err := c.Write([]byte{socksVersion, socksNoAuth}); err != nil {
-		return "", err
+	var client string
+	if method == socksUserPass {
+		user, password, err := readUserPass(c)
+		if err != nil {
+			return "", "", err
+		}
+		client, err = p.identify(user, password, true)
+		status := byte(0)
+		if err != nil {
+			status = 1
+		}
+		if _, werr := c.Write([]byte{userPassVersion, status}); werr != nil || err != nil {
+			return "", "", errors.Join(err, werr)
+		}
 	}
+	host, err := readSocksRequest(c)
+	return host, client, err
+}
+
+// readUserPass reads a username and password subnegotiation (RFC 1929).
+func readUserPass(c net.Conn) (string, string, error) {
+	var ver [1]byte
+	if _, err := io.ReadFull(c, ver[:]); err != nil {
+		return "", "", err
+	}
+	if ver[0] != userPassVersion {
+		return "", "", fmt.Errorf("socks: username and password version %d", ver[0])
+	}
+	field := func() (string, error) {
+		var n [1]byte
+		if _, err := io.ReadFull(c, n[:]); err != nil {
+			return "", err
+		}
+		b := make([]byte, n[0])
+		_, err := io.ReadFull(c, b)
+		return string(b), err
+	}
+	user, err := field()
+	if err != nil {
+		return "", "", err
+	}
+	password, err := field()
+	return user, password, err
+}
+
+// readSocksRequest reads a request and returns the host:port it names.
+func readSocksRequest(c net.Conn) (string, error) {
 	var req [4]byte
 	if _, err := io.ReadFull(c, req[:]); err != nil {
 		return "", err

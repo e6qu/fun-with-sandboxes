@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -61,7 +62,7 @@ func (e *Engine) Inspect(ref string) (container.InspectResponse, error) {
 		HostConfig: &hc, Config: &cfg, Mounts: c.mountPoints(),
 		GraphDriver: &storage.DriverData{Name: "apfs-clone", Data: map[string]string{"MergedDir": c.root()}},
 		NetworkSettings: &container.NetworkSettings{
-			SandboxID: r.ID, Ports: c.portMap(), Networks: copyEndpoints(r.Networks),
+			SandboxID: r.ID, Ports: c.portMap(), Networks: c.endpoints(),
 		},
 	}, nil
 }
@@ -78,12 +79,36 @@ func (e *Engine) execsFor(id string) map[string]*Exec {
 	return out
 }
 
-func copyEndpoints(in map[string]*network.EndpointSettings) map[string]*network.EndpointSettings {
+// endpoints are the container's endpoints as Docker reports them: with
+// their addresses while the container runs, and without once it stops.
+// The caller holds c.mu.
+func (c *Container) endpoints() map[string]*network.EndpointSettings {
 	out := map[string]*network.EndpointSettings{}
-	for k, v := range in {
-		out[k] = v.Copy()
+	running := c.rec.State.Status == container.StateRunning
+	for name := range c.rec.Networks {
+		es := c.endpoint(name)
+		if !running {
+			es.IPAddress, es.IPPrefixLen, es.Gateway, es.MacAddress = netip.Addr{}, 0, netip.Addr{}, nil
+		}
+		out[name] = es
 	}
 	return out
+}
+
+// endpoint is the container's endpoint on network name, with its
+// address: its own on a network with a subnet, else its member address
+// in memberSubnet.
+func (c *Container) endpoint(name string) *network.EndpointSettings {
+	es := c.rec.Networks[name].Copy()
+	if es.IPAddress.IsValid() || name == "none" || c.rec.Address == "" {
+		return es
+	}
+	a, err := netip.ParseAddr(c.rec.Address)
+	if err != nil {
+		return es
+	}
+	es.IPAddress, es.IPPrefixLen, es.Gateway, es.MacAddress = a, netip.MustParsePrefix(memberSubnet).Bits(), netip.MustParseAddr(memberGateway), macOf(a)
+	return es
 }
 
 func (c *Container) mountPoints() []container.MountPoint {
@@ -258,7 +283,7 @@ func (c *Container) summary(opts ListOptions) (container.Summary, bool) {
 		ID: r.ID, Names: []string{"/" + r.Name}, Image: r.Image, ImageID: r.ImageID,
 		Command: strings.Join(argv, " "), Created: r.Created.Unix(), Ports: ports,
 		Labels: r.Config.Labels, State: c.stateName(), Status: c.status(),
-		NetworkSettings: &container.NetworkSettingsSummary{Networks: copyEndpoints(r.Networks)},
+		NetworkSettings: &container.NetworkSettingsSummary{Networks: c.endpoints()},
 		Mounts:          c.mountPoints(),
 	}
 	s.HostConfig.NetworkMode = string(r.HostConfig.NetworkMode)

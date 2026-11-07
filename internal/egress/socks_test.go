@@ -93,11 +93,11 @@ func TestSOCKS5Refusals(t *testing.T) {
 		methods, request []byte
 		want             byte
 	}{
-		"a host address":         {[]byte{socksNoAuth}, connectRequest(socksConnect, "rebind.test", port), socksNotAllowed},
-		"an unknown name":        {[]byte{socksNoAuth}, connectRequest(socksConnect, "missing.test", port), socksHostUnreach},
-		"BIND":                   {[]byte{socksNoAuth}, connectRequest(0x02, "remote.test", port), socksCmdUnsupport},
-		"UDP ASSOCIATE":          {[]byte{socksNoAuth}, connectRequest(0x03, "remote.test", port), socksCmdUnsupport},
-		"username/password only": {[]byte{0x02}, nil, socksNoMethod},
+		"a host address":  {[]byte{socksNoAuth}, connectRequest(socksConnect, "rebind.test", port), socksNotAllowed},
+		"an unknown name": {[]byte{socksNoAuth}, connectRequest(socksConnect, "missing.test", port), socksHostUnreach},
+		"BIND":            {[]byte{socksNoAuth}, connectRequest(0x02, "remote.test", port), socksCmdUnsupport},
+		"UDP ASSOCIATE":   {[]byte{socksNoAuth}, connectRequest(0x03, "remote.test", port), socksCmdUnsupport},
+		"GSSAPI only":     {[]byte{0x01}, nil, socksNoMethod},
 	} {
 		if got := socksRequest(t, p, c.methods, c.request); got != c.want {
 			t.Errorf("%s: reply %#x, want %#x", name, got, c.want)

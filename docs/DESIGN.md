@@ -252,16 +252,28 @@ same knobs, each enforced by a real mechanism or refused:
   becomes an IPv4 one too and reaches the dual-stack listener on
   `127.0.0.1`, its loopback addresses reading as `::1`.
   Each member of a stack has a member address in `127.88.0.0/16`, assigned
-  as it is created and kept in its record. The engine keeps a network file
-  per stack, rewritten as members come, go, are renamed or change networks,
+  as it is created and kept in its record; it is the member's identity in
+  the network file. A network created with an IPv4 subnet (one, of the
+  default IPAM driver, outside `127.0.0.0/8` and other networks' subnets)
+  gives each endpoint an address of it too: the one its IPAM configuration
+  names, or the lowest of the range that no endpoint, the gateway or an
+  auxiliary address holds, recorded in the endpoint and reported by
+  inspect while the container runs. The engine keeps a network file per
+  stack, rewritten as members come, go, are renamed or change networks,
   of each member's address, the names it answers to (its container name,
-  service, hostname, DNS names and aliases) and its ports' host ports; the
+  service, hostname, DNS names and aliases), its ports' host ports, and
+  its addresses on networks with subnets, `network=address/bits`; the
   container reads it (`FWS_NETWORK`) and nothing else of the engine's
-  state. The library presents the container's interfaces where a program
-  lists them, in the routing sysctl (`NET_RT_IFLIST`, `NET_RT_IFLIST2`)
-  that `getifaddrs` and Go read and in the `SIOCGIF*` ioctls: the host's
-  loopback interface, and `eth0`, which takes the index after the host's
-  highest, with the member address. A Unix socket's address maps as a
+  state. The library resolves a member's names to its address on the
+  first network the two share, by name, takes any of a member's addresses
+  as the member's, any of its own as its own, and an address of a
+  network's subnet that no member holds as unreachable. It presents the
+  container's interfaces where a program lists them, in the routing
+  sysctl (`NET_RT_IFLIST`, `NET_RT_IFLIST2`) that `getifaddrs` and Go read
+  and in the `SIOCGIF*` ioctls: the host's loopback interface, and `eth0`
+  onwards, which take the indexes after the host's highest, one for each
+  of the container's addresses on its networks, in their order, with its
+  subnet's mask. A Unix socket's address maps as a
   file path does, in `bind`, `connect` and `sendto`, and reads back as the
   container's path. A host path past the address's 104 bytes binds,
   connects and sends by its path below the root, or below the source of
@@ -311,10 +323,11 @@ same knobs, each enforced by a real mechanism or refused:
   file, port directory and router, and its stack's egress proxy, in the
   container library's variables and the Seatbelt profile alike, so its
   processes bind and reach what that container's do. The stack's egress
-  proxy reads the same file and reaches a member as the library does, so a
-  client that sends even its stack's traffic through `HTTP_PROXY`, as
-  Python's `urllib` does for a name `NO_PROXY` leaves out, reaches the
-  member too.
+  proxy reads the same file and reaches a member as the library does, for
+  the container the client's credentials name, so a client that sends even
+  its stack's traffic through `HTTP_PROXY`, as Python's `urllib` does for
+  a name `NO_PROXY` leaves out, reaches the members that container sees,
+  and the aliases its own links give them.
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would
@@ -471,12 +484,24 @@ it; it tells services their assignment through the environment.
   port or flow port, as a published UDP port's proxy does. A relay port
   lies in the stack's block, where every member may send; the router takes
   a datagram only from its container's own ports, its UDP host ports and
-  flow ports, the ports its sockets send from.
+  flow ports, the ports its sockets send from. A UDP socket no program
+  bound, which the kernel would bind to an ephemeral port on its first
+  datagram, the library binds to an ephemeral port of the container's own
+  before its first datagram to a foreign member, so the relay takes it.
 - **Egress.** Seatbelt can allow loopback ports or every destination, nothing
   in between, so containers reach the internet through a proxy the engine
   runs for each stack on a port of the stack's block (`internal/egress`): an
-  HTTP proxy, and on the same port a SOCKS5 one (RFC 1928, CONNECT only, no
-  authentication) for any TCP, told apart by the first byte a client sends.
+  HTTP proxy, and on the same port a SOCKS5 one (RFC 1928, CONNECT only) for
+  any TCP, told apart by the first byte a client sends. A container's proxy
+  URLs carry its member address as the user and, as the password, an
+  HMAC-SHA256 of the address under a key the engine draws for the stack and
+  keeps in its state, which no container reads; the proxy checks them
+  (`Proxy-Authorization: Basic`, or RFC 1929 for SOCKS5) and answers a
+  wrong pair with 407, or SOCKS5's failure status. They name the member
+  whose view of the stack the proxy resolves members in; a client with no
+  credentials, a build step's, reaches no member. An address of a
+  network's subnet that no member the client sees holds is unreachable
+  through the proxy, as it is through the library.
   Containers, classic `RUN` steps and BuildKit steps receive `HTTP_PROXY`,
   `HTTPS_PROXY`, `ALL_PROXY` (`socks5h://`, so the proxy resolves names) and
   `NO_PROXY`, which leaves loopback and the member block to the container
@@ -585,7 +610,8 @@ policies follow Docker's back-off.
 Requests the engine cannot honour return an error rather than being
 accepted: `501` for memory, CPU, PID, ulimit and device limits; privileged
 mode; capabilities; non-default users; `host` networking; non-`bridge`
-network drivers; custom IPAM; SCTP publishing; and resource updates.
+network drivers; IPAM drivers other than the default, IPv6 and more than
+one subnet; SCTP publishing; and resource updates.
 
 `POST /grpc` and `POST /session` serve an embedded BuildKit
 (`internal/buildkit`), as dockerd does, so buildx's docker driver, `docker
