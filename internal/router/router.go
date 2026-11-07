@@ -4,7 +4,8 @@
 //
 // For TCP, a client sends the port it wants to the container's router, a
 // loopback port every member of its stack may reach, and the router joins
-// the connection to the socket.
+// the connection to the socket, first writing the client's address there,
+// so that the listener's side reports its peer as a TCP server's does.
 //
 // A client of a member of another stack, on a network the two stacks
 // share, reaches it through its own container's router, which relays the
@@ -67,6 +68,33 @@ func KeyPath(dir string) string { return filepath.Join(dir, "relay-key") }
 // side: the IPv4 address and port the datagram came from, to the
 // container, or goes to, from it.
 const Header = 6
+
+// ClientHeader is the size of what the router writes on a connection to a
+// container's listener before the client's stream: the IPv4 address and
+// port it sees the client at, as Header's are laid out.
+const ClientHeader = 6
+
+// ReadClient reads the client's address the router writes before a
+// connection's stream.
+func ReadClient(r io.Reader) (netip.AddrPort, error) {
+	var h [ClientHeader]byte
+	if _, err := io.ReadFull(r, h[:]); err != nil {
+		return netip.AddrPort{}, err
+	}
+	return netip.AddrPortFrom(netip.AddrFrom4([4]byte(h[:4])), binary.BigEndian.Uint16(h[4:])), nil
+}
+
+// clientHeader is what the router writes for a client at addr.
+func clientHeader(addr net.Addr) []byte {
+	h := make([]byte, ClientHeader)
+	if t, ok := addr.(*net.TCPAddr); ok {
+		if v4 := t.IP.To4(); v4 != nil {
+			copy(h, v4)
+		}
+		binary.BigEndian.PutUint16(h[4:], uint16(t.Port))
+	}
+	return h
+}
 
 // SocketPath is where the container library listens on TCP port port.
 func SocketPath(dir string, port int) string {
@@ -301,8 +329,10 @@ func (r *Router) join(c net.Conn) {
 		if addr, p, err = r.foreignTarget(c); err == nil {
 			up, err = r.foreign(addr, p)
 		}
-	} else {
-		up, err = net.Dial("unix", SocketPath(r.dir, port))
+	} else if up, err = net.Dial("unix", SocketPath(r.dir, port)); err == nil {
+		if _, err = up.Write(clientHeader(c.RemoteAddr())); err != nil {
+			up.Close()
+		}
 	}
 	c.SetReadDeadline(time.Time{})
 	if err != nil {

@@ -5,6 +5,7 @@
     "/data",
     "/data/filerldb2",
     "/etc/seaweedfs",
+    "/home/seaweed",
     "/tmp"
   ],
   "config": {

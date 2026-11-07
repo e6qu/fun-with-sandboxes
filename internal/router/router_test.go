@@ -33,6 +33,7 @@ func portDir(t *testing.T) string {
 
 func TestJoinsToTheListener(t *testing.T) {
 	dir := portDir(t)
+	clients := make(chan netip.AddrPort, 1)
 	l, err := net.Listen("unix", SocketPath(dir, 7000))
 	if err != nil {
 		t.Fatal(err)
@@ -44,6 +45,11 @@ func TestJoinsToTheListener(t *testing.T) {
 			return
 		}
 		defer c.Close()
+		from, err := ReadClient(c)
+		if err != nil {
+			return
+		}
+		clients <- from
 		line, _ := bufio.NewReader(c).ReadString('\n')
 		c.Write([]byte("echo " + line))
 	}()
@@ -60,6 +66,9 @@ func TestJoinsToTheListener(t *testing.T) {
 	c.Write([]byte("hello\n"))
 	if got, _ := bufio.NewReader(c).ReadString('\n'); got != "echo hello\n" {
 		t.Errorf("got %q", got)
+	}
+	if from, want := <-clients, c.LocalAddr().(*net.TCPAddr).AddrPort(); from != want {
+		t.Errorf("the listener's client is %v, want %v", from, want)
 	}
 	if _, err := Dial(r.Addr().String(), 7001); err == nil {
 		t.Error("a port nothing listens on was reached")
@@ -164,6 +173,8 @@ func dialForeign(router string, key []byte, addr netip.Addr, port int) (net.Conn
 	return c, nil
 }
 
+// echo answers each line a client sends on l; on a container's listener,
+// whose connections the router makes, after the client's address.
 func echo(t *testing.T, l net.Listener) {
 	t.Helper()
 	t.Cleanup(func() { l.Close() })
@@ -175,6 +186,11 @@ func echo(t *testing.T, l net.Listener) {
 			}
 			go func() {
 				defer c.Close()
+				if _, ok := l.(*net.UnixListener); ok {
+					if _, err := ReadClient(c); err != nil {
+						return
+					}
+				}
 				line, _ := bufio.NewReader(c).ReadString('\n')
 				c.Write([]byte("echo " + line))
 			}()

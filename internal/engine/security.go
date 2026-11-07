@@ -14,6 +14,11 @@ var defaultCapabilities = []string{
 	"NET_RAW", "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_CHROOT",
 }
 
+// heldCapabilities are capabilities beyond Docker's default set whose
+// power every container holds already: IPC_LOCK's, to lock memory, which
+// macOS grants an unprivileged process up to its RLIMIT_MEMLOCK.
+var heldCapabilities = []string{"IPC_LOCK"}
+
 // No default capability grants a container here a power to give up: they
 // grant powers over other users' files and processes, devices or identity,
 // which a container running as the engine's unprivileged user does not
@@ -31,7 +36,7 @@ func capName(c string) string {
 // refusing what needs root or a Linux kernel.
 func checkSecurity(hc *container.HostConfig) error {
 	known := map[string]bool{}
-	for _, c := range defaultCapabilities {
+	for _, c := range append(append([]string{}, defaultCapabilities...), heldCapabilities...) {
 		known[c] = true
 	}
 	for _, c := range hc.CapDrop {
@@ -70,7 +75,7 @@ func checkSecurity(hc *container.HostConfig) error {
 // linuxCapabilities are capability names beyond Docker's default set.
 var linuxCapabilities = map[string]bool{
 	"AUDIT_CONTROL": true, "AUDIT_READ": true, "BLOCK_SUSPEND": true, "BPF": true, "CHECKPOINT_RESTORE": true,
-	"DAC_READ_SEARCH": true, "IPC_LOCK": true, "IPC_OWNER": true, "LEASE": true, "LINUX_IMMUTABLE": true,
+	"DAC_READ_SEARCH": true, "IPC_OWNER": true, "LEASE": true, "LINUX_IMMUTABLE": true,
 	"MAC_ADMIN": true, "MAC_OVERRIDE": true, "NET_ADMIN": true, "NET_BROADCAST": true, "PERFMON": true,
 	"SYS_ADMIN": true, "SYS_BOOT": true, "SYS_MODULE": true, "SYS_NICE": true, "SYS_PACCT": true,
 	"SYS_PTRACE": true, "SYS_RAWIO": true, "SYS_RESOURCE": true, "SYS_TIME": true, "SYS_TTY_CONFIG": true,

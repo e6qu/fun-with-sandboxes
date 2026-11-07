@@ -159,7 +159,7 @@ func TestReachesStackMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ul.Close()
-	go http.Serve(ul, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "member routed") }))
+	go http.Serve(clientListener{ul}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "member routed") }))
 	rt, err := router.Listen("127.0.0.1:0", dir, func() (*net.UDPConn, error) {
 		return net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	}, router.Network{})
@@ -250,5 +250,23 @@ func TestReachesStackMembers(t *testing.T) {
 	if c, err := d.Dial("tcp", "web:8000"); err == nil {
 		c.Close()
 		t.Error("SOCKS5 took a wrong password")
+	}
+}
+
+// clientListener reads the client's address the router writes before each
+// connection's stream, as the container library does on a listener of a
+// port without a host port.
+type clientListener struct{ net.Listener }
+
+func (l clientListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := router.ReadClient(c); err == nil {
+			return c, nil
+		}
+		c.Close()
 	}
 }

@@ -95,12 +95,12 @@ tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite
 ## Image catalog
 
 A Nix-built catalog for `aarch64-darwin`/`x86_64-darwin`, converted to OCI
-layers with a `darwin/<arch>` platform entry: `bun`, `dynamodb`, `gitea`,
-`lambda`, `mariadb`, `memcached`, `mysql`, `nats`, `nginx`, `node`,
-`playwright`, `postgres`, `python`, `rabbitmq`, `redis`, `ryuk`
-(Testcontainers' reaper), `seaweedfs`, `toolbox` and `valkey`. SeaweedFS
-is the catalog's S3 server: nixpkgs marks MinIO insecure, abandoned
-upstream with unfixed vulnerabilities. Compose
+layers with a `darwin/<arch>` platform entry: `bun`, `consul`, `dynamodb`,
+`etcd`, `gitea`, `lambda`, `mariadb`, `memcached`, `mongo`, `mysql`, `nats`,
+`nginx`, `node`, `playwright`, `postgres`, `python`, `rabbitmq`, `redis`,
+`ryuk` (Testcontainers' reaper), `seaweedfs`, `toolbox`, `valkey` and
+`vault`. SeaweedFS is the catalog's S3 server: nixpkgs marks MinIO insecure,
+abandoned upstream with unfixed vulnerabilities. Compose
 files name these images explicitly; the engine never silently substitutes an
 image name.
 
