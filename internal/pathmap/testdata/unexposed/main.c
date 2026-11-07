@@ -85,8 +85,22 @@ int main(int argc, char **argv) {
     n = sizeof s;
     int k = accept(l, (void *)&s, &n);
     if (k < 0) fail("local");
+    char client[80], seen[80];
+    strlcpy(client, addr(&s), sizeof client);
+    n = sizeof s;
+    getpeername(k, (void *)&s, &n);
+    strlcpy(seen, addr(&s), sizeof seen);
+    n = sizeof s;
+    getsockname(c, (void *)&s, &n);
     char buf[8] = {0};
     if (write(c, "ping", 4) != 4 || read(k, buf, 4) != 4) fail("local");
+    // The server sees its client at the port the client has, on the
+    // IPv4-mapped loopback address a dual-stack listener reports.
+    const char *own = strrchr(addr(&s), ':');
+    printf("client=%s\n", strcmp(seen, client) == 0 && strncmp(client, "[::ffff:127.0.0.1]:", 19) == 0 &&
+                               strcmp(strrchr(client, ':'), own) == 0 && strcmp(own, ":0") != 0
+                           ? "its-own"
+                           : client);
     n = sizeof s;
     getpeername(c, (void *)&s, &n);
     printf("local=%s %s\n", buf, addr(&s));

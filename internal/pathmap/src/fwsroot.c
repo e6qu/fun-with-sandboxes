@@ -27,6 +27,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <poll.h>
 #include <pthread.h>
 #include <pwd.h>
 #include <sys/utsname.h>
@@ -2704,6 +2705,9 @@ static unsigned short container_port(int type, unsigned short hport) {
 // What the router puts before a datagram on a Unix one: the IPv4 address
 // and port it came from, or goes to.
 #define DGRAM_HEADER 6
+// What the router writes on a connection to a listener on a port without a
+// host port before its stream: the client's IPv4 address and port.
+#define CLIENT_HEADER 6
 // The most iovecs a datagram takes, one fewer than the kernel's UIO_MAXIOV
 // for the header's.
 #define DGRAM_IOV 1023
@@ -3312,9 +3316,10 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
     unsigned char st = state_of(fd);
     if ((st & NET_UNIX) && k->ss_family == AF_UNIX) {
         // A listener on a port without a host port, or a connection it
-        // accepted, whose clients came through a router from loopback.
-        in_addr_t a = own ? ((st & NET_ANY) ? htonl(INADDR_ANY) : htonl(INADDR_LOOPBACK)) : htonl(INADDR_LOOPBACK);
-        present_inet(fd, a, own ? net_port[fd] : 0, own, out, outlen);
+        // accepted, whose client is where the router saw it.
+        int in = fd >= 0 && fd < NET_FDS;
+        in_addr_t a = own ? ((st & NET_ANY) ? htonl(INADDR_ANY) : htonl(INADDR_LOOPBACK)) : in && net_peer[fd] ? net_peer[fd] : htonl(INADDR_LOOPBACK);
+        present_inet(fd, a, !in ? 0 : own ? net_port[fd] : net_dport[fd], own, out, outlen);
         return;
     }
     if ((st & NET_ROUTED) && !own) {
@@ -4241,19 +4246,56 @@ static ssize_t fws_read(int fd, void *buf, size_t n) {
 }
 INTERPOSE(fws_read, read);
 
-static int fws_accept(int fd, struct sockaddr *sa, socklen_t *len) {
-    struct sockaddr_storage k;
-    socklen_t kn = sizeof k;
-    int c = accept(fd, (struct sockaddr *)&k, &kn);
-    if (c >= 0) {
-        set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
-        if (c < NET_FDS && fd < NET_FDS) {
-            net_port[c] = net_port[fd];
-            set_name(unix_names, c, unix_names[fd]);
-        }
-        present(c, &k, kn, sa, len, 0);
+// take_client reads the client's address and port, which the router
+// writes before the stream of a connection it makes to a listener on a port
+// without a host port, and reports whether c carried them: the library's
+// own probes of a listener connect and write nothing.
+static int take_client(int c) {
+    unsigned char h[CLIENT_HEADER];
+    size_t got = 0;
+    while (got < sizeof h) {
+        struct pollfd p = {c, POLLIN, 0};
+        int r = poll(&p, 1, 10000);
+        if (r == -1 && errno == EINTR) continue;
+        if (r != 1) return 0;
+        ssize_t n = recv(c, h + got, sizeof h - got, 0);
+        if (n == -1 && (errno == EINTR || errno == EAGAIN)) continue;
+        if (n <= 0) return 0;
+        got += (size_t)n;
     }
-    return c;
+    if (c < NET_FDS) {
+        memcpy(&net_peer[c], h, 4);
+        net_dport[c] = (unsigned short)(h[4] << 8 | h[5]);
+    }
+    return 1;
+}
+
+// accepted completes a connection c that fd accepted, with k its peer as
+// the kernel reports it, and reports whether the program gets it.
+static int accepted(int fd, int c, const struct sockaddr_storage *k, socklen_t kn, struct sockaddr *sa, socklen_t *len) {
+    int e = errno;
+    if ((state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_STREAM && !take_client(c)) {
+        close(c);
+        errno = e;
+        return 0;
+    }
+    set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
+    if (c < NET_FDS && fd < NET_FDS) {
+        net_port[c] = net_port[fd];
+        set_name(unix_names, c, unix_names[fd]);
+    }
+    present(c, k, kn, sa, len, 0);
+    errno = e;
+    return 1;
+}
+
+static int fws_accept(int fd, struct sockaddr *sa, socklen_t *len) {
+    for (;;) {
+        struct sockaddr_storage k;
+        socklen_t kn = sizeof k;
+        int c = accept(fd, (struct sockaddr *)&k, &kn);
+        if (c < 0 || accepted(fd, c, &k, kn, sa, len)) return c;
+    }
 }
 INTERPOSE(fws_accept, accept);
 
@@ -4510,18 +4552,12 @@ INTERPOSE(fws_recvmsg_nocancel, recvmsg_nocancel);
 
 extern int accept_nocancel(int, struct sockaddr *, socklen_t *) __asm("_accept$NOCANCEL") __attribute__((weak_import));
 static int fws_accept_nocancel(int fd, struct sockaddr *sa, socklen_t *len) {
-    struct sockaddr_storage k;
-    socklen_t kn = sizeof k;
-    int c = accept_nocancel(fd, (struct sockaddr *)&k, &kn);
-    if (c >= 0) {
-        set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
-        if (c < NET_FDS && fd < NET_FDS) {
-            net_port[c] = net_port[fd];
-            set_name(unix_names, c, unix_names[fd]);
-        }
-        present(c, &k, kn, sa, len, 0);
+    for (;;) {
+        struct sockaddr_storage k;
+        socklen_t kn = sizeof k;
+        int c = accept_nocancel(fd, (struct sockaddr *)&k, &kn);
+        if (c < 0 || accepted(fd, c, &k, kn, sa, len)) return c;
     }
-    return c;
 }
 INTERPOSE(fws_accept_nocancel, accept_nocancel);
 

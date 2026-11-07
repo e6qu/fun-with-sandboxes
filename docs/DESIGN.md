@@ -312,7 +312,10 @@ same knobs, each enforced by a real mechanism or refused:
   container's shim runs its router, on a port of the stack's block that
   the network file names: a client sends the container port it wants, two
   bytes, and the router joins the connection to that port's socket or
-  refuses it. The library connects a client of a member's port without a
+  refuses it, writing the client's loopback address and port there first,
+  which the library takes on `accept` and reports as the peer, as a TCP
+  server sees its client; a connection that carries none, as the library's
+  own probes of a socket do, the library closes and accepts the next. The library connects a client of a member's port without a
   host port through the member's router, and one of its own container's
   through its own, at once, whether or not the socket blocks, and reports
   the peer as the member's address and port. A UDP socket on such a port
@@ -520,7 +523,8 @@ it; it tells services their assignment through the environment.
   through the proxy, as it is through the library.
   Containers, classic `RUN` steps and BuildKit steps receive `HTTP_PROXY`,
   `HTTPS_PROXY`, `ALL_PROXY` (`socks5h://`, so the proxy resolves names) and
-  `NO_PROXY`, which leaves loopback and the member block to the container
+  `NO_PROXY`, which leaves loopback, the unspecified addresses, which a
+  connection reaches as loopback, and the member block to the container
   library. The proxy resolves each destination once, refuses it if any
   address is loopback, link-local, multicast, unspecified or assigned to one
   of the host's interfaces, and dials an address it checked, so DNS cannot
