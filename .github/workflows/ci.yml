@@ -189,11 +189,18 @@ jobs:
         env:
           FWS_E2E_IMAGES: ${{ runner.temp }}/images
         working-directory: tests/e2e
-        run: go test -tags e2e -v -count=1 -timeout 90m ./...
+        # fs_usage records which process removes or truncates a blob of an
+        # engine's image store, which only an image removal should do.
+        run: |
+          sudo fs_usage -w -f pathname 2>/dev/null |
+            grep --line-buffered -E '(unlink|rmdir|truncate).*/images/oci/blobs/' > "$RUNNER_TEMP/blob-writes.log" &
+          go test -tags e2e -v -count=1 -timeout 90m ./...
       - name: crash reports and Seatbelt denials
         if: failure()
         run: |
           df -h /
+          echo "== removals in image stores' blobs"
+          tail -n 200 "$RUNNER_TEMP/blob-writes.log" || true
           for f in ~/Library/Logs/DiagnosticReports/*.ips; do
             [ -e "$f" ] || continue
             echo "== $f"
