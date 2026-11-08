@@ -83,6 +83,10 @@ func run(m *testing.M) int {
 	sock := filepath.Join(home, ".e2e.sock")
 	defer os.Remove(sock)
 	daemon := exec.Command(bin, "-root", root, "-socket", sock, "-port-base", "30000", "-port-limit", "31000", "-block-size", "50")
+	// The engine runs in a session of its own, as a daemon does, so a
+	// signal it sends its own process group ends it, and the suite reports
+	// that, rather than reaching the suite and the CI runner's agent.
+	daemon.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	stderr, _ := daemon.StderrPipe()
 	if err := daemon.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
