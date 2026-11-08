@@ -83,6 +83,7 @@ func pki(t *testing.T, dir, server string) {
 		{"admin", "kubernetes-admin", "system:masters"},
 		{"controller-manager", "system:kube-controller-manager", ""},
 		{"scheduler", "system:kube-scheduler", ""},
+		{"kubelet", "system:node:node1", "system:nodes"},
 	} {
 		subject := pkix.Name{CommonName: c.user}
 		if c.group != "" {
@@ -106,6 +107,9 @@ func pki(t *testing.T, dir, server string) {
 // run it: etcd, the API server, the controller manager and the scheduler
 // on one network. The controller manager turns a Deployment into its
 // Pods, the scheduler finds no node for them, and both hold their leases.
+// Then a kubelet joins in a privileged container and runs the Pods on the
+// engine nested in it, through the Container Runtime Interface the engine
+// serves there, and the API server reads their logs from it.
 func TestKubernetesControlPlane(t *testing.T) {
 	const network = "e2e-k8s"
 	dir := t.TempDir()
@@ -117,7 +121,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 		mustDocker(t, append([]string{"run", "-d", "--restart=on-failure", "--name", "e2e-" + name, "--network", network, "--network-alias", name,
 			"-v", dir + ":/etc/kubernetes/pki:ro"}, args...)...)
 	}
-	names := []string{"etcd", "kube-apiserver", "kube-controller-manager", "kube-scheduler"}
+	names := []string{"etcd", "kube-apiserver", "kube-controller-manager", "kube-scheduler", "kubelet"}
 	defer func() {
 		if t.Failed() {
 			for _, n := range names {
@@ -205,6 +209,60 @@ func TestKubernetesControlPlane(t *testing.T) {
 	mustKubectl("wait", "--for=condition=PodScheduled=false", "--timeout=2m", "pod", "-l", "app=web")
 	if out := mustKubectl("get", "events", "--field-selector", "reason=FailedScheduling", "-o", "jsonpath={.items[*].reportingComponent}"); !strings.Contains(out, "default-scheduler") {
 		t.Errorf("the scheduler's events: %q", out)
+	}
+
+	// The node registers tainted, as kind's nodes take images it loads
+	// before they run pods; the taint goes once the node's engine holds
+	// the sandbox's pause image and the Deployment's.
+	mustDocker(t, "run", "-d", "--privileged", "--restart=on-failure", "--name", "e2e-kubelet", "--network", network, "--network-alias", "node1",
+		"-v", dir+":/etc/kubernetes/pki:ro", "--entrypoint", "/bin/sh", "fws/kubelet:1.35", "-c",
+		"exec kubelet --kubeconfig="+pkiDir+"kubelet.conf --container-runtime-endpoint=unix://$FWS_ENGINE --hostname-override=node1"+
+			" --cgroups-per-qos=false --enforce-node-allocatable= --fail-swap-on=false --eviction-hard=memory.available<10Mi"+
+			" --register-with-taints=e2e/loading=true:NoSchedule")
+	mustKubectl("wait", "--for=create", "--timeout=2m", "node/node1")
+	mustKubectl("wait", "--for=condition=Ready", "--timeout=2m", "node/node1")
+	if out := mustKubectl("get", "node/node1", "-o", "jsonpath={.status.nodeInfo.operatingSystem} {.status.nodeInfo.kubeletVersion} {.status.nodeInfo.containerRuntimeVersion}"); !strings.HasPrefix(out, "darwin v1.35.0 fun-with-sandboxes://") {
+		t.Errorf("the node's info: %q", out)
+	}
+	sock := strings.TrimSpace(mustDocker(t, "exec", "e2e-kubelet", "/bin/sh", "-c", "echo $FWS_ENGINE"))
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	save := exec.CommandContext(ctx, "docker", "save", "fws/pause:3.10.1", "fws/nginx:1", "fws/toolbox:1")
+	load := exec.CommandContext(ctx, "docker", "-H", "unix://"+sock, "load")
+	pipe, err := save.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	load.Stdin = pipe
+	if err := save.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := load.CombinedOutput(); err != nil || save.Wait() != nil {
+		t.Fatalf("loading images into the node's engine: %v\n%s", err, out)
+	}
+	mustKubectl("taint", "nodes", "node1", "e2e/loading-")
+	mustKubectl("rollout", "status", "--timeout=3m", "deployment/web")
+	pods := strings.Fields(mustKubectl("get", "pods", "-l", "app=web", "-o", "jsonpath={range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP} {end}"))
+	if len(pods) != 2 {
+		t.Fatalf("the Deployment's pods: %q", pods)
+	}
+	for _, p := range pods {
+		f := strings.Split(p, "=")
+		if f[1] != "node1" || f[2] == "" {
+			t.Errorf("pod %s ran on %q with address %q", f[0], f[1], f[2])
+		}
+	}
+	// The API server reads a pod's log from the kubelet, which reads the
+	// file the runtime writes.
+	mustKubectl("run", "greeter", "--image=fws/toolbox:1", "--restart=Never", "--", "echo", "from the node")
+	mustKubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/greeter")
+	if out := mustKubectl("logs", "greeter"); out != "from the node\n" {
+		t.Errorf("the greeter's log: %q", out)
+	}
+	mustKubectl("scale", "deployment/web", "--replicas=0")
+	mustKubectl("wait", "--for=delete", "--timeout=2m", "pod", "-l", "app=web")
+	if out := mustDocker(t, "-H", "unix://"+sock, "ps", "--format", "{{.Names}}"); strings.Contains(out, "k8s_nginx") {
+		t.Errorf("the node's engine still runs the deleted pods' containers:\n%s", out)
 	}
 }
 

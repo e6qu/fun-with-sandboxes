@@ -1,0 +1,15 @@
+{
+  "tag": "fws/pause:3.10.1",
+  "files": {},
+  "dirs": [],
+  "config": {
+    "User": "65535:65535",
+    "Entrypoint": [
+      "/pause"
+    ],
+    "WorkingDir": "/",
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

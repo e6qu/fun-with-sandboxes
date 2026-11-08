@@ -68,6 +68,11 @@ func (e *Engine) stateRoot() string {
 	return e.cfg.Root
 }
 
+// HostPath is the host's path for path p of the engine's host: p, or for
+// an engine nested in a privileged container, the host's path for that
+// container's p.
+func (e *Engine) HostPath(p string) (string, error) { return e.hostPath(p) }
+
 // hostPath is the host's path for the source of a bind mount.
 func (e *Engine) hostPath(p string) (string, error) {
 	if n := e.cfg.Nested; n != nil {

@@ -499,5 +499,13 @@ for c in kube-apiserver kube-controller-manager kube-scheduler kubectl; do
     -file "/go-runner=$go_runner/bin/go-runner" -file "/usr/local/bin/$c=$k8s/bin/$c" \
     -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/$c.tar"
 done
+pause=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/pause.nix --argstr nixpkgs "$nixpkgs")
+closure "$pause" > "$build/pause.closure"
+mkimage $(accounts pause) -spec images/pause/image.json -closure "$build/pause.closure" -file "/pause=$pause/bin/pause" -out "$out/pause.tar"
+kubelet=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/kubelet.nix --argstr nixpkgs "$nixpkgs")
+closure $(nix-store -qR "$kubelet" | grep -v "^$kubelet$") > "$build/kubelet.closure"
+mkimage $(accounts kubelet) -spec images/kubelet/image.json -closure "$build/kubelet.closure" \
+  -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" \
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/kubelet.tar"
 
 ls -l "$out"

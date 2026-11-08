@@ -1,0 +1,635 @@
+diff --git a/pkg/kubelet/cadvisor/cadvisor_darwin.go b/pkg/kubelet/cadvisor/cadvisor_darwin.go
+new file mode 100644
+index 00000000..e1f13956
+--- /dev/null
++++ b/pkg/kubelet/cadvisor/cadvisor_darwin.go
+@@ -0,0 +1,85 @@
++//go:build darwin
++// +build darwin
++
++/*
++Copyright 2026 The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package cadvisor
++
++import (
++	"context"
++
++	cadvisorapi "github.com/google/cadvisor/info/v1"
++	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
++	"k8s.io/kubernetes/pkg/kubelet/darwinstats"
++)
++
++// cadvisorClient reads a macOS node's statistics from its kernel. The node
++// has no cgroups: its one container is the root, the node itself.
++type cadvisorClient struct {
++	rootPath string
++	stats    *darwinstats.Client
++}
++
++var _ Interface = new(cadvisorClient)
++
++// New creates a cAdvisor client for a macOS node.
++func New(imageFsInfoProvider ImageFsInfoProvider, rootPath string, cgroupRoots []string, usingLegacyStats, localStorageCapacityIsolation bool) (Interface, error) {
++	client, err := darwinstats.NewClient()
++	return &cadvisorClient{rootPath: rootPath, stats: client}, err
++}
++
++func (cu *cadvisorClient) Start() error {
++	return nil
++}
++
++func (cu *cadvisorClient) ContainerInfoV2(name string, options cadvisorapiv2.RequestOptions) (map[string]cadvisorapiv2.ContainerInfo, error) {
++	info, err := cu.stats.RootInfo()
++	if err != nil {
++		return nil, err
++	}
++	return map[string]cadvisorapiv2.ContainerInfo{"/": info}, nil
++}
++
++func (cu *cadvisorClient) GetRequestedContainersInfo(containerName string, options cadvisorapiv2.RequestOptions) (map[string]*cadvisorapi.ContainerInfo, error) {
++	return nil, nil
++}
++
++func (cu *cadvisorClient) MachineInfo() (*cadvisorapi.MachineInfo, error) {
++	return cu.stats.MachineInfo()
++}
++
++func (cu *cadvisorClient) VersionInfo() (*cadvisorapi.VersionInfo, error) {
++	return cu.stats.VersionInfo()
++}
++
++// The node keeps its images and its containers' files on the disk of its
++// root directory.
++func (cu *cadvisorClient) ImagesFsInfo(context.Context) (cadvisorapiv2.FsInfo, error) {
++	return cu.RootFsInfo()
++}
++
++func (cu *cadvisorClient) ContainerFsInfo(context.Context) (cadvisorapiv2.FsInfo, error) {
++	return cu.RootFsInfo()
++}
++
++func (cu *cadvisorClient) RootFsInfo() (cadvisorapiv2.FsInfo, error) {
++	return cu.GetDirFsInfo(cu.rootPath)
++}
++
++func (cu *cadvisorClient) GetDirFsInfo(path string) (cadvisorapiv2.FsInfo, error) {
++	return darwinstats.FsInfo(path)
++}
+diff --git a/pkg/kubelet/cadvisor/cadvisor_unsupported.go b/pkg/kubelet/cadvisor/cadvisor_unsupported.go
+index e555f2e5..4a3e14be 100644
+--- a/pkg/kubelet/cadvisor/cadvisor_unsupported.go
++++ b/pkg/kubelet/cadvisor/cadvisor_unsupported.go
+@@ -1,5 +1,5 @@
+-//go:build !linux && !windows
+-// +build !linux,!windows
++//go:build !linux && !windows && !darwin
++// +build !linux,!windows,!darwin
+ 
+ /*
+ Copyright 2015 The Kubernetes Authors.
+diff --git a/pkg/kubelet/cm/container_manager_darwin.go b/pkg/kubelet/cm/container_manager_darwin.go
+new file mode 100644
+index 00000000..6abb9dbb
+--- /dev/null
++++ b/pkg/kubelet/cm/container_manager_darwin.go
+@@ -0,0 +1,104 @@
++//go:build darwin
++// +build darwin
++
++/*
++Copyright 2026 The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package cm
++
++import (
++	"context"
++	"fmt"
++
++	v1 "k8s.io/api/core/v1"
++	"k8s.io/apimachinery/pkg/api/resource"
++	clientset "k8s.io/client-go/kubernetes"
++	"k8s.io/client-go/tools/record"
++	internalapi "k8s.io/cri-api/pkg/apis"
++	"k8s.io/klog/v2"
++	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
++	"k8s.io/kubernetes/pkg/kubelet/config"
++	"k8s.io/kubernetes/pkg/kubelet/status"
++	"k8s.io/mount-utils"
++)
++
++// containerManagerImpl manages a macOS node's containers. macOS has no
++// cgroups, so the manager places no pod in one; it reports the node's
++// capacity and what it reserves, from which the kubelet admits pods.
++type containerManagerImpl struct {
++	containerManagerStub
++	capacity          v1.ResourceList
++	cadvisorInterface cadvisor.Interface
++	nodeConfig        NodeConfig
++}
++
++var _ ContainerManager = &containerManagerImpl{}
++
++// NewContainerManager creates the container manager of a macOS node.
++func NewContainerManager(_ context.Context, _ mount.Interface, cadvisorInterface cadvisor.Interface, nodeConfig NodeConfig, failSwapOn bool, recorder record.EventRecorder, kubeClient clientset.Interface) (ContainerManager, error) {
++	machineInfo, err := cadvisorInterface.MachineInfo()
++	if err != nil {
++		return nil, err
++	}
++	return &containerManagerImpl{
++		capacity:          cadvisor.CapacityFromMachineInfo(machineInfo),
++		cadvisorInterface: cadvisorInterface,
++		nodeConfig:        nodeConfig,
++	}, nil
++}
++
++func (cm *containerManagerImpl) Start(ctx context.Context, node *v1.Node, activePods ActivePodsFunc, getNode GetNodeFunc, sourcesReady config.SourcesReady, podStatusProvider status.PodStatusProvider, runtimeService internalapi.RuntimeService, localStorageCapacityIsolation bool) error {
++	klog.FromContext(ctx).V(2).Info("Starting macOS container manager")
++	if localStorageCapacityIsolation {
++		rootfs, err := cm.cadvisorInterface.RootFsInfo()
++		if err != nil {
++			return fmt.Errorf("failed to get rootfs info: %w", err)
++		}
++		for name, quantity := range cadvisor.EphemeralStorageCapacityFromFsInfo(rootfs) {
++			cm.capacity[name] = quantity
++		}
++	}
++	return cm.containerManagerStub.Start(ctx, node, activePods, getNode, sourcesReady, podStatusProvider, runtimeService, localStorageCapacityIsolation)
++}
++
++func (cm *containerManagerImpl) GetNodeConfig() NodeConfig {
++	return cm.nodeConfig
++}
++
++func (cm *containerManagerImpl) GetCapacity(localStorageCapacityIsolation bool) v1.ResourceList {
++	return cm.capacity
++}
++
++func (cm *containerManagerImpl) GetNodeAllocatableReservation() v1.ResourceList {
++	evictionReservation := hardEvictionReservation(cm.nodeConfig.HardEvictionThresholds, cm.capacity)
++	result := make(v1.ResourceList)
++	for k := range cm.capacity {
++		value := resource.NewQuantity(0, resource.DecimalSI)
++		if cm.nodeConfig.SystemReserved != nil {
++			value.Add(cm.nodeConfig.SystemReserved[k])
++		}
++		if cm.nodeConfig.KubeReserved != nil {
++			value.Add(cm.nodeConfig.KubeReserved[k])
++		}
++		if evictionReservation != nil {
++			value.Add(evictionReservation[k])
++		}
++		if !value.IsZero() {
++			result[k] = *value
++		}
++	}
++	return result
++}
+diff --git a/pkg/kubelet/cm/container_manager_unsupported.go b/pkg/kubelet/cm/container_manager_unsupported.go
+index a92f0ce8..4d2f5c69 100644
+--- a/pkg/kubelet/cm/container_manager_unsupported.go
++++ b/pkg/kubelet/cm/container_manager_unsupported.go
+@@ -1,5 +1,5 @@
+-//go:build !linux && !windows
+-// +build !linux,!windows
++//go:build !linux && !windows && !darwin
++// +build !linux,!windows,!darwin
+ 
+ /*
+ Copyright 2015 The Kubernetes Authors.
+diff --git a/pkg/kubelet/config/file_unsupported.go b/pkg/kubelet/config/file_unsupported.go
+index 1b2c56a6..7d7dfdfc 100644
+--- a/pkg/kubelet/config/file_unsupported.go
++++ b/pkg/kubelet/config/file_unsupported.go
+@@ -1,5 +1,5 @@
+-//go:build !linux
+-// +build !linux
++//go:build !linux && !darwin
++// +build !linux,!darwin
+ 
+ /*
+ Copyright 2016 The Kubernetes Authors.
+diff --git a/pkg/kubelet/config/file_linux.go b/pkg/kubelet/config/file_watch.go
+similarity index 98%
+rename from pkg/kubelet/config/file_linux.go
+rename to pkg/kubelet/config/file_watch.go
+index f05010f8..6921ee4e 100644
+--- a/pkg/kubelet/config/file_linux.go
++++ b/pkg/kubelet/config/file_watch.go
+@@ -1,5 +1,5 @@
+-//go:build linux
+-// +build linux
++//go:build linux || darwin
++// +build linux darwin
+ 
+ /*
+ Copyright 2016 The Kubernetes Authors.
+diff --git a/pkg/kubelet/darwinstats/darwinstats.go b/pkg/kubelet/darwinstats/darwinstats.go
+new file mode 100644
+index 00000000..7795eca0
+--- /dev/null
++++ b/pkg/kubelet/darwinstats/darwinstats.go
+@@ -0,0 +1,249 @@
++//go:build darwin
++
++/*
++Copyright 2026 The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++// Package darwinstats reads a macOS node's machine information and its
++// CPU, memory and filesystem usage from the kernel, in cAdvisor's shapes,
++// as winstats does for a Windows node.
++package darwinstats
++
++import (
++	"encoding/binary"
++	"fmt"
++	"sync"
++	"time"
++
++	cadvisorapi "github.com/google/cadvisor/info/v1"
++	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
++	"golang.org/x/sys/unix"
++)
++
++// Client reads the node's statistics.
++type Client struct {
++	mu      sync.Mutex
++	started time.Time
++	prev    *cadvisorapiv2.ContainerStats
++}
++
++// NewClient returns a client for the node it runs on.
++func NewClient() (*Client, error) {
++	boot, err := unix.SysctlTimeval("kern.boottime")
++	if err != nil {
++		return nil, fmt.Errorf("kern.boottime: %w", err)
++	}
++	return &Client{started: time.Unix(boot.Unix())}, nil
++}
++
++func sysctlUint64(name string) (uint64, error) {
++	v, err := unix.SysctlUint64(name)
++	if err != nil {
++		return 0, fmt.Errorf("sysctl %s: %w", name, err)
++	}
++	return v, nil
++}
++
++func sysctlUint32(name string) (uint32, error) {
++	v, err := unix.SysctlUint32(name)
++	if err != nil {
++		return 0, fmt.Errorf("sysctl %s: %w", name, err)
++	}
++	return v, nil
++}
++
++// MachineInfo describes the node's processors, memory and identity.
++func (c *Client) MachineInfo() (*cadvisorapi.MachineInfo, error) {
++	cores, err := sysctlUint32("hw.logicalcpu")
++	if err != nil {
++		return nil, err
++	}
++	physical, err := sysctlUint32("hw.physicalcpu")
++	if err != nil {
++		return nil, err
++	}
++	packages, err := sysctlUint32("hw.packages")
++	if err != nil {
++		return nil, err
++	}
++	memory, err := sysctlUint64("hw.memsize")
++	if err != nil {
++		return nil, err
++	}
++	// struct xsw_usage: total, available and used bytes of swap.
++	swap, err := unix.SysctlRaw("vm.swapusage")
++	if err != nil || len(swap) < 8 {
++		return nil, fmt.Errorf("sysctl vm.swapusage: %v", err)
++	}
++	machineID, err := unix.Sysctl("kern.uuid")
++	if err != nil {
++		return nil, fmt.Errorf("sysctl kern.uuid: %w", err)
++	}
++	bootID, err := unix.Sysctl("kern.bootsessionuuid")
++	if err != nil {
++		return nil, fmt.Errorf("sysctl kern.bootsessionuuid: %w", err)
++	}
++	// Apple silicon publishes no CPU frequency.
++	var khz uint64
++	if hz, err := unix.SysctlUint64("hw.cpufrequency"); err == nil {
++		khz = hz / 1000
++	}
++	vendor, _ := unix.Sysctl("machdep.cpu.brand_string")
++	return &cadvisorapi.MachineInfo{
++		Timestamp:        time.Now(),
++		CPUVendorID:      vendor,
++		NumCores:         int(cores),
++		NumPhysicalCores: int(physical),
++		NumSockets:       int(packages),
++		CpuFrequency:     khz,
++		MemoryCapacity:   memory,
++		SwapCapacity:     binary.LittleEndian.Uint64(swap[:8]),
++		MachineID:        machineID,
++		SystemUUID:       machineID,
++		BootID:           bootID,
++	}, nil
++}
++
++// VersionInfo names the node's kernel and operating system.
++func (c *Client) VersionInfo() (*cadvisorapi.VersionInfo, error) {
++	kernel, err := unix.Sysctl("kern.osrelease")
++	if err != nil {
++		return nil, fmt.Errorf("sysctl kern.osrelease: %w", err)
++	}
++	product, err := unix.Sysctl("kern.osproductversion")
++	if err != nil {
++		return nil, fmt.Errorf("sysctl kern.osproductversion: %w", err)
++	}
++	return &cadvisorapi.VersionInfo{KernelVersion: kernel, ContainerOsVersion: "macOS " + product}, nil
++}
++
++// tickNanos is how long one of the scheduler's statistics ticks lasts.
++func tickNanos() (uint64, error) {
++	// struct clockinfo begins with hz, the ticks in a second.
++	b, err := unix.SysctlRaw("kern.clockrate")
++	if err != nil || len(b) < 4 {
++		return 0, fmt.Errorf("sysctl kern.clockrate: %v", err)
++	}
++	hz := binary.LittleEndian.Uint32(b[:4])
++	if hz == 0 {
++		return 0, fmt.Errorf("sysctl kern.clockrate: hz is 0")
++	}
++	return uint64(time.Second) / uint64(hz), nil
++}
++
++// sample reads the node's CPU time and memory now.
++func (c *Client) sample() (*cadvisorapiv2.ContainerStats, error) {
++	load, err := readCPULoad()
++	if err != nil {
++		return nil, err
++	}
++	vm, err := readVMStatistics()
++	if err != nil {
++		return nil, err
++	}
++	tick, err := tickNanos()
++	if err != nil {
++		return nil, err
++	}
++	page, err := sysctlUint64("hw.pagesize")
++	if err != nil {
++		return nil, err
++	}
++	user := (uint64(load.user) + uint64(load.nice)) * tick
++	system := uint64(load.system) * tick
++	// Memory in use is what Activity Monitor calls Memory Used: pages apps
++	// hold, pages the kernel wires and pages the compressor holds.
++	anonymous := uint64(vm.internalPageCount)
++	if p := uint64(vm.purgeableCount); p < anonymous {
++		anonymous -= p
++	}
++	used := (anonymous + uint64(vm.wireCount) + uint64(vm.compressorPageCount)) * page
++	// The page cache, file-backed pages, can be reclaimed.
++	cache := uint64(vm.externalPageCount) * page
++	return &cadvisorapiv2.ContainerStats{
++		Timestamp: time.Now(),
++		Cpu: &cadvisorapi.CpuStats{Usage: cadvisorapi.CpuUsage{
++			Total: user + system, User: user, System: system,
++		}},
++		Memory: &cadvisorapi.MemoryStats{
++			Usage:      used + cache,
++			Cache:      cache,
++			RSS:        anonymous * page,
++			WorkingSet: used,
++			ContainerData: cadvisorapi.MemoryStatsMemoryData{
++				Pgfault:    vm.faults,
++				Pgmajfault: vm.pageins,
++			},
++		},
++	}, nil
++}
++
++// RootInfo is the node's root container: its capacity and its two most
++// recent samples, the earlier taken by the previous call, whose difference
++// is the CPU it uses now.
++func (c *Client) RootInfo() (cadvisorapiv2.ContainerInfo, error) {
++	m, err := c.MachineInfo()
++	if err != nil {
++		return cadvisorapiv2.ContainerInfo{}, err
++	}
++	cur, err := c.sample()
++	if err != nil {
++		return cadvisorapiv2.ContainerInfo{}, err
++	}
++	c.mu.Lock()
++	prev := c.prev
++	c.prev = cur
++	c.mu.Unlock()
++	stats := []*cadvisorapiv2.ContainerStats{cur}
++	if prev != nil {
++		if d := cur.Timestamp.Sub(prev.Timestamp); d > 0 && cur.Cpu.Usage.Total >= prev.Cpu.Usage.Total {
++			cur.CpuInst = &cadvisorapiv2.CpuInstStats{Usage: cadvisorapiv2.CpuInstUsage{
++				Total:  (cur.Cpu.Usage.Total - prev.Cpu.Usage.Total) * uint64(time.Second) / uint64(d),
++				User:   (cur.Cpu.Usage.User - prev.Cpu.Usage.User) * uint64(time.Second) / uint64(d),
++				System: (cur.Cpu.Usage.System - prev.Cpu.Usage.System) * uint64(time.Second) / uint64(d),
++			}}
++		}
++		stats = []*cadvisorapiv2.ContainerStats{prev, cur}
++	}
++	return cadvisorapiv2.ContainerInfo{
++		Spec: cadvisorapiv2.ContainerSpec{
++			CreationTime: c.started,
++			HasCpu:       true,
++			HasMemory:    true,
++			Memory:       cadvisorapiv2.MemorySpec{Limit: m.MemoryCapacity},
++		},
++		Stats: stats,
++	}, nil
++}
++
++// FsInfo is the capacity and use of the filesystem path is on.
++func FsInfo(path string) (cadvisorapiv2.FsInfo, error) {
++	var s unix.Statfs_t
++	if err := unix.Statfs(path, &s); err != nil {
++		return cadvisorapiv2.FsInfo{}, fmt.Errorf("statfs %s: %w", path, err)
++	}
++	bsize := uint64(s.Bsize)
++	inodes, free := s.Files, s.Ffree
++	return cadvisorapiv2.FsInfo{
++		Timestamp:  time.Now(),
++		Device:     unix.ByteSliceToString(s.Mntfromname[:]),
++		Mountpoint: unix.ByteSliceToString(s.Mntonname[:]),
++		Capacity:   s.Blocks * bsize,
++		Available:  s.Bavail * bsize,
++		Usage:      (s.Blocks - s.Bfree) * bsize,
++		Inodes:     &inodes,
++		InodesFree: &free,
++	}, nil
++}
+diff --git a/pkg/kubelet/darwinstats/libsystem_darwin.go b/pkg/kubelet/darwinstats/libsystem_darwin.go
+new file mode 100644
+index 00000000..ea41706a
+--- /dev/null
++++ b/pkg/kubelet/darwinstats/libsystem_darwin.go
+@@ -0,0 +1,89 @@
++//go:build darwin
++
++/*
++Copyright 2026 The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package darwinstats
++
++import (
++	"fmt"
++	"syscall"
++	"unsafe"
++)
++
++// The kernel's host statistics are Mach calls libSystem makes; call them
++// as golang.org/x/sys/unix calls libSystem, without cgo.
++
++func syscall_syscall6(fn, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err syscall.Errno)
++
++//go:linkname syscall_syscall6 syscall.syscall6
++
++var libc_mach_host_self_trampoline_addr uintptr
++
++//go:cgo_import_dynamic libc_mach_host_self mach_host_self "/usr/lib/libSystem.B.dylib"
++
++var libc_host_statistics64_trampoline_addr uintptr
++
++//go:cgo_import_dynamic libc_host_statistics64 host_statistics64 "/usr/lib/libSystem.B.dylib"
++
++// Flavors and counts of host_statistics64 (mach/host_info.h).
++const (
++	hostCPULoadInfo      = 3
++	hostCPULoadInfoCount = 4
++	hostVMInfo64         = 4
++	hostVMInfo64Count    = 38
++)
++
++// cpuLoad is host_cpu_load_info: ticks every CPU spent in each state.
++type cpuLoad struct {
++	user, system, idle, nice uint32
++}
++
++// vmStatistics64 is struct vm_statistics64 (mach/vm_statistics.h).
++type vmStatistics64 struct {
++	freeCount, activeCount, inactiveCount, wireCount  uint32
++	zeroFillCount, reactivations, pageins, pageouts   uint64
++	faults, cowFaults, lookups, hits, purges          uint64
++	purgeableCount, speculativeCount                  uint32
++	decompressions, compressions, swapins, swapouts   uint64
++	compressorPageCount, throttledCount               uint32
++	externalPageCount, internalPageCount              uint32
++	totalUncompressedPagesInCompressor                uint64
++}
++
++var host = func() uintptr {
++	r, _, _ := syscall_syscall6(libc_mach_host_self_trampoline_addr, 0, 0, 0, 0, 0, 0)
++	return r
++}()
++
++func hostStatistics(flavor int, info unsafe.Pointer, count uint32) error {
++	n := count
++	r, _, _ := syscall_syscall6(libc_host_statistics64_trampoline_addr, host, uintptr(flavor), uintptr(info), uintptr(unsafe.Pointer(&n)), 0, 0)
++	if r != 0 {
++		return fmt.Errorf("host_statistics64 flavor %d: kern_return_t %d", flavor, r)
++	}
++	return nil
++}
++
++func readCPULoad() (cpuLoad, error) {
++	var l cpuLoad
++	return l, hostStatistics(hostCPULoadInfo, unsafe.Pointer(&l), hostCPULoadInfoCount)
++}
++
++func readVMStatistics() (vmStatistics64, error) {
++	var v vmStatistics64
++	return v, hostStatistics(hostVMInfo64, unsafe.Pointer(&v), hostVMInfo64Count)
++}
+diff --git a/pkg/kubelet/darwinstats/trampolines_darwin.s b/pkg/kubelet/darwinstats/trampolines_darwin.s
+new file mode 100644
+index 00000000..ec5305c6
+--- /dev/null
++++ b/pkg/kubelet/darwinstats/trampolines_darwin.s
+@@ -0,0 +1,27 @@
++// Copyright 2026 The Kubernetes Authors.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++//go:build darwin && (amd64 || arm64)
++
++#include "textflag.h"
++
++TEXT libc_mach_host_self_trampoline<>(SB),NOSPLIT,$0-0
++	JMP	libc_mach_host_self(SB)
++GLOBL	·libc_mach_host_self_trampoline_addr(SB), RODATA, $8
++DATA	·libc_mach_host_self_trampoline_addr(SB)/8, $libc_mach_host_self_trampoline<>(SB)
++
++TEXT libc_host_statistics64_trampoline<>(SB),NOSPLIT,$0-0
++	JMP	libc_host_statistics64(SB)
++GLOBL	·libc_host_statistics64_trampoline_addr(SB), RODATA, $8
++DATA	·libc_host_statistics64_trampoline_addr(SB)/8, $libc_host_statistics64_trampoline<>(SB)

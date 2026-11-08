@@ -23,6 +23,7 @@ import (
 	"github.com/moby/moby/api/types/volume"
 	"golang.org/x/net/websocket"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/cri"
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
 )
 
@@ -42,11 +43,13 @@ type Server struct {
 	lp      *http.ServeMux
 	pods    *podStore
 	started time.Time
+	cri     *cri.Service
 }
 
 // New serves the engine's API; bk, when set, also serves BuildKit.
 func New(e *engine.Engine, bk BuildKit) *Server {
-	s := &Server{e: e, bk: bk, mux: http.NewServeMux(), lp: http.NewServeMux(), pods: openPods(e.Root()), started: time.Now()}
+	s := &Server{e: e, bk: bk, mux: http.NewServeMux(), lp: http.NewServeMux(), pods: openPods(e.Root()), started: time.Now(),
+		cri: cri.New(e, cri.DefaultSandboxImage)}
 	s.routes()
 	s.libpodRoutes()
 	return s
@@ -55,6 +58,12 @@ func New(e *engine.Engine, bk BuildKit) *Server {
 var versionPrefix = regexp.MustCompile(`^/v(\d+\.\d+)(/.*)$`)
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// The socket serves the Container Runtime Interface too, as gRPC over
+	// HTTP/2, where the kubelet's --container-runtime-endpoint names it.
+	if cri.Serves(r) {
+		s.cri.ServeHTTP(w, r)
+		return
+	}
 	if p, ok := libpodPath(r.URL.Path); ok {
 		s.serveLibpod(w, r, p)
 		return

@@ -96,8 +96,8 @@ tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite
 
 A Nix-built catalog for `aarch64-darwin`/`x86_64-darwin`, converted to OCI
 layers with a `darwin/<arch>` platform entry: `bun`, `clickhouse`, `consul`, `dind`, `dynamodb`,
-`etcd`, `gitea`, `influxdb`, `kafka`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`, `kubectl`, `lambda`, `mailpit`, `mariadb`, `meilisearch`, `memcached`, `mongo`, `mysql`, `nats`,
-`neo4j`, `nginx`, `node`, `opensearch`, `playwright`, `postgres`, `python`, `qdrant`, `rabbitmq`, `redis`,
+`etcd`, `gitea`, `influxdb`, `kafka`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`, `kubectl`, `kubelet`, `lambda`, `mailpit`, `mariadb`, `meilisearch`, `memcached`, `mongo`, `mysql`, `nats`,
+`neo4j`, `nginx`, `node`, `opensearch`, `pause`, `playwright`, `postgres`, `python`, `qdrant`, `rabbitmq`, `redis`,
 `ryuk` (Testcontainers' reaper), `seaweedfs`, `toolbox`, `toxiproxy`, `valkey` and
 `vault`. SeaweedFS is the catalog's S3 server: nixpkgs marks MinIO insecure,
 abandoned upstream with unfixed vulnerabilities. Compose
@@ -134,14 +134,17 @@ dependency order:
    (`images/kubernetes`), and images for the four upstream publishes, over
    go-runner. A control plane of them turns Deployments into Pods, which
    wait for a node.
-4. **A kubelet for macOS**: upstream kubelet manages Linux cgroups and
-   namespaces and does not run on macOS. The node runs a kubelet that
-   speaks the API server's node and pod contract and runs pods through the
-   node's nested engine: the pod's containers share a network as
-   `--network container:` shares one, its volumes are the engine's
-   volumes and bind mounts, and probes, logs, exec and port-forward pass
-   to the engine. CRI, the kubelet's runtime interface, is served by fwsd
-   for it.
+4. **A kubelet for macOS** (done, but for streams): upstream's kubelet
+   with the darwin parts its tree lacks (`images/kubernetes/kubelet-darwin.patch`):
+   machine information and node CPU, memory and filesystem use from
+   macOS's kernel in cAdvisor's shapes, a container manager for a node
+   without cgroups, and the static pod manifests' watcher on kqueue. fwsd
+   serves CRI on its sockets, nested engines' among them (`internal/cri`):
+   pod sandboxes are `fws/pause` containers, their containers join the
+   sandbox's network, and the engine writes CRI logs where the kubelet
+   asks. A kubelet in a privileged container joins the control plane as a
+   node and runs Deployments' pods. Left: the streaming server for exec,
+   attach and port-forward.
 5. **Cluster networking and services**: pod addresses from the engine's
    IPAM per node network, a kube-proxy replacement that maps Service
    ClusterIPs and NodePorts onto the routers the engine already runs, and

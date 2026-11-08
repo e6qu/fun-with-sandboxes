@@ -86,6 +86,16 @@ func startBuildKit(e *engine.Engine) (*buildkit.Service, error) {
 	return svc, nil
 }
 
+// apiServer serves the engine's APIs: Docker's and Podman's over HTTP/1.1,
+// and the Container Runtime Interface over HTTP/2 without TLS, which its
+// gRPC clients speak to a Unix socket.
+func apiServer(e *engine.Engine, bk api.BuildKit) *http.Server {
+	srv := &http.Server{Handler: api.New(e, bk), ReadHeaderTimeout: 30 * time.Second, Protocols: new(http.Protocols)}
+	srv.Protocols.SetHTTP1(true)
+	srv.Protocols.SetUnencryptedHTTP2(true)
+	return srv
+}
+
 // nestedAPI serves the API of the engine nested in a privileged container
 // on its socket, with BuildKit of its own when the engine has BuildKit.
 type nestedAPI struct {
@@ -120,7 +130,7 @@ func serveNested(withBuildKit bool) func(*engine.Engine, string) (io.Closer, err
 			n.Close()
 			return nil, err
 		}
-		n.srv = &http.Server{Handler: api.New(e, bk), ReadHeaderTimeout: 30 * time.Second}
+		n.srv = apiServer(e, bk)
 		go n.srv.Serve(l)
 		return n, nil
 	}
@@ -156,7 +166,7 @@ func run(cfg engine.Config, socket string, withBuildKit bool) error {
 	if err := os.Chmod(socket, 0o600); err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: api.New(e, bk), ReadHeaderTimeout: 30 * time.Second}
+	srv := apiServer(e, bk)
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)

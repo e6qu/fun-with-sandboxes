@@ -50,14 +50,25 @@ machine — and from what macOS offers an unprivileged process under them.
   adds plugins as on any distribution. The official image runs the JDK
   bundled for Linux; the catalog links nixpkgs' at the bundled JDK's
   path, `/usr/share/opensearch/jdk`.
-- **Kubernetes' images are its control plane and kubectl.** The catalog
-  carries the API server, the controller manager, the scheduler and
-  kubectl, which a control plane of containers runs as kubeadm's static
-  pods do; it carries no kube-proxy, which programs Linux iptables, and no
-  kubelet, which manages Linux cgroups and namespaces. Pods wait for a
-  node until the roadmap's kubelet for macOS joins one (`PLAN.md`).
-  Upstream's images are distroless, without a shell; the catalog's carry
-  `/bin/sh` and `/bin/nc`, as all its images do.
+- **Kubernetes' images are its control plane, kubectl and a kubelet.**
+  The catalog carries the API server, the controller manager, the
+  scheduler and kubectl, which a control plane of containers runs as
+  kubeadm's static pods do, and a kubelet for macOS; it carries no
+  kube-proxy, which programs Linux iptables. Upstream's images are
+  distroless, without a shell; the catalog's carry `/bin/sh` and
+  `/bin/nc`, as all its images do.
+- **The kubelet applies no Linux settings to its containers.** On a darwin
+  node it sends the runtime no Linux resources or security context, as
+  upstream's kubelet sends none on an operating system it has no settings
+  for: a container's `resources.limits` and `securityContext.runAsUser`
+  take no effect, and the image's user runs it.
+- **CRI serves no exec, attach or port-forward streams yet.** `ExecSync`
+  runs commands, as the kubelet's exec probes do; `kubectl exec`,
+  `attach` and `port-forward` wait for the streaming server the roadmap's
+  node image brings (`PLAN.md`).
+- **A pod's address is its node's.** A pod sandbox takes its address on
+  the engine that runs it, which other nodes' and the host's engines do
+  not route to; cluster networking is on the roadmap.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
