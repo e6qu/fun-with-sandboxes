@@ -188,31 +188,37 @@ jobs:
         with:
           path: ~/fws-built
           key: ${{ steps.built.outputs.cache-primary-key }}
+      # The suite needs neither the build's store paths, which the cache
+      # holds for the next run, nor the caches it substituted from.
+      - name: free what the build left
+        run: |
+          rm -rf ~/fws-built ~/fws-servers
+          nix-store --gc
+          df -h /
+      # crane's registry keeps every blob in memory, so it stops once it
+      # has shown the archives publish.
       - name: publish images to a local registry
         run: |
-          crane="go run github.com/google/go-containerregistry/cmd/crane@v0.22.1"
-          $crane registry serve --address 127.0.0.1:5000 &
+          GOBIN="$RUNNER_TEMP/bin" go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
+          crane="$RUNNER_TEMP/bin/crane"
+          "$crane" registry serve --address 127.0.0.1:5000 &
+          registry=$!
+          trap 'kill $registry' EXIT
           until curl -sf 127.0.0.1:5000/v2/ >/dev/null; do sleep 1; done
           scripts/publish-images.sh "$RUNNER_TEMP/images" 127.0.0.1:5000/e6qu
           for ref in fws-postgres:16 fws-postgres:18 fws-redis:8 fws-nginx:1 fws-mariadb:11 fws-python:3.14 fws-node:26 fws-bun:1 fws-gitea:1 fws-dynamodb-local:2 fws-rabbitmq:4 fws-lambda/python:3.14 fws-lambda/nodejs:24 fws-lambda/java:17 fws-playwright:1.59 fws-toolbox:1 fws-ryuk:0.14.0 fws-mysql:8.4 fws-valkey:9 fws-memcached:1.6 fws-nats:2.14 fws-seaweedfs:4.36 fws-etcd:3.6 fws-consul:2.1 fws-vault:2.0 fws-mongo:8.2 fws-kafka:4.2 fws-mailpit:1.32 fws-meilisearch:1.43 fws-qdrant:1.17 fws-neo4j:2026.02 fws-clickhouse:26.5 fws-influxdb:2.7 fws-opensearch:3.5 fws-toxiproxy:2.12 fws-dind:29 fws-kube-apiserver:1.35 fws-kube-controller-manager:1.35 fws-kube-scheduler:1.35 fws-kubectl:1.35 fws-pause:3.10.1 fws-kubelet:1.35; do
-            $crane config "127.0.0.1:5000/e6qu/$ref" | grep -q '"os":"darwin"'
+            "$crane" config "127.0.0.1:5000/e6qu/$ref" | grep -q '"os":"darwin"'
           done
       - name: end-to-end tests
         env:
           FWS_E2E_IMAGES: ${{ runner.temp }}/images
         working-directory: tests/e2e
-        # fs_usage records which process removes or truncates a blob of an
-        # engine's image store, which only an image removal should do.
-        run: |
-          sudo fs_usage -w -f pathname 2>/dev/null |
-            grep --line-buffered -E '(unlink|rmdir|truncate).*/images/oci/blobs/' > "$RUNNER_TEMP/blob-writes.log" &
-          go test -tags e2e -v -count=1 -timeout 90m ./...
+        run: go test -tags e2e -v -count=1 -timeout 90m ./...
       - name: crash reports and Seatbelt denials
         if: failure()
         run: |
           df -h /
-          echo "== removals in image stores' blobs"
-          tail -n 200 "$RUNNER_TEMP/blob-writes.log" || true
+          vm_stat
           for f in ~/Library/Logs/DiagnosticReports/*.ips; do
             [ -e "$f" ] || continue
             echo "== $f"
