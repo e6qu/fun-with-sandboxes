@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -130,11 +131,31 @@ func run(m *testing.M) int {
 		fmt.Fprintf(os.Stderr, "no image archives in %s\n", images)
 		return 1
 	}
+	// Load the archives as many at a time as the host has processors: a
+	// load spends its time decompressing and writing one layer at a time.
+	loads := make(chan string)
+	failed := make(chan string, len(tars))
+	var loaders sync.WaitGroup
+	for range runtime.NumCPU() {
+		loaders.Go(func() {
+			for t := range loads {
+				if out, err := exec.Command("docker", "load", "-i", t).CombinedOutput(); err != nil {
+					failed <- fmt.Sprintf("docker load %s: %v\n%s", t, err, out)
+				}
+			}
+		})
+	}
 	for _, t := range tars {
-		if out, err := exec.Command("docker", "load", "-i", t).CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "docker load %s: %v\n%s", t, err, out)
-			return 1
+		loads <- t
+	}
+	close(loads)
+	loaders.Wait()
+	close(failed)
+	if len(failed) > 0 {
+		for f := range failed {
+			fmt.Fprint(os.Stderr, f)
 		}
+		return 1
 	}
 	// Testcontainers runs its reaper from the image it names; the catalog's
 	// darwin build of it goes by that name here.

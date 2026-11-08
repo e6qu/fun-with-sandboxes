@@ -3,7 +3,6 @@ package image
 import (
 	"archive/tar"
 	"bufio"
-	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +10,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/klauspost/compress/gzip"
 )
 
 const (
