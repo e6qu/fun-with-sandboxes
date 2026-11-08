@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -508,6 +509,9 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	} else if v != "" {
 		env = append(env, v)
 	}
+	if c.rec.HostConfig.Privileged {
+		env = append(env, EngineVar+"="+e.engineSocket(c))
+	}
 	// On the host's UTS namespace the library presents no hostname, so the
 	// container reads the host's, as it changes.
 	if c.rec.HostConfig.UTSMode != "host" {
@@ -587,7 +591,6 @@ func checkHostConfig(hc *container.HostConfig) error {
 		return err
 	}
 	for _, k := range []knob{
-		{hc.Privileged, "privileged mode"},
 		{hc.UsernsMode != "", "user namespaces"},
 		{hc.Runtime != "" && hc.Runtime != "runc", "alternative runtimes"},
 		{hc.LogConfig.Type != "" && hc.LogConfig.Type != "json-file" && hc.LogConfig.Type != "local", "log drivers other than json-file"},
@@ -940,7 +943,7 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 		dest := filepath.Join(root, m.Destination)
 		switch m.Type {
 		case mount.TypeBind:
-			src, err := filepath.Abs(m.Source)
+			src, err := e.hostPath(m.Source)
 			if err != nil {
 				return nil, err
 			}
@@ -1265,8 +1268,11 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 		return seatbelt.Spec{}, err
 	}
 	spec := seatbelt.Spec{
-		Root: c.root(), StateRoot: e.cfg.Root, ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
+		Root: c.root(), StateRoot: e.stateRoot(), ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
 		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath()},
+	}
+	if c.rec.HostConfig.Privileged {
+		spec.Sockets = append(spec.Sockets, e.engineSocket(c))
 	}
 	if _, ledger, err := e.shmEnv(c); err != nil {
 		return seatbelt.Spec{}, err
@@ -1420,6 +1426,11 @@ func (c *Container) start(e *Engine) error {
 		}
 		return invalid("%v", err)
 	}
+	if c.rec.HostConfig.Privileged {
+		if err := e.openNested(c); err != nil {
+			return err
+		}
+	}
 	if hc := c.rec.HostConfig; hc.Init != nil && *hc.Init {
 		if err := placeInit(c.root()); err != nil {
 			return err
@@ -1463,7 +1474,11 @@ func (c *Container) start(e *Engine) error {
 	}
 	published := network.PortMap{}
 	for i, p := range plan {
-		published[p.port] = append(published[p.port], network.PortBinding{HostIP: p.binding.IP, HostPort: strconv.Itoa(ready.Ports[i])})
+		port, ip := ready.Ports[i], p.binding.IP
+		if p.report != 0 {
+			port, ip = p.report, netip.IPv4Unspecified()
+		}
+		published[p.port] = append(published[p.port], network.PortBinding{HostIP: ip, HostPort: strconv.Itoa(port)})
 	}
 
 	c.mu.Lock()
@@ -1523,18 +1538,18 @@ func (c *Container) writePidsLimit(limit *int64) error {
 // shimSocket is where the container's shim listens: under the engine's
 // root, kept short, as macOS caps socket paths at 104 bytes.
 func (e *Engine) shimSocket(c *Container) string {
-	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".sock")
+	return filepath.Join(e.runDir(), c.rec.ID[:12]+".sock")
 }
 
 // portDir holds the Unix sockets the container library listens on for the
 // container's TCP ports that have no host port: outside the root, where
 // only the container and its shim reach them.
 func (e *Engine) portDir(c *Container) string {
-	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".p")
+	return filepath.Join(e.runDir(), c.rec.ID[:12]+".p")
 }
 
 func (e *Engine) anchorSocket(c *Container) string {
-	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".anchor")
+	return filepath.Join(e.runDir(), c.rec.ID[:12]+".anchor")
 }
 
 // anchor is the socket of the running container's exec anchor, which
@@ -1620,6 +1635,9 @@ func (e *Engine) ended(c *Container, exit shim.Exit, done chan struct{}) {
 	c.save()
 	c.task = nil
 	c.mu.Unlock()
+	if c.rec.HostConfig.Privileged {
+		e.closeNested(c)
+	}
 	close(done)
 	if exit.OOMKilled {
 		e.publishContainer(c, events.ActionOOM, nil)
@@ -1869,6 +1887,11 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 			task.Signal(syscall.SIGKILL)
 		}
 		<-done
+	}
+	if c.rec.HostConfig.Privileged {
+		if err := e.removeNested(c); err != nil {
+			return err
+		}
 	}
 
 	e.mu.Lock()

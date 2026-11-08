@@ -51,13 +51,13 @@ type egressProc struct {
 }
 
 func (e *Engine) egressFile(stack string) string {
-	return filepath.Join(e.cfg.Root, "run", "egress-"+stack+".json")
+	return filepath.Join(e.runDir(), "egress-"+stack+".json")
 }
 
 // egressKeyFile holds the key the stack's proxy signs its members'
 // credentials with, in the engine's state, which no container reads.
 func (e *Engine) egressKeyFile(stack string) string {
-	return filepath.Join(e.cfg.Root, "run", "egress-"+stack+".key")
+	return filepath.Join(e.runDir(), "egress-"+stack+".key")
 }
 
 // egressCredentials are the proxy credentials of the member at address.
@@ -117,7 +117,7 @@ func (e *Engine) ensureEgress(stack string) (int, error) {
 		}
 		stopProcess(&left)
 	}
-	logf, err := os.OpenFile(filepath.Join(e.cfg.Root, "run", "egress-"+stack+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	logf, err := os.OpenFile(filepath.Join(e.runDir(), "egress-"+stack+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return 0, err
 	}
@@ -195,7 +195,7 @@ func (e *Engine) closeEgressLocked(stack string) {
 func (e *Engine) closeAllEgress() {
 	e.egressMu.Lock()
 	defer e.egressMu.Unlock()
-	files, _ := filepath.Glob(filepath.Join(e.cfg.Root, "run", "egress-*.json"))
+	files, _ := filepath.Glob(filepath.Join(e.runDir(), "egress-*.json"))
 	for _, f := range files {
 		e.closeEgressLocked(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(f), "egress-"), ".json"))
 	}

@@ -196,6 +196,23 @@ same knobs, each enforced by a real mechanism or refused:
   as each socket closes, and `docker stats` polls the rest. A connection
   between two of the container's sockets crosses no boundary and counts for
   neither.
+- **Nested engines.** A privileged container gets an engine of its own,
+  as a `docker:dind` container runs dockerd (`internal/engine/nested.go`):
+  the outer engine opens an `engine.Engine` whose state is under the
+  container's directory and whose allocator holds a range of the outer
+  one's port blocks, and serves its API on a socket in the outer run
+  directory (`FWS_ENGINE`), which the container's profile lets it reach
+  and its `dockerd` relays from the listeners its flags name. macOS
+  refuses `sandbox_init` in a process already under a profile that denies
+  anything, so no engine inside the sandbox could confine containers; the
+  nested engine's containers are the outer engine's processes, each in a
+  sandbox of its own, which deny the outermost engine's state. The nested
+  engine reads a bind mount's source through the container's root and
+  mounts, and publishes a port in the container: on the host port of the
+  container's port, or on the Unix socket its port directory holds for a
+  port without one, where the container's library connects to its own
+  loopback ports. It ends its containers when the container ends, and
+  goes with the container.
 - **Live restore.** The shim and each stack's egress proxy are processes of
   their own, so with `-live-restore` the engine stops without stopping its
   containers, and the next engine reconnects to the shims through their

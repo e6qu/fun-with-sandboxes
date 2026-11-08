@@ -27,9 +27,10 @@ machine — and from what macOS offers an unprivileged process under them.
 - **`fws/meilisearch` serves no mini-dashboard and carries no `meilitool`.**
   nixpkgs builds Meilisearch without the dashboard, which its build would
   download, and builds the server alone.
-- **`fws/qdrant` serves a pinned web UI.** Qdrant's image fetches the web
-  UI's latest release when it is built; the catalog pins one release, so
-  rebuilds serve the same dashboard.
+- **`fws/qdrant` serves nixpkgs' web UI.** Qdrant's image fetches the web
+  UI's latest release when it is built; the catalog serves the release
+  nixpkgs builds from source, an older one, so rebuilds serve the same
+  dashboard.
 - **`fws/neo4j` is the Community Edition.** Its official entrypoint's
   behaviour is reimplemented in Go: `NEO4J_PLUGINS` installs APOC from the
   distribution and downloads the others from their versions files, and
@@ -364,6 +365,20 @@ machine — and from what macOS offers an unprivileged process under them.
   Docker places tini: the engine's helper binary, which by that name
   passes signals on to the command, reaps orphans and exits as the command
   does.
+- **`--privileged` gives a container an engine of its own, nothing more.**
+  It is how Docker in Docker runs (`fws/dind`): the engine nests another
+  engine in the container, with its own containers, networks, volumes and
+  images, and serves its API on a socket the container's `dockerd`
+  relays. macOS refuses a second Seatbelt profile in a sandboxed process,
+  so the outer engine runs the nested engine's containers, each in a
+  sandbox of its own, and the privileged container gains no other right:
+  no devices, capabilities or mounts. Its engine reads bind mounts as the
+  container's own paths and publishes TCP ports in the container, on the
+  container's host port for that port where it has one; it publishes no
+  UDP ports. The nested engine takes four of the outer engine's port
+  blocks for its stacks, and stops its containers when the container
+  stops. KinD and Podman's own engine, which run Linux images and Linux
+  namespaces, need a VM, as does a Linux `docker:dind`.
 - **Settings without a macOS counterpart are refused**, never ignored:
   DNS servers, search domains and options (a container resolves names
   through the host's resolver and reaches the internet through its

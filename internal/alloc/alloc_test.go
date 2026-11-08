@@ -157,3 +157,31 @@ func TestDialFlow(t *testing.T) {
 		t.Fatalf("a key took a flow's port: %d, %v", next, err)
 	}
 }
+
+func TestReserveHoldsConsecutiveBlocks(t *testing.T) {
+	root := t.TempDir()
+	a := open(t, root)
+	if _, err := a.Stack("alpha"); err != nil {
+		t.Fatal(err)
+	}
+	base, limit, err := a.Reserve("nested-x", 2)
+	if err != nil || base != 41010 || limit != 41030 {
+		t.Fatalf("Reserve = %d-%d, %v; want 41010-41030", base, limit, err)
+	}
+	if b, l, err := a.Reserve("nested-x", 2); err != nil || b != base || l != limit {
+		t.Errorf("a second Reserve = %d-%d, %v", b, l, err)
+	}
+	s, err := a.Stack("beta")
+	if err != nil || s.PortBase != 41030 {
+		t.Errorf("a stack after the reservation got %d, %v; want 41030", s.PortBase, err)
+	}
+	if _, _, err := a.Reserve("nested-y", 1); !errors.Is(err, ErrNoBlock) {
+		t.Errorf("a reservation past the range: %v", err)
+	}
+	if err := a.Release("nested-x"); err != nil {
+		t.Fatal(err)
+	}
+	if base, _, err := open(t, root).Reserve("nested-y", 2); err != nil || base != 41010 {
+		t.Errorf("after the release, Reserve = %d, %v", base, err)
+	}
+}

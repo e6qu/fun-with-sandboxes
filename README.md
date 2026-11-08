@@ -72,6 +72,7 @@ Consul, which no binary cache holds:
 | `fws/clickhouse:26.5` | `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`, `/docker-entrypoint-initdb.d` and the other variables of the official image's own `entrypoint.sh`, which it runs; configuration in `/etc/clickhouse-server`, data in `/var/lib/clickhouse`; HTTP on 8123, native on 9000 |
 | `fws/influxdb:2.7` | `DOCKER_INFLUXDB_INIT_*` setup and upgrade, `*_FILE` secrets and `/docker-entrypoint-initdb.d` scripts, as the official entrypoint handles them; the influx CLI configured in `/etc/influxdb2`, data in `/var/lib/influxdb2`; the API and UI on 8086 |
 | `fws/opensearch:3.5` | the minimal distribution under the official image's entrypoint script, so dotted variables such as `discovery.type` become settings; runs as user 1000 from `/usr/share/opensearch`; REST on 9200 |
+| `fws/dind:29` | Docker in Docker: run it `--privileged`, and its `dockerd` serves an engine of its own, which the official image's entrypoint arguments, `DOCKER_TLS_CERTDIR` and dockerd's `--host` and TLS flags configure; the Docker CLI with buildx and Compose; 2375, or 2376 with TLS |
 | `fws/toxiproxy:2.12` | arguments to the server at `/toxiproxy`, with `/toxiproxy-cli` beside it; the API on 8474 |
 | `fws/nats:2.14` | arguments to `nats-server`; `/nats-server.conf` serves clients on 4222, monitoring on 8222 and routes on 6222 |
 | `fws/rabbitmq:4` | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`; AMQP on 5672, the Erlang port mapper on 4369 and distribution on 25672 |

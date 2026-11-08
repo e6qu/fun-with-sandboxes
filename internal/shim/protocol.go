@@ -61,6 +61,10 @@ type Binding struct {
 	IP       netip.Addr
 	Lo, Hi   int
 	Upstream string
+	// Dir, when set, publishes the TCP port as the Unix socket a
+	// container's port without a host port is in that directory: the
+	// port of a privileged container a nested engine publishes in.
+	Dir string `json:",omitempty"`
 }
 
 // Resources are the limits the shim enforces while the container runs.

@@ -273,6 +273,8 @@ github.com/testcontainers/testcontainers-go/modules/clickhouse v0.44.0 h1:TOkNKu
 github.com/testcontainers/testcontainers-go/modules/clickhouse v0.44.0/go.mod h1:/9m3N7gu2ErXf7bUdK/u6KY0X19gRrWZjiDtqmctlhI=
 github.com/testcontainers/testcontainers-go/modules/consul v0.44.0 h1:3K9iR88TdBE8b/CtlpS04dNqGoKn26mK/spO/uJC6wQ=
 github.com/testcontainers/testcontainers-go/modules/consul v0.44.0/go.mod h1:vQPBiz3ne1so2F2xCvG4EVj12nmHOWp9e3odD1sgecg=
+github.com/testcontainers/testcontainers-go/modules/dind v0.44.0 h1:bEEdrzRpMOGq6rxFh9Q8FJjJmbWGpXncLGxJaLFK3u8=
+github.com/testcontainers/testcontainers-go/modules/dind v0.44.0/go.mod h1:mzH1Z/14MngCzcroZZfbwiQPizAMEWEdw02KGb+4uvo=
 github.com/testcontainers/testcontainers-go/modules/etcd v0.44.0 h1:5EJnJCUdSKTSKmTji/Wgu9g1Fj8lwIbz8kdwgBcKHHY=
 github.com/testcontainers/testcontainers-go/modules/etcd v0.44.0/go.mod h1:VDtHLTbW7dMf2/W57Ws/91fuiJpjyI1xiwd3IKs8jlo=
 github.com/testcontainers/testcontainers-go/modules/influxdb v0.44.0 h1:zRfNdXPFpl2UrYJbUfFSstTP1FfbY89SwVeT5Dt1nuQ=

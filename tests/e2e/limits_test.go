@@ -108,8 +108,10 @@ func TestCapabilitiesAndSecurityOptions(t *testing.T) {
 	if _, err := docker(t, "run", "--rm", "--cap-add", "SYS_ADMIN", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "needs root") {
 		t.Fatalf("cap-add SYS_ADMIN: %v", err)
 	}
-	if _, err := docker(t, "run", "--rm", "--privileged", "fws/toolbox:1", "echo"); err == nil {
-		t.Fatal("a privileged container ran")
+	// --privileged gives a container an engine of its own (dind_test.go),
+	// and no more of the host.
+	if out, err := docker(t, "run", "--rm", "--privileged", "fws/toolbox:1", "cat", filepath.Join(stateRoot, "alloc.json")); err == nil {
+		t.Errorf("a privileged container read the engine's state: %q", out)
 	}
 	if _, err := docker(t, "run", "--rm", "--security-opt", "seccomp=/dev/null", "fws/toolbox:1", "echo"); err == nil {
 		t.Fatal("a seccomp profile was accepted")

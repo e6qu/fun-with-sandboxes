@@ -159,6 +159,33 @@ func Listen(proto string, ip netip.Addr, lo, hi int, upstream string, dial FlowD
 	return nil, 0, err
 }
 
+// ephemeralLo and ephemeralHi bound the ports ListenUnix picks from when
+// it is given none, as Linux picks a published port's host port.
+const ephemeralLo, ephemeralHi = 32768, 60999
+
+// ListenUnix listens, for the first port from lo to hi free, or for an
+// ephemeral one with lo 0, on the Unix socket path gives that port, and
+// forwards each connection to upstream: a TCP port published in a
+// container whose own ports without host ports are Unix sockets.
+func ListenUnix(path func(port int) string, lo, hi int, upstream string) (io.Closer, int, error) {
+	if lo == 0 {
+		lo, hi = ephemeralLo, ephemeralHi
+	}
+	var err error
+	for port := lo; port <= hi; port++ {
+		var l net.Listener
+		if l, err = net.Listen("unix", path(port)); err == nil {
+			px := &proxy{l: l, target: upstream, conns: map[net.Conn]struct{}{}}
+			go px.serve()
+			return px, port, nil
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, 0, err
+		}
+	}
+	return nil, 0, err
+}
+
 // udpIdleTimeout is how long a UDP flow lasts without traffic, as Docker's
 // userland proxy keeps its flows.
 const udpIdleTimeout = 90 * time.Second

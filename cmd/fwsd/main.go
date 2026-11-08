@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -72,19 +73,70 @@ func shimBinary() (string, error) {
 	return p, nil
 }
 
+// startBuildKit starts BuildKit for an engine, which builds into its
+// images.
+func startBuildKit(e *engine.Engine) (*buildkit.Service, error) {
+	svc, err := buildkit.New(context.Background(), buildkit.Config{
+		Root: filepath.Join(e.Root(), "buildkit"), StateRoot: e.StateRoot(), Images: e.Images(), Egress: e.BuildEgress,
+		Library: e.Library,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("start BuildKit: %w", err)
+	}
+	return svc, nil
+}
+
+// nestedAPI serves the API of the engine nested in a privileged container
+// on its socket, with BuildKit of its own when the engine has BuildKit.
+type nestedAPI struct {
+	srv *http.Server
+	bk  *buildkit.Service
+}
+
+func (n *nestedAPI) Close() error {
+	var err error
+	if n.srv != nil {
+		err = n.srv.Close()
+	}
+	if n.bk != nil {
+		n.bk.Close()
+	}
+	return err
+}
+
+func serveNested(withBuildKit bool) func(*engine.Engine, string) (io.Closer, error) {
+	return func(e *engine.Engine, socket string) (io.Closer, error) {
+		n := &nestedAPI{}
+		var bk api.BuildKit
+		if withBuildKit {
+			svc, err := startBuildKit(e)
+			if err != nil {
+				return nil, err
+			}
+			n.bk, bk = svc, svc
+		}
+		l, err := net.Listen("unix", socket)
+		if err != nil {
+			n.Close()
+			return nil, err
+		}
+		n.srv = &http.Server{Handler: api.New(e, bk), ReadHeaderTimeout: 30 * time.Second}
+		go n.srv.Serve(l)
+		return n, nil
+	}
+}
+
 func run(cfg engine.Config, socket string, withBuildKit bool) error {
+	cfg.Serve = serveNested(withBuildKit)
 	e, err := engine.Open(cfg)
 	if err != nil {
 		return err
 	}
 	var bk api.BuildKit
 	if withBuildKit {
-		svc, err := buildkit.New(context.Background(), buildkit.Config{
-			Root: filepath.Join(e.Root(), "buildkit"), StateRoot: e.Root(), Images: e.Images(), Egress: e.BuildEgress,
-			Library: e.Library,
-		})
+		svc, err := startBuildKit(e)
 		if err != nil {
-			return fmt.Errorf("start BuildKit: %w", err)
+			return err
 		}
 		defer svc.Close()
 		bk = svc

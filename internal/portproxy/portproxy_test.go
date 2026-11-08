@@ -2,8 +2,11 @@ package portproxy
 
 import (
 	"errors"
+	"io"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -143,5 +146,54 @@ func TestHostPortRange(t *testing.T) {
 		if _, _, err := HostPortRange(bad); err == nil {
 			t.Errorf("HostPortRange(%q) accepted it", bad)
 		}
+	}
+}
+
+func TestListenUnixTakesTheFirstFreePort(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "pp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	up, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer up.Close()
+	go func() {
+		for {
+			c, err := up.Accept()
+			if err != nil {
+				return
+			}
+			c.Write([]byte("hello"))
+			c.Close()
+		}
+	}()
+	path := func(port int) string { return filepath.Join(dir, "tcp-"+strconv.Itoa(port)) }
+	taken, err := net.Listen("unix", path(8080))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+	px, port, err := ListenUnix(path, 8080, 8081, up.Addr().String())
+	if err != nil || port != 8081 {
+		t.Fatalf("ListenUnix = %d, %v; want 8081", port, err)
+	}
+	c, err := net.Dial("unix", path(8081))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(c)
+	c.Close()
+	if string(b) != "hello" {
+		t.Errorf("through the socket: %q", b)
+	}
+	px.Close()
+	if _, err := os.Stat(path(8081)); !os.IsNotExist(err) {
+		t.Errorf("the socket outlived its proxy: %v", err)
+	}
+	if _, port, err := ListenUnix(path, 0, 0, up.Addr().String()); err != nil || port < 32768 {
+		t.Errorf("an ephemeral port: %d, %v", port, err)
 	}
 }

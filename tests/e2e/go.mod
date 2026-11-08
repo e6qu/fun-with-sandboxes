@@ -14,6 +14,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/clickhouse v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/consul v0.44.0
+	github.com/testcontainers/testcontainers-go/modules/dind v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/etcd v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/influxdb v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/kafka v0.44.0

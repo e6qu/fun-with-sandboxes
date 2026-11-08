@@ -54,6 +54,8 @@ go build -o "$build/mongo-entry" ./images/mongo/entry
 go build -o "$build/ub" ./images/kafka/ub
 go build -o "$build/neo4j-entry" ./images/neo4j/entry
 go build -o "$build/influxdb-entry" ./images/influxdb/entry
+go build -o "$build/dind-entry" ./images/dind/entry
+go build -o "$build/dockerd" ./images/dind/dockerd
 
 # output_with BINARY INSTALLABLE... builds INSTALLABLE and prints its
 # output that holds bin/BINARY. Unfree packages, such as DynamoDB Local,
@@ -225,7 +227,7 @@ mkimage $(accounts meilisearch) -spec images/meilisearch/image.json -closure "$b
 # with the API's OpenAPI document, which its sync script adds.
 qdrant=$(pkg_with qdrant qdrant)
 qdrant_src=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#qdrant.src")
-qdrant_ui=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/qdrant/web-ui.nix --argstr nixpkgs "$nixpkgs")
+qdrant_ui=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#qdrant-web-ui")
 cp -R "$qdrant_ui" "$build/qdrant-static"
 chmod -R u+w "$build/qdrant-static"
 cp "$qdrant_src/docs/redoc/master/openapi.json" "$build/qdrant-static/openapi.json"
@@ -332,6 +334,22 @@ closure "$jre" "$coreutils" "$bash" "$gnugrep" > "$build/opensearch.closure"
 mkimage $(accounts opensearch opensearch 1000 1000 /usr/share/opensearch) -spec images/opensearch/image.json -closure "$build/opensearch.closure" \
   -pkg "$coreutils" -pkg "$bash" -pkg "$gnugrep" -link /usr/bin/env=../../bin/env -link "/usr/share/opensearch/jdk=../../..$jre" \
   -file "/usr/share/opensearch=$home" -out "$out/opensearch.tar"
+
+# Docker in Docker as the dind image lays it out: the Docker CLI with its
+# buildx and Compose plugins, the entrypoint scripts' work, and a dockerd
+# that serves the engine fwsd nests in a privileged container.
+docker=$(pkg_with docker-client docker)
+buildx=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#docker-buildx")
+compose=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#docker-compose")
+coreutils=$(pkg_with coreutils dirname)
+wget=$(pkg_with wget wget)
+closure "$docker" "$buildx" "$compose" "$coreutils" "$wget" > "$build/dind.closure"
+mkimage $(accounts dind) -spec images/dind/image.json -closure "$build/dind.closure" -pkg "$docker" -pkg "$coreutils" -pkg "$wget" \
+  -link /usr/local/bin/docker=../../../bin/docker -link /usr/bin/env=../../bin/env \
+  -link "/usr/local/libexec/docker/cli-plugins/docker-buildx=../../../../..$buildx/libexec/docker/cli-plugins/docker-buildx" \
+  -link "/usr/local/libexec/docker/cli-plugins/docker-compose=../../../../..$compose/libexec/docker/cli-plugins/docker-compose" \
+  -file "/usr/local/bin/dockerd-entrypoint.sh=$build/dind-entry" -file "/usr/local/bin/docker-entrypoint.sh=$build/dind-entry" \
+  -file "/usr/local/bin/dockerd=$build/dockerd" -out "$out/dind.tar"
 
 # Toxiproxy as its image runs it: the server at /toxiproxy and the CLI
 # beside it.
