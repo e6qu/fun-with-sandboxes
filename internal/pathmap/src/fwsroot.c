@@ -941,10 +941,37 @@ static ssize_t fws_readlink(const char *path, char *buf, size_t size) { return r
 INTERPOSE(fws_readlink, readlink);
 static ssize_t fws_readlinkat(int fd, const char *path, char *buf, size_t size) { return readlinkat(fd, AT_MAPF(fd, path, 0), buf, size); }
 INTERPOSE(fws_readlinkat, readlinkat);
-static int fws_chmod(const char *path, mode_t mode) { return chmod(MAP(path), mode); }
+// A chmod sets the mode on disk, which then stands for the one extraction
+// recorded (MODE_XATTR).
+#define MODE_XATTR "com.fws.mode"
+static int fws_chmod(const char *path, mode_t mode) {
+    const char *p = MAP(path);
+    int r = chmod(p, mode);
+    if (r == 0) removexattr(p, MODE_XATTR, 0);
+    return r;
+}
 INTERPOSE(fws_chmod, chmod);
-static int fws_fchmodat(int fd, const char *path, mode_t mode, int flag) { return fchmodat(fd, AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW)), mode, flag); }
+static int fws_fchmodat(int fd, const char *path, mode_t mode, int flag) {
+    const char *p = AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW));
+    int r = fchmodat(fd, p, mode, flag);
+    if (r == 0) {
+        int saved = errno;
+        int f = openat(fd, p, O_RDONLY | O_CLOEXEC | ((flag & AT_SYMLINK_NOFOLLOW) ? O_SYMLINK : 0));
+        if (f >= 0) {
+            fremovexattr(f, MODE_XATTR, 0);
+            close(f);
+        }
+        errno = saved;
+    }
+    return r;
+}
 INTERPOSE(fws_fchmodat, fchmodat);
+static int fws_fchmod(int fd, mode_t mode) {
+    int r = fchmod(fd, mode);
+    if (r == 0) fremovexattr(fd, MODE_XATTR, 0);
+    return r;
+}
+INTERPOSE(fws_fchmod, fchmod);
 static int fws_utimes(const char *path, const struct timeval t[2]) { return utimes(MAP(path), t); }
 INTERPOSE(fws_utimes, utimes);
 static int fws_lutimes(const char *path, const struct timeval t[2]) { return lutimes(LMAP(path), t); }
@@ -1098,6 +1125,10 @@ static char **child_env(char *const envp[], char *ids) {
     for (size_t i = 0; i < n; i++) {
         if (strncmp(envp[i], "FWS_UID=", 8) == 0 || strncmp(envp[i], "FWS_GID=", 8) == 0 ||
             strncmp(envp[i], "FWS_GROUPS=", 11) == 0) continue;
+        // A program that empties the library's variable, as ClickHouse
+        // does before it executes itself again, gets it back: a container
+        // process cannot leave the container's view.
+        if (strcmp(envp[i], "DYLD_INSERT_LIBRARIES=") == 0) continue;
         out[j++] = envp[i];
     }
     int a = snprintf(ids, 64, "FWS_UID=%u", fake_euid);
@@ -1110,6 +1141,14 @@ static char **child_env(char *const envp[], char *ids) {
     }
     return out;
 }
+
+// A container's processes do not see the variable that loads the library,
+// which no container's environment holds.
+static char *fws_getenv(const char *name) {
+    if (strcmp(name, "DYLD_INSERT_LIBRARIES") == 0) return NULL;
+    return getenv(name);
+}
+INTERPOSE(fws_getenv, getenv);
 
 static int fws_execve(const char *path, char *const argv[], char *const envp[]) {
     char ids[64];
@@ -1241,12 +1280,13 @@ static int fws_getgroups(int n, gid_t *list) {
     memcpy(list, fake_groups, fake_ngroups * sizeof *list);
     return fake_ngroups;
 }
-// C programs reach getgroups as getgroups$DARWIN_EXTSN, which the header
-// names getgroups here, and others, such as Go's runtime, by its own name.
-extern int getgroups_posix(int, gid_t[]) __asm("_getgroups");
+// Programs built with _DARWIN_C_SOURCE, such as Python, call getgroups as
+// getgroups$DARWIN_EXTSN, which answers the user's group access list from
+// the host's directory; others, such as Go's runtime, by its own name.
+extern int getgroups_extsn(int, gid_t[]) __asm("_getgroups$DARWIN_EXTSN");
 INTERPOSE(fws_getgroups, getgroups);
-static int fws_getgroups_posix(int n, gid_t *list) { return fws_getgroups(n, list); }
-INTERPOSE(fws_getgroups_posix, getgroups_posix);
+static int fws_getgroups_extsn(int n, gid_t *list) { return fws_getgroups(n, list); }
+INTERPOSE(fws_getgroups_extsn, getgroups_extsn);
 
 // Only root changes identity, as the kernel would allow; the new identity
 // passes to the programs the process executes.
@@ -1422,6 +1462,17 @@ static void own(struct stat *st, const char *path, int fd, int nofollow) {
     } else {
         st->st_uid = 0;
         st->st_gid = 0;
+    }
+    // The mode the file's image gave it, where extraction kept the owner's
+    // read and write, or search, on disk.
+    char v[16];
+    ssize_t n = fd >= 0 ? fgetxattr(fd, MODE_XATTR, v, sizeof v - 1, 0, 0)
+                        : getxattr(path, MODE_XATTR, v, sizeof v - 1, 0, nofollow ? XATTR_NOFOLLOW : 0);
+    if (n > 0) {
+        v[n] = 0;
+        mode_t m = 0;
+        for (ssize_t i = 0; i < n && v[i] >= '0' && v[i] <= '7'; i++) m = (mode_t)(m * 8 + (mode_t)(v[i] - '0'));
+        st->st_mode = (st->st_mode & ~(mode_t)07777) | (m & 07777);
     }
 }
 

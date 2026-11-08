@@ -627,3 +627,26 @@ func TestGroupsDomainAndSharedMemorySize(t *testing.T) {
 		t.Errorf("the ledger after every object went: %q, %v", b, err)
 	}
 }
+
+// A program does not see the variable that loads the library, and one
+// that empties it before it executes itself again, as ClickHouse does,
+// stays in the container's view.
+func TestLibraryVariableIsHiddenAndKept(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "reexec")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", bin, "testdata/reexec/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin)
+	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, "FWS_HOSTNAME=web"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("reexec: %v\n%s", err, out)
+	}
+	if want := "hidden\nhostname=web\n"; string(out) != want {
+		t.Errorf("got %q, want %q", out, want)
+	}
+}

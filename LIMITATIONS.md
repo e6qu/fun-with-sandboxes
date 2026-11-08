@@ -358,9 +358,10 @@ machine — and from what macOS offers an unprivileged process under them.
   - `--blkio-weight` picks a disk I/O policy tier (standard, utility,
     throttle); per-device rates are refused, and a running container's
     weight cannot change, as macOS lets a process set only its own policy.
-  - `--ulimit` sets nofile, fsize, cpu, core and stack; nproc, which macOS
-    counts across every process of the user, and data and as, which it
-    does not enforce, are refused.
+  - `--ulimit` sets nofile, fsize, cpu, core and stack, and memlock
+    unlimited; nproc, which macOS counts across every process of the user,
+    and data, as and a finite memlock, which it does not enforce, are
+    refused.
 - **`--init` runs the engine's own init**, at `/sbin/docker-init` as
   Docker places tini: the engine's helper binary, which by that name
   passes signals on to the command, reaps orphans and exits as the command

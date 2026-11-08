@@ -240,6 +240,14 @@ same knobs, each enforced by a real mechanism or refused:
   `#!` names `/usr/bin/env` runs the program its argument names from the
   container's `PATH`, as `env` would, because Apple's `env` cannot load the
   library.
+  A file's mode is the one its image or `docker cp` gave it: extraction
+  keeps the owner's read and write, and a directory's search, on disk,
+  which the engine's user and a container's root need, records the mode
+  it widened in an extended attribute (`com.fws.mode`), which `stat` and
+  the engine's archives report, and which `chmod` drops. The library
+  hides the variable that loads it from `getenv`, as no container's
+  environment holds it, and restores it to a program that empties it
+  before it executes another, as ClickHouse does.
   `setuid` and its kin switch the presented identity, `setgroups` and
   `initgroups` the supplementary groups (`FWS_GROUPS`), and every program
   a process executes inherits the identity it holds then, with the

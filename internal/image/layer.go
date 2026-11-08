@@ -18,6 +18,11 @@ const (
 	opaqueWhiteout = ".wh..wh..opq"
 )
 
+// ModeXattr records a file's mode where extraction kept more on disk: the
+// owner's read and write on files and search on directories, which the
+// engine's user, and a container's root, needs.
+const ModeXattr = "com.fws.mode"
+
 // ApplyLayer extracts one image layer onto dir, honouring OCI whiteouts. The
 // engine runs unprivileged, so it drops ownership and setuid/setgid bits, and
 // refuses entries that would land outside dir.
@@ -120,7 +125,10 @@ func applyEntry(dir string, h *tar.Header, r io.Reader, o extractOptions) error 
 		if err := os.MkdirAll(target, 0o755); err != nil {
 			return err
 		}
-		return os.Chmod(target, mode|0o700)
+		if err := os.Chmod(target, mode|0o700); err != nil {
+			return err
+		}
+		return recordMode(target, mode, mode|0o700)
 	case tar.TypeReg:
 		if err := removeNonDir(target); err != nil {
 			return err
@@ -136,7 +144,10 @@ func applyEntry(dir string, h *tar.Header, r io.Reader, o extractOptions) error 
 		if err := f.Close(); err != nil {
 			return err
 		}
-		return os.Chmod(target, mode|0o600)
+		if err := os.Chmod(target, mode|0o600); err != nil {
+			return err
+		}
+		return recordMode(target, mode, mode|0o600)
 	case tar.TypeSymlink:
 		if err := removeNonDir(target); err != nil {
 			return err

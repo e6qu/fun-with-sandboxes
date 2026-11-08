@@ -90,30 +90,24 @@ func TestDockerInDocker(t *testing.T) {
 	if out := inDind(t, name, "docker", "version", "--format", "{{.Server.Os}}"); out != "darwin\n" {
 		t.Errorf("the nested engine's OS: %q", out)
 	}
-	loadInto(t, name, "fws/python:3.14")
-	if out := inDind(t, name, "docker", "run", "--rm", "--name", "inner", "fws/python:3.14", "python3", "-c", "print('inside')"); out != "inside\n" {
+	loadInto(t, name, "fws/toolbox:1")
+	if out := inDind(t, name, "docker", "run", "--rm", "--name", "inner", "fws/toolbox:1", "echo", "inside"); out != "inside\n" {
 		t.Errorf("an inner container printed %q", out)
 	}
 	// A bind mount names the dind container's files.
 	inDind(t, name, "sh", "-c", "mkdir -p /work && echo from-dind > /work/note")
-	if out := inDind(t, name, "docker", "run", "--rm", "-v", "/work:/w", "fws/python:3.14", "python3", "-c", "print(open('/w/note').read().strip())"); out != "from-dind\n" {
+	if out := inDind(t, name, "docker", "run", "--rm", "-v", "/work:/w", "fws/toolbox:1", "cat", "/w/note"); out != "from-dind\n" {
 		t.Errorf("an inner bind mount read %q", out)
 	}
 	// Compose in the container: services reach one another by name, and a
 	// published port listens in the dind container.
 	compose := `services:
   web:
-    image: fws/python:3.14
-    command: ["python3", "-m", "http.server", "8000"]
-    ports: ["8080:8000"]
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000')"]
-      interval: 1s
-      start_interval: 200ms
-      start_period: 30s
+    image: fws/toolbox:1
+    ports: ["8080:8080"]
   client:
-    image: fws/python:3.14
-    command: ["python3", "-c", "import time; time.sleep(600)"]
+    image: fws/toolbox:1
+    command: ["hold"]
     depends_on:
       web: {condition: service_healthy}
 `
@@ -123,11 +117,10 @@ func TestDockerInDocker(t *testing.T) {
 	}
 	mustDocker(t, "cp", f, name+":/work/compose.yaml")
 	inDind(t, name, "docker", "compose", "-f", "/work/compose.yaml", "-p", "inner", "up", "-d", "--wait")
-	if out := inDind(t, name, "docker", "compose", "-f", "/work/compose.yaml", "-p", "inner", "exec", "-T", "client", "python3", "-c",
-		"import urllib.request; print(urllib.request.urlopen('http://web:8000').status)"); out != "200\n" {
+	if out := inDind(t, name, "docker", "compose", "-f", "/work/compose.yaml", "-p", "inner", "exec", "-T", "client", "/toolbox", "fetch", "http://web:8080/healthz"); out != "200 OK\n" {
 		t.Errorf("the inner client reached web: %q", out)
 	}
-	if out := inDind(t, name, "wget", "-qO-", "http://localhost:8080/"); !strings.Contains(out, "Directory listing") {
+	if out := inDind(t, name, "wget", "-qO-", "http://localhost:8080/healthz"); out != "ok\n" {
 		t.Errorf("the published port in the dind container: %.200q", out)
 	}
 	// The engines keep their containers apart.
@@ -185,11 +178,11 @@ func TestTestcontainersDinD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.LoadImage(ctx, "fws/python:3.14"); err != nil {
+	if err := c.LoadImage(ctx, "fws/toolbox:1"); err != nil {
 		t.Fatal(err)
 	}
 	daemon := "tcp://" + strings.TrimPrefix(host, "http://")
-	out, err := dockerAt(t, daemon, "run", "--rm", "fws/python:3.14", "python3", "-c", "print('nested')")
+	out, err := dockerAt(t, daemon, "run", "--rm", "fws/toolbox:1", "echo", "nested")
 	if err != nil || out != "nested\n" {
 		t.Errorf("a container on the nested engine: %q, %v", out, err)
 	}
@@ -203,13 +196,13 @@ func TestPodmanAndDockerNested(t *testing.T) {
 	mustPodman(t, "run", "-d", "--privileged", "--name", name, "-e", "DOCKER_TLS_CERTDIR=", "fws/dind:29")
 	defer podman(t, "rm", "-f", name)
 	awaitLog(t, name, "API listen on /var/run/docker.sock")
-	loadInto(t, name, "fws/python:3.14")
+	loadInto(t, name, "fws/toolbox:1")
 	inner := func(client string) string {
 		args := []string{"exec", name, client}
 		if client == "podman" {
 			args = append(args, "--remote", "--url", "unix:///var/run/docker.sock")
 		}
-		return mustPodman(t, append(args, "run", "--rm", "fws/python:3.14", "python3", "-c", "print('nested "+client+"')")...)
+		return mustPodman(t, append(args, "run", "--rm", "fws/toolbox:1", "echo", "nested", client)...)
 	}
 	if out := inner("podman"); out != "nested podman\n" {
 		t.Errorf("Podman in Podman: %q", out)

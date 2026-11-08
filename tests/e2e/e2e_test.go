@@ -223,7 +223,9 @@ func mustCompose(t *testing.T, project string, args ...string) string {
 }
 
 func TestDockerRun(t *testing.T) {
-	out := mustDocker(t, "run", "--rm", "fws/toolbox:1", "echo", "hello", "from", "a", "sandbox")
+	// Other tests' containers, such as Testcontainers' reaper, may outlive
+	// them; this test looks for its own, by label.
+	out := mustDocker(t, "run", "--rm", "--label", "e2e.test=dockerrun", "fws/toolbox:1", "echo", "hello", "from", "a", "sandbox")
 	if strings.TrimSpace(out) != "hello from a sandbox" {
 		t.Fatalf("docker run output %q", out)
 	}
@@ -233,7 +235,7 @@ func TestDockerRun(t *testing.T) {
 	if _, err := docker(t, "run", "--rm", "--network", "host", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("host network: %v", err)
 	}
-	if out := mustDocker(t, "ps", "-a", "-q"); strings.TrimSpace(out) != "" {
+	if out := mustDocker(t, "ps", "-a", "-q", "--filter", "label=e2e.test=dockerrun"); strings.TrimSpace(out) != "" {
 		t.Fatalf("--rm left containers behind: %q", out)
 	}
 }

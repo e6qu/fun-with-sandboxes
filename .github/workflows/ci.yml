@@ -129,6 +129,16 @@ jobs:
           path: ~/fws-servers/mariadb
           key: ${{ steps.drv.outputs.mariadb }}
           fail-on-cache-miss: true
+      # The images, their archives, a registry's copies and the engines'
+      # stores fill the runner's disk; the runner's SDKs for other
+      # platforms take tens of gigabytes the suite never uses.
+      - name: free disk space
+        run: |
+          df -h /
+          sudo rm -rf ~/Library/Android /usr/local/share/dotnet ~/.dotnet ~/.ghcup /usr/local/lib/android \
+            /Library/Developer/CoreSimulator/Caches ~/Library/Developer/CoreSimulator/Caches
+          xcrun simctl delete all || true
+          df -h /
       - name: install the Docker CLI, Docker Compose and buildx
         run: |
           brew install docker docker-compose docker-buildx podman podman-compose
@@ -181,6 +191,7 @@ jobs:
       - name: crash reports and Seatbelt denials
         if: failure()
         run: |
+          df -h /
           for f in ~/Library/Logs/DiagnosticReports/*.ips; do
             [ -e "$f" ] || continue
             echo "== $f"

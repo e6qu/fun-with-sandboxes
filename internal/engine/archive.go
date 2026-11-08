@@ -160,6 +160,9 @@ func (v fsView) writeTree(tw *tar.Writer, h, name string) error {
 	if fi.IsDir() {
 		hdr.Name += "/"
 	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		hdr.Mode = hdr.Mode&^0o777 | int64(image.RecordedMode(h, fi))
+	}
 	hdr.Uname, hdr.Gname = "", ""
 	if err := tw.WriteHeader(hdr); err != nil {
 		return err
@@ -213,6 +216,11 @@ func (e *Engine) ArchiveGet(ref, p string, begin func(container.PathStat), w io.
 	h, err := v.resolve(p, false)
 	if err != nil {
 		return err
+	}
+	// A path that ends in "/." names the directory's contents, as Docker's
+	// daemon names it ".", so docker cp copies them into the destination.
+	if p == "." || strings.HasSuffix(p, "/.") {
+		st.Name = "."
 	}
 	begin(st)
 	tw := tar.NewWriter(w)
