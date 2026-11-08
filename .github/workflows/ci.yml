@@ -144,7 +144,13 @@ jobs:
           key: fetched-${{ hashFiles('images/**/*.nix') }}
       - name: build images
         run: |
-          export NIX_CONFIG="extra-substituters = file://$HOME/fws-servers/mysql?trusted=1 file://$HOME/fws-servers/mariadb?trusted=1 file://$HOME/fws-fetched?trusted=1"
+          substituters="file://$HOME/fws-servers/mysql?trusted=1 file://$HOME/fws-servers/mariadb?trusted=1"
+          # The daemon, as root, would claim an empty cache directory that
+          # the next step fills as the runner.
+          if [ "${{ steps.fetched.outputs.cache-hit }}" = true ]; then
+            substituters="$substituters file://$HOME/fws-fetched?trusted=1"
+          fi
+          export NIX_CONFIG="extra-substituters = $substituters"
           scripts/build-images.sh "$RUNNER_TEMP/images"
       - name: keep the pinned downloads
         if: steps.fetched.outputs.cache-hit != 'true'
