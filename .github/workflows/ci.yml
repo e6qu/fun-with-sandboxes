@@ -135,10 +135,29 @@ jobs:
           mkdir -p ~/.docker
           echo "{\"cliPluginsExtraDirs\": [\"$(brew --prefix)/lib/docker/cli-plugins\"]}" > ~/.docker/config.json
           docker buildx version
+      # The files the images pin from GitHub releases and repositories,
+      # kept between runs so a build needs GitHub only when a pin changes.
+      - uses: actions/cache/restore@v4
+        id: fetched
+        with:
+          path: ~/fws-fetched
+          key: fetched-${{ hashFiles('images/**/*.nix') }}
       - name: build images
         run: |
-          export NIX_CONFIG="extra-substituters = file://$HOME/fws-servers/mysql?trusted=1 file://$HOME/fws-servers/mariadb?trusted=1"
+          export NIX_CONFIG="extra-substituters = file://$HOME/fws-servers/mysql?trusted=1 file://$HOME/fws-servers/mariadb?trusted=1 file://$HOME/fws-fetched?trusted=1"
           scripts/build-images.sh "$RUNNER_TEMP/images"
+      - name: keep the pinned downloads
+        if: steps.fetched.outputs.cache-hit != 'true'
+        run: |
+          nixpkgs=$(sed -n 's/^nixpkgs=${NIXPKGS:-\(.*\)}$/\1/p' scripts/build-images.sh)
+          for f in images/*/*.nix; do
+            nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths --impure -f "$f" --argstr nixpkgs "$nixpkgs"
+          done | xargs nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-fetched"
+      - uses: actions/cache/save@v4
+        if: steps.fetched.outputs.cache-hit != 'true'
+        with:
+          path: ~/fws-fetched
+          key: ${{ steps.fetched.outputs.cache-primary-key }}
       - name: publish images to a local registry
         run: |
           crane="go run github.com/google/go-containerregistry/cmd/crane@v0.22.1"
