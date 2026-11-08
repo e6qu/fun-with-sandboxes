@@ -147,35 +147,47 @@ jobs:
           mkdir -p ~/.docker
           echo "{\"cliPluginsExtraDirs\": [\"$(brew --prefix)/lib/docker/cli-plugins\"]}" > ~/.docker/config.json
           docker buildx version
-      # The files the images pin from GitHub releases and repositories,
-      # kept between runs so a build needs GitHub only when a pin changes.
+      # What the image build makes rather than substitutes from
+      # cache.nixos.org: the files the images pin from GitHub releases and
+      # repositories, and the packages Hydra does not build, such as Consul
+      # and MongoDB under their licences. Nix substitutes by store path, so
+      # an earlier run's cache serves every derivation that has not changed.
       - uses: actions/cache/restore@v4
-        id: fetched
+        id: built
         with:
-          path: ~/fws-fetched
-          key: fetched-${{ hashFiles('images/**/*.nix') }}
+          path: ~/fws-built
+          key: built-${{ hashFiles('scripts/build-images.sh', 'images/**') }}
+          restore-keys: built-
       - name: build images
         run: |
           substituters="file://$HOME/fws-servers/mysql?trusted=1 file://$HOME/fws-servers/mariadb?trusted=1"
           # The daemon, as root, would claim an empty cache directory that
           # the next step fills as the runner.
-          if [ "${{ steps.fetched.outputs.cache-hit }}" = true ]; then
-            substituters="$substituters file://$HOME/fws-fetched?trusted=1"
+          if [ -d ~/fws-built ]; then
+            substituters="$substituters file://$HOME/fws-built?trusted=1"
           fi
           export NIX_CONFIG="extra-substituters = $substituters"
           scripts/build-images.sh "$RUNNER_TEMP/images"
-      - name: keep the pinned downloads
-        if: steps.fetched.outputs.cache-hit != 'true'
+      # The store paths this run built, added to what the restored cache
+      # holds.
+      - name: keep what the build made
+        if: steps.built.outputs.cache-hit != 'true'
         run: |
-          nixpkgs=$(sed -n 's/^nixpkgs=${NIXPKGS:-\(.*\)}$/\1/p' scripts/build-images.sh)
-          for f in images/*/*.nix; do
-            nix --extra-experimental-features 'nix-command flakes' build --no-link --print-out-paths --impure -f "$f" --argstr nixpkgs "$nixpkgs"
-          done | xargs nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-fetched"
+          built=$(nix --extra-experimental-features nix-command path-info --json --all | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          entries = d.items() if isinstance(d, dict) else ((e["path"], e) for e in d)
+          print(" ".join(p for p, i in entries if i and i.get("ultimate")))')
+          mkdir -p ~/fws-built
+          if [ -n "$built" ]; then
+            nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-built" $built
+          fi
+          du -sh ~/fws-built
       - uses: actions/cache/save@v4
-        if: steps.fetched.outputs.cache-hit != 'true'
+        if: steps.built.outputs.cache-hit != 'true'
         with:
-          path: ~/fws-fetched
-          key: ${{ steps.fetched.outputs.cache-primary-key }}
+          path: ~/fws-built
+          key: ${{ steps.built.outputs.cache-primary-key }}
       - name: publish images to a local registry
         run: |
           crane="go run github.com/google/go-containerregistry/cmd/crane@v0.22.1"
