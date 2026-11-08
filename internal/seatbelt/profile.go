@@ -96,6 +96,9 @@ type Spec struct {
 	// ReadFiles are files outside the root the container reads, such as its
 	// stack's network file.
 	ReadFiles []string
+	// WriteFiles are files outside the root the container writes, such as
+	// the ledger of its shared memory.
+	WriteFiles []string
 	// Helper is the engine's helper binary, which the container's sandbox
 	// executes once, to start the anchor that runs its execs.
 	Helper string
@@ -154,7 +157,7 @@ func Render(s Spec) (string, error) {
 	for _, v := range s.Volumes {
 		paths = append(paths, v.Path)
 	}
-	extra := append(append([]string{}, s.Libraries...), s.ReadFiles...)
+	extra := append(append(append([]string{}, s.Libraries...), s.ReadFiles...), s.WriteFiles...)
 	if s.Helper != "" {
 		extra = append(extra, s.Helper)
 	}
@@ -212,6 +215,9 @@ func Render(s Spec) (string, error) {
 	}
 	if s.PortDir != "" {
 		w("  (subpath %q)", s.PortDir)
+	}
+	for _, f := range s.WriteFiles {
+		w("  (literal %q)", f)
 	}
 	for _, d := range []string{"/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty"} {
 		w("  (literal %q)", d)

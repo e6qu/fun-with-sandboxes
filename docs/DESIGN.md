@@ -223,8 +223,9 @@ same knobs, each enforced by a real mechanism or refused:
   `#!` names `/usr/bin/env` runs the program its argument names from the
   container's `PATH`, as `env` would, because Apple's `env` cannot load the
   library.
-  `setuid` and its kin switch the presented identity, and every program a
-  process executes inherits the identity it holds then, with the
+  `setuid` and its kin switch the presented identity, `setgroups` and
+  `initgroups` the supplementary groups (`FWS_GROUPS`), and every program
+  a process executes inherits the identity it holds then, with the
   container's variables, whatever environment the process passes: an
   entrypoint drops root as the official images' entrypoints do with `gosu`
   (`sandboxenv.Become`), and a program that clears its environment stays in

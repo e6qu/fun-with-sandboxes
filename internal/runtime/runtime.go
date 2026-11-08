@@ -84,6 +84,11 @@ func exitCode(ws syscall.WaitStatus) int {
 	return ws.ExitStatus()
 }
 
+// InitPath is where a container run with --init finds its init, as
+// Docker's docker-init: the engine's helper binary, which takes the init's
+// role when it runs by that name.
+const InitPath = "/sbin/docker-init"
+
 // FromWorkDir makes a relative argv[0] with a slash, such as ./run.sh,
 // absolute in the container, as execve resolves it from the working
 // directory.

@@ -7,18 +7,22 @@
 //     holds, so a file can be made there, names the root's; any other, such
 //     as the system frameworks and devices, stays the host's (SANDBOX_ROOT);
 //     symbolic links resolve in the container, as under chroot;
-//   - the container's user and group (FWS_UID, FWS_GID), root by default:
+//   - the container's user and group (FWS_UID, FWS_GID), root by default,
+//     and its supplementary groups (FWS_GROUPS, comma-separated):
 //     chown succeeds and records the owner in an extended attribute, which
 //     stat reports, and a file a user other than root makes is recorded as
 //     theirs; files the container's processes made report root otherwise;
 //   - the users and groups of the container's /etc/passwd and /etc/group;
-//   - the container's hostname (FWS_HOSTNAME);
+//   - the container's hostname (FWS_HOSTNAME) and NIS domain name
+//     (FWS_DOMAINNAME);
 //   - its volumes and bind mounts at their destinations (FWS_MOUNTS: a
 //     destination, a tab and the resolved source, a line each): the engine
 //     places a mount as a symlink in the root, which a path through the
 //     mount point follows, and which presents the source's own path;
 //   - its private IPC namespace (SANDBOX_IPC_PREFIX): POSIX IPC and Mach
-//     bootstrap names carry the container's prefix.
+//     bootstrap names carry the container's prefix, and its POSIX shared
+//     memory stays within the size of its /dev/shm (FWS_SHM: a ledger of
+//     its objects' sizes, a tab and the size).
 //
 // The host still decides every access, by the engine's user's rights.
 // IPV6_RECVPKTINFO and IPV6_PKTINFO name RFC 3542's options only with this.
@@ -44,6 +48,7 @@
 #include <string.h>
 #include <sys/attr.h>
 #include <sys/clonefile.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
@@ -87,7 +92,12 @@ static size_t rootlen;
 
 static uid_t fake_uid, fake_euid;
 static gid_t fake_gid, fake_egid;
+static gid_t fake_groups[NGROUPS_MAX];
+static int fake_ngroups;
+// FWS_GROUPS as a program the process starts gets it.
+static char groups_var[sizeof "FWS_GROUPS=" + NGROUPS_MAX * 11];
 static char hostname[256];
+static char domainname[256];
 // The host pid of the container's main process (FWS_INIT), its pid 1.
 static pid_t init_pid;
 // On the host's PID namespace (FWS_PIDNS=host) there is no pid 1 to
@@ -291,8 +301,17 @@ static void parse_network(const char *path, const char *address) {
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", "FWS_PIDNS", "FWS_PIDNSFILE", "FWS_PROCS", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_DOMAINNAME", "FWS_SHM", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", "FWS_PIDNS", "FWS_PIDNSFILE", "FWS_PROCS", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
+
+static void set_groups_var(void) {
+    size_t o = (size_t)snprintf(groups_var, sizeof groups_var, "FWS_GROUPS=");
+    for (int i = 0; i < fake_ngroups && o < sizeof groups_var; i++) {
+        o += (size_t)snprintf(groups_var + o, sizeof groups_var - o, i ? ",%u" : "%u", fake_groups[i]);
+    }
+}
+
+static void parse_shm(const char *v);
 
 __attribute__((constructor)) static void fwsroot_init(void) {
     for (size_t i = 0; kept_names[i]; i++) {
@@ -305,6 +324,18 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     }
     fake_uid = fake_euid = (uid_t)env_number("FWS_UID");
     fake_gid = fake_egid = (gid_t)env_number("FWS_GID");
+    const char *gs = getenv("FWS_GROUPS");
+    if (gs) {
+        unsigned long g;
+        while (*gs && fake_ngroups < NGROUPS_MAX && (gs = num(gs, &g)) != NULL) {
+            fake_groups[fake_ngroups++] = (gid_t)g;
+            if (*gs != ',') break;
+            gs++;
+        }
+    } else {
+        fake_groups[fake_ngroups++] = fake_gid;
+    }
+    set_groups_var();
     const char *ns = getenv("FWS_PIDNS");
     host_pids = ns && strcmp(ns, "host") == 0;
     // On another container's PID namespace, FWS_PIDNS is its pid 1.
@@ -337,7 +368,12 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     if (h) {
         strlcpy(hostname, h, sizeof hostname);
     }
+    const char *d = getenv("FWS_DOMAINNAME");
+    if (d) {
+        strlcpy(domainname, d, sizeof domainname);
+    }
     parse_mounts(getenv("FWS_MOUNTS"));
+    parse_shm(getenv("FWS_SHM"));
     parse_ports(getenv("FWS_PORTS"));
     parse_network(getenv("FWS_NETWORK"), getenv("FWS_ADDRESS"));
     parse_routing(getenv("FWS_PORTDIR"), getenv("FWS_ROUTER"));
@@ -1056,17 +1092,19 @@ static int has_var(char *const envp[], const char *kv) {
 static char **child_env(char *const envp[], char *ids) {
     size_t n = 0;
     while (envp && envp[n]) n++;
-    char **out = calloc(n + 8, sizeof *out);
+    char **out = calloc(n + 4 + sizeof kept_names / sizeof kept_names[0], sizeof *out);
     if (!out) return NULL;
     size_t j = 0;
     for (size_t i = 0; i < n; i++) {
-        if (strncmp(envp[i], "FWS_UID=", 8) == 0 || strncmp(envp[i], "FWS_GID=", 8) == 0) continue;
+        if (strncmp(envp[i], "FWS_UID=", 8) == 0 || strncmp(envp[i], "FWS_GID=", 8) == 0 ||
+            strncmp(envp[i], "FWS_GROUPS=", 11) == 0) continue;
         out[j++] = envp[i];
     }
     int a = snprintf(ids, 64, "FWS_UID=%u", fake_euid);
     snprintf(ids + a + 1, 64 - a - 1, "FWS_GID=%u", fake_egid);
     out[j++] = ids;
     out[j++] = ids + a + 1;
+    out[j++] = groups_var;
     for (size_t i = 0; kept_names[i]; i++) {
         if (kept[i] && !has_var(envp, kept[i])) out[j++] = kept[i];
     }
@@ -1194,16 +1232,21 @@ static gid_t fws_getegid(void) { return fake_egid; }
 INTERPOSE(fws_getegid, getegid);
 static int fws_getgroups(int n, gid_t *list) {
     if (n == 0) {
-        return 1;
+        return fake_ngroups;
     }
-    if (n < 1) {
+    if (n < fake_ngroups) {
         errno = EINVAL;
         return -1;
     }
-    list[0] = fake_egid;
-    return 1;
+    memcpy(list, fake_groups, fake_ngroups * sizeof *list);
+    return fake_ngroups;
 }
+// C programs reach getgroups as getgroups$DARWIN_EXTSN, which the header
+// names getgroups here, and others, such as Go's runtime, by its own name.
+extern int getgroups_posix(int, gid_t[]) __asm("_getgroups");
 INTERPOSE(fws_getgroups, getgroups);
+static int fws_getgroups_posix(int n, gid_t *list) { return fws_getgroups(n, list); }
+INTERPOSE(fws_getgroups_posix, getgroups_posix);
 
 // Only root changes identity, as the kernel would allow; the new identity
 // passes to the programs the process executes.
@@ -1271,23 +1314,59 @@ static int fws_setregid(gid_t r, gid_t e) {
 }
 INTERPOSE(fws_setregid, setregid);
 static int fws_setgroups(int n, const gid_t *list) {
-    (void)n;
-    (void)list;
     if (fake_euid != 0) {
         errno = EPERM;
         return -1;
     }
+    if (n < 0 || n > NGROUPS_MAX) {
+        errno = EINVAL;
+        return -1;
+    }
+    memcpy(fake_groups, list, n * sizeof *list);
+    fake_ngroups = n;
+    set_groups_var();
+    setenv("FWS_GROUPS", groups_var + sizeof "FWS_GROUPS=" - 1, 1);
     return 0;
 }
 INTERPOSE(fws_setgroups, setgroups);
+// initgroups gives the process gid and the groups of the container's
+// /etc/group that list name as a member.
 static int fws_initgroups(const char *name, int gid) {
-    (void)name;
-    (void)gid;
     if (fake_euid != 0) {
         errno = EPERM;
         return -1;
     }
-    return 0;
+    gid_t list[NGROUPS_MAX];
+    int n = 0;
+    list[n++] = (gid_t)gid;
+    char path[PATH_MAX];
+    snprintf(path, sizeof path, "%s/etc/group", root);
+    FILE *f = rootlen ? fopen(path, "r") : NULL;
+    char line[4096];
+    while (f && n < NGROUPS_MAX && fgets(line, sizeof line, f)) {
+        char *fields[4];
+        char *s = line;
+        int k = 0;
+        line[strcspn(line, "\n")] = 0;
+        while (k < 4 && (fields[k] = strsep(&s, ":")) != NULL) {
+            k++;
+        }
+        if (k < 4 || fields[0][0] == '#') {
+            continue;
+        }
+        gid_t g = (gid_t)strtoul(fields[2], NULL, 10);
+        char *member;
+        while ((member = strsep(&fields[3], ",")) != NULL) {
+            if (strcmp(member, name) == 0) {
+                int seen = 0;
+                for (int i = 0; i < n; i++) seen |= list[i] == g;
+                if (!seen) list[n++] = g;
+                break;
+            }
+        }
+    }
+    if (f) fclose(f);
+    return fws_setgroups(n, list);
 }
 INTERPOSE(fws_initgroups, initgroups);
 
@@ -1654,6 +1733,18 @@ static int fws_gethostname(char *name, size_t len) {
     return 0;
 }
 INTERPOSE(fws_gethostname, gethostname);
+static int fws_getdomainname(char *name, int len) {
+    if (!hostname[0]) {
+        return getdomainname(name, len);
+    }
+    if (len < 0 || strlen(domainname) + 1 > (size_t)len) {
+        errno = EINVAL;
+        return -1;
+    }
+    strcpy(name, domainname);
+    return 0;
+}
+INTERPOSE(fws_getdomainname, getdomainname);
 static int fws_uname(struct utsname *u) {
     int r = uname(u);
     if (r == 0 && hostname[0]) {
@@ -2462,8 +2553,12 @@ static int fws_sysctl(int *name, u_int namelen, void *old, size_t *oldlen, void 
         if (r == 0) *oldlen = own_procs(old, *oldlen);
         return r;
     }
-    if (hostname[0] && namelen == 2 && name[0] == CTL_KERN && name[1] == KERN_HOSTNAME && new == NULL) {
-        size_t n = strlen(hostname) + 1;
+    // On its own UTS namespace the container has its hostname and NIS
+    // domain name, which getdomainname reads here.
+    if (hostname[0] && namelen == 2 && name[0] == CTL_KERN && (name[1] == KERN_HOSTNAME || name[1] == KERN_NISDOMAINNAME) &&
+        new == NULL) {
+        const char *v = name[1] == KERN_HOSTNAME ? hostname : domainname;
+        size_t n = strlen(v) + 1;
         if (old == NULL) {
             *oldlen = n;
             return 0;
@@ -2472,7 +2567,7 @@ static int fws_sysctl(int *name, u_int namelen, void *old, size_t *oldlen, void 
             errno = ENOMEM;
             return -1;
         }
-        memcpy(old, hostname, n);
+        memcpy(old, v, n);
         *oldlen = n;
         return 0;
     }
@@ -2482,6 +2577,10 @@ INTERPOSE(fws_sysctl, sysctl);
 static int fws_sysctlbyname(const char *name, void *old, size_t *oldlen, void *new, size_t newlen) {
     if (hostname[0] && strcmp(name, "kern.hostname") == 0 && new == NULL) {
         int mib[2] = {CTL_KERN, KERN_HOSTNAME};
+        return fws_sysctl(mib, 2, old, oldlen, NULL, 0);
+    }
+    if (hostname[0] && strcmp(name, "kern.nisdomainname") == 0 && new == NULL) {
+        int mib[2] = {CTL_KERN, KERN_NISDOMAINNAME};
         return fws_sysctl(mib, 2, old, oldlen, NULL, 0);
     }
     if (strncmp(name, "kern.proc.", 10) == 0 && new == NULL) {
@@ -2620,6 +2719,75 @@ static const char *posix_ipc_name(const char *name, char *out) {
     return out;
 }
 
+// The sizes of the IPC namespace's shared memory objects, which a ledger
+// file every process of the namespace locks and rewrites keeps, as a
+// tmpfs at /dev/shm keeps its files' sizes: an object grows only while
+// the objects' sizes stay within the limit.
+static char shm_ledger[PATH_MAX];
+static unsigned long long shm_limit;
+static struct {
+    int fd;
+    dev_t dev;
+    ino_t ino;
+    char name[POSIX_IPC_NAME_MAX + 1];
+} shm_fds[64];
+static pthread_mutex_t shm_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void parse_shm(const char *v) {
+    const char *tab = v ? strchr(v, '\t') : NULL;
+    unsigned long limit;
+    if (!tab || (size_t)(tab - v) >= sizeof shm_ledger || !num(tab + 1, &limit)) return;
+    memcpy(shm_ledger, v, (size_t)(tab - v));
+    shm_ledger[tab - v] = 0;
+    shm_limit = limit;
+}
+
+// shm_record sets name's size in the ledger, or removes it for a size of
+// -1. With check, it refuses a size that would take the objects past the
+// limit. It reports the size the ledger held before in *prev, -1 for none.
+static int shm_record(const char *name, long long size, int check, long long *prev) {
+    *prev = -1;
+    int lf = open(shm_ledger, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lf < 0) return -1;
+    if (flock(lf, LOCK_EX) != 0) {
+        close(lf);
+        return -1;
+    }
+    static char in[65536], out[65536];
+    ssize_t n = pread(lf, in, sizeof in - 1, 0);
+    if (n < 0) n = 0;
+    in[n] = 0;
+    size_t o = 0;
+    unsigned long long total = 0;
+    for (char *line = in, *next; line && *line; line = next) {
+        next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        char *tab = strchr(line, '\t');
+        unsigned long sz;
+        if (!tab || !num(tab + 1, &sz)) continue;
+        *tab = 0;
+        if (strcmp(line, name) == 0) {
+            *prev = (long long)sz;
+            continue;
+        }
+        total += sz;
+        o += (size_t)snprintf(out + o, sizeof out - o, "%s\t%lu\n", line, sz);
+        if (o >= sizeof out) break;
+    }
+    int r = 0;
+    if (check && size >= 0 && total + (unsigned long long)size > shm_limit) {
+        errno = ENOSPC;
+        r = -1;
+    } else {
+        if (size >= 0 && o < sizeof out) o += (size_t)snprintf(out + o, sizeof out - o, "%s\t%lld\n", name, size);
+        if (o > sizeof out) o = sizeof out;
+        if (ftruncate(lf, 0) != 0 || pwrite(lf, out, o, 0) != (ssize_t)o) r = -1;
+    }
+    flock(lf, LOCK_UN);
+    close(lf);
+    return r;
+}
+
 static int fws_shm_open(const char *name, int flags, ...) {
     mode_t mode = 0;
     if (flags & O_CREAT) {
@@ -2629,15 +2797,73 @@ static int fws_shm_open(const char *name, int flags, ...) {
         va_end(ap);
     }
     char own[POSIX_IPC_NAME_MAX + 1];
-    return shm_open(posix_ipc_name(name, own), flags, mode);
+    const char *n = posix_ipc_name(name, own);
+    int fd = shm_open(n, flags, mode);
+    struct stat st;
+    if (fd >= 0 && shm_ledger[0] && fstat(fd, &st) == 0) {
+        pthread_mutex_lock(&shm_lock);
+        size_t slot = sizeof shm_fds / sizeof shm_fds[0];
+        for (size_t i = 0; i < sizeof shm_fds / sizeof shm_fds[0]; i++) {
+            if (shm_fds[i].name[0] == 0 || shm_fds[i].fd == fd) {
+                slot = i;
+                if (shm_fds[i].fd == fd) break;
+            }
+        }
+        if (slot < sizeof shm_fds / sizeof shm_fds[0]) {
+            shm_fds[slot].fd = fd;
+            shm_fds[slot].dev = st.st_dev;
+            shm_fds[slot].ino = st.st_ino;
+            strlcpy(shm_fds[slot].name, n, sizeof shm_fds[slot].name);
+        }
+        pthread_mutex_unlock(&shm_lock);
+    }
+    return fd;
 }
 INTERPOSE(fws_shm_open, shm_open);
 
 static int fws_shm_unlink(const char *name) {
     char own[POSIX_IPC_NAME_MAX + 1];
-    return shm_unlink(posix_ipc_name(name, own));
+    const char *n = posix_ipc_name(name, own);
+    int r = shm_unlink(n);
+    if (r == 0 && shm_ledger[0]) {
+        int saved = errno;
+        long long prev;
+        shm_record(n, -1, 0, &prev);
+        errno = saved;
+    }
+    return r;
 }
 INTERPOSE(fws_shm_unlink, shm_unlink);
+
+// ftruncate sizes a shared memory object, which macOS lets happen once:
+// the ledger takes the size first, and gets the old one back if the
+// kernel refuses it.
+static int fws_ftruncate(int fd, off_t length) {
+    char name[POSIX_IPC_NAME_MAX + 1] = "";
+    struct stat st;
+    if (shm_ledger[0] && length >= 0 && fstat(fd, &st) == 0) {
+        pthread_mutex_lock(&shm_lock);
+        for (size_t i = 0; i < sizeof shm_fds / sizeof shm_fds[0]; i++) {
+            if (shm_fds[i].name[0] && shm_fds[i].fd == fd && shm_fds[i].dev == st.st_dev && shm_fds[i].ino == st.st_ino) {
+                strlcpy(name, shm_fds[i].name, sizeof name);
+                break;
+            }
+        }
+        pthread_mutex_unlock(&shm_lock);
+    }
+    if (!name[0]) return ftruncate(fd, length);
+    long long prev;
+    if (shm_record(name, (long long)length, 1, &prev) != 0) return -1;
+    int r = ftruncate(fd, length);
+    if (r != 0) {
+        int saved = errno;
+        long long ignored;
+        shm_record(name, prev, 0, &ignored);
+        errno = saved;
+    }
+    return r;
+}
+INTERPOSE(fws_ftruncate, ftruncate);
 
 static sem_t *fws_sem_open(const char *name, int flags, ...) {
     char own[POSIX_IPC_NAME_MAX + 1];

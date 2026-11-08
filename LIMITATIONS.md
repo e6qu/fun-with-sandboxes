@@ -48,9 +48,11 @@ machine — and from what macOS offers an unprivileged process under them.
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
   the container's user and group (as fakeroot does), its users and groups
-  from its own `/etc/passwd` and `/etc/group`, and its hostname. So
-  arguments, entrypoints, `CMD`, `--user`, `USER`, `exec -u`, `--hostname`
-  and `-w` behave as in Docker. Its limits:
+  from its own `/etc/passwd` and `/etc/group`, its supplementary groups
+  (the user's memberships there and `--group-add`), and its hostname and
+  domain name. So arguments, entrypoints, `CMD`, `--user`, `USER`,
+  `exec -u`, `--group-add`, `--hostname`, `--domainname` and `-w` behave
+  as in Docker. Its limits:
   - A path names the root's file when the root holds it, or its parent, so
     a file can be made there; any other path, such as `/dev` or the system
     frameworks, names the host's. Symbolic links resolve inside the
@@ -122,6 +124,14 @@ machine — and from what macOS offers an unprivileged process under them.
   one key, as two PostgreSQL servers on port 5432 do, get objects of their
   own. A program that loads no library, or one that guesses another
   container's hashed key, can still reach that container's objects.
+- **`--shm-size` caps the container's POSIX shared memory.** The
+  container library keeps a ledger of the sizes of the IPC namespace's
+  shared memory objects, and `ftruncate` fails with `ENOSPC` past the
+  size, 64 MiB unless the container asks for another, as a full
+  `/dev/shm` refuses on Linux. An object counts until it is unlinked, not
+  until its last mapping goes, and each start removes the objects the last
+  run left, as each start of a Docker container mounts an empty
+  `/dev/shm`. There is no `/dev/shm` directory to list.
 - **POSIX shared memory and semaphore names carry the prefix.** Under
   private IPC the container library gives every name the program uses
   `SANDBOX_IPC_PREFIX`, and a name too long to carry it within macOS's
@@ -345,6 +355,17 @@ machine — and from what macOS offers an unprivileged process under them.
   - `--ulimit` sets nofile, fsize, cpu, core and stack; nproc, which macOS
     counts across every process of the user, and data and as, which it
     does not enforce, are refused.
+- **`--init` runs the engine's own init**, at `/sbin/docker-init` as
+  Docker places tini: the engine's helper binary, which by that name
+  passes signals on to the command, reaps orphans and exits as the command
+  does.
+- **Settings without a macOS counterpart are refused**, never ignored:
+  DNS servers, search domains and options (a container resolves names
+  through the host's resolver and reaches the internet through its
+  stack's egress proxy), `--oom-score-adj`, `--storage-opt`, cgroup
+  sharing and isolation technologies other than the default. `--cgroupns`
+  takes Docker's values and changes nothing, as there are no cgroups to
+  show.
 - **Each container costs a supervisor process**, `fws-shim`, held under
   16 MiB of memory footprint by the test suite.
 - **`docker pause` stops the container's processes with SIGSTOP**, not a
