@@ -99,10 +99,12 @@ jobs:
           path: ~/fws-servers/${{ matrix.server }}
           key: ${{ steps.drv.outputs.key }}
 
+  # The image build takes from twenty minutes to an hour on a macOS
+  # runner, and the suite up to its own ninety.
   e2e:
     needs: servers
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
