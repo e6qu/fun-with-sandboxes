@@ -155,6 +155,7 @@ func startDaemon(t *testing.T, root, sock string, args ...string) *liveDaemon {
 	d := &liveDaemon{t: t, root: root, sock: sock, host: "unix://" + sock}
 	d.cmd = exec.Command(fwsdBin, append([]string{"-root", root, "-socket", sock,
 		"-port-base", "31000", "-port-limit", "31500", "-block-size", "50", "-buildkit=false"}, args...)...)
+	d.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	stderr, err := d.cmd.StderrPipe()
 	if err != nil {
 		t.Fatal(err)

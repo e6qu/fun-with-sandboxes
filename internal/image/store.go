@@ -27,6 +27,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/types"
+	"github.com/klauspost/compress/gzip"
 )
 
 var ErrNotFound = errors.New("image not found")
@@ -851,7 +853,7 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 // measure reads a layer's uncompressed stream, applying it onto dir when
 // apply is set, and returns its length.
 func measure(l v1.Layer, dir string, apply bool) (int64, error) {
-	rc, err := l.Uncompressed()
+	rc, err := uncompressed(l)
 	if err != nil {
 		return 0, err
 	}
@@ -866,6 +868,42 @@ func measure(l v1.Layer, dir string, apply bool) (int64, error) {
 		return 0, err
 	}
 	return n.n, nil
+}
+
+// uncompressed opens a layer's tar stream, decompressing a gzip layer
+// with klauspost's decoder, which reads several times faster than the
+// standard library's.
+func uncompressed(l v1.Layer) (io.ReadCloser, error) {
+	mt, err := l.MediaType()
+	if err != nil {
+		return nil, err
+	}
+	if mt != types.OCILayer && mt != types.DockerLayer {
+		return l.Uncompressed()
+	}
+	rc, err := l.Compressed()
+	if err != nil {
+		return nil, err
+	}
+	gz, err := gzip.NewReader(rc)
+	if err != nil {
+		rc.Close()
+		return nil, err
+	}
+	return gzipReadCloser{gz, rc}, nil
+}
+
+type gzipReadCloser struct {
+	*gzip.Reader
+	compressed io.ReadCloser
+}
+
+func (g gzipReadCloser) Close() error {
+	err := g.Reader.Close()
+	if cerr := g.compressed.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 type countingReader struct {
