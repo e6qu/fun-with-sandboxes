@@ -65,6 +65,9 @@ func WriteTarWith(dir string, w io.Writer, asEmptyDir func(rel string) bool) err
 			h.Name += "/"
 		}
 		h.Uid, h.Gid, h.Uname, h.Gname = 0, 0, "", ""
+		if fi.Mode()&fs.ModeSymlink == 0 {
+			h.Mode = h.Mode&^0o777 | int64(RecordedMode(p, fi))
+		}
 		h.Format = tar.FormatPAX
 		h.AccessTime, h.ChangeTime = time.Time{}, time.Time{}
 		if err := tw.WriteHeader(h); err != nil {

@@ -1,0 +1,31 @@
+{
+  "tag": "fws/opensearch:3.5",
+  "files": {},
+  "dirs": [
+    "/tmp"
+  ],
+  "config": {
+    "User": "1000",
+    "Env": [
+      "PATH=/usr/bin:/bin:/usr/share/opensearch/jdk/bin:/usr/share/opensearch/bin",
+      "JAVA_HOME=/usr/share/opensearch/jdk",
+      "LD_LIBRARY_PATH=/usr/share/opensearch/plugins/opensearch-knn/lib:/usr/share/opensearch/plugins/opensearch-neural-search/lib"
+    ],
+    "Entrypoint": [
+      "./opensearch-docker-entrypoint.sh"
+    ],
+    "Cmd": [
+      "opensearch"
+    ],
+    "WorkingDir": "/usr/share/opensearch",
+    "ExposedPorts": {
+      "9200/tcp": {},
+      "9300/tcp": {},
+      "9600/tcp": {},
+      "9650/tcp": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

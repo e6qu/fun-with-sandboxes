@@ -12,8 +12,11 @@ require (
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/rabbitmq/amqp091-go v1.16.0
 	github.com/testcontainers/testcontainers-go v0.44.0
+	github.com/testcontainers/testcontainers-go/modules/clickhouse v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/consul v0.44.0
+	github.com/testcontainers/testcontainers-go/modules/dind v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/etcd v0.44.0
+	github.com/testcontainers/testcontainers-go/modules/influxdb v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/kafka v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/mailpit v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/mariadb v0.44.0
@@ -23,10 +26,12 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/mysql v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/nats v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/neo4j v0.44.0
+	github.com/testcontainers/testcontainers-go/modules/opensearch v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/qdrant v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
+	github.com/testcontainers/testcontainers-go/modules/toxiproxy v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/valkey v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/vault v0.44.0
 	github.com/twmb/franz-go v1.22.2

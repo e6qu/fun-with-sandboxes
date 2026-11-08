@@ -105,8 +105,8 @@ func TestPingAndVersionNegotiation(t *testing.T) {
 	if res := call(t, ts, "GET", "/v1.44/version", "", &v); res.StatusCode != 200 || v["ApiVersion"] != engine.APIVersion {
 		t.Fatalf("versioned /version: %d %v", res.StatusCode, v)
 	}
-	var e map[string]string
-	if res := call(t, ts, "GET", "/v9.99/version", "", &e); res.StatusCode != 400 || !strings.Contains(e["message"], "too new") {
+	var e errorBody
+	if res := call(t, ts, "GET", "/v9.99/version", "", &e); res.StatusCode != 400 || !strings.Contains(e.Message, "too new") {
 		t.Fatalf("too-new version: %d %v", res.StatusCode, e)
 	}
 }
@@ -165,20 +165,21 @@ func TestVolumeLifecycle(t *testing.T) {
 
 func TestContainerErrors(t *testing.T) {
 	ts := newServer(t)
-	var e map[string]string
-	if res := call(t, ts, "GET", "/containers/nope/json", "", &e); res.StatusCode != 404 || !strings.Contains(e["message"], "No such container") {
+	var e errorBody
+	if res := call(t, ts, "GET", "/containers/nope/json", "", &e); res.StatusCode != 404 || !strings.Contains(e.Message, "No such container") ||
+		e.Cause != "no such container" || e.Response != 404 {
 		t.Fatalf("missing container: %d %v", res.StatusCode, e)
 	}
-	if res := call(t, ts, "POST", "/containers/create?name=x", `{"Image":"missing:1"}`, &e); res.StatusCode != 404 || !strings.Contains(e["message"], "No such image") {
+	if res := call(t, ts, "POST", "/containers/create?name=x", `{"Image":"missing:1"}`, &e); res.StatusCode != 404 || !strings.Contains(e.Message, "No such image") {
 		t.Fatalf("missing image: %d %v", res.StatusCode, e)
 	}
-	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"Memory":1048576}}`, &e); res.StatusCode != 400 || !strings.Contains(e["message"], "Minimum memory limit allowed is 6MB") {
+	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"Memory":1048576}}`, &e); res.StatusCode != 400 || !strings.Contains(e.Message, "Minimum memory limit allowed is 6MB") {
 		t.Fatalf("memory limit below Docker's minimum: %d %v", res.StatusCode, e)
 	}
-	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"CpusetCpus":"0"}}`, &e); res.StatusCode != 501 || !strings.Contains(e["message"], "cpusets") {
+	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"CpusetCpus":"0"}}`, &e); res.StatusCode != 501 || !strings.Contains(e.Message, "cpusets") {
 		t.Fatalf("cpuset: %d %v", res.StatusCode, e)
 	}
-	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"Ulimits":[{"Name":"nproc","Soft":10,"Hard":10}]}}`, &e); res.StatusCode != 501 || !strings.Contains(e["message"], "nproc") {
+	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"Ulimits":[{"Name":"nproc","Soft":10,"Hard":10}]}}`, &e); res.StatusCode != 501 || !strings.Contains(e.Message, "nproc") {
 		t.Fatalf("ulimit nproc: %d %v", res.StatusCode, e)
 	}
 	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"NetworkMode":"host"}}`, &e); res.StatusCode != 501 {

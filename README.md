@@ -69,6 +69,11 @@ Consul, which no binary cache holds:
 | `fws/meilisearch:1.43` | `MEILI_` variables, such as `MEILI_MASTER_KEY`, and arguments to `meilisearch`, which runs in `/meili_data`; the API on 7700 |
 | `fws/qdrant:1.17` | `QDRANT__` variables over `/qdrant/config`, and `QDRANT_ALLOW_RECOVERY_MODE` as the official entrypoint reads it; storage and snapshots in `/qdrant`; REST and the dashboard on 6333, gRPC on 6334 |
 | `fws/neo4j:2026.02` | `NEO4J_AUTH`, `NEO4J_PLUGINS` and `NEO4J_` settings, written into `/var/lib/neo4j/conf/neo4j.conf` as the official entrypoint writes them (`NEO4J_server_memory_heap_max__size` becomes `server.memory.heap.max_size`), and mounted `/conf`, `/plugins`, `/import`, `/licenses` and `/ssl`; data in `/data`, logs in `/logs`; HTTP on 7474, Bolt on 7687 |
+| `fws/clickhouse:26.5` | `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`, `/docker-entrypoint-initdb.d` and the other variables of the official image's own `entrypoint.sh`, which it runs; configuration in `/etc/clickhouse-server`, data in `/var/lib/clickhouse`; HTTP on 8123, native on 9000 |
+| `fws/influxdb:2.7` | `DOCKER_INFLUXDB_INIT_*` setup and upgrade, `*_FILE` secrets and `/docker-entrypoint-initdb.d` scripts, as the official entrypoint handles them; the influx CLI configured in `/etc/influxdb2`, data in `/var/lib/influxdb2`; the API and UI on 8086 |
+| `fws/opensearch:3.5` | the minimal distribution under the official image's entrypoint script, so dotted variables such as `discovery.type` become settings; runs as user 1000 from `/usr/share/opensearch`; REST on 9200 |
+| `fws/dind:29` | Docker in Docker: run it `--privileged`, and its `dockerd` serves an engine of its own, which the official image's entrypoint arguments, `DOCKER_TLS_CERTDIR` and dockerd's `--host` and TLS flags configure; the Docker CLI with buildx and Compose; 2375, or 2376 with TLS |
+| `fws/toxiproxy:2.12` | arguments to the server at `/toxiproxy`, with `/toxiproxy-cli` beside it; the API on 8474 |
 | `fws/nats:2.14` | arguments to `nats-server`; `/nats-server.conf` serves clients on 4222, monitoring on 8222 and routes on 6222 |
 | `fws/rabbitmq:4` | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`; AMQP on 5672, the Erlang port mapper on 4369 and distribution on 25672 |
 | `fws/dynamodb-local:2` | arguments to DynamoDB Local (default `-sharedDb -dbPath /home/dynamodblocal/data`); port 8000 |
@@ -176,6 +181,20 @@ docker tag fws/ryuk:0.14.0 testcontainers/ryuk:0.14.0
 
 Testcontainers for Go 0.44 runs Ryuk 0.14.0; other Testcontainers releases
 name other Ryuk versions.
+
+## Podman
+
+The engine serves Podman's API, libpod, on the same socket, so Podman's
+remote client and `podman-compose` drive it as they drive Podman:
+
+```bash
+export CONTAINER_HOST=unix://$HOME/.fws/docker.sock
+podman --remote run --rm fws/python:3.14 python3 -c 'print("hi")'
+```
+
+Pods share no namespaces: create them with `--infra=false --share=`, as
+`podman-compose` does; an infra container runs Podman's pause image, which
+the engine does not have.
 
 ## Develop
 

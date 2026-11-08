@@ -53,6 +53,9 @@ go build -o "$build/vault-entry" ./images/vault/entry
 go build -o "$build/mongo-entry" ./images/mongo/entry
 go build -o "$build/ub" ./images/kafka/ub
 go build -o "$build/neo4j-entry" ./images/neo4j/entry
+go build -o "$build/influxdb-entry" ./images/influxdb/entry
+go build -o "$build/dind-entry" ./images/dind/entry
+go build -o "$build/dockerd" ./images/dind/dockerd
 
 # output_with BINARY INSTALLABLE... builds INSTALLABLE and prints its
 # output that holds bin/BINARY. Unfree packages, such as DynamoDB Local,
@@ -224,7 +227,7 @@ mkimage $(accounts meilisearch) -spec images/meilisearch/image.json -closure "$b
 # with the API's OpenAPI document, which its sync script adds.
 qdrant=$(pkg_with qdrant qdrant)
 qdrant_src=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#qdrant.src")
-qdrant_ui=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/qdrant/web-ui.nix --argstr nixpkgs "$nixpkgs")
+qdrant_ui=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#qdrant-web-ui")
 cp -R "$qdrant_ui" "$build/qdrant-static"
 chmod -R u+w "$build/qdrant-static"
 cp "$qdrant_src/docs/redoc/master/openapi.json" "$build/qdrant-static/openapi.json"
@@ -263,6 +266,99 @@ mkimage $(accounts neo4j neo4j 7474 7474 /var/lib/neo4j) -spec images/neo4j/imag
   -link /var/lib/neo4j/data=../../../data -link /var/lib/neo4j/logs=../../../logs -file "/var/lib/neo4j/conf=$build/neo4j-conf" \
   -file "/startup/docker-entrypoint.sh=$build/neo4j-entry" -file "/startup/neo4j-plugins.json=images/neo4j/neo4j-plugins.json" \
   -out "$out/neo4j.tar"
+
+# ClickHouse as its server image runs it: the server configuration its
+# packages install, the image's own configuration and entrypoint script,
+# which reads the configuration with clickhouse extract-from-config and
+# drops to the clickhouse user with clickhouse su.
+clickhouse=$(pkg_with clickhouse clickhouse)
+clickhouse_docker=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/clickhouse/docker.nix --argstr nixpkgs "$nixpkgs")
+mkdir "$build/clickhouse"
+cp "$clickhouse_docker"/* "$build/clickhouse"
+chmod 755 "$build/clickhouse/entrypoint.sh"
+chmod 666 "$build"/clickhouse/*.xml
+coreutils=$(pkg_with coreutils dirname)
+bash=$(pkg_with bash bash)
+gnugrep=$(pkg_with gnugrep grep)
+gzip=$(pkg_with gzip gunzip)
+wget=$(pkg_with wget wget)
+closure "$clickhouse" "$coreutils" "$bash" "$gnugrep" "$gzip" "$wget" > "$build/clickhouse.closure"
+mkimage $(accounts clickhouse clickhouse 101 101 /var/lib/clickhouse) -spec images/clickhouse/image.json -closure "$build/clickhouse.closure" \
+  -pkg "$clickhouse" -pkg "$coreutils" -pkg "$bash" -pkg "$gnugrep" -pkg "$gzip" -pkg "$wget" -link /usr/bin/env=../../bin/env \
+  -file "/etc/clickhouse-server/config.xml=$build/clickhouse/config.xml" -file "/etc/clickhouse-server/users.xml=$build/clickhouse/users.xml" \
+  -file "/etc/clickhouse-server/config.d/docker_related_config.xml=$build/clickhouse/docker_related_config.xml" \
+  -file "/entrypoint.sh=$build/clickhouse/entrypoint.sh" -out "$out/clickhouse.tar"
+
+# InfluxDB 2 with the influx CLI its image carries, the image's default
+# configuration and an entrypoint that does what its script does;
+# run-parts runs the user's setup scripts.
+influxd=$(pkg_with influxdb2-server influxd)
+influx=$(pkg_with influxdb2-cli influx)
+debianutils=$(pkg_with debianutils run-parts)
+coreutils=$(pkg_with coreutils dirname)
+bash=$(pkg_with bash bash)
+closure "$influxd" "$influx" "$debianutils" "$coreutils" "$bash" > "$build/influxdb.closure"
+mkimage $(accounts influxdb influxdb 1000 1000 /home/influxdb) -spec images/influxdb/image.json -closure "$build/influxdb.closure" \
+  -pkg "$influxd" -pkg "$influx" -pkg "$debianutils" -pkg "$coreutils" -pkg "$bash" -link /usr/bin/env=../../bin/env \
+  -file "/etc/defaults/influxdb2/config.yml=images/influxdb/default-config.yml" -file "/entrypoint.sh=$build/influxdb-entry" \
+  -out "$out/influxdb.tar"
+
+# OpenSearch laid out at /usr/share/opensearch as its image lays it out:
+# OpenSearch's minimal distribution, of the version nixpkgs packages, with
+# the image's entrypoint and configuration and the changes its one-time
+# setup makes at build time, and nixpkgs' JDK at the bundled JDK's path.
+opensearch_docker=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/opensearch/docker.nix --argstr nixpkgs "$nixpkgs")
+jre=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#jre_headless")
+coreutils=$(pkg_with coreutils dirname)
+bash=$(pkg_with bash bash)
+gnugrep=$(pkg_with gnugrep grep)
+gnused=$(pkg_with gnused sed)
+# The one-time setup writes paths in the home it runs from, as realpath
+# resolves it, which the image then names /usr/share/opensearch.
+home=$(cd "$build" && pwd -P)/opensearch
+mkdir "$home"
+tar -xzf "$opensearch_docker/opensearch-min.tar.gz" -C "$home" --strip-components=1 --exclude '*/jdk/*' --exclude '*/jdk'
+cp "$opensearch_docker/opensearch-docker-entrypoint-3.x.sh" "$home/opensearch-docker-entrypoint.sh"
+cp "$opensearch_docker/opensearch-onetime-setup.sh" "$home/"
+cp "$opensearch_docker/log4j2.properties" "$opensearch_docker/opensearch.yml" "$home/config/"
+if [ -d "$home/config/opensearch-performance-analyzer" ]; then
+  cp "$opensearch_docker/performance-analyzer.properties" "$home/config/opensearch-performance-analyzer/"
+fi
+chmod -R u+w "$home"
+chmod 755 "$home/opensearch-docker-entrypoint.sh" "$home/opensearch-onetime-setup.sh"
+PATH="$gnused/bin:$coreutils/bin:$gnugrep/bin:$PATH" DISABLE_INSTALL_DEMO_CONFIG=true DISABLE_SECURITY_PLUGIN=false \
+  "$bash/bin/bash" "$home/opensearch-onetime-setup.sh"
+"$gnused/bin/sed" -i "s|$home|/usr/share/opensearch|g" "$home/config/jvm.options"
+mkdir -p "$home/data" "$home/logs"
+closure "$jre" "$coreutils" "$bash" "$gnugrep" > "$build/opensearch.closure"
+mkimage $(accounts opensearch opensearch 1000 1000 /usr/share/opensearch) -spec images/opensearch/image.json -closure "$build/opensearch.closure" \
+  -pkg "$coreutils" -pkg "$bash" -pkg "$gnugrep" -link /usr/bin/env=../../bin/env -link "/usr/share/opensearch/jdk=../../..$jre" \
+  -file "/usr/share/opensearch=$home" -out "$out/opensearch.tar"
+
+# Docker in Docker as the dind image lays it out: the Docker CLI with its
+# buildx and Compose plugins, the entrypoint scripts' work, and a dockerd
+# that serves the engine fwsd nests in a privileged container, whose
+# socket serves Podman's API too, for the Podman client beside Docker's.
+docker=$(pkg_with docker-client docker)
+podman=$(pkg_with podman podman)
+buildx=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#docker-buildx")
+compose=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#docker-compose")
+coreutils=$(pkg_with coreutils dirname)
+wget=$(pkg_with wget wget)
+closure "$docker" "$podman" "$buildx" "$compose" "$coreutils" "$wget" > "$build/dind.closure"
+mkimage $(accounts dind) -spec images/dind/image.json -closure "$build/dind.closure" -pkg "$docker" -pkg "$podman" -pkg "$coreutils" -pkg "$wget" \
+  -link /usr/local/bin/docker=../../../bin/docker -link /usr/bin/env=../../bin/env \
+  -link "/usr/local/libexec/docker/cli-plugins/docker-buildx=../../../../..$buildx/libexec/docker/cli-plugins/docker-buildx" \
+  -link "/usr/local/libexec/docker/cli-plugins/docker-compose=../../../../..$compose/libexec/docker/cli-plugins/docker-compose" \
+  -file "/usr/local/bin/dockerd-entrypoint.sh=$build/dind-entry" -file "/usr/local/bin/docker-entrypoint.sh=$build/dind-entry" \
+  -file "/usr/local/bin/dockerd=$build/dockerd" -out "$out/dind.tar"
+
+# Toxiproxy as its image runs it: the server at /toxiproxy and the CLI
+# beside it.
+toxiproxy=$(pkg_with toxiproxy toxiproxy-server)
+closure "$toxiproxy" > "$build/toxiproxy.closure"
+mkimage $(accounts toxiproxy) -spec images/toxiproxy/image.json -closure "$build/toxiproxy.closure" -pkg "$toxiproxy" \
+  -link /toxiproxy=bin/toxiproxy-server -link /toxiproxy-cli=bin/toxiproxy-cli -out "$out/toxiproxy.tar"
 
 python=$(pkg_with python314 python3.14)
 closure "$python" > "$build/python.closure"

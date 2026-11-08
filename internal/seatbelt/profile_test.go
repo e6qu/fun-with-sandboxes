@@ -253,3 +253,25 @@ func TestProcsSocketIsReachable(t *testing.T) {
 		t.Errorf("profile grants the run directory:\n%s", p)
 	}
 }
+
+// A privileged container reaches its nested engine's socket, and writes
+// its shared memory ledger, by their paths alone.
+func TestSocketsAndWriteFilesAreReachable(t *testing.T) {
+	s := spec()
+	s.Sockets = []string{"/Users/u/.fws/run/c1.engine"}
+	s.WriteFiles = []string{"/Users/u/.fws/stacks/x/c/c1/shm"}
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`(allow network-outbound (remote unix-socket (path-literal "/Users/u/.fws/run/c1.engine")))`,
+		`  (literal "/Users/u/.fws/stacks/x/c/c1/shm")`} {
+		if !strings.Contains(p, want) {
+			t.Errorf("profile lacks %s:\n%s", want, p)
+		}
+	}
+	s.Sockets = []string{`/bad"path`}
+	if _, err := Render(s); err == nil {
+		t.Error("a socket path with a quote rendered")
+	}
+}

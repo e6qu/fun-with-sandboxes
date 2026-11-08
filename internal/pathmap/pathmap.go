@@ -25,6 +25,10 @@ var source []byte
 // names the user and group.
 const HostnameVar = "FWS_HOSTNAME"
 
+// DomainnameVar names the NIS domain name the library presents with the
+// hostname.
+const DomainnameVar = "FWS_DOMAINNAME"
+
 // PortDirVar names the directory where the library listens, with Unix
 // sockets, on the container's TCP ports that have no host port; RouterVar
 // names the port of the container's router (package router), through which

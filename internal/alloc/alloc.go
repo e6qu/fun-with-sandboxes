@@ -121,7 +121,7 @@ func (a *Allocator) stackLocked(name string) (*Stack, error) {
 	if s, ok := a.st.Stacks[name]; ok {
 		return s, nil
 	}
-	base, err := a.freeBlockLocked()
+	base, err := a.freeRangeLocked(1)
 	if err != nil {
 		return nil, err
 	}
@@ -137,18 +137,56 @@ func (a *Allocator) stackLocked(name string) (*Stack, error) {
 	return s, nil
 }
 
-func (a *Allocator) freeBlockLocked() (int, error) {
+// freeRangeLocked finds n consecutive blocks no stack holds.
+func (a *Allocator) freeRangeLocked(n int) (int, error) {
 	used := map[int]bool{}
 	for _, s := range a.st.Stacks {
-		used[s.PortBase] = true
+		for p := s.PortBase; p < s.PortBase+s.BlockSize; p += a.cfg.BlockSize {
+			used[p] = true
+		}
 	}
-	for base := a.cfg.PortBase; base+a.cfg.BlockSize <= a.cfg.PortLimit; base += a.cfg.BlockSize {
-		if !used[base] {
+	for base := a.cfg.PortBase; base+n*a.cfg.BlockSize <= a.cfg.PortLimit; base += a.cfg.BlockSize {
+		free := true
+		for i := 0; i < n && free; i++ {
+			free = !used[base+i*a.cfg.BlockSize]
+		}
+		if free {
 			return base, nil
 		}
 	}
 	return 0, ErrNoBlock
 }
+
+// Reserve holds n consecutive blocks under name, as one stack whose block
+// spans them, for an allocator of its own to hand out: an engine nested in
+// a container takes its stacks' ports from them. It returns the range,
+// the same one on each call for the name.
+func (a *Allocator) Reserve(name string, n int) (base, limit int, err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	dir, err := a.Dir(name)
+	if err != nil {
+		return 0, 0, err
+	}
+	if s, ok := a.st.Stacks[name]; ok {
+		return s.PortBase, s.PortBase + s.BlockSize, nil
+	}
+	if base, err = a.freeRangeLocked(n); err != nil {
+		return 0, 0, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return 0, 0, err
+	}
+	a.st.Stacks[name] = &Stack{Name: name, PortBase: base, BlockSize: n * a.cfg.BlockSize, Ports: map[string]int{}}
+	if err := a.saveLocked(); err != nil {
+		delete(a.st.Stacks, name)
+		return 0, 0, err
+	}
+	return base, base + n*a.cfg.BlockSize, nil
+}
+
+// BlockSize is the number of ports in each stack's block.
+func (a *Allocator) BlockSize() int { return a.cfg.BlockSize }
 
 // Port returns the host port assigned to key (for example "db/5432") in the
 // stack, assigning the lowest free port of the block on first use. A port is

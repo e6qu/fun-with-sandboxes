@@ -196,6 +196,23 @@ same knobs, each enforced by a real mechanism or refused:
   as each socket closes, and `docker stats` polls the rest. A connection
   between two of the container's sockets crosses no boundary and counts for
   neither.
+- **Nested engines.** A privileged container gets an engine of its own,
+  as a `docker:dind` container runs dockerd (`internal/engine/nested.go`):
+  the outer engine opens an `engine.Engine` whose state is under the
+  container's directory and whose allocator holds a range of the outer
+  one's port blocks, and serves its API on a socket in the outer run
+  directory (`FWS_ENGINE`), which the container's profile lets it reach
+  and its `dockerd` relays from the listeners its flags name. macOS
+  refuses `sandbox_init` in a process already under a profile that denies
+  anything, so no engine inside the sandbox could confine containers; the
+  nested engine's containers are the outer engine's processes, each in a
+  sandbox of its own, which deny the outermost engine's state. The nested
+  engine reads a bind mount's source through the container's root and
+  mounts, and publishes a port in the container: on the host port of the
+  container's port, or on the Unix socket its port directory holds for a
+  port without one, where the container's library connects to its own
+  loopback ports. It ends its containers when the container ends, and
+  goes with the container.
 - **Live restore.** The shim and each stack's egress proxy are processes of
   their own, so with `-live-restore` the engine stops without stopping its
   containers, and the next engine reconnects to the shims through their
@@ -223,8 +240,17 @@ same knobs, each enforced by a real mechanism or refused:
   `#!` names `/usr/bin/env` runs the program its argument names from the
   container's `PATH`, as `env` would, because Apple's `env` cannot load the
   library.
-  `setuid` and its kin switch the presented identity, and every program a
-  process executes inherits the identity it holds then, with the
+  A file's mode is the one its image or `docker cp` gave it: extraction
+  keeps the owner's read and write, and a directory's search, on disk,
+  which the engine's user and a container's root need, records the mode
+  it widened in an extended attribute (`com.fws.mode`), which `stat` and
+  the engine's archives report, and which `chmod` drops. The library
+  hides the variable that loads it from `getenv`, as no container's
+  environment holds it, and restores it to a program that empties it
+  before it executes another, as ClickHouse does.
+  `setuid` and its kin switch the presented identity, `setgroups` and
+  `initgroups` the supplementary groups (`FWS_GROUPS`), and every program
+  a process executes inherits the identity it holds then, with the
   container's variables, whatever environment the process passes: an
   entrypoint drops root as the official images' entrypoints do with `gosu`
   (`sandboxenv.Become`), and a program that clears its environment stays in
@@ -722,6 +748,22 @@ It archives mounts as their contents rather than as the symlinks that
 implement them.
 
 ---
+
+### Podman's API
+
+The socket serves Podman's API beside Docker's, under `/libpod`, versioned
+by Podman's releases (`/v5.8.0/libpod/...`), with Podman's
+`Libpod-API-Version` header (`internal/api/libpod*.go`). The endpoints that
+speak Docker's protocol (attach, exec, kill, pause, rename, resize,
+archive) pass to Docker's handlers; the rest take and give Podman's
+shapes: a SpecGenerator becomes the Docker create request that does what
+it asks (Podman's client names signals by their Linux numbers), list,
+inspect, remove and wait answer as Podman's do (wait also for running,
+healthy and unhealthy, on the engine's events), logs come framed by
+stream even from a terminal, and pulls stream Podman's progress lines.
+Pods are the engine's: a record per pod, kept in `pods.json`, and Podman's
+`io.podman.pod` label on each member. Errors carry Podman's `cause` and
+`response` beside Docker's `message`, for both clients.
 
 ## 9. Runtime launch sequence
 

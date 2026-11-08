@@ -26,7 +26,7 @@ func (e *Engine) writeHosts(c *Container) error {
 	if onNetwork(net) {
 		addresses = firstAddresses(net.rec.Address, net.rec.Networks)
 	}
-	return writeHostsFiles(c.root(), hostnameOf(net), addresses, net.rec.HostConfig.ExtraHosts, linkHosts(links), c.rec.Mounts)
+	return writeHostsFiles(c.root(), hostnameOf(net), net.rec.Config.Domainname, addresses, net.rec.HostConfig.ExtraHosts, linkHosts(links), c.rec.Mounts)
 }
 
 // firstAddresses are the addresses a container at member address holds
@@ -59,9 +59,9 @@ func firstAddresses(address string, nets map[string]*network.EndpointSettings) [
 // writeHostsFiles writes the container's /etc/hosts and /etc/hostname, as
 // Docker does: localhost, its --add-host entries, where host-gateway names
 // the host, on loopback here, the container's hostname at its addresses,
-// or on loopback for a container on no network, and its links. A mount
-// at either path stands instead.
-func writeHostsFiles(root, hostname string, addresses, extra, links []string, mounts []mountRec) error {
+// after the name its domain name makes it, or on loopback for a container
+// on no network, and its links. A mount at either path stands instead.
+func writeHostsFiles(root, hostname, domain string, addresses, extra, links []string, mounts []mountRec) error {
 	mounted := map[string]bool{}
 	for _, m := range mounts {
 		mounted[filepath.Clean(m.Destination)] = true
@@ -81,8 +81,12 @@ func writeHostsFiles(root, hostname string, addresses, extra, links []string, mo
 	if len(addresses) == 0 || addresses[0] == "" {
 		addresses = []string{"127.0.0.1"}
 	}
+	names := hostname
+	if domain != "" {
+		names = hostname + "." + domain + " " + hostname
+	}
 	for _, a := range addresses {
-		fmt.Fprintf(&b, "%s\t%s\n", a, hostname)
+		fmt.Fprintf(&b, "%s\t%s\n", a, names)
 	}
 	for _, l := range links {
 		b.WriteString(l + "\n")

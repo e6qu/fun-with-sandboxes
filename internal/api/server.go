@@ -38,18 +38,27 @@ type Server struct {
 	e   *engine.Engine
 	bk  BuildKit
 	mux *http.ServeMux
+	// lp serves the libpod endpoints that differ from Docker's.
+	lp      *http.ServeMux
+	pods    *podStore
+	started time.Time
 }
 
 // New serves the engine's API; bk, when set, also serves BuildKit.
 func New(e *engine.Engine, bk BuildKit) *Server {
-	s := &Server{e: e, bk: bk, mux: http.NewServeMux()}
+	s := &Server{e: e, bk: bk, mux: http.NewServeMux(), lp: http.NewServeMux(), pods: openPods(e.Root()), started: time.Now()}
 	s.routes()
+	s.libpodRoutes()
 	return s
 }
 
 var versionPrefix = regexp.MustCompile(`^/v(\d+\.\d+)(/.*)$`)
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if p, ok := libpodPath(r.URL.Path); ok {
+		s.serveLibpod(w, r, p)
+		return
+	}
 	if m := versionPrefix.FindStringSubmatch(r.URL.Path); m != nil {
 		if cmpVersion(m[1], engine.APIVersion) > 0 {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("client version %s is too new. Maximum supported API version is %s", m[1], engine.APIVersion))
@@ -437,6 +446,12 @@ func flush(w http.ResponseWriter) {
 }
 
 func (s *Server) containerLogs(w http.ResponseWriter, r *http.Request) {
+	s.logs(w, r, false)
+}
+
+// logs serves a container's logs, raw for a TTY container as Docker sends
+// them, or always framed by stream, as Podman's API sends them.
+func (s *Server) logs(w http.ResponseWriter, r *http.Request, framed bool) {
 	q := r.URL.Query()
 	id := r.PathValue("id")
 	c, err := s.e.Container(id)
@@ -460,7 +475,7 @@ func (s *Server) containerLogs(w http.ResponseWriter, r *http.Request) {
 	opts.Since = unixParam(q.Get("since"))
 	opts.Until = unixParam(q.Get("until"))
 	timestamps := boolParam(q.Get("timestamps"))
-	tty := c.IsTTY()
+	tty := c.IsTTY() && !framed
 	ct := "application/vnd.docker.multiplexed-stream"
 	if tty {
 		ct = "application/vnd.docker.raw-stream"
@@ -747,8 +762,39 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// writeError writes an error as Docker does, its message, and as Podman
+// does, with the cause its clients match and the status: the body of
+// Podman's compatible API too, whose extra fields Docker clients pass over.
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"message": msg})
+	writeJSON(w, status, errorBody{Message: msg, Cause: causeOf(msg), Response: status})
+}
+
+type errorBody struct {
+	Message  string `json:"message"`
+	Cause    string `json:"cause"`
+	Response int    `json:"response"`
+}
+
+// causes are the errors Podman's clients match by cause, by the message
+// the engine gives them.
+var causes = []struct{ prefix, cause string }{
+	{"No such container", "no such container"},
+	{"No such image", "no such image"},
+	{"No such exec instance", "no such exec session"},
+	{"No such pod", "no such pod"},
+	{"network ", "network not found"},
+}
+
+func causeOf(msg string) string {
+	for _, c := range causes {
+		if strings.HasPrefix(msg, c.prefix) && (c.prefix != "network " || strings.HasSuffix(msg, " not found")) {
+			return c.cause
+		}
+	}
+	if strings.Contains(msg, "no such volume") {
+		return "no such volume"
+	}
+	return msg
 }
 
 type unsupportedError string

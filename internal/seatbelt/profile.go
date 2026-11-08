@@ -96,6 +96,9 @@ type Spec struct {
 	// ReadFiles are files outside the root the container reads, such as its
 	// stack's network file.
 	ReadFiles []string
+	// WriteFiles are files outside the root the container writes, such as
+	// the ledger of its shared memory.
+	WriteFiles []string
 	// Helper is the engine's helper binary, which the container's sandbox
 	// executes once, to start the anchor that runs its execs.
 	Helper string
@@ -108,6 +111,9 @@ type Spec struct {
 	// ProcsSocket is where the container's shim answers it about its PID
 	// namespace (package pidns).
 	ProcsSocket string
+	// Sockets are other Unix sockets outside the root the container
+	// reaches, such as the API of the engine nested in it.
+	Sockets []string
 }
 
 // IPCMode is a container's IPC confinement.
@@ -154,10 +160,11 @@ func Render(s Spec) (string, error) {
 	for _, v := range s.Volumes {
 		paths = append(paths, v.Path)
 	}
-	extra := append(append([]string{}, s.Libraries...), s.ReadFiles...)
+	extra := append(append(append([]string{}, s.Libraries...), s.ReadFiles...), s.WriteFiles...)
 	if s.Helper != "" {
 		extra = append(extra, s.Helper)
 	}
+	extra = append(extra, s.Sockets...)
 	if s.ProcsSocket != "" {
 		extra = append(extra, s.ProcsSocket)
 	}
@@ -212,6 +219,9 @@ func Render(s Spec) (string, error) {
 	}
 	if s.PortDir != "" {
 		w("  (subpath %q)", s.PortDir)
+	}
+	for _, f := range s.WriteFiles {
+		w("  (literal %q)", f)
 	}
 	for _, d := range []string{"/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty"} {
 		w("  (literal %q)", d)
@@ -312,6 +322,9 @@ func Render(s Spec) (string, error) {
 	}
 	if s.ProcsSocket != "" {
 		w("(allow network-outbound (remote unix-socket (path-literal %q)))", s.ProcsSocket)
+	}
+	for _, sock := range s.Sockets {
+		w("(allow network-outbound (remote unix-socket (path-literal %q)))", sock)
 	}
 	w("(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/syslog\")))")
 	for _, p := range uniq(s.ConnectPorts) {

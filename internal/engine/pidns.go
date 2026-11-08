@@ -18,7 +18,7 @@ func (e *Engine) pidnsFile(c *Container) string { return filepath.Join(c.dir, "p
 // procsSocket is where c's shim answers its library about its PID
 // namespace.
 func (e *Engine) procsSocket(c *Container) string {
-	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".procs")
+	return filepath.Join(e.runDir(), c.rec.ID[:12]+".procs")
 }
 
 // pidOwner is the container whose main process is c's PID namespace's pid

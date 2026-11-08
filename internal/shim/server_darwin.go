@@ -122,7 +122,13 @@ func (s *server) run(report func(Ready)) (int, error) {
 	dial := func(raddr *net.UDPAddr) (net.Conn, error) { return alloc.DialFlow(cfg.AllocRoot, cfg.Stack, raddr) }
 	var ports []int
 	for _, b := range cfg.Publish {
-		cl, port, err := portproxy.Listen(b.Proto, b.IP, b.Lo, b.Hi, b.Upstream, dial)
+		var cl io.Closer
+		var port int
+		if b.Dir != "" {
+			cl, port, err = portproxy.ListenUnix(func(p int) string { return router.SocketPath(b.Dir, p) }, b.Lo, b.Hi, b.Upstream)
+		} else {
+			cl, port, err = portproxy.Listen(b.Proto, b.IP, b.Lo, b.Hi, b.Upstream, dial)
+		}
 		if err != nil {
 			closeProxies()
 			if errors.Is(err, syscall.EADDRINUSE) {

@@ -596,3 +596,57 @@ func TestUserDirectoriesAreTheContainersTmp(t *testing.T) {
 		t.Errorf("the container's /tmp holds %v", made)
 	}
 }
+
+// A container process holds the supplementary groups the engine gives it
+// and those initgroups finds in the container's /etc/group, its NIS domain
+// name, and POSIX shared memory up to its /dev/shm size, which a ledger
+// the IPC namespace's processes share keeps.
+func TestGroupsDomainAndSharedMemorySize(t *testing.T) {
+	root := containerRoot(t)
+	os.WriteFile(filepath.Join(root, "etc", "group"), []byte("root:x:0:\nstaff:x:50:\naudio:x:29:root,app\nvideo:x:44:app\n"), 0o644)
+	bin := filepath.Join(root, "bin", "uts")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", bin, "testdata/uts/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := filepath.Join(t.TempDir(), "shm")
+	cmd := exec.Command(bin)
+	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_ROOT=" + root, "FWS_GROUPS=29,7",
+		"FWS_HOSTNAME=web", "FWS_DOMAINNAME=example.com", "FWS_SHM=" + ledger + "\t4194304"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("uts: %v\n%s", err, out)
+	}
+	if want := "groups=29,7\ndomain=example.com\nshm=ok ENOSPC ok\ninitgroups=50,29,44\n"; string(out) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", out, want)
+	}
+	if b, err := os.ReadFile(ledger); err != nil || len(b) != 0 {
+		t.Errorf("the ledger after every object went: %q, %v", b, err)
+	}
+}
+
+// A program does not see the variable that loads the library, and one
+// that empties it before it executes itself again, as ClickHouse does,
+// stays in the container's view.
+func TestLibraryVariableIsHiddenAndKept(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "reexec")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", bin, "testdata/reexec/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin)
+	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, "FWS_HOSTNAME=web"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("reexec: %v\n%s", err, out)
+	}
+	if want := "hidden\nhostname=web\n"; string(out) != want {
+		t.Errorf("got %q, want %q", out, want)
+	}
+}

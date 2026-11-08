@@ -27,22 +27,38 @@ machine — and from what macOS offers an unprivileged process under them.
 - **`fws/meilisearch` serves no mini-dashboard and carries no `meilitool`.**
   nixpkgs builds Meilisearch without the dashboard, which its build would
   download, and builds the server alone.
-- **`fws/qdrant` serves a pinned web UI.** Qdrant's image fetches the web
-  UI's latest release when it is built; the catalog pins one release, so
-  rebuilds serve the same dashboard.
+- **`fws/qdrant` serves nixpkgs' web UI.** Qdrant's image fetches the web
+  UI's latest release when it is built; the catalog serves the release
+  nixpkgs builds from source, an older one, so rebuilds serve the same
+  dashboard.
 - **`fws/neo4j` is the Community Edition.** Its official entrypoint's
   behaviour is reimplemented in Go: `NEO4J_PLUGINS` installs APOC from the
   distribution and downloads the others from their versions files, and
   `EXTENSION_SCRIPT` runs in bash, whose environment the server then
   inherits, as when the official script sources it. The image is not
   Debian-based, so it prints no warning about Debian releases.
+- **`fws/influxdb`'s entrypoint is reimplemented in Go.** The official
+  script needs `gosu`, which nixpkgs builds only for Linux, and `dasel` 2,
+  whose successor in nixpkgs reads other arguments; the Go entrypoint does
+  what the script does, and still runs the user's scripts with `run-parts`.
+- **`fws/opensearch` is OpenSearch's minimal distribution on nixpkgs'
+  JDK.** The official image carries the full bundle, whose plugins (the
+  security plugin, k-NN, ML Commons and the rest) take about a gigabyte,
+  some with Linux-only native libraries; the catalog carries the server
+  and its modules, so `DISABLE_SECURITY_PLUGIN` and the demo
+  configuration have no plugin to act on, and `opensearch-plugin install`
+  adds plugins as on any distribution. The official image runs the JDK
+  bundled for Linux; the catalog links nixpkgs' at the bundled JDK's
+  path, `/usr/share/opensearch/jdk`.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
   the container's user and group (as fakeroot does), its users and groups
-  from its own `/etc/passwd` and `/etc/group`, and its hostname. So
-  arguments, entrypoints, `CMD`, `--user`, `USER`, `exec -u`, `--hostname`
-  and `-w` behave as in Docker. Its limits:
+  from its own `/etc/passwd` and `/etc/group`, its supplementary groups
+  (the user's memberships there and `--group-add`), and its hostname and
+  domain name. So arguments, entrypoints, `CMD`, `--user`, `USER`,
+  `exec -u`, `--group-add`, `--hostname`, `--domainname` and `-w` behave
+  as in Docker. Its limits:
   - A path names the root's file when the root holds it, or its parent, so
     a file can be made there; any other path, such as `/dev` or the system
     frameworks, names the host's. Symbolic links resolve inside the
@@ -114,6 +130,14 @@ machine — and from what macOS offers an unprivileged process under them.
   one key, as two PostgreSQL servers on port 5432 do, get objects of their
   own. A program that loads no library, or one that guesses another
   container's hashed key, can still reach that container's objects.
+- **`--shm-size` caps the container's POSIX shared memory.** The
+  container library keeps a ledger of the sizes of the IPC namespace's
+  shared memory objects, and `ftruncate` fails with `ENOSPC` past the
+  size, 64 MiB unless the container asks for another, as a full
+  `/dev/shm` refuses on Linux. An object counts until it is unlinked, not
+  until its last mapping goes, and each start removes the objects the last
+  run left, as each start of a Docker container mounts an empty
+  `/dev/shm`. There is no `/dev/shm` directory to list.
 - **POSIX shared memory and semaphore names carry the prefix.** Under
   private IPC the container library gives every name the program uses
   `SANDBOX_IPC_PREFIX`, and a name too long to carry it within macOS's
@@ -334,9 +358,42 @@ machine — and from what macOS offers an unprivileged process under them.
   - `--blkio-weight` picks a disk I/O policy tier (standard, utility,
     throttle); per-device rates are refused, and a running container's
     weight cannot change, as macOS lets a process set only its own policy.
-  - `--ulimit` sets nofile, fsize, cpu, core and stack; nproc, which macOS
-    counts across every process of the user, and data and as, which it
-    does not enforce, are refused.
+  - `--ulimit` sets nofile, fsize, cpu, core and stack, and memlock
+    unlimited; nproc, which macOS counts across every process of the user,
+    and data, as and a finite memlock, which it does not enforce, are
+    refused.
+- **`--init` runs the engine's own init**, at `/sbin/docker-init` as
+  Docker places tini: the engine's helper binary, which by that name
+  passes signals on to the command, reaps orphans and exits as the command
+  does.
+- **`--privileged` gives a container an engine of its own, nothing more.**
+  It is how Docker in Docker runs (`fws/dind`): the engine nests another
+  engine in the container, with its own containers, networks, volumes and
+  images, and serves its API on a socket the container's `dockerd`
+  relays. macOS refuses a second Seatbelt profile in a sandboxed process,
+  so the outer engine runs the nested engine's containers, each in a
+  sandbox of its own, and the privileged container gains no other right:
+  no devices, capabilities or mounts. Its engine reads bind mounts as the
+  container's own paths and publishes TCP ports in the container, on the
+  container's host port for that port where it has one; it publishes no
+  UDP ports. The nested engine takes four of the outer engine's port
+  blocks for its stacks, and stops its containers when the container
+  stops. A Linux `docker:dind`, KinD's `kindest/node` and Podman's own
+  engine run Linux images and namespaces, which need a VM; a KinD node
+  image built from macOS parts is on the roadmap (`PLAN.md`).
+- **Podman's pods share no namespaces.** A pod's infra container, which
+  holds the namespaces its containers share, runs Podman's pause image,
+  which the engine does not have, so a pod is created with
+  `--infra=false --share=`, as `podman-compose` creates its pods.
+  `podman generate kube`, `play kube`, checkpoints and quadlets are not
+  served.
+- **Settings without a macOS counterpart are refused**, never ignored:
+  DNS servers, search domains and options (a container resolves names
+  through the host's resolver and reaches the internet through its
+  stack's egress proxy), `--oom-score-adj`, `--storage-opt`, cgroup
+  sharing and isolation technologies other than the default. `--cgroupns`
+  takes Docker's values and changes nothing, as there are no cgroups to
+  show.
 - **Each container costs a supervisor process**, `fws-shim`, held under
   16 MiB of memory footprint by the test suite.
 - **`docker pause` stops the container's processes with SIGSTOP**, not a

@@ -1030,7 +1030,7 @@ func (b *builder) runStep(ctx context.Context, s *stage, in dockerfile.Instructi
 		return err
 	}
 	env := append(b.runEnv(s, proxy), id.Env()...)
-	spec := seatbelt.Spec{Root: s.root, StateRoot: b.e.cfg.Root, IPCPrefix: seatbelt.IPCPrefixFor(s.root), Libraries: []string{lib}}
+	spec := seatbelt.Spec{Root: s.root, StateRoot: b.e.stateRoot(), IPCPrefix: seatbelt.IPCPrefixFor(s.root), Libraries: []string{lib}}
 	if proxy != 0 {
 		spec.ConnectPorts = []int{proxy}
 	}

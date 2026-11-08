@@ -1,0 +1,169 @@
+{
+ "name": "c1",
+ "pod": "p1",
+ "command": [
+  "/bin/true"
+ ],
+ "env_host": false,
+ "httpproxy": true,
+ "env": {
+  "A": "1"
+ },
+ "terminal": false,
+ "stdin": false,
+ "labels": {
+  "k": "v"
+ },
+ "annotations": {
+  "io.podman.annotations.pids-limit": "50"
+ },
+ "stop_signal": 2,
+ "stop_timeout": 7,
+ "log_configuration": {},
+ "restart_policy": "on-failure",
+ "restart_tries": 3,
+ "systemd": "true",
+ "sdnotifyMode": "container",
+ "pidns": {},
+ "utsns": {},
+ "hostname": "h1",
+ "remove": false,
+ "containerCreateCommand": [
+  "podman",
+  "--remote",
+  "create",
+  "..."
+ ],
+ "init_container_type": "",
+ "unsetenvall": false,
+ "manage_password": true,
+ "image": "lp/tiny:1",
+ "raw_image_name": "lp/tiny:1",
+ "image_volume_mode": "anonymous",
+ "init": true,
+ "mounts": [
+  {
+   "destination": "/bind",
+   "type": "bind",
+   "source": "/host/dir",
+   "options": [
+    "ro"
+   ]
+  },
+  {
+   "destination": "/scratch",
+   "type": "tmpfs",
+   "source": "tmpfs"
+  }
+ ],
+ "volumes": [
+  {
+   "Name": "v1",
+   "Dest": "/data",
+   "Options": null,
+   "IsAnonymous": false,
+   "SubPath": ""
+  }
+ ],
+ "ipcns": {
+  "nsmode": "shareable"
+ },
+ "shm_size": 8388608,
+ "work_dir": "/work",
+ "volatile": false,
+ "privileged": false,
+ "user": "1000:1000",
+ "groups": [
+  "777"
+ ],
+ "cap_drop": [
+  "ALL"
+ ],
+ "seccomp_policy": "default",
+ "userns": {},
+ "idmappings": {
+  "HostUIDMapping": true,
+  "HostGIDMapping": true,
+  "UIDMap": null,
+  "GIDMap": null,
+  "AutoUserNs": false,
+  "AutoUserNsOpts": {
+   "Size": 0,
+   "InitialSize": 0,
+   "PasswdFile": "",
+   "GroupFile": "",
+   "AdditionalUIDMappings": null,
+   "AdditionalGIDMappings": null
+  }
+ },
+ "read_only_filesystem": true,
+ "read_write_tmpfs": true,
+ "umask": "0022",
+ "cgroupns": {},
+ "netns": {
+  "nsmode": "bridge"
+ },
+ "portmappings": [
+  {
+   "host_ip": "",
+   "container_port": 80,
+   "host_port": 8080,
+   "range": 1,
+   "protocol": ""
+  },
+  {
+   "host_ip": "",
+   "container_port": 9000,
+   "host_port": 9000,
+   "range": 2,
+   "protocol": "udp"
+  }
+ ],
+ "publish_image_ports": false,
+ "Networks": {
+  "lpn2": {
+   "aliases": [
+    "web"
+   ],
+   "interface_name": ""
+  }
+ },
+ "use_image_resolve_conf": false,
+ "use_image_hostname": false,
+ "use_image_hosts": false,
+ "hostadd": [
+  "db:10.0.0.5"
+ ],
+ "resource_limits": {
+  "memory": {
+   "limit": 67108864,
+   "swap": 134217728
+  },
+  "cpu": {
+   "quota": 150000,
+   "period": 100000
+  },
+  "pids": {
+   "limit": 50
+  }
+ },
+ "r_limits": [
+  {
+   "type": "nofile",
+   "hard": 2048,
+   "soft": 1024
+  }
+ ],
+ "healthconfig": {
+  "Test": [
+   "CMD-SHELL",
+   "true"
+  ],
+  "Interval": 2000000000,
+  "Timeout": 30000000000,
+  "Retries": 3
+ },
+ "healthLogDestination": "local",
+ "healthMaxLogCount": 5,
+ "healthMaxLogSize": 500
+}

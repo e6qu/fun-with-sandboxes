@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -276,6 +277,17 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err := checkHostConfig(req.HostConfig); err != nil {
 		return container.CreateResponse{}, err
 	}
+	switch {
+	case req.HostConfig.ShmSize < 0:
+		return container.CreateResponse{}, invalid("SHM size can not be less than 0")
+	case req.HostConfig.ShmSize == 0:
+		req.HostConfig.ShmSize = defaultShmSize
+	}
+	// A container whose networking is disabled is on no network, as one in
+	// network mode none.
+	if req.Config.NetworkDisabled {
+		req.HostConfig.NetworkMode = "none"
+	}
 	if req.HostConfig.UTSMode == "host" && req.Config.Hostname != "" {
 		return container.CreateResponse{}, invalid("conflicting options: hostname and the UTS mode")
 	}
@@ -401,20 +413,20 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			return container.CreateResponse{}, err
 		}
 	}
-	hostname, extraHosts, hostAddress := cfg.Hostname, req.HostConfig.ExtraHosts, firstAddresses(address, networks)
+	hostname, domain, extraHosts, hostAddress := cfg.Hostname, cfg.Domainname, req.HostConfig.ExtraHosts, firstAddresses(address, networks)
 	if req.HostConfig.NetworkMode == "none" {
 		hostAddress = nil
 	}
 	if net != nil {
 		// A container on another's network has its hostname and hosts, as
 		// it would its UTS namespace's files in Docker.
-		hostname, extraHosts, hostAddress = hostnameOf(net), net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks)
+		hostname, domain, extraHosts, hostAddress = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks)
 		cfg.Hostname = hostname
 	}
 	if hostname == "" {
 		hostname = id[:12]
 	}
-	if err := writeHostsFiles(c.root(), hostname, hostAddress, extraHosts, nil, mounts); err != nil {
+	if err := writeHostsFiles(c.root(), hostname, domain, hostAddress, extraHosts, nil, mounts); err != nil {
 		return container.CreateResponse{}, err
 	}
 
@@ -475,6 +487,9 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	if err != nil {
 		return nil, err
 	}
+	if id, err = id.AddGroups(c.root(), c.rec.HostConfig.GroupAdd); err != nil {
+		return nil, err
+	}
 	net, err := e.netOwner(c)
 	if err != nil {
 		return nil, err
@@ -489,10 +504,18 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	}
 	host := hostnameOf(c)
 	env = append(env, id.Env()...)
+	if v, _, err := e.shmEnv(c); err != nil {
+		return nil, err
+	} else if v != "" {
+		env = append(env, v)
+	}
+	if c.rec.HostConfig.Privileged {
+		env = append(env, EngineVar+"="+e.engineSocket(c))
+	}
 	// On the host's UTS namespace the library presents no hostname, so the
 	// container reads the host's, as it changes.
 	if c.rec.HostConfig.UTSMode != "host" {
-		env = append(env, pathmap.HostnameVar+"="+host)
+		env = append(env, pathmap.HostnameVar+"="+host, pathmap.DomainnameVar+"="+c.rec.Config.Domainname)
 	}
 	pv, err := e.pidnsEnv(c)
 	if err != nil {
@@ -568,7 +591,6 @@ func checkHostConfig(hc *container.HostConfig) error {
 		return err
 	}
 	for _, k := range []knob{
-		{hc.Privileged, "privileged mode"},
 		{hc.UsernsMode != "", "user namespaces"},
 		{hc.Runtime != "" && hc.Runtime != "runc", "alternative runtimes"},
 		{hc.LogConfig.Type != "" && hc.LogConfig.Type != "json-file" && hc.LogConfig.Type != "local", "log drivers other than json-file"},
@@ -577,6 +599,28 @@ func checkHostConfig(hc *container.HostConfig) error {
 		if k.set {
 			return unsupported("%s are not supported: this engine runs without root or a VM and cannot enforce them", k.name)
 		}
+	}
+	for _, k := range []struct {
+		set  bool
+		what string
+	}{
+		{len(hc.DNS) > 0 || len(hc.DNSSearch) > 0 || len(hc.DNSOptions) > 0,
+			"DNS servers, search domains and options are not supported: a container resolves names through the host's resolver and reaches the internet through its stack's egress proxy, never a DNS server of its own"},
+		{hc.OomScoreAdj != 0, "OOM score adjustments are not supported: macOS ends processes under memory pressure by its own measure"},
+		{len(hc.StorageOpt) > 0, "storage options are not supported: a container's root is a directory, which no size quota holds"},
+		{hc.Cgroup != "", "cgroup sharing is not supported: macOS has no cgroups"},
+	} {
+		if k.set {
+			return unsupported("%s", k.what)
+		}
+	}
+	if hc.Isolation != "" && hc.Isolation != container.IsolationDefault {
+		return invalid("invalid isolation: %q - this engine only supports 'default'", hc.Isolation)
+	}
+	switch hc.CgroupnsMode {
+	case "", container.CgroupnsModePrivate, container.CgroupnsModeHost:
+	default:
+		return invalid("invalid cgroup namespace mode: %s", hc.CgroupnsMode)
 	}
 	if err := checkSecurity(hc); err != nil {
 		return err
@@ -899,7 +943,7 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 		dest := filepath.Join(root, m.Destination)
 		switch m.Type {
 		case mount.TypeBind:
-			src, err := filepath.Abs(m.Source)
+			src, err := e.hostPath(m.Source)
 			if err != nil {
 				return nil, err
 			}
@@ -978,6 +1022,30 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 		}
 	}
 	return mounts, nil
+}
+
+// placeInit links the engine's helper binary, which runs as the init by
+// that name, at the init's path in root, as Docker mounts docker-init.
+func placeInit(root string) error {
+	self, err := roles.Binary()
+	if err != nil {
+		return err
+	}
+	real, err := filepath.EvalSymlinks(self)
+	if err != nil {
+		return err
+	}
+	dest, err := rootfs.Join(root, runtime.InitPath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return err
+	}
+	return os.Symlink(real, dest)
 }
 
 // subpath is the file or directory sub names inside dir, resolved as inside a
@@ -1200,8 +1268,17 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 		return seatbelt.Spec{}, err
 	}
 	spec := seatbelt.Spec{
-		Root: c.root(), StateRoot: e.cfg.Root, ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
+		Root: c.root(), StateRoot: e.stateRoot(), ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
 		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath()},
+	}
+	if c.rec.HostConfig.Privileged {
+		spec.Sockets = append(spec.Sockets, e.engineSocket(c))
+	}
+	if _, ledger, err := e.shmEnv(c); err != nil {
+		return seatbelt.Spec{}, err
+	} else if ledger != "" {
+		spec.ReadFiles = append(spec.ReadFiles, ledger)
+		spec.WriteFiles = append(spec.WriteFiles, ledger)
 	}
 	owner, err := e.pidOwner(c)
 	if err != nil {
@@ -1316,6 +1393,13 @@ func (c *Container) start(e *Engine) error {
 	if err := c.writePidsLimit(c.rec.HostConfig.PidsLimit); err != nil {
 		return err
 	}
+	if owner, err := e.shmOwner(c); err != nil {
+		return err
+	} else if owner == c {
+		if err := clearShm(c); err != nil {
+			return err
+		}
+	}
 	if err := checkEndpointLinks(c); err != nil {
 		return err
 	}
@@ -1341,6 +1425,17 @@ func (c *Container) start(e *Engine) error {
 			return err
 		}
 		return invalid("%v", err)
+	}
+	if c.rec.HostConfig.Privileged {
+		if err := e.openNested(c); err != nil {
+			return err
+		}
+	}
+	if hc := c.rec.HostConfig; hc.Init != nil && *hc.Init {
+		if err := placeInit(c.root()); err != nil {
+			return err
+		}
+		argv = append([]string{runtime.InitPath, "--"}, argv...)
 	}
 	cfg := shim.Config{
 		ID: c.rec.ID,
@@ -1379,7 +1474,11 @@ func (c *Container) start(e *Engine) error {
 	}
 	published := network.PortMap{}
 	for i, p := range plan {
-		published[p.port] = append(published[p.port], network.PortBinding{HostIP: p.binding.IP, HostPort: strconv.Itoa(ready.Ports[i])})
+		port, ip := ready.Ports[i], p.binding.IP
+		if p.report != 0 {
+			port, ip = p.report, netip.IPv4Unspecified()
+		}
+		published[p.port] = append(published[p.port], network.PortBinding{HostIP: ip, HostPort: strconv.Itoa(port)})
 	}
 
 	c.mu.Lock()
@@ -1439,18 +1538,18 @@ func (c *Container) writePidsLimit(limit *int64) error {
 // shimSocket is where the container's shim listens: under the engine's
 // root, kept short, as macOS caps socket paths at 104 bytes.
 func (e *Engine) shimSocket(c *Container) string {
-	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".sock")
+	return filepath.Join(e.runDir(), c.rec.ID[:12]+".sock")
 }
 
 // portDir holds the Unix sockets the container library listens on for the
 // container's TCP ports that have no host port: outside the root, where
 // only the container and its shim reach them.
 func (e *Engine) portDir(c *Container) string {
-	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".p")
+	return filepath.Join(e.runDir(), c.rec.ID[:12]+".p")
 }
 
 func (e *Engine) anchorSocket(c *Container) string {
-	return filepath.Join(e.cfg.Root, "run", c.rec.ID[:12]+".anchor")
+	return filepath.Join(e.runDir(), c.rec.ID[:12]+".anchor")
 }
 
 // anchor is the socket of the running container's exec anchor, which
@@ -1536,6 +1635,9 @@ func (e *Engine) ended(c *Container, exit shim.Exit, done chan struct{}) {
 	c.save()
 	c.task = nil
 	c.mu.Unlock()
+	if c.rec.HostConfig.Privileged {
+		e.closeNested(c)
+	}
 	close(done)
 	if exit.OOMKilled {
 		e.publishContainer(c, events.ActionOOM, nil)
@@ -1785,6 +1887,11 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 			task.Signal(syscall.SIGKILL)
 		}
 		<-done
+	}
+	if c.rec.HostConfig.Privileged {
+		if err := e.removeNested(c); err != nil {
+			return err
+		}
 	}
 
 	e.mu.Lock()

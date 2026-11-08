@@ -1,0 +1,31 @@
+{
+  "tag": "fws/dind:29",
+  "files": {},
+  "dirs": [
+    "/tmp",
+    "/run",
+    "/var/run",
+    "/var/lib/docker",
+    "/certs",
+    "/certs/client"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "DOCKER_TLS_CERTDIR=/certs"
+    ],
+    "Entrypoint": [
+      "dockerd-entrypoint.sh"
+    ],
+    "ExposedPorts": {
+      "2375/tcp": {},
+      "2376/tcp": {}
+    },
+    "Volumes": {
+      "/var/lib/docker": {}
+    },
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

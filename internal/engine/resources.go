@@ -124,7 +124,15 @@ func containerLimits(r container.Resources) (runtime.Limits, shim.Resources, err
 				return l, s, unsupported("ulimit nproc is not supported: macOS counts it across every process of the engine's user")
 			case "data", "as":
 				return l, s, unsupported("ulimit %s is not supported: macOS does not enforce it", u.Name)
-			case "memlock", "rss", "locks", "sigpending", "msgqueue", "nice", "rtprio", "rttime":
+			case "memlock":
+				// macOS bounds wired memory by its own limits, not
+				// RLIMIT_MEMLOCK, so only no limit at all holds.
+				if u.Soft != -1 || u.Hard != -1 {
+					return l, s, unsupported("ulimit memlock is not supported but unlimited: macOS does not enforce it")
+				}
+				l.Rlimits = append(l.Rlimits, runtime.Rlimit{Resource: runtime.RlimitMemlock, Cur: rlim(-1), Max: rlim(-1)})
+				continue
+			case "rss", "locks", "sigpending", "msgqueue", "nice", "rtprio", "rttime":
 				return l, s, unsupported("ulimit %s is not supported: macOS has no such limit", u.Name)
 			}
 			return l, s, invalid("invalid ulimit type: %s", u.Name)

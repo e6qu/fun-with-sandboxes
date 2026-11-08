@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -13,7 +14,7 @@ func TestWriteHostsFiles(t *testing.T) {
 	os.WriteFile(outside, []byte("host's own\n"), 0o644)
 	// An image whose /etc/hosts is a symlink out of the root.
 	os.Symlink(outside, filepath.Join(root, "etc", "hosts"))
-	if err := writeHostsFiles(root, "web-1", []string{"127.88.0.4", "fd00:5::3"}, []string{"db.local:10.0.0.5", "host.docker.internal:host-gateway"}, []string{"127.88.0.2\tdb db-host other"}, nil); err != nil {
+	if err := writeHostsFiles(root, "web-1", "", []string{"127.88.0.4", "fd00:5::3"}, []string{"db.local:10.0.0.5", "host.docker.internal:host-gateway"}, []string{"127.88.0.2\tdb db-host other"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	hosts, _ := os.ReadFile(filepath.Join(root, "etc", "hosts"))
@@ -29,13 +30,21 @@ func TestWriteHostsFiles(t *testing.T) {
 	}
 	// A mount at /etc/hosts stands.
 	root2 := t.TempDir()
-	if err := writeHostsFiles(root2, "x", nil, nil, nil, []mountRec{{Destination: "/etc/hosts"}}); err != nil {
+	if err := writeHostsFiles(root2, "x", "", nil, nil, nil, []mountRec{{Destination: "/etc/hosts"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root2, "etc", "hosts")); !os.IsNotExist(err) {
 		t.Errorf("wrote /etc/hosts over a mount: %v", err)
 	}
-	if err := writeHostsFiles(t.TempDir(), "x", nil, []string{"bad"}, nil, nil); err == nil {
+	// A domain name makes the container's name a fully qualified one.
+	root3 := t.TempDir()
+	if err := writeHostsFiles(root3, "web", "example.com", []string{"127.88.0.4"}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root3, "etc", "hosts")); !strings.HasSuffix(string(b), "127.88.0.4\tweb.example.com web\n") {
+		t.Errorf("/etc/hosts with a domain name:\n%s", b)
+	}
+	if err := writeHostsFiles(t.TempDir(), "x", "", nil, []string{"bad"}, nil, nil); err == nil {
 		t.Error("accepted --add-host without an address")
 	}
 }
