@@ -486,4 +486,18 @@ chmod -R u+w "$build/ryuk-src"
 "$build/fws-mkimage" -spec images/ryuk/image.json -file "/bin/ryuk=$build/ryuk" \
   -file "/bin/nc=$build/nc" -out "$out/ryuk.tar"
 
+# Kubernetes' control-plane images as its release lays them out: each
+# binary in /usr/local/bin over go-runner as the entrypoint, with distroless
+# static's accounts and CA bundle. An image holds its own binary and the
+# data files the build references, not the other components.
+k8s=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/kubernetes.nix --argstr nixpkgs "$nixpkgs")
+go_runner=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/go-runner.nix --argstr nixpkgs "$nixpkgs")
+cacert=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#cacert")
+closure $(nix-store -qR "$k8s" | grep -v "^$k8s$") > "$build/kubernetes.closure"
+for c in kube-apiserver kube-controller-manager kube-scheduler kubectl; do
+  mkimage $(accounts "$c" nonroot 65532 65532 /home/nonroot) -spec "images/$c/image.json" -closure "$build/kubernetes.closure" \
+    -file "/go-runner=$go_runner/bin/go-runner" -file "/usr/local/bin/$c=$k8s/bin/$c" \
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/$c.tar"
+done
+
 ls -l "$out"

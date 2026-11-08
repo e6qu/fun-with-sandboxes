@@ -50,6 +50,14 @@ machine — and from what macOS offers an unprivileged process under them.
   adds plugins as on any distribution. The official image runs the JDK
   bundled for Linux; the catalog links nixpkgs' at the bundled JDK's
   path, `/usr/share/opensearch/jdk`.
+- **Kubernetes' images are its control plane and kubectl.** The catalog
+  carries the API server, the controller manager, the scheduler and
+  kubectl, which a control plane of containers runs as kubeadm's static
+  pods do; it carries no kube-proxy, which programs Linux iptables, and no
+  kubelet, which manages Linux cgroups and namespaces. Pods wait for a
+  node until the roadmap's kubelet for macOS joins one (`PLAN.md`).
+  Upstream's images are distroless, without a shell; the catalog's carry
+  `/bin/sh` and `/bin/nc`, as all its images do.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents

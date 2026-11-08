@@ -96,7 +96,7 @@ tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite
 
 A Nix-built catalog for `aarch64-darwin`/`x86_64-darwin`, converted to OCI
 layers with a `darwin/<arch>` platform entry: `bun`, `clickhouse`, `consul`, `dind`, `dynamodb`,
-`etcd`, `gitea`, `influxdb`, `kafka`, `lambda`, `mailpit`, `mariadb`, `meilisearch`, `memcached`, `mongo`, `mysql`, `nats`,
+`etcd`, `gitea`, `influxdb`, `kafka`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`, `kubectl`, `lambda`, `mailpit`, `mariadb`, `meilisearch`, `memcached`, `mongo`, `mysql`, `nats`,
 `neo4j`, `nginx`, `node`, `opensearch`, `playwright`, `postgres`, `python`, `qdrant`, `rabbitmq`, `redis`,
 `ryuk` (Testcontainers' reaper), `seaweedfs`, `toolbox`, `toxiproxy`, `valkey` and
 `vault`. SeaweedFS is the catalog's S3 server: nixpkgs marks MinIO insecure,
@@ -122,16 +122,18 @@ official `kindest/node` image is Linux (systemd, containerd, kubelet), so
 it needs a VM; the roadmap builds the same contract from macOS parts, in
 dependency order:
 
-1. **Nested engines and `fws/dind`** (in progress): a privileged
+1. **Nested engines and `fws/dind`** (done): a privileged
    container gets an engine of its own, which a node's pods run on, each
    in a sandbox the outer engine applies.
-2. **Podman's API** (in progress): kind's `podman` provider, and
+2. **Podman's API** (done): kind's `podman` provider, and
    `podman-compose`, drive fwsd as well as its `docker` provider does.
-3. **Kubernetes control plane for darwin**: `etcd` (in the catalog),
-   `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`,
-   `kubectl` and `kubeadm`, built for `darwin/arm64` and `darwin/amd64`
-   with Nix from upstream sources at the release `kindest/node` ships, and
-   images for each.
+3. **Kubernetes control plane for darwin** (done): `etcd` (in the
+   catalog), `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`,
+   `kubectl` and `kubeadm` 1.35.0, the release kind 0.31's `kindest/node`
+   ships, built with Nix from upstream's sources by upstream's make
+   (`images/kubernetes`), and images for the four upstream publishes, over
+   go-runner. A control plane of them turns Deployments into Pods, which
+   wait for a node.
 4. **A kubelet for macOS**: upstream kubelet manages Linux cgroups and
    namespaces and does not run on macOS. The node runs a kubelet that
    speaks the API server's node and pod contract and runs pods through the

@@ -49,7 +49,8 @@ Nix packages into archives for `docker load`, and `scripts/publish-images.sh`
 pushes them to a registry the engine can pull from. MySQL and MariaDB are
 built from source, with the compilation comment their vendors' builds
 carry (`images/servers.nix`), so the first build compiles them, as it does
-Consul, which no binary cache holds:
+Consul, which no binary cache holds, and Kubernetes, whose nixpkgs package
+builds for Linux alone:
 
 | Image | Configured like the official image through |
 |---|---|
@@ -62,6 +63,7 @@ Consul, which no binary cache holds:
 | `fws/seaweedfs:4.36` | the subcommand and its flags, as `mini` (the default: master, volume, filer, S3 on 8333, WebDAV and the admin UI), `server`, `master`, `volume`, `filer`, `s3` or `shell`; `/data` |
 | `fws/mongo:8.2` | `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD` (or their `_FILE` forms), `MONGO_INITDB_DATABASE`, `/docker-entrypoint-initdb.d/*.js` and `*.sh`, run against a server that listens on loopback alone; arguments to `mongod`, which binds every address unless they or its configuration name some; `mongosh` |
 | `fws/etcd:3.6` | arguments to `etcd`, with `etcdctl` and `etcdutl`; clients on 2379, peers on 2380 |
+| `fws/kube-apiserver:1.35`, `fws/kube-controller-manager:1.35`, `fws/kube-scheduler:1.35`, `fws/kubectl:1.35` | Kubernetes 1.35.0, the release kind's node image ships, laid out as its release images are: the command and its flags, run through `/go-runner` (its `--log-file` and `--also-stdout`), with the binary in `/usr/local/bin`; the API server on 6443, the controller manager on 10257, the scheduler on 10259 |
 | `fws/consul:2.1` | `CONSUL_LOCAL_CONFIG`, `CONSUL_BIND_INTERFACE`, `CONSUL_CLIENT_INTERFACE`; arguments to `consul` (default `agent -dev -client 0.0.0.0`); HTTP on 8500, DNS on 8600 |
 | `fws/vault:2.0` | `VAULT_DEV_ROOT_TOKEN_ID`, `VAULT_DEV_LISTEN_ADDRESS`, `VAULT_LOCAL_CONFIG`, `VAULT_REDIRECT_INTERFACE`, `VAULT_CLUSTER_INTERFACE`; arguments to `vault` (default `server -dev`); port 8200 |
 | `fws/kafka:4.2` | `KAFKA_` variables, written into `/etc/kafka/kafka.properties` as Confluent's images write them (`KAFKA_ADVERTISED_LISTENERS` becomes `advertised.listeners`), `CLUSTER_ID`, and `KAFKA_LOG4J_ROOT_LOGLEVEL` and `KAFKA_LOG4J_LOGGERS` for its log on standard output, through the `/etc/confluent/docker` scripts Testcontainers' module drives; one KRaft broker and controller by default, clients on 9092; Kafka's tools in `/usr/bin` |
