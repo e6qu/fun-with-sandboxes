@@ -1136,8 +1136,10 @@ static char **child_env(char *const envp[], char *ids) {
     out[j++] = ids;
     out[j++] = ids + a + 1;
     out[j++] = groups_var;
+    // out holds what the program passes, without what it emptied, and
+    // ends with a NULL, as calloc left it.
     for (size_t i = 0; kept_names[i]; i++) {
-        if (kept[i] && !has_var(envp, kept[i])) out[j++] = kept[i];
+        if (kept[i] && !has_var(out, kept[i])) out[j++] = kept[i];
     }
     return out;
 }
