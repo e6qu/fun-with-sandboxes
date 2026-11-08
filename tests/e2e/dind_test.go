@@ -194,3 +194,30 @@ func TestTestcontainersDinD(t *testing.T) {
 		t.Errorf("a container on the nested engine: %q, %v", out, err)
 	}
 }
+
+// The privileged container's engine serves Podman's API too: Podman's
+// client in a container Podman started runs containers there, and so does
+// Docker's, and Podman's client in a container Docker started.
+func TestPodmanAndDockerNested(t *testing.T) {
+	const name = "e2e-pinp"
+	mustPodman(t, "run", "-d", "--privileged", "--name", name, "-e", "DOCKER_TLS_CERTDIR=", "fws/dind:29")
+	defer podman(t, "rm", "-f", name)
+	awaitLog(t, name, "API listen on /var/run/docker.sock")
+	loadInto(t, name, "fws/python:3.14")
+	inner := func(client string) string {
+		args := []string{"exec", name, client}
+		if client == "podman" {
+			args = append(args, "--remote", "--url", "unix:///var/run/docker.sock")
+		}
+		return mustPodman(t, append(args, "run", "--rm", "fws/python:3.14", "python3", "-c", "print('nested "+client+"')")...)
+	}
+	if out := inner("podman"); out != "nested podman\n" {
+		t.Errorf("Podman in Podman: %q", out)
+	}
+	if out := inner("docker"); out != "nested docker\n" {
+		t.Errorf("Docker in Podman: %q", out)
+	}
+	if out := mustDocker(t, "exec", name, "podman", "--remote", "--url", "unix:///var/run/docker.sock", "ps", "-a", "--format", "{{.Image}}"); out != "" {
+		t.Errorf("Podman in Docker lists removed containers: %q", out)
+	}
+}

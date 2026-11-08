@@ -182,6 +182,20 @@ docker tag fws/ryuk:0.14.0 testcontainers/ryuk:0.14.0
 Testcontainers for Go 0.44 runs Ryuk 0.14.0; other Testcontainers releases
 name other Ryuk versions.
 
+## Podman
+
+The engine serves Podman's API, libpod, on the same socket, so Podman's
+remote client and `podman-compose` drive it as they drive Podman:
+
+```bash
+export CONTAINER_HOST=unix://$HOME/.fws/docker.sock
+podman --remote run --rm fws/python:3.14 python3 -c 'print("hi")'
+```
+
+Pods share no namespaces: create them with `--infra=false --share=`, as
+`podman-compose` does; an infra container runs Podman's pause image, which
+the engine does not have.
+
 ## Develop
 
 ```bash

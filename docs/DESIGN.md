@@ -741,6 +741,22 @@ implement them.
 
 ---
 
+### Podman's API
+
+The socket serves Podman's API beside Docker's, under `/libpod`, versioned
+by Podman's releases (`/v5.8.0/libpod/...`), with Podman's
+`Libpod-API-Version` header (`internal/api/libpod*.go`). The endpoints that
+speak Docker's protocol (attach, exec, kill, pause, rename, resize,
+archive) pass to Docker's handlers; the rest take and give Podman's
+shapes: a SpecGenerator becomes the Docker create request that does what
+it asks (Podman's client names signals by their Linux numbers), list,
+inspect, remove and wait answer as Podman's do (wait also for running,
+healthy and unhealthy, on the engine's events), logs come framed by
+stream even from a terminal, and pulls stream Podman's progress lines.
+Pods are the engine's: a record per pod, kept in `pods.json`, and Podman's
+`io.podman.pod` label on each member. Errors carry Podman's `cause` and
+`response` beside Docker's `message`, for both clients.
+
 ## 9. Runtime launch sequence
 
 On create: clone the image root, assign the stack's ports, realise the

@@ -337,14 +337,16 @@ mkimage $(accounts opensearch opensearch 1000 1000 /usr/share/opensearch) -spec 
 
 # Docker in Docker as the dind image lays it out: the Docker CLI with its
 # buildx and Compose plugins, the entrypoint scripts' work, and a dockerd
-# that serves the engine fwsd nests in a privileged container.
+# that serves the engine fwsd nests in a privileged container, whose
+# socket serves Podman's API too, for the Podman client beside Docker's.
 docker=$(pkg_with docker-client docker)
+podman=$(pkg_with podman podman)
 buildx=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#docker-buildx")
 compose=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#docker-compose")
 coreutils=$(pkg_with coreutils dirname)
 wget=$(pkg_with wget wget)
-closure "$docker" "$buildx" "$compose" "$coreutils" "$wget" > "$build/dind.closure"
-mkimage $(accounts dind) -spec images/dind/image.json -closure "$build/dind.closure" -pkg "$docker" -pkg "$coreutils" -pkg "$wget" \
+closure "$docker" "$podman" "$buildx" "$compose" "$coreutils" "$wget" > "$build/dind.closure"
+mkimage $(accounts dind) -spec images/dind/image.json -closure "$build/dind.closure" -pkg "$docker" -pkg "$podman" -pkg "$coreutils" -pkg "$wget" \
   -link /usr/local/bin/docker=../../../bin/docker -link /usr/bin/env=../../bin/env \
   -link "/usr/local/libexec/docker/cli-plugins/docker-buildx=../../../../..$buildx/libexec/docker/cli-plugins/docker-buildx" \
   -link "/usr/local/libexec/docker/cli-plugins/docker-compose=../../../../..$compose/libexec/docker/cli-plugins/docker-compose" \

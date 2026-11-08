@@ -377,8 +377,15 @@ machine — and from what macOS offers an unprivileged process under them.
   container's host port for that port where it has one; it publishes no
   UDP ports. The nested engine takes four of the outer engine's port
   blocks for its stacks, and stops its containers when the container
-  stops. KinD and Podman's own engine, which run Linux images and Linux
-  namespaces, need a VM, as does a Linux `docker:dind`.
+  stops. A Linux `docker:dind`, KinD's `kindest/node` and Podman's own
+  engine run Linux images and namespaces, which need a VM; a KinD node
+  image built from macOS parts is on the roadmap (`PLAN.md`).
+- **Podman's pods share no namespaces.** A pod's infra container, which
+  holds the namespaces its containers share, runs Podman's pause image,
+  which the engine does not have, so a pod is created with
+  `--infra=false --share=`, as `podman-compose` creates its pods.
+  `podman generate kube`, `play kube`, checkpoints and quadlets are not
+  served.
 - **Settings without a macOS counterpart are refused**, never ignored:
   DNS servers, search domains and options (a container resolves names
   through the host's resolver and reaches the internet through its
