@@ -108,8 +108,7 @@ func TestInfluxDB(t *testing.T) {
 	}
 }
 
-// OpenSearch, with the security plugin the module disables, indexes a
-// document and finds it.
+// OpenSearch indexes a document and finds it.
 func TestOpenSearch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

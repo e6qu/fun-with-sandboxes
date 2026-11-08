@@ -302,12 +302,9 @@ mkimage $(accounts influxdb influxdb 1000 1000 /home/influxdb) -spec images/infl
   -out "$out/influxdb.tar"
 
 # OpenSearch laid out at /usr/share/opensearch as its image lays it out:
-# the distribution's scripts and configuration, with the image's
-# configuration and the changes its one-time setup makes at build time,
-# and the libraries, modules, plugins and agent from Nix's copy of the
-# distribution; the JDK is nixpkgs' at the bundled JDK's path.
-opensearch=$(pkg_with opensearch opensearch)
-opensearch_src=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#opensearch.src")
+# OpenSearch's minimal distribution, of the version nixpkgs packages, with
+# the image's entrypoint and configuration and the changes its one-time
+# setup makes at build time, and nixpkgs' JDK at the bundled JDK's path.
 opensearch_docker=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/opensearch/docker.nix --argstr nixpkgs "$nixpkgs")
 jre=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#jre_headless")
 coreutils=$(pkg_with coreutils dirname)
@@ -318,31 +315,23 @@ gnused=$(pkg_with gnused sed)
 # resolves it, which the image then names /usr/share/opensearch.
 home=$(cd "$build" && pwd -P)/opensearch
 mkdir "$home"
-opensearch_version=$("${nix[@]}" eval --raw "$nixpkgs#opensearch.version")
-tar -xzf "$opensearch_src" -C "$home" --strip-components=1 "opensearch-$opensearch_version/bin" "opensearch-$opensearch_version/config"
+tar -xzf "$opensearch_docker/opensearch-min.tar.gz" -C "$home" --strip-components=1 --exclude '*/jdk/*' --exclude '*/jdk'
 cp "$opensearch_docker/opensearch-docker-entrypoint-3.x.sh" "$home/opensearch-docker-entrypoint.sh"
-cp "$opensearch_docker/opensearch-onetime-setup.sh" "$opensearch_docker/log4j2.properties" "$opensearch_docker/opensearch.yml" "$home/"
-mv "$home/log4j2.properties" "$home/opensearch.yml" "$home/config/"
+cp "$opensearch_docker/opensearch-onetime-setup.sh" "$home/"
+cp "$opensearch_docker/log4j2.properties" "$opensearch_docker/opensearch.yml" "$home/config/"
 if [ -d "$home/config/opensearch-performance-analyzer" ]; then
   cp "$opensearch_docker/performance-analyzer.properties" "$home/config/opensearch-performance-analyzer/"
 fi
 chmod -R u+w "$home"
 chmod 755 "$home/opensearch-docker-entrypoint.sh" "$home/opensearch-onetime-setup.sh"
-ln -s "$opensearch/plugins" "$home/plugins"
 PATH="$gnused/bin:$coreutils/bin:$gnugrep/bin:$PATH" DISABLE_INSTALL_DEMO_CONFIG=true DISABLE_SECURITY_PLUGIN=false \
   "$bash/bin/bash" "$home/opensearch-onetime-setup.sh"
-rm "$home/plugins"
 "$gnused/bin/sed" -i "s|$home|/usr/share/opensearch|g" "$home/config/jvm.options"
-opensearch_args=()
-for n in lib modules plugins agent; do
-  opensearch_args+=(-link "/usr/share/opensearch/$n=../../..$opensearch/$n")
-done
-closure "$opensearch" "$jre" "$coreutils" "$bash" "$gnugrep" > "$build/opensearch.closure"
+mkdir -p "$home/data" "$home/logs"
+closure "$jre" "$coreutils" "$bash" "$gnugrep" > "$build/opensearch.closure"
 mkimage $(accounts opensearch opensearch 1000 1000 /usr/share/opensearch) -spec images/opensearch/image.json -closure "$build/opensearch.closure" \
-  -pkg "$coreutils" -pkg "$bash" -pkg "$gnugrep" -link /usr/bin/env=../../bin/env "${opensearch_args[@]}" \
-  -link "/usr/share/opensearch/jdk=../../..$jre" -file "/usr/share/opensearch/bin=$home/bin" -file "/usr/share/opensearch/config=$home/config" \
-  -file "/usr/share/opensearch/opensearch-docker-entrypoint.sh=$home/opensearch-docker-entrypoint.sh" \
-  -file "/usr/share/opensearch/opensearch-onetime-setup.sh=$home/opensearch-onetime-setup.sh" -out "$out/opensearch.tar"
+  -pkg "$coreutils" -pkg "$bash" -pkg "$gnugrep" -link /usr/bin/env=../../bin/env -link "/usr/share/opensearch/jdk=../../..$jre" \
+  -file "/usr/share/opensearch=$home" -out "$out/opensearch.tar"
 
 # Toxiproxy as its image runs it: the server at /toxiproxy and the CLI
 # beside it.

@@ -2,9 +2,7 @@
   "tag": "fws/opensearch:3.5",
   "files": {},
   "dirs": [
-    "/tmp",
-    "/usr/share/opensearch/data",
-    "/usr/share/opensearch/logs"
+    "/tmp"
   ],
   "config": {
     "User": "1000",

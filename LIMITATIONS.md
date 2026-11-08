@@ -40,10 +40,15 @@ machine — and from what macOS offers an unprivileged process under them.
   script needs `gosu`, which nixpkgs builds only for Linux, and `dasel` 2,
   whose successor in nixpkgs reads other arguments; the Go entrypoint does
   what the script does, and still runs the user's scripts with `run-parts`.
-- **`fws/opensearch` runs nixpkgs' JDK.** The official image runs the JDK
-  bundled for Linux; the catalog links nixpkgs' at the bundled JDK's path,
-  `/usr/share/opensearch/jdk`. Plugins with Linux-only native libraries,
-  such as k-NN's engines, cannot load those libraries.
+- **`fws/opensearch` is OpenSearch's minimal distribution on nixpkgs'
+  JDK.** The official image carries the full bundle, whose plugins (the
+  security plugin, k-NN, ML Commons and the rest) take about a gigabyte,
+  some with Linux-only native libraries; the catalog carries the server
+  and its modules, so `DISABLE_SECURITY_PLUGIN` and the demo
+  configuration have no plugin to act on, and `opensearch-plugin install`
+  adds plugins as on any distribution. The official image runs the JDK
+  bundled for Linux; the catalog links nixpkgs' at the bundled JDK's
+  path, `/usr/share/opensearch/jdk`.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
