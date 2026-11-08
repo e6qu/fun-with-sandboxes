@@ -13,7 +13,9 @@ pkgs.buildGoModule {
     owner = "kubernetes";
     repo = "kubernetes";
     tag = "v${version}";
-    hash = "sha256-ncUd30mVUu7nkZt7MQWJoHeOLyOINKBWS3Mok31lmjU=";
+    # The archive substitutes the refs that name the commit, which change.
+    forceFetchGit = true;
+    hash = "sha256-w1Y8PqVEjRUtlqbpj51Np9Wn8JGNu7TzPkbJ59NAugE=";
   };
   vendorHash = null;
   doCheck = false;
