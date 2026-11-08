@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -44,7 +45,7 @@ func (s *Service) CreateContainer(ctx context.Context, req *runtimeapi.CreateCon
 	if sin.State == nil || !sin.State.Running {
 		return nil, status.Errorf(codes.FailedPrecondition, "sandbox %s is not ready", sandbox)
 	}
-	smeta, err := decodeLabel[runtimeapi.PodSandboxMetadata](sin.Config.Labels, metadataLabel)
+	smeta, err := decodeLabel[*runtimeapi.PodSandboxMetadata](sin.Config.Labels, metadataLabel)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "sandbox %s: %v", sandbox, err)
 	}
@@ -67,7 +68,12 @@ func (s *Service) CreateContainer(ctx context.Context, req *runtimeapi.CreateCon
 		imageLabel:       cfg.Image.Image,
 		configLabel:      encodeLabel(containerRecord{Mounts: cfg.Mounts}),
 	}
-	var env []string
+	// The pod's containers see its hostname, as containerd gives them.
+	hostname := sin.Config.Hostname
+	if sc.HostNetwork {
+		hostname, _ = os.Hostname()
+	}
+	env := []string{"HOSTNAME=" + hostname}
 	for _, kv := range cfg.Envs {
 		env = append(env, kv.Key+"="+string(kv.Value))
 	}
@@ -174,14 +180,14 @@ func containerState(st *container.State) runtimeapi.ContainerState {
 // containerStatus is the CRI status of the container in describes.
 func containerStatus(in container.InspectResponse) (*runtimeapi.ContainerStatus, error) {
 	labels := in.Config.Labels
-	meta, err := decodeLabel[runtimeapi.ContainerMetadata](labels, metadataLabel)
+	meta, err := decodeLabel[*runtimeapi.ContainerMetadata](labels, metadataLabel)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "container %s: %v", in.ID, err)
 	}
 	rec, _ := decodeLabel[containerRecord](labels, configLabel)
 	st := &runtimeapi.ContainerStatus{
 		Id:          in.ID,
-		Metadata:    &meta,
+		Metadata:    meta,
 		State:       containerState(in.State),
 		CreatedAt:   nanos(parseTime(in.Created)),
 		Image:       &runtimeapi.ImageSpec{Image: labels[imageLabel]},

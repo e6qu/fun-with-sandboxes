@@ -55,6 +55,10 @@ func New(e *engine.Engine, bk BuildKit) *Server {
 	return s
 }
 
+// Close stops what the server runs beside its handlers: the CRI's stream
+// server and its log copies.
+func (s *Server) Close() { s.cri.Close() }
+
 var versionPrefix = regexp.MustCompile(`^/v(\d+\.\d+)(/.*)$`)
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

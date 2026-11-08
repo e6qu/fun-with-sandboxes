@@ -62,10 +62,6 @@ machine — and from what macOS offers an unprivileged process under them.
   upstream's kubelet sends none on an operating system it has no settings
   for: a container's `resources.limits` and `securityContext.runAsUser`
   take no effect, and the image's user runs it.
-- **CRI serves no exec, attach or port-forward streams yet.** `ExecSync`
-  runs commands, as the kubelet's exec probes do; `kubectl exec`,
-  `attach` and `port-forward` wait for the streaming server the roadmap's
-  node image brings (`PLAN.md`).
 - **A pod's address is its node's.** A pod sandbox takes its address on
   the engine that runs it, which other nodes' and the host's engines do
   not route to; cluster networking is on the roadmap.

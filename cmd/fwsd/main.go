@@ -89,17 +89,19 @@ func startBuildKit(e *engine.Engine) (*buildkit.Service, error) {
 // apiServer serves the engine's APIs: Docker's and Podman's over HTTP/1.1,
 // and the Container Runtime Interface over HTTP/2 without TLS, which its
 // gRPC clients speak to a Unix socket.
-func apiServer(e *engine.Engine, bk api.BuildKit) *http.Server {
-	srv := &http.Server{Handler: api.New(e, bk), ReadHeaderTimeout: 30 * time.Second, Protocols: new(http.Protocols)}
+func apiServer(e *engine.Engine, bk api.BuildKit) (*http.Server, *api.Server) {
+	h := api.New(e, bk)
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second, Protocols: new(http.Protocols)}
 	srv.Protocols.SetHTTP1(true)
 	srv.Protocols.SetUnencryptedHTTP2(true)
-	return srv
+	return srv, h
 }
 
 // nestedAPI serves the API of the engine nested in a privileged container
 // on its socket, with BuildKit of its own when the engine has BuildKit.
 type nestedAPI struct {
 	srv *http.Server
+	api *api.Server
 	bk  *buildkit.Service
 }
 
@@ -107,6 +109,7 @@ func (n *nestedAPI) Close() error {
 	var err error
 	if n.srv != nil {
 		err = n.srv.Close()
+		n.api.Close()
 	}
 	if n.bk != nil {
 		n.bk.Close()
@@ -130,7 +133,7 @@ func serveNested(withBuildKit bool) func(*engine.Engine, string) (io.Closer, err
 			n.Close()
 			return nil, err
 		}
-		n.srv = apiServer(e, bk)
+		n.srv, n.api = apiServer(e, bk)
 		go n.srv.Serve(l)
 		return n, nil
 	}
@@ -166,7 +169,8 @@ func run(cfg engine.Config, socket string, withBuildKit bool) error {
 	if err := os.Chmod(socket, 0o600); err != nil {
 		return err
 	}
-	srv := apiServer(e, bk)
+	srv, h := apiServer(e, bk)
+	defer h.Close()
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)

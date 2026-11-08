@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -149,6 +150,51 @@ func TestCRIPodSandbox(t *testing.T) {
 	if _, err := crictl(t, "exec", "--sync", client, "/toolbox", "fetch", "http://127.0.0.1:1/"); err == nil {
 		t.Error("a failing exec's exit status was lost")
 	}
+	// The runtime's stream server runs a streamed exec, and forwards a
+	// local port to the pod's.
+	if out := mustCrictl(t, "exec", client, "/bin/sh", "-c", "echo streamed $GREETING"); out != "streamed hello\n" {
+		t.Errorf("crictl exec: %q", out)
+	}
+	if _, err := crictl(t, "exec", client, "/bin/sh", "-c", "exit 3"); err == nil {
+		t.Error("a streamed exec's exit status was lost")
+	}
+	fl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := fl.Addr().(*net.TCPAddr).Port
+	fl.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pf := exec.CommandContext(ctx, "crictl", "--runtime-endpoint", dockerHost, "port-forward", sandbox, strconv.Itoa(local)+":8080")
+	pfOut, err := pf.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pf.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer pf.Wait()
+	// crictl reports each local address it forwards from as it listens.
+	buf := make([]byte, 4096)
+	var seen strings.Builder
+	for !strings.Contains(seen.String(), "Forwarding from") {
+		n, err := pfOut.Read(buf)
+		seen.Write(buf[:n])
+		if err != nil {
+			t.Fatalf("crictl port-forward ended: %v\n%s", err, seen.String())
+		}
+	}
+	go io.Copy(io.Discard, pfOut)
+	res, err = http.Get("http://127.0.0.1:" + strconv.Itoa(local) + "/healthz")
+	if err != nil {
+		t.Fatalf("a forwarded port: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Errorf("a forwarded port answered %s", res.Status)
+	}
+	cancel()
 
 	// The greeter's output, in the file the client named, in CRI's format.
 	// CRI has no call that waits for a container to exit; its clients poll

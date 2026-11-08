@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
+	"k8s.io/cri-streaming/pkg/streaming"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
 )
@@ -52,6 +53,10 @@ type Service struct {
 	sandboxImage string
 	grpc         *grpc.Server
 
+	streams    streaming.Server
+	streamHTTP *http.Server
+	streamsErr error
+
 	mu   sync.Mutex
 	logs map[string]*logCopy
 }
@@ -61,6 +66,7 @@ func New(e *engine.Engine, sandboxImage string) *Service {
 	s := &Service{e: e, sandboxImage: sandboxImage, grpc: grpc.NewServer(), logs: map[string]*logCopy{}}
 	runtimeapi.RegisterRuntimeServiceServer(s.grpc, s)
 	runtimeapi.RegisterImageServiceServer(s.grpc, s)
+	s.streamsErr = s.openStreams()
 	s.resumeLogs()
 	return s
 }
@@ -74,8 +80,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.grpc.ServeHTTP(w, r)
 }
 
-// Close stops copying the containers' logs.
+// Close stops serving streams and copying the containers' logs.
 func (s *Service) Close() {
+	if s.streamHTTP != nil {
+		s.streamHTTP.Close()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, l := range s.logs {

@@ -3,12 +3,15 @@ package engine
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
+	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
 
 // A privileged container runs an engine of its own, as Docker's dind
@@ -195,4 +198,55 @@ func (e *Engine) portIn(c *Container, p int) (int, string, error) {
 		return 0, "", unsupported("the privileged container is on no network, so its engine's containers cannot publish ports in it")
 	}
 	return 0, e.portDir(net), nil
+}
+
+// DialPort connects to port p of container ref's network, where a process
+// of the network listens on it: the port's host port when it has one, else
+// the Unix socket the container library binds the port to.
+func (e *Engine) DialPort(ref string, p int) (net.Conn, error) {
+	c, err := e.Container(ref)
+	if err != nil {
+		return nil, err
+	}
+	hp, dir, err := e.portIn(c, p)
+	if err != nil {
+		return nil, err
+	}
+	if dir == "" {
+		return net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
+	}
+	return net.Dial("unix", router.SocketPath(dir, p))
+}
+
+// StreamPort is the port the engine serves the Container Runtime
+// Interface's exec, attach and port-forward streams on in a privileged
+// container, containerd's.
+const StreamPort = 10010
+
+// ListenStreams listens for the Container Runtime Interface's streams and
+// returns the address its clients reach the listener at: a host loopback
+// port, or for an engine nested in a privileged container, that
+// container's StreamPort on its loopback.
+func (e *Engine) ListenStreams() (net.Listener, string, error) {
+	n := e.cfg.Nested
+	if n == nil {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, "", err
+		}
+		return l, l.Addr().String(), nil
+	}
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(StreamPort))
+	hp, dir, err := n.Port(StreamPort)
+	if err != nil {
+		return nil, "", err
+	}
+	if dir == "" {
+		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
+		return l, addr, err
+	}
+	path := router.SocketPath(dir, StreamPort)
+	os.Remove(path)
+	l, err := net.Listen("unix", path)
+	return l, addr, err
 }

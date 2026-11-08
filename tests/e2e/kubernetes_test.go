@@ -252,6 +252,11 @@ func TestKubernetesControlPlane(t *testing.T) {
 			t.Errorf("pod %s ran on %q with address %q", f[0], f[1], f[2])
 		}
 	}
+	// kubectl exec reaches the runtime's stream server through the kubelet.
+	web := strings.Split(pods[0], "=")[0]
+	if out := mustKubectl("exec", web, "--", "/bin/sh", "-c", "echo inside $HOSTNAME"); out != "inside "+web+"\n" {
+		t.Errorf("kubectl exec: %q", out)
+	}
 	// The API server reads a pod's log from the kubelet, which reads the
 	// file the runtime writes.
 	mustKubectl("run", "greeter", "--image=fws/toolbox:1", "--restart=Never", "--", "echo", "from the node")

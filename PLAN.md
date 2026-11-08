@@ -134,7 +134,7 @@ dependency order:
    (`images/kubernetes`), and images for the four upstream publishes, over
    go-runner. A control plane of them turns Deployments into Pods, which
    wait for a node.
-4. **A kubelet for macOS** (done, but for streams): upstream's kubelet
+4. **A kubelet for macOS** (done): upstream's kubelet
    with the darwin parts its tree lacks (`images/kubernetes/kubelet-darwin.patch`):
    machine information and node CPU, memory and filesystem use from
    macOS's kernel in cAdvisor's shapes, a container manager for a node
@@ -142,9 +142,10 @@ dependency order:
    serves CRI on its sockets, nested engines' among them (`internal/cri`):
    pod sandboxes are `fws/pause` containers, their containers join the
    sandbox's network, and the engine writes CRI logs where the kubelet
-   asks. A kubelet in a privileged container joins the control plane as a
-   node and runs Deployments' pods. Left: the streaming server for exec,
-   attach and port-forward.
+   asks, and its stream server, on containerd's port 10010 in a node's
+   container, serves exec, attach and port-forward. A kubelet in a
+   privileged container joins the control plane as a node and runs
+   Deployments' pods.
 5. **Cluster networking and services**: pod addresses from the engine's
    IPAM per node network, a kube-proxy replacement that maps Service
    ClusterIPs and NodePorts onto the routers the engine already runs, and

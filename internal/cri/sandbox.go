@@ -142,7 +142,7 @@ func (s *Service) RemovePodSandbox(ctx context.Context, req *runtimeapi.RemovePo
 // describes it.
 func sandboxStatus(in container.InspectResponse) (*runtimeapi.PodSandboxStatus, error) {
 	labels := in.Config.Labels
-	meta, err := decodeLabel[runtimeapi.PodSandboxMetadata](labels, metadataLabel)
+	meta, err := decodeLabel[*runtimeapi.PodSandboxMetadata](labels, metadataLabel)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "sandbox %s: %v", in.ID, err)
 	}
@@ -176,7 +176,7 @@ func sandboxStatus(in container.InspectResponse) (*runtimeapi.PodSandboxStatus, 
 	}
 	return &runtimeapi.PodSandboxStatus{
 		Id:        in.ID,
-		Metadata:  &meta,
+		Metadata:  meta,
 		State:     state,
 		CreatedAt: nanos(parseTime(in.Created)),
 		Network:   network,

@@ -212,7 +212,10 @@ crictl --runtime-endpoint unix://$HOME/.fws/docker.sock pods
 A pod sandbox is an `fws/pause:3.10.1` container that holds the pod's
 network, published ports and DNS, and the pod's containers join that
 network, as cri-dockerd maps CRI onto Docker's. The engine writes each
-container's output to the log file the kubelet names, in CRI's format.
+container's output to the log file the kubelet names, in CRI's format,
+and serves exec, attach and port-forward streams as containerd does: on a
+loopback port of the host, or for an engine nested in a privileged
+container, on that container's port 10010.
 
 ## Develop
 
