@@ -221,6 +221,24 @@ the container holds it; one lookup now settles a file the container holds
 with no link on its way. A process start still costs 4.7 ms more than
 natively.
 
+A second measurement, with the flag: `fstat` 0.56 µs natively and
+0.54 µs through the library, `stat` 1.09 µs and 2.58 µs, `stat` of a
+missing file 1.01 µs and 4.65 µs, `readdir` 9.7 µs and 10.9 µs, a process
+start 2.6 ms natively, 4.7 ms with an empty library inserted and 8.1 ms
+with fwsroot: inserting any library costs the dynamic loader 2.1 ms, and
+fwsroot 3.3 ms more. `stat`, `lstat`, `fstatat` and `open` without
+`O_CREAT` now first make the call itself on the container's file with the
+kernel refusing any link on the way, so a file the container holds costs
+no lookup of the library's, and a missing one whose parent the container
+holds costs one. The benchmark's `started` reports a process's time from
+the kernel's start of it to `main`, to tell the loader's and the
+constructor's share of a process start from the spawning call's.
+
+Open bug: with a pids limit, every `fork` and `posix_spawn` lists every
+process of the engine's user and checks each, to count the container's
+against the limit, where a pids cgroup keeps a count. Docker sets no
+limit by default, and no test of the suite sets one.
+
 Left as they are, each with its reason in `LIMITATIONS.md`:
 
 - tmpfs mounts are directories on disk. The one memory-backed filesystem

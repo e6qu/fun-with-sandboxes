@@ -730,6 +730,91 @@ static int follows(int flags) {
     return !(flags & (O_NOFOLLOW | O_SYMLINK)) && (flags & (O_CREAT | O_EXCL)) != (O_CREAT | O_EXCL);
 }
 
+// direct writes to buf container path p's host path in the root, for a
+// call that the kernel then resolves refusing any link on its way: the
+// common case, a file the container holds, costs no lookup of the
+// library's. It reports 0 for a path the mapping must handle: relative,
+// on the host's side, on a mount, in a host tree, or through "..".
+static int direct(const char *p, char *buf) {
+    if (!rootlen || !p || p[0] != '/' || host_side(p) || in_host_tree(p) || strstr(p, "/..")) {
+        return 0;
+    }
+    for (size_t i = 0; i < nmounts; i++) {
+        if (under(p, mounts[i].dest, mounts[i].destlen)) {
+            return 0;
+        }
+    }
+    size_t cl = strlen(croot), n = strlen(p);
+    if (cl + n + 1 > PATH_MAX) {
+        return 0;
+    }
+    memcpy(buf, croot, cl);
+    memcpy(buf + cl, p, n + 1);
+    return 1;
+}
+
+// rooted is container path p's host path under the root as the library
+// names it, which own matches, given d, its path under the resolved root.
+static const char *rooted(const char *p, char *d) {
+    if (strcmp(root, croot) != 0) {
+        memcpy(d, root, rootlen);
+        strcpy(d + rootlen, p);
+    }
+    return d;
+}
+
+// missing settles a direct call that found no file at host path d: the
+// container's answer is ENOENT where the root holds d's parent, as the
+// mapping finds. It reports 0 where the mapping must decide, as the host
+// may hold the path.
+static int missing(char *d) {
+    char *slash = strrchr(d, '/');
+    if (!slash) {
+        return 0;
+    }
+    struct stat st;
+    *slash = 0;
+    int parent = lstat(d, &st) == 0;
+    *slash = '/';
+    if (!parent) {
+        return 0;
+    }
+    errno = ENOENT;
+    return 1;
+}
+
+static void own(struct stat *st, const char *path, int fd, int nofollow);
+
+// settle_stat makes a stat, or with nofollow an lstat, of container path
+// path directly where it can, and reports whether it did, with *r its
+// result.
+static int settle_stat(const char *path, struct stat *st, int nofollow, int *r) {
+    char d[PATH_MAX];
+    if (!direct(path, d)) {
+        return 0;
+    }
+    if (fstatat(AT_FDCWD, d, st, AT_SYMLINK_NOFOLLOW_ANY) == 0) {
+        // A link the final component names is lstat's answer, and stat's
+        // to resolve in the container.
+        if (S_ISLNK(st->st_mode) && !nofollow) {
+            return 0;
+        }
+        own(st, rooted(path, d), -1, nofollow);
+        *r = 0;
+        return 1;
+    }
+    if (errno == ENOENT && missing(d)) {
+        *r = -1;
+        return 1;
+    }
+    return 0;
+}
+
+// settle_open opens container path path directly where it can, for an
+// open that follows links and makes no file, and reports whether it did,
+// with *fd the result. nocancel opens without a cancellation point.
+static int settle_open(const char *path, int flags, int nocancel, int *fd);
+
 static int fws_open(const char *path, int flags, ...) {
     mode_t mode = 0;
     if (flags & O_CREAT) {
@@ -738,6 +823,8 @@ static int fws_open(const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
+    int sfd;
+    if (settle_open(path, flags, 0, &sfd)) return sfd;
     const char *p = MAPF(path, follows(flags));
     int fresh = creating(p, flags);
     int fd = open(p, flags, mode);
@@ -755,6 +842,8 @@ static int fws_open_nocancel(const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
+    int sfd;
+    if (settle_open(path, flags, 1, &sfd)) return sfd;
     const char *p = MAPF(path, follows(flags));
     int fresh = creating(p, flags);
     int fd = open_nocancel(p, flags, mode);
@@ -771,6 +860,8 @@ static int fws_openat(int fd, const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
+    int sfd;
+    if (settle_open(path, flags, 0, &sfd)) return sfd;
     const char *p = AT_MAPF(fd, path, follows(flags));
     int fresh = (p[0] == '/' || fd == AT_FDCWD) && creating(p, flags);
     int r = openat(fd, p, flags, mode);
@@ -782,6 +873,22 @@ INTERPOSE(fws_openat, openat);
 // Bun, among others, opens files through the cancellation-point-free
 // variants.
 extern int openat_nocancel(int, const char *, int, ...) __asm("_openat$NOCANCEL");
+static int settle_open(const char *path, int flags, int nocancel, int *fd) {
+    char d[PATH_MAX];
+    if ((flags & O_CREAT) || !follows(flags) || !direct(path, d)) {
+        return 0;
+    }
+    int r = nocancel ? openat_nocancel(AT_FDCWD, d, flags | O_NOFOLLOW_ANY) : openat(AT_FDCWD, d, flags | O_NOFOLLOW_ANY);
+    if (r >= 0) {
+        *fd = r;
+        return 1;
+    }
+    if (errno == ENOENT && missing(d)) {
+        *fd = -1;
+        return 1;
+    }
+    return 0;
+}
 static int fws_openat_nocancel(int fd, const char *path, int flags, ...) {
     mode_t mode = 0;
     if (flags & O_CREAT) {
@@ -790,6 +897,8 @@ static int fws_openat_nocancel(int fd, const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
+    int sfd;
+    if (settle_open(path, flags, 1, &sfd)) return sfd;
     const char *p = AT_MAPF(fd, path, follows(flags));
     int fresh = (p[0] == '/' || fd == AT_FDCWD) && creating(p, flags);
     int r = openat_nocancel(fd, p, flags, mode);
@@ -831,6 +940,8 @@ static uid_t getuid_real(void) {
 static void own(struct stat *st, const char *path, int fd, int nofollow);
 
 static int fws_stat(const char *path, struct stat *st) {
+    int sr;
+    if (settle_stat(path, st, 0, &sr)) return sr;
     const char *p = MAP(path);
     int r = stat(p, st);
     if (r == 0) own(st, p, -1, 0);
@@ -838,6 +949,8 @@ static int fws_stat(const char *path, struct stat *st) {
 }
 INTERPOSE(fws_stat, stat);
 static int fws_lstat(const char *path, struct stat *st) {
+    int sr;
+    if (settle_stat(path, st, 1, &sr)) return sr;
     const char *p = LMAP(path);
     int r = lstat(p, st);
     if (r == 0) own(st, p, -1, 1);
@@ -851,6 +964,8 @@ static int fws_fstat(int fd, struct stat *st) {
 }
 INTERPOSE(fws_fstat, fstat);
 static int fws_fstatat(int fd, const char *path, struct stat *st, int flag) {
+    int sr;
+    if ((flag & ~AT_SYMLINK_NOFOLLOW) == 0 && settle_stat(path, st, flag & AT_SYMLINK_NOFOLLOW, &sr)) return sr;
     const char *p = AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW));
     int r = fstatat(fd, p, st, flag);
     if (r == 0) {
@@ -875,6 +990,8 @@ extern int fstatat64(int, const char *, void *, int);
 // Their struct stat64 is the struct stat this library builds with.
 extern int fstat64(int, void *);
 static int fws_stat64(const char *path, void *st) {
+    int sr;
+    if (settle_stat(path, st, 0, &sr)) return sr;
     const char *p = MAP(path);
     int r = stat64(p, st);
     if (r == 0) own(st, p, -1, 0);
@@ -882,6 +999,8 @@ static int fws_stat64(const char *path, void *st) {
 }
 INTERPOSE(fws_stat64, stat64);
 static int fws_lstat64(const char *path, void *st) {
+    int sr;
+    if (settle_stat(path, st, 1, &sr)) return sr;
     const char *p = LMAP(path);
     int r = lstat64(p, st);
     if (r == 0) own(st, p, -1, 1);
@@ -895,6 +1014,8 @@ static int fws_fstat64(int fd, void *st) {
 }
 INTERPOSE(fws_fstat64, fstat64);
 static int fws_fstatat64(int fd, const char *path, void *st, int flag) {
+    int sr;
+    if ((flag & ~AT_SYMLINK_NOFOLLOW) == 0 && settle_stat(path, st, flag & AT_SYMLINK_NOFOLLOW, &sr)) return sr;
     const char *p = AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW));
     int r = fstatat64(fd, p, st, flag);
     if (r == 0 && (p[0] == '/' || fd == AT_FDCWD)) own(st, p, -1, flag & AT_SYMLINK_NOFOLLOW);

@@ -55,8 +55,8 @@ func containerRoot(t testing.TB) string {
 
 func TestPathsNameTheRoot(t *testing.T) {
 	root := containerRoot(t)
-	got := probe(t, root, nil, "read", "system", "write", "list", "cwd", "exec")
-	for k, want := range map[string]string{"read": "inside", "system": "ok", "write": "ok", "cwd": "/made", "exec": "read=inside"} {
+	got := probe(t, root, nil, "read", "system", "missing", "write", "list", "cwd", "exec")
+	for k, want := range map[string]string{"read": "inside", "system": "ok", "missing": "true,true,true", "write": "ok", "cwd": "/made", "exec": "read=inside"} {
 		if got[k] != want {
 			t.Errorf("%s: %q, want %q", k, got[k], want)
 		}

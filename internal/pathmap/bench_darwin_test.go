@@ -26,7 +26,7 @@ func BenchmarkCalls(b *testing.B) {
 	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-dynamiclib", "-o", empty, "testdata/empty/empty.c").CombinedOutput(); err != nil {
 		b.Fatalf("build the empty library: %v\n%s", err, out)
 	}
-	for _, op := range []string{"getpid", "getuid", "open", "stat", "stat-missing", "fstat", "pread", "readdir", "socket", "spawn"} {
+	for _, op := range []string{"getpid", "getuid", "open", "stat", "stat-missing", "fstat", "pread", "readdir", "socket", "spawn", "started"} {
 		// empty inserts a library that does nothing: what the loader costs.
 		for _, mode := range []string{"native", "empty", "fwsroot"} {
 			b.Run(op+"/"+mode, func(b *testing.B) {
@@ -37,17 +37,29 @@ func BenchmarkCalls(b *testing.B) {
 				case "fwsroot":
 					dir, env = "", []string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_ROOT=" + root}
 				}
-				cmd := exec.Command(bin, op, strconv.Itoa(b.N), dir)
-				cmd.Env = env
-				out, err := cmd.CombinedOutput()
-				if err != nil {
-					b.Fatalf("%s: %v\n%s", op, err, out)
+				run := func(n int) float64 {
+					cmd := exec.Command(bin, op, strconv.Itoa(n), dir)
+					cmd.Env = env
+					out, err := cmd.CombinedOutput()
+					if err != nil {
+						b.Fatalf("%s: %v\n%s", op, err, out)
+					}
+					ns, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+					if err != nil {
+						b.Fatalf("%s printed %q", op, out)
+					}
+					return ns
 				}
-				ns, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
-				if err != nil {
-					b.Fatalf("%s printed %q", op, out)
+				// started times one process start, so each iteration starts one.
+				if op == "started" {
+					var sum float64
+					for range b.N {
+						sum += run(1)
+					}
+					b.ReportMetric(sum/float64(b.N), "ns/call")
+					return
 				}
-				b.ReportMetric(ns, "ns/call")
+				b.ReportMetric(run(b.N), "ns/call")
 			})
 		}
 	}

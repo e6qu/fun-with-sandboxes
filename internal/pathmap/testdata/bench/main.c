@@ -1,7 +1,10 @@
 // bench OP N DIR runs system call OP N times on files under DIR, which
 // names the container's root as the process sees it, and prints the
 // nanoseconds each call took. spawn starts DIR/bin/bench, this program.
+// bench started N DIR prints how long this process took to reach main.
 #include <dirent.h>
+#include <libproc.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -23,6 +26,20 @@ int main(int argc, char **argv) {
 	}
 	const char *op = argv[1], *dir = argv[3];
 	long n = atol(argv[2]);
+	if (!strcmp(op, "started")) {
+		// The nanoseconds from the kernel's start of this process to main:
+		// the loader's work and the inserted library's constructor.
+		struct timeval now;
+		gettimeofday(&now, NULL);
+		struct proc_bsdinfo bi;
+		if (proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &bi, sizeof bi) != sizeof bi) {
+			perror("proc_pidinfo");
+			return 1;
+		}
+		long long us = (now.tv_sec - (long long)bi.pbi_start_tvsec) * 1000000LL + (now.tv_usec - (long long)bi.pbi_start_tvusec);
+		printf("%lld\n", us * 1000);
+		return 0;
+	}
 	char file[1024], missing[1024], sub[1024], self[1024];
 	snprintf(file, sizeof file, "%s/etc/marker", dir);
 	snprintf(missing, sizeof missing, "%s/etc/missing", dir);
