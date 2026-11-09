@@ -327,8 +327,22 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		portKey += "#" + n
 	}
 
+	st := e.steps("create " + id[:12])
+	defer st.log()
+	staged, err := os.MkdirTemp(stagingDir(e.cfg.Root), id[:12]+"-")
+	if err != nil {
+		return container.CreateResponse{}, err
+	}
+	defer os.RemoveAll(staged)
+	stagedRoot := filepath.Join(staged, "r")
+	if err := e.images.Clone(img.ID, stagedRoot); err != nil {
+		return container.CreateResponse{}, fmt.Errorf("clone image root: %w", err)
+	}
+	st.mark("clone")
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	st.mark("lock")
 	for _, other := range e.containers {
 		if other.rec.Name == name {
 			return container.CreateResponse{}, conflict("Conflict. The container name \"/%s\" is already in use by container \"%s\". You have to remove (or rename) that container to be able to reuse that name.", name, other.rec.ID)
@@ -380,8 +394,8 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			e.releaseStackIfEmptyLocked(stack)
 		}
 	}()
-	if err := e.images.Clone(img.ID, c.root()); err != nil {
-		return container.CreateResponse{}, fmt.Errorf("clone image root: %w", err)
+	if err := os.Rename(stagedRoot, c.root()); err != nil {
+		return container.CreateResponse{}, err
 	}
 
 	ports := map[string]int{}
@@ -457,9 +471,11 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err := c.save(); err != nil {
 		return container.CreateResponse{}, err
 	}
+	st.mark("prepare")
 	if err := image.CloneDir(c.root(), c.initDir()); err != nil {
 		return container.CreateResponse{}, fmt.Errorf("record the initial root: %w", err)
 	}
+	st.mark("record")
 	e.containers[id] = c
 	if err := e.writeNetworkLocked(stack); err != nil {
 		delete(e.containers, id)
@@ -1362,6 +1378,7 @@ func (c *Container) start(e *Engine) error {
 		c.mu.Unlock()
 	}()
 
+	st := e.steps("start " + c.rec.ID[:12])
 	argv := c.argv()
 	if len(argv) == 0 {
 		return invalid("no command specified")
@@ -1375,6 +1392,7 @@ func (c *Container) start(e *Engine) error {
 	if err != nil {
 		return err
 	}
+	st.mark("profile")
 	limits, res, err := containerLimits(c.rec.HostConfig.Resources)
 	if err != nil {
 		return err
@@ -1406,11 +1424,13 @@ func (c *Container) start(e *Engine) error {
 	if err := e.writeHosts(c); err != nil {
 		return err
 	}
+	st.mark("files")
 	if e.hasEgress(c) {
 		if _, err := e.ensureEgress(c.rec.Stack); err != nil {
 			return err
 		}
 	}
+	st.mark("egress")
 	plan, err := e.publishPlan(c)
 	if err != nil {
 		return err
@@ -1460,7 +1480,9 @@ func (c *Container) start(e *Engine) error {
 	for _, p := range plan {
 		cfg.Publish = append(cfg.Publish, p.binding)
 	}
+	st.mark("prepare")
 	task, ready, err := shim.Launch(c.dir, cfg)
+	st.mark("launch")
 	if err != nil {
 		if errors.Is(err, shim.ErrPortInUse) {
 			return conflict("%v", err)
@@ -1492,6 +1514,8 @@ func (c *Container) start(e *Engine) error {
 	c.mu.Unlock()
 	e.publishContainer(c, events.ActionStart, nil)
 	go e.watch(c, task, done)
+	st.mark("record")
+	st.log("shim: " + ready.Steps)
 	return nil
 }
 
@@ -1909,7 +1933,7 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 		}
 	}
 	c.logs.close()
-	if err := os.RemoveAll(c.dir); err != nil {
+	if err := e.discard(c.dir); err != nil {
 		return err
 	}
 	if opts.RemoveVolumes {

@@ -36,7 +36,7 @@ func main() {
 	egress := flag.Bool("egress", true, "give each stack an HTTP proxy to the internet that refuses destinations on this host")
 	withBuildKit := flag.Bool("buildkit", true, "serve BuildKit for docker build, buildx and docker compose build")
 	liveRestore := flag.Bool("live-restore", false, "keep containers running while the engine stops, and reconnect to them when it starts")
-	debug := flag.Bool("debug", false, "log each API request, with its status and how long the engine took to serve it")
+	debug := flag.Bool("debug", false, "log each API request, with its status and how long the engine took to serve it, and the steps of each container's create and start")
 	flag.Parse()
 
 	if os.Geteuid() == 0 {
@@ -50,7 +50,7 @@ func main() {
 		log.Fatal(err)
 	}
 	roles.Use(helper)
-	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress, LiveRestore: *liveRestore}
+	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress, LiveRestore: *liveRestore, Debug: *debug}
 	if err := run(cfg, *socket, *withBuildKit, *debug); err != nil {
 		log.Fatal(err)
 	}

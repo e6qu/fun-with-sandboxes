@@ -41,6 +41,9 @@ type Config struct {
 	// LiveRestore keeps containers running when the engine stops, as
 	// dockerd's live-restore does; the next engine reconnects to them.
 	LiveRestore bool
+	// Debug logs how long each step of a container's create, start and
+	// removal takes.
+	Debug bool
 	// Serve serves an engine's API on a Unix socket: the API of the engine
 	// nested in each privileged container, which it serves until closed.
 	Serve func(e *Engine, socket string) (io.Closer, error)
@@ -109,6 +112,9 @@ func Open(cfg Config) (*Engine, error) {
 			return nil, err
 		}
 	} else if err != nil {
+		return nil, err
+	}
+	if err := clearScratch(root); err != nil {
 		return nil, err
 	}
 	a, err := alloc.Open(alloc.Config{Root: root, PortBase: cfg.PortBase, PortLimit: cfg.PortLimit, BlockSize: cfg.BlockSize})

@@ -86,6 +86,9 @@ type Ready struct {
 	Ports     []int  `json:",omitempty"`
 	Error     string `json:",omitempty"`
 	PortInUse bool   `json:",omitempty"`
+	// Steps is how long each step of the shim's start took, for the
+	// engine's debug log.
+	Steps string `json:",omitempty"`
 }
 
 // Exit is how the container's main process ended, written to ExitPath.

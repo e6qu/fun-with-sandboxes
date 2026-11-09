@@ -234,6 +234,28 @@ holds costs one. The benchmark's `started` reports a process's time from
 the kernel's start of it to `main`, to tell the loader's and the
 constructor's share of a process start from the spawning call's.
 
+A third measurement: `stat` 2.0 µs natively and 1.4 µs through the
+library, `open` 8.5 µs and 9.1 µs, `fstat` and `readdir` as natively, a
+missing file's `stat` 1.0 µs and 2.5 µs. A process reached `main` 2.9 ms
+after the kernel started it natively, 7.3 ms with an empty library
+inserted and 10.4 ms with fwsroot: the loader's 4.4 ms for an inserted
+library and fwsroot's own 3.1 ms remain open.
+
+The engine's time per endpoint over the suite, beside the requests that
+wait on a container by design (`wait`, `attach`, `events`, BuildKit's
+session): `docker rm` 2.38 s on average over 153 removals, a start 1.16 s
+over 253, with a median of 1.165 s and a 90th percentile of 1.233 s, and a
+create 368 ms over 278. A removal deleted the container's root, a clone of
+its image's with as many files, under the engine's lock, which every
+create, start and network change also takes; a create cloned the image's
+root under it. A create now clones the root into a staging directory
+before it takes the lock and moves it into place with a rename, and a
+removal moves the container's directory to a trash directory under the
+lock and deletes it after. With `-debug` the engine logs the time of each
+step of a create and a start, and the shim the steps of its own start.
+CRI's `ImageFsInfo` took 66 s on its first call and 4.1 s on average: it
+walks every container's root on each call.
+
 Open bug: with a pids limit, every `fork` and `posix_spawn` lists every
 process of the engine's user and checks each, to count the container's
 against the limit, where a pids cgroup keeps a count. Docker sets no

@@ -224,7 +224,13 @@ func (rt requestTimes) add(line string) (time.Duration, bool) {
 		return 0, false
 	}
 	path, _, _ := strings.Cut(f[3], "?")
-	path = idSegment.ReplaceAllString(versionPath.ReplaceAllString(path, ""), "/$1/{}")
+	path = idSegment.ReplaceAllStringFunc(versionPath.ReplaceAllString(path, ""), func(seg string) string {
+		collection, name, _ := strings.Cut(strings.TrimPrefix(seg, "/"), "/")
+		if collectionVerbs[name] {
+			return seg
+		}
+		return "/" + collection + "/{}"
+	})
 	key := f[2] + " " + path
 	e := rt[key]
 	if e == nil {
@@ -236,6 +242,10 @@ func (rt requestTimes) add(line string) (time.Duration, bool) {
 	e.max = max(e.max, d)
 	return d, true
 }
+
+// collectionVerbs are the endpoints on a collection itself, which a path
+// names where it would name a member.
+var collectionVerbs = map[string]bool{"create": true, "json": true, "load": true, "get": true, "prune": true, "search": true}
 
 var versionPath = regexp.MustCompile(`^/v\d+\.\d+`)
 
