@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -198,8 +199,20 @@ func TestToxiproxy(t *testing.T) {
 // became ready and the end of its server's own logs.
 func serverLogs(t *testing.T, c testcontainers.Container) {
 	t.Helper()
-	if out, err := docker(t, "top", c.GetContainerID()); err == nil {
+	out, err := docker(t, "top", c.GetContainerID())
+	if err == nil {
 		t.Logf("the container's processes:\n%s", out)
+		// Each thread's stack, which shows what a server that ignores
+		// SIGTERM waits on.
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n")[1:] {
+			if f := strings.Fields(line); len(f) > 1 {
+				s, _ := exec.Command("/usr/bin/sample", f[1], "1").CombinedOutput()
+				if len(s) > 64<<10 {
+					s = s[:64<<10]
+				}
+				t.Logf("sample %s:\n%s", f[1], s)
+			}
+		}
 	}
 	for _, f := range []string{"/var/log/clickhouse-server/clickhouse-server.err.log", "/var/log/clickhouse-server/clickhouse-server.log"} {
 		r, err := c.CopyFileFromContainer(context.Background(), f)
@@ -209,9 +222,15 @@ func serverLogs(t *testing.T, c testcontainers.Container) {
 		}
 		b, _ := io.ReadAll(r)
 		r.Close()
-		if len(b) > 16<<10 {
-			b = b[len(b)-16<<10:]
+		var kept []string
+		for _, l := range strings.Split(string(b), "\n") {
+			if !strings.Contains(l, "<Trace>") && !strings.Contains(l, "<Debug>") && !strings.Contains(l, "<Test>") {
+				kept = append(kept, l)
+			}
 		}
-		t.Logf("%s:\n%s", f, b)
+		if len(kept) > 200 {
+			kept = kept[len(kept)-200:]
+		}
+		t.Logf("%s, above Debug:\n%s", f, strings.Join(kept, "\n"))
 	}
 }

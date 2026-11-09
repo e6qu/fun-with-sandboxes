@@ -150,9 +150,16 @@ func TestKubernetesControlPlane(t *testing.T) {
 	kubectl := func(args ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, "docker", append([]string{"run", "--rm", "--network", network,
-			"-v", dir + ":/etc/kubernetes/pki:ro", "fws/kubectl:1.35", "kubectl", "--kubeconfig=" + pkiDir + "admin.conf"}, args...)...).CombinedOutput()
-		return string(out), err
+		cmd := exec.CommandContext(ctx, "docker", append([]string{"run", "--rm", "--network", network,
+			"-v", dir + ":/etc/kubernetes/pki:ro", "fws/kubectl:1.35", "kubectl", "--kubeconfig=" + pkiDir + "admin.conf"}, args...)...)
+		// The image's entrypoint, go-runner, logs to stderr.
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil {
+			return string(out) + stderr.String(), err
+		}
+		return string(out), nil
 	}
 	mustKubectl := func(args ...string) string {
 		t.Helper()

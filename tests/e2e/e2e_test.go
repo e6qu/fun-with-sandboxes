@@ -205,7 +205,7 @@ func dockerAt(t *testing.T, host string, args ...string) (string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := stacksOnTimeout(exec.CommandContext(ctx, "docker", args...))
 	if host != "" {
 		cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
 	}
@@ -216,6 +216,16 @@ func dockerAt(t *testing.T, host string, args ...string) (string, error) {
 		return out.String(), fmt.Errorf("docker %s: %v: %s", strings.Join(args, " "), err, errb.String())
 	}
 	return out.String(), nil
+}
+
+// stacksOnTimeout makes a command that outlives its context, and its
+// children, print every goroutine's stack before they are killed, which Go
+// programs do on SIGQUIT.
+func stacksOnTimeout(cmd *exec.Cmd) *exec.Cmd {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGQUIT) }
+	cmd.WaitDelay = 15 * time.Second
+	return cmd
 }
 
 func mustDocker(t *testing.T, args ...string) string {

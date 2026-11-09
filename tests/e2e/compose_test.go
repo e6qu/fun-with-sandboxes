@@ -40,7 +40,7 @@ func newProject(t *testing.T, name string, files map[string]string, env ...strin
 }
 
 func (p *project) command(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "docker-compose", append([]string{"-p", p.name, "--project-directory", p.dir}, args...)...)
+	cmd := stacksOnTimeout(exec.CommandContext(ctx, "docker-compose", append([]string{"-p", p.name, "--project-directory", p.dir}, args...)...))
 	cmd.Dir = p.dir
 	cmd.Env = append(os.Environ(), p.env...)
 	return cmd

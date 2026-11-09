@@ -185,6 +185,18 @@ container, with launchd as their parent. The fix is a mark the kernel
 keeps for the process's life, such as its Seatbelt sandbox, which every
 descendant inherits and none can drop.
 
+Open bug: ClickHouse's temporary init server ignores the SIGTERM its
+image's entrypoint sends once the init scripts have run. `kill` succeeds,
+the server logs no shutdown and keeps serving, and the entrypoint waits on
+it until the test gives up. `TestClickHouse` samples every thread's stack
+when it times out, to show what the server's signal path waits on.
+
+Open bug: `docker-compose up --build`, which builds through `buildx bake`,
+stalls for minutes after loading its bake definitions, while `docker build`
+of the same Dockerfile takes seconds; `TestComposeWatch` takes 220 to 300
+seconds against a five-minute limit. A command that outlives its limit now
+prints every Go process's goroutines, to show what bake waits on.
+
 Left as they are, each with its reason in `LIMITATIONS.md`:
 
 - tmpfs mounts are directories on disk. The one memory-backed filesystem
