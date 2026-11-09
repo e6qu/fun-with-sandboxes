@@ -28,12 +28,16 @@ func BenchmarkCalls(b *testing.B) {
 	}
 	for _, op := range []string{"getpid", "getuid", "open", "stat", "stat-missing", "fstat", "pread", "readdir", "socket", "spawn", "started"} {
 		// empty inserts a library that does nothing: what the loader costs.
-		for _, mode := range []string{"native", "empty", "fwsroot"} {
+		// bare inserts fwsroot without a container's variables: what its
+		// interposing costs the loader, beside what it does for a container.
+		for _, mode := range []string{"native", "empty", "bare", "fwsroot"} {
 			b.Run(op+"/"+mode, func(b *testing.B) {
 				dir, env := root, []string(nil)
 				switch mode {
 				case "empty":
 					env = []string{"DYLD_INSERT_LIBRARIES=" + empty}
+				case "bare":
+					env = []string{"DYLD_INSERT_LIBRARIES=" + lib}
 				case "fwsroot":
 					dir, env = "", []string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_ROOT=" + root}
 				}
