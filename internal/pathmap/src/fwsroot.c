@@ -4844,13 +4844,17 @@ static int accepted(int fd, int c, const struct sockaddr_storage *k, socklen_t k
     return 1;
 }
 
+// A connection the library drops, a probe of whether a listener lives,
+// ended before the program took it: accept fails with ECONNABORTED, as for
+// any connection a client abandons first, rather than waiting for the next
+// one, which would hold a server that polls, then accepts, from its loop.
 static int fws_accept(int fd, struct sockaddr *sa, socklen_t *len) {
-    for (;;) {
-        struct sockaddr_storage k;
-        socklen_t kn = sizeof k;
-        int c = accept(fd, (struct sockaddr *)&k, &kn);
-        if (c < 0 || accepted(fd, c, &k, kn, sa, len)) return c;
-    }
+    struct sockaddr_storage k;
+    socklen_t kn = sizeof k;
+    int c = accept(fd, (struct sockaddr *)&k, &kn);
+    if (c < 0 || accepted(fd, c, &k, kn, sa, len)) return c;
+    errno = ECONNABORTED;
+    return -1;
 }
 INTERPOSE(fws_accept, accept);
 
@@ -5107,12 +5111,12 @@ INTERPOSE(fws_recvmsg_nocancel, recvmsg_nocancel);
 
 extern int accept_nocancel(int, struct sockaddr *, socklen_t *) __asm("_accept$NOCANCEL") __attribute__((weak_import));
 static int fws_accept_nocancel(int fd, struct sockaddr *sa, socklen_t *len) {
-    for (;;) {
-        struct sockaddr_storage k;
-        socklen_t kn = sizeof k;
-        int c = accept_nocancel(fd, (struct sockaddr *)&k, &kn);
-        if (c < 0 || accepted(fd, c, &k, kn, sa, len)) return c;
-    }
+    struct sockaddr_storage k;
+    socklen_t kn = sizeof k;
+    int c = accept_nocancel(fd, (struct sockaddr *)&k, &kn);
+    if (c < 0 || accepted(fd, c, &k, kn, sa, len)) return c;
+    errno = ECONNABORTED;
+    return -1;
 }
 INTERPOSE(fws_accept_nocancel, accept_nocancel);
 

@@ -128,8 +128,10 @@ func TestKubernetesControlPlane(t *testing.T) {
 	defer func() {
 		if t.Failed() {
 			for _, n := range names {
-				out, _ := docker(t, "logs", "e2e-"+n)
-				t.Logf("%s's log:\n%s", n, tail(out, 40))
+				state, _ := docker(t, "inspect", "-f", "{{json .State}} restarts={{.RestartCount}}", "e2e-"+n)
+				// docker logs writes the container's stderr to its own.
+				out, _ := exec.Command("docker", "logs", "e2e-"+n).CombinedOutput()
+				t.Logf("%s: %s\n%s", n, strings.TrimSpace(state), tail(string(out), 40))
 			}
 		}
 		for _, n := range names {

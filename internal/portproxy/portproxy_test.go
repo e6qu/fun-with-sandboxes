@@ -166,17 +166,24 @@ func TestListenUnixTakesTheFirstFreePort(t *testing.T) {
 			if err != nil {
 				return
 			}
-			c.Write([]byte("hello"))
+			b := make([]byte, 4)
+			io.ReadFull(c, b)
+			c.Write(append([]byte("hello:"), b...))
 			c.Close()
 		}
 	}()
+	// What a router writes before each stream, which upstream never sees.
+	header := func(r io.Reader) error {
+		_, err := io.ReadFull(r, make([]byte, 6))
+		return err
+	}
 	path := func(port int) string { return filepath.Join(dir, "tcp-"+strconv.Itoa(port)) }
 	taken, err := net.Listen("unix", path(8080))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer taken.Close()
-	px, port, err := ListenUnix(path, 8080, 8081, up.Addr().String())
+	px, port, err := ListenUnix(path, 8080, 8081, up.Addr().String(), header)
 	if err != nil || port != 8081 {
 		t.Fatalf("ListenUnix = %d, %v; want 8081", port, err)
 	}
@@ -184,16 +191,17 @@ func TestListenUnixTakesTheFirstFreePort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.Write([]byte("HEADERping"))
 	b, _ := io.ReadAll(c)
 	c.Close()
-	if string(b) != "hello" {
+	if string(b) != "hello:ping" {
 		t.Errorf("through the socket: %q", b)
 	}
 	px.Close()
 	if _, err := os.Stat(path(8081)); !os.IsNotExist(err) {
 		t.Errorf("the socket outlived its proxy: %v", err)
 	}
-	if _, port, err := ListenUnix(path, 0, 0, up.Addr().String()); err != nil || port < 32768 {
+	if _, port, err := ListenUnix(path, 0, 0, up.Addr().String(), header); err != nil || port < 32768 {
 		t.Errorf("an ephemeral port: %d, %v", port, err)
 	}
 }

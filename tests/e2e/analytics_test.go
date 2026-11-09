@@ -207,8 +207,9 @@ func serverLogs(t *testing.T, c testcontainers.Container) {
 		for _, line := range strings.Split(strings.TrimSpace(out), "\n")[1:] {
 			if f := strings.Fields(line); len(f) > 1 {
 				s, _ := exec.Command("/usr/bin/sample", f[1], "1").CombinedOutput()
-				if len(s) > 64<<10 {
-					s = s[:64<<10]
+				// The server's background pools take most of a sample.
+				if len(s) > 512<<10 {
+					s = s[:512<<10]
 				}
 				t.Logf("sample %s:\n%s", f[1], s)
 			}

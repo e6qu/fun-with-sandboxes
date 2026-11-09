@@ -135,7 +135,11 @@ func (s *server) run(report func(Ready)) (int, error) {
 		var cl io.Closer
 		var port int
 		if b.Dir != "" {
-			cl, port, err = portproxy.ListenUnix(func(p int) string { return router.SocketPath(b.Dir, p) }, b.Lo, b.Hi, b.Upstream)
+			// The container's router writes the client's address before
+			// each connection's stream, which only the container library's
+			// listeners take.
+			cl, port, err = portproxy.ListenUnix(func(p int) string { return router.SocketPath(b.Dir, p) }, b.Lo, b.Hi, b.Upstream,
+				func(r io.Reader) error { _, err := router.ReadClient(r); return err })
 		} else {
 			cl, port, err = portproxy.Listen(b.Proto, b.IP, b.Lo, b.Hi, b.Upstream, dial)
 		}

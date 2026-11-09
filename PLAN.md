@@ -185,11 +185,26 @@ container, with launchd as their parent. The fix is a mark the kernel
 keeps for the process's life, such as its Seatbelt sandbox, which every
 descendant inherits and none can drop.
 
-Open bug: ClickHouse's temporary init server ignores the SIGTERM its
-image's entrypoint sends once the init scripts have run. `kill` succeeds,
-the server logs no shutdown and keeps serving, and the entrypoint waits on
-it until the test gives up. `TestClickHouse` samples every thread's stack
-when it times out, to show what the server's signal path waits on.
+ClickHouse's temporary init server took the SIGTERM its image's
+entrypoint sends once the init scripts ran, and its shutdown waited on its
+TCP server's acceptor thread. The library drops a connection on one of its
+listeners that writes nothing, its own probe of whether a listener lives,
+and its `accept` then waited for the next connection, where Poco's
+acceptor polls, accepts and checks whether it is to stop: the real
+server's probe of the port left the init server's acceptor in `accept` for
+good. `accept` now fails with `ECONNABORTED` for a connection it drops, as
+for any a client abandons before the program takes it.
+
+A port a nested engine published inside a privileged container answered
+`400 Bad Request`: the shim's proxy from the container's port directory to
+the inner container passed on the client address the container's router
+writes before each connection's stream, which only the library's
+listeners read. The proxy now reads it.
+
+The Kubernetes test's dump of each component's log read the CLI's standard
+output alone, where `docker logs` writes a container's standard error to
+its own: etcd's and the kubelet's logs, all on standard error, came out
+empty. It now reads both, with each container's state.
 
 Open bug: `docker-compose up --build`, which builds through `buildx bake`,
 stalls for minutes after loading its bake definitions, while `docker build`

@@ -20,6 +20,9 @@ import (
 type proxy struct {
 	l      net.Listener
 	target string
+	// header reads what the connecting side writes before a connection's
+	// stream, which the target does not take.
+	header func(io.Reader) error
 	wg     sync.WaitGroup
 	mu     sync.Mutex
 	conns  map[net.Conn]struct{}
@@ -40,6 +43,12 @@ func (p *proxy) serve() {
 		go func() {
 			defer p.wg.Done()
 			defer p.untrack(c)
+			if p.header != nil {
+				if err := p.header(c); err != nil {
+					c.Close()
+					return
+				}
+			}
 			up, err := net.Dial("tcp", p.target)
 			if err != nil {
 				c.Close()
@@ -166,8 +175,10 @@ const ephemeralLo, ephemeralHi = 32768, 60999
 // ListenUnix listens, for the first port from lo to hi free, or for an
 // ephemeral one with lo 0, on the Unix socket path gives that port, and
 // forwards each connection to upstream: a TCP port published in a
-// container whose own ports without host ports are Unix sockets.
-func ListenUnix(path func(port int) string, lo, hi int, upstream string) (io.Closer, int, error) {
+// container whose own ports without host ports are Unix sockets. header
+// reads what the container's router writes on each connection before the
+// client's stream.
+func ListenUnix(path func(port int) string, lo, hi int, upstream string, header func(io.Reader) error) (io.Closer, int, error) {
 	if lo == 0 {
 		lo, hi = ephemeralLo, ephemeralHi
 	}
@@ -175,7 +186,7 @@ func ListenUnix(path func(port int) string, lo, hi int, upstream string) (io.Clo
 	for port := lo; port <= hi; port++ {
 		var l net.Listener
 		if l, err = net.Listen("unix", path(port)); err == nil {
-			px := &proxy{l: l, target: upstream, conns: map[net.Conn]struct{}{}}
+			px := &proxy{l: l, target: upstream, header: header, conns: map[net.Conn]struct{}{}}
 			go px.serve()
 			return px, port, nil
 		}

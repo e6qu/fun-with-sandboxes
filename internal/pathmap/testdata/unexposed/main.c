@@ -21,6 +21,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 int sandbox_init(const char *profile, uint64_t flags, char **err);
@@ -138,6 +139,24 @@ int main(int argc, char **argv) {
     n = sizeof s;
     getpeername(c, (void *)&s, &n);
     printf("local=%s %s\n", buf, addr(&s));
+
+    // A connection that writes nothing, as the library's probe of whether a
+    // listener lives, never reaches the program, whose accept fails at once
+    // rather than waiting for the next one.
+    int pr0 = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un pu;
+    memset(&pu, 0, sizeof pu);
+    pu.sun_family = AF_UNIX;
+    snprintf(pu.sun_path, sizeof pu.sun_path, "%s/tcp-7000", argv[1]);
+    pu.sun_len = (unsigned char)SUN_LEN(&pu);
+    if (connect(pr0, (void *)&pu, pu.sun_len)) fail("probe");
+    close(pr0);
+    alarm(5);
+    n = sizeof s;
+    int pa = accept(l, (void *)&s, &n);
+    int pe = errno;
+    alarm(0);
+    printf("probe=%d %s\n", pa, pa < 0 && pe == ECONNABORTED ? "ECONNABORTED" : strerror(pe));
     char sf[128];
     sent(k, c, sf, sizeof sf);
     printf("sendfile-unix=%s\n", sf);
