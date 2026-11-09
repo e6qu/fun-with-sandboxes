@@ -1030,26 +1030,26 @@ static int fws_mkfifo(const char *path, mode_t mode) {
     return r;
 }
 INTERPOSE(fws_mkfifo, mkfifo);
-// kept is flags with META_FLAG kept where the file has it, so a container's
+// keep_mark is flags with the file's own META_FLAG, so a container's
 // chflags leaves the library's mark.
-static unsigned int kept(int r, const struct stat *st, unsigned int flags) {
+static unsigned int keep_mark(int r, const struct stat *st, unsigned int flags) {
     return r == 0 && st->st_uid == getuid_real() ? (flags & ~(unsigned int)META_FLAG) | (st->st_flags & META_FLAG) : flags;
 }
 static int fws_chflags(const char *path, unsigned int flags) {
     const char *p = MAP(path);
     struct stat st;
-    return chflags(p, kept(stat(p, &st), &st, flags));
+    return chflags(p, keep_mark(stat(p, &st), &st, flags));
 }
 INTERPOSE(fws_chflags, chflags);
 static int fws_lchflags(const char *path, unsigned int flags) {
     const char *p = LMAP(path);
     struct stat st;
-    return lchflags(p, kept(lstat(p, &st), &st, flags));
+    return lchflags(p, keep_mark(lstat(p, &st), &st, flags));
 }
 INTERPOSE(fws_lchflags, lchflags);
 static int fws_fchflags(int fd, unsigned int flags) {
     struct stat st;
-    return fchflags(fd, kept(fstat(fd, &st), &st, flags));
+    return fchflags(fd, keep_mark(fstat(fd, &st), &st, flags));
 }
 INTERPOSE(fws_fchflags, fchflags);
 static ssize_t fws_getxattr(const char *path, const char *name, void *v, size_t n, uint32_t pos, int o) { return getxattr(MAPF(path, !(o & XATTR_NOFOLLOW)), name, v, n, pos, o); }
