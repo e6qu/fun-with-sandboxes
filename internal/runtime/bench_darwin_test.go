@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
+	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
 
@@ -28,6 +29,12 @@ func BenchmarkStart(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	// The end-to-end suite builds fws-shim, which runs the spawn helper and
+	// the anchor, with the race detector.
+	raced := filepath.Join(state, "fws-shim")
+	if out, err := exec.Command("go", "build", "-race", "-o", raced, "../../cmd/fws-shim").CombinedOutput(); err != nil {
+		b.Fatalf("build fws-shim: %v\n%s", err, out)
+	}
 	dir, err := os.MkdirTemp("/tmp", "fws")
 	if err != nil {
 		b.Fatal(err)
@@ -44,13 +51,17 @@ func BenchmarkStart(b *testing.B) {
 		name    string
 		library bool
 		anchor  bool
+		helper  string
 	}{
-		{"sandbox", false, false},
-		{"library", true, false},
-		{"anchor", false, true},
-		{"container", true, true},
+		{"sandbox", false, false, ""},
+		{"library", true, false, ""},
+		{"anchor", false, true, ""},
+		{"container", true, true, ""},
+		{"container-race", true, true, raced},
 	} {
 		b.Run(mode.name, func(b *testing.B) {
+			roles.Use(mode.helper)
+			defer roles.Use("")
 			var total time.Duration
 			for i := 0; i < b.N; i++ {
 				s := spec()

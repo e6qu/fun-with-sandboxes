@@ -1,0 +1,516 @@
+﻿2026-11-09T22:32:04.4118300Z Current runner version: '2.338.2'
+2026-11-09T22:32:04.4137060Z ##[group]Runner Image Provisioner
+2026-11-09T22:32:04.4137820Z Hosted Compute Agent
+2026-11-09T22:32:04.4138370Z Version: 20261103.629
+2026-11-09T22:32:04.4138910Z Commit: 15dbd9ccb5dbf34fae002b6ed1a2670f52df37bc
+2026-11-09T22:32:04.4139590Z Build Date: 2026-11-03T17:26:59Z
+2026-11-09T22:32:04.4140280Z Worker ID: {400e271c-9329-4add-b610-e5d29d7a8b21}
+2026-11-09T22:32:04.4140960Z Region: westus
+2026-11-09T22:32:04.4141380Z Cloud: MacCloud
+2026-11-09T22:32:04.4141820Z ##[endgroup]
+2026-11-09T22:32:04.4142870Z ##[group]Operating System
+2026-11-09T22:32:04.4143340Z macOS
+2026-11-09T22:32:04.4143750Z 15.8.2
+2026-11-09T22:32:04.4144170Z 24H232
+2026-11-09T22:32:04.4144550Z ##[endgroup]
+2026-11-09T22:32:04.4145180Z ##[group]Runner Image
+2026-11-09T22:32:04.4145650Z Image: macos-15-arm64
+2026-11-09T22:32:04.4146110Z Version: 20261104.0514.1
+2026-11-09T22:32:04.4147120Z Included Software: https://github.com/actions/runner-images/blob/macos-15-arm64/20261104.0514/images/macos/macos-15-arm64-Readme.md
+2026-11-09T22:32:04.4148400Z Image Release: https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20261104.0514
+2026-11-09T22:32:04.4149210Z ##[endgroup]
+2026-11-09T22:32:04.4150080Z ##[group]GITHUB_TOKEN Permissions
+2026-11-09T22:32:04.4151450Z Contents: read
+2026-11-09T22:32:04.4151930Z Metadata: read
+2026-11-09T22:32:04.4152360Z ##[endgroup]
+2026-11-09T22:32:04.4154020Z Secret source: Actions
+2026-11-09T22:32:04.4154670Z Cache mode: write
+2026-11-09T22:32:04.4155210Z Prepare workflow directory
+2026-11-09T22:32:04.4429120Z Prepare all required actions
+2026-11-09T22:32:04.4465030Z Getting action download info
+2026-11-09T22:32:04.7158480Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+2026-11-09T22:32:04.9808590Z Download action repository 'actions/setup-go@v5' (SHA:40f1582b2485089dde7abd97c1529aa768e1baff)
+2026-11-09T22:32:05.4832600Z Complete job name: macos
+2026-11-09T22:32:05.5955870Z ##[group]Run actions/checkout@v4
+2026-11-09T22:32:05.5956930Z with:
+2026-11-09T22:32:05.5957370Z   ref: 42fe12e366bc6b121ba1fc8db369642b4cba00e4
+2026-11-09T22:32:05.5957920Z   repository: e6qu/fun-with-sandboxes
+2026-11-09T22:32:05.5960710Z   token: ***
+2026-11-09T22:32:05.5961070Z   ssh-strict: true
+2026-11-09T22:32:05.5961460Z   ssh-user: git
+2026-11-09T22:32:05.5961790Z   persist-credentials: true
+2026-11-09T22:32:05.5962140Z   clean: true
+2026-11-09T22:32:05.5962470Z   sparse-checkout-cone-mode: true
+2026-11-09T22:32:05.5962950Z   fetch-depth: 1
+2026-11-09T22:32:05.5963270Z   fetch-tags: false
+2026-11-09T22:32:05.5963600Z   show-progress: true
+2026-11-09T22:32:05.5963930Z   lfs: false
+2026-11-09T22:32:05.5964240Z   submodules: false
+2026-11-09T22:32:05.5964580Z   set-safe-directory: true
+2026-11-09T22:32:05.5964950Z   allow-unsafe-pr-checkout: false
+2026-11-09T22:32:05.5965500Z ##[endgroup]
+2026-11-09T22:32:05.9928680Z Syncing repository: e6qu/fun-with-sandboxes
+2026-11-09T22:32:05.9930620Z ##[group]Getting Git version info
+2026-11-09T22:32:05.9931530Z Working directory is '/Users/runner/work/fun-with-sandboxes/fun-with-sandboxes'
+2026-11-09T22:32:05.9932560Z [command]/opt/homebrew/bin/git version
+2026-11-09T22:32:06.0183890Z git version 2.56.0
+2026-11-09T22:32:06.0197760Z ##[endgroup]
+2026-11-09T22:32:06.0204420Z Copying '/Users/runner/.gitconfig' to '/Users/runner/work/_temp/beea8146-921c-418e-a2f2-51b5739ee20d/.gitconfig'
+2026-11-09T22:32:06.0212450Z Temporarily overriding HOME='/Users/runner/work/_temp/beea8146-921c-418e-a2f2-51b5739ee20d' before making global git config changes
+2026-11-09T22:32:06.0213640Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-09T22:32:06.0216570Z [command]/opt/homebrew/bin/git config --global --add safe.directory /Users/runner/work/fun-with-sandboxes/fun-with-sandboxes
+2026-11-09T22:32:06.0319160Z Deleting the contents of '/Users/runner/work/fun-with-sandboxes/fun-with-sandboxes'
+2026-11-09T22:32:06.0325170Z ##[group]Initializing the repository
+2026-11-09T22:32:06.0327180Z [command]/opt/homebrew/bin/git init /Users/runner/work/fun-with-sandboxes/fun-with-sandboxes
+2026-11-09T22:32:06.0569500Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-11-09T22:32:06.0572050Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-11-09T22:32:06.0572880Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-11-09T22:32:06.0573620Z hint: call:
+2026-11-09T22:32:06.0573980Z hint:
+2026-11-09T22:32:06.0574890Z hint: 	git config --global init.defaultBranch <name>
+2026-11-09T22:32:06.0575490Z hint:
+2026-11-09T22:32:06.0576110Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-11-09T22:32:06.0576880Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-11-09T22:32:06.0578760Z hint:
+2026-11-09T22:32:06.0579170Z hint: 	git branch -m <name>
+2026-11-09T22:32:06.0579590Z hint:
+2026-11-09T22:32:06.0580840Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-11-09T22:32:06.0592320Z Initialized empty Git repository in /Users/runner/work/fun-with-sandboxes/fun-with-sandboxes/.git/
+2026-11-09T22:32:06.0604840Z [command]/opt/homebrew/bin/git remote add origin https://github.com/e6qu/fun-with-sandboxes
+2026-11-09T22:32:06.0703220Z ##[endgroup]
+2026-11-09T22:32:06.0705260Z ##[group]Disabling automatic garbage collection
+2026-11-09T22:32:06.0707730Z [command]/opt/homebrew/bin/git config --local gc.auto 0
+2026-11-09T22:32:06.0787490Z ##[endgroup]
+2026-11-09T22:32:06.0788180Z ##[group]Setting up auth
+2026-11-09T22:32:06.0793020Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-09T22:32:06.0866080Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-09T22:32:06.1919620Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-09T22:32:06.1984070Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-09T22:32:06.2763340Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-09T22:32:06.2829810Z [command]/opt/homebrew/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-09T22:32:06.3596980Z [command]/opt/homebrew/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-11-09T22:32:06.3669760Z ##[endgroup]
+2026-11-09T22:32:06.3671600Z ##[group]Fetching the repository
+2026-11-09T22:32:06.3674650Z [command]/opt/homebrew/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin 42fe12e366bc6b121ba1fc8db369642b4cba00e4
+2026-11-09T22:32:07.0419050Z From https://github.com/e6qu/fun-with-sandboxes
+2026-11-09T22:32:07.0420980Z  * branch            42fe12e366bc6b121ba1fc8db369642b4cba00e4 -> FETCH_HEAD
+2026-11-09T22:32:07.0422600Z ##[endgroup]
+2026-11-09T22:32:07.0423170Z ##[group]Determining the checkout info
+2026-11-09T22:32:07.0423840Z ##[endgroup]
+2026-11-09T22:32:07.0426480Z [command]/opt/homebrew/bin/git sparse-checkout disable
+2026-11-09T22:32:07.0507240Z [command]/opt/homebrew/bin/git config --local --unset-all extensions.worktreeConfig
+2026-11-09T22:32:07.0582120Z ##[group]Checking out the ref
+2026-11-09T22:32:07.0585770Z [command]/opt/homebrew/bin/git checkout --progress --force 42fe12e366bc6b121ba1fc8db369642b4cba00e4
+2026-11-09T22:32:07.1909460Z HEAD is now at 42fe12e Hand probes over as closed connections, and clone a container's initial root beside its root
+2026-11-09T22:32:07.1914410Z ##[endgroup]
+2026-11-09T22:32:07.2010970Z [command]/opt/homebrew/bin/git log -1 --format=%H
+2026-11-09T22:32:07.2074450Z 42fe12e366bc6b121ba1fc8db369642b4cba00e4
+2026-11-09T22:32:07.2408650Z ##[group]Run actions/setup-go@v5
+2026-11-09T22:32:07.2409570Z with:
+2026-11-09T22:32:07.2410350Z   go-version-file: go.mod
+2026-11-09T22:32:07.2411240Z   check-latest: false
+2026-11-09T22:32:07.2419090Z   token: ***
+2026-11-09T22:32:07.2419890Z   cache: true
+2026-11-09T22:32:07.2420600Z ##[endgroup]
+2026-11-09T22:32:07.3660360Z Setup go version spec 1.26.8
+2026-11-09T22:32:07.3677620Z Attempting to download 1.26.8...
+2026-11-09T22:32:07.3830120Z (node:1099) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-09T22:32:07.3841650Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-09T22:32:08.0104650Z matching 1.26.8...
+2026-11-09T22:32:08.0125590Z Acquiring 1.26.8 from https://github.com/actions/go-versions/releases/download/1.26.8-33583485350/go-1.26.8-darwin-arm64.tar.gz
+2026-11-09T22:32:08.6578620Z Extracting Go...
+2026-11-09T22:32:08.6742310Z [command]/usr/bin/tar xz -C /Users/runner/work/_temp/de21a475-0e3c-4486-a079-f88f0e914ae3 -f /Users/runner/work/_temp/6c0206be-f757-4d3a-9cbc-4347506c81f2
+2026-11-09T22:32:10.9114220Z Successfully extracted go to /Users/runner/work/_temp/de21a475-0e3c-4486-a079-f88f0e914ae3
+2026-11-09T22:32:10.9115220Z Adding to the cache ...
+2026-11-09T22:32:20.2391400Z Successfully cached go to /Users/runner/hostedtoolcache/go/1.26.8/arm64
+2026-11-09T22:32:20.2392530Z Added go to the path
+2026-11-09T22:32:20.2394150Z Successfully set up Go version 1.26.8
+2026-11-09T22:32:20.3912580Z [command]/Users/runner/hostedtoolcache/go/1.26.8/arm64/bin/go env GOMODCACHE
+2026-11-09T22:32:20.3920860Z [command]/Users/runner/hostedtoolcache/go/1.26.8/arm64/bin/go env GOCACHE
+2026-11-09T22:32:20.3988310Z /Users/runner/Library/Caches/go-build
+2026-11-09T22:32:20.3989290Z /Users/runner/go/pkg/mod
+2026-11-09T22:32:20.5633030Z Cache hit for: setup-go-macOS-arm64-go-1.26.8-f778fe922bb3d6e73e64f9945420d64e9a19955e46d81b47a5e0ef48ff2f647f
+2026-11-09T22:32:20.5792460Z (node:1099) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-11-09T22:32:21.7498770Z Received 58720256 of 418165582 (14.0%), 55.9 MBs/sec
+2026-11-09T22:32:22.7569420Z Received 130023424 of 418165582 (31.1%), 61.8 MBs/sec
+2026-11-09T22:32:23.7516060Z Received 222298112 of 418165582 (53.2%), 70.5 MBs/sec
+2026-11-09T22:32:24.7526080Z Received 281018368 of 418165582 (67.2%), 66.9 MBs/sec
+2026-11-09T22:32:25.7553210Z Received 381681664 of 418165582 (91.3%), 72.7 MBs/sec
+2026-11-09T22:32:26.5940560Z Received 418165582 of 418165582 (100.0%), 68.2 MBs/sec
+2026-11-09T22:32:26.6010370Z Cache Size: ~399 MB (418165582 B)
+2026-11-09T22:32:26.6274800Z [command]/opt/homebrew/bin/gtar -xf /Users/runner/work/_temp/84a5b5bf-b059-4542-bf3a-e30543924900/cache.tzst -P -C /Users/runner/work/fun-with-sandboxes/fun-with-sandboxes --delay-directory-restore --use-compress-program unzstd
+2026-11-09T22:32:34.6636210Z Cache restored successfully
+2026-11-09T22:32:34.6804520Z Cache restored from key: setup-go-macOS-arm64-go-1.26.8-f778fe922bb3d6e73e64f9945420d64e9a19955e46d81b47a5e0ef48ff2f647f
+2026-11-09T22:32:34.7008350Z go version go1.26.8 darwin/arm64
+2026-11-09T22:32:34.7008730Z 
+2026-11-09T22:32:34.7012340Z ##[group]go env
+2026-11-09T22:32:37.8255400Z AR='ar'
+2026-11-09T22:32:37.8256310Z CC='clang'
+2026-11-09T22:32:37.8258690Z CGO_CFLAGS='-O2 -g'
+2026-11-09T22:32:37.8311350Z CGO_CPPFLAGS=''
+2026-11-09T22:32:37.8344020Z CGO_CXXFLAGS='-O2 -g'
+2026-11-09T22:32:37.8347600Z CGO_ENABLED='1'
+2026-11-09T22:32:37.8348220Z CGO_FFLAGS='-O2 -g'
+2026-11-09T22:32:37.8351210Z CGO_LDFLAGS='-O2 -g'
+2026-11-09T22:32:37.8352420Z CXX='clang++'
+2026-11-09T22:32:37.8353610Z GCCGO='gccgo'
+2026-11-09T22:32:37.8354220Z GO111MODULE=''
+2026-11-09T22:32:37.8356200Z GOARCH='arm64'
+2026-11-09T22:32:37.8357260Z GOARM64='v8.0'
+2026-11-09T22:32:37.8357810Z GOAUTH='netrc'
+2026-11-09T22:32:37.8366620Z GOBIN=''
+2026-11-09T22:32:37.8369900Z GOCACHE='/Users/runner/Library/Caches/go-build'
+2026-11-09T22:32:37.8374200Z GOCACHEPROG=''
+2026-11-09T22:32:37.8374630Z GODEBUG=''
+2026-11-09T22:32:37.8374980Z GOENV='/Users/runner/Library/Application Support/go/env'
+2026-11-09T22:32:37.8375410Z GOEXE=''
+2026-11-09T22:32:37.8375630Z GOEXPERIMENT=''
+2026-11-09T22:32:37.8376050Z GOFIPS140='off'
+2026-11-09T22:32:37.8376770Z GOFLAGS=''
+2026-11-09T22:32:37.8378520Z GOGCCFLAGS='-fPIC -arch arm64 -pthread -fno-caret-diagnostics -Qunused-arguments -fmessage-length=0 -ffile-prefix-map=/var/folders/2s/vty41l455yv698g4xkgfv7z00000gn/T/go-build3540398002=/tmp/go-build -gno-record-gcc-switches -fno-common'
+2026-11-09T22:32:37.8381960Z GOHOSTARCH='arm64'
+2026-11-09T22:32:37.8383490Z GOHOSTOS='darwin'
+2026-11-09T22:32:37.8384100Z GOINSECURE=''
+2026-11-09T22:32:37.8385260Z GOMOD='/Users/runner/work/fun-with-sandboxes/fun-with-sandboxes/go.mod'
+2026-11-09T22:32:37.8386780Z GOMODCACHE='/Users/runner/go/pkg/mod'
+2026-11-09T22:32:37.8387830Z GONOPROXY=''
+2026-11-09T22:32:37.8388670Z GONOSUMDB=''
+2026-11-09T22:32:37.8389510Z GOOS='darwin'
+2026-11-09T22:32:37.8390230Z GOPATH='/Users/runner/go'
+2026-11-09T22:32:37.8391130Z GOPRIVATE=''
+2026-11-09T22:32:37.8392300Z GOPROXY='https://proxy.golang.org,direct'
+2026-11-09T22:32:37.8393360Z GOROOT='/Users/runner/hostedtoolcache/go/1.26.8/arm64'
+2026-11-09T22:32:37.8394510Z GOSUMDB='sum.golang.org'
+2026-11-09T22:32:37.8395250Z GOTELEMETRY='local'
+2026-11-09T22:32:37.8396500Z GOTELEMETRYDIR='/Users/runner/Library/Application Support/go/telemetry'
+2026-11-09T22:32:37.8397740Z GOTMPDIR=''
+2026-11-09T22:32:37.8398400Z GOTOOLCHAIN='auto'
+2026-11-09T22:32:37.8399890Z GOTOOLDIR='/Users/runner/hostedtoolcache/go/1.26.8/arm64/pkg/tool/darwin_arm64'
+2026-11-09T22:32:37.8400490Z GOVCS=''
+2026-11-09T22:32:37.8402820Z GOVERSION='go1.26.8'
+2026-11-09T22:32:37.8403360Z GOWORK=''
+2026-11-09T22:32:37.8403740Z PKG_CONFIG='pkg-config'
+2026-11-09T22:32:37.8403960Z 
+2026-11-09T22:32:37.8404610Z ##[endgroup]
+2026-11-09T22:32:37.9025790Z ##[group]Run go test -race -count=3 ./...
+2026-11-09T22:32:37.9026540Z [36;1mgo test -race -count=3 ./...[0m
+2026-11-09T22:32:37.9353740Z shell: /bin/bash -e {0}
+2026-11-09T22:32:37.9354380Z ##[endgroup]
+2026-11-09T22:32:43.9298630Z ok  	github.com/e6qu/fun-with-sandboxes/cmd/fws-mkimage	1.277s
+2026-11-09T22:32:43.9344610Z ?   	github.com/e6qu/fun-with-sandboxes/cmd/fws-shim	[no test files]
+2026-11-09T22:32:44.9303360Z ?   	github.com/e6qu/fun-with-sandboxes/cmd/fwsd	[no test files]
+2026-11-09T22:32:44.9405720Z ?   	github.com/e6qu/fun-with-sandboxes/images/consul/entry	[no test files]
+2026-11-09T22:32:45.9854490Z ok  	github.com/e6qu/fun-with-sandboxes/images/dind/dockerd	1.056s
+2026-11-09T22:32:56.7526520Z ok  	github.com/e6qu/fun-with-sandboxes/images/dind/entry	11.732s
+2026-11-09T22:32:56.7542220Z ?   	github.com/e6qu/fun-with-sandboxes/images/dynamodb/entry	[no test files]
+2026-11-09T22:32:56.7544310Z ok  	github.com/e6qu/fun-with-sandboxes/images/gitea/entry	1.111s
+2026-11-09T22:32:56.7554920Z ok  	github.com/e6qu/fun-with-sandboxes/images/influxdb/entry	1.050s
+2026-11-09T22:32:56.7581450Z ok  	github.com/e6qu/fun-with-sandboxes/images/kafka/ub	1.030s
+2026-11-09T22:32:56.7583010Z ?   	github.com/e6qu/fun-with-sandboxes/images/lambda/entry	[no test files]
+2026-11-09T22:32:56.7585920Z ?   	github.com/e6qu/fun-with-sandboxes/images/mariadb/entry	[no test files]
+2026-11-09T22:32:56.7652530Z ?   	github.com/e6qu/fun-with-sandboxes/images/memcached/entry	[no test files]
+2026-11-09T22:32:56.7653530Z ok  	github.com/e6qu/fun-with-sandboxes/images/mongo/entry	1.028s
+2026-11-09T22:32:56.7657380Z ?   	github.com/e6qu/fun-with-sandboxes/images/mysql/entry	[no test files]
+2026-11-09T22:32:56.7658020Z ok  	github.com/e6qu/fun-with-sandboxes/images/nc	1.080s
+2026-11-09T22:32:56.7658870Z ok  	github.com/e6qu/fun-with-sandboxes/images/neo4j/entry	1.036s
+2026-11-09T22:32:56.7659800Z ?   	github.com/e6qu/fun-with-sandboxes/images/nginx/entry	[no test files]
+2026-11-09T22:32:56.7661510Z ?   	github.com/e6qu/fun-with-sandboxes/images/playwright/entry	[no test files]
+2026-11-09T22:32:56.7662390Z ?   	github.com/e6qu/fun-with-sandboxes/images/postgres/entry	[no test files]
+2026-11-09T22:32:56.7769370Z ?   	github.com/e6qu/fun-with-sandboxes/images/rabbitmq/entry	[no test files]
+2026-11-09T22:32:56.7803630Z ?   	github.com/e6qu/fun-with-sandboxes/images/redis/entry	[no test files]
+2026-11-09T22:32:56.7828210Z ?   	github.com/e6qu/fun-with-sandboxes/images/seaweedfs/entry	[no test files]
+2026-11-09T22:32:56.7930570Z ?   	github.com/e6qu/fun-with-sandboxes/images/toolbox	[no test files]
+2026-11-09T22:32:56.8032090Z ?   	github.com/e6qu/fun-with-sandboxes/images/valkey/entry	[no test files]
+2026-11-09T22:32:56.8051190Z ?   	github.com/e6qu/fun-with-sandboxes/images/vault/entry	[no test files]
+2026-11-09T22:32:56.8098490Z ok  	github.com/e6qu/fun-with-sandboxes/internal/alloc	1.143s
+2026-11-09T22:32:56.8145180Z ok  	github.com/e6qu/fun-with-sandboxes/internal/api	2.533s
+2026-11-09T22:32:56.8154230Z ok  	github.com/e6qu/fun-with-sandboxes/internal/buildkit	1.367s
+2026-11-09T22:32:56.8194870Z ok  	github.com/e6qu/fun-with-sandboxes/internal/cri	1.108s
+2026-11-09T22:32:56.8262240Z ok  	github.com/e6qu/fun-with-sandboxes/internal/dockerfile	1.085s
+2026-11-09T22:32:58.0211490Z ok  	github.com/e6qu/fun-with-sandboxes/internal/egress	1.261s
+2026-11-09T22:33:03.6478620Z ok  	github.com/e6qu/fun-with-sandboxes/internal/engine	4.685s
+2026-11-09T22:33:03.6482920Z ok  	github.com/e6qu/fun-with-sandboxes/internal/identity	1.064s
+2026-11-09T22:33:03.6484460Z ok  	github.com/e6qu/fun-with-sandboxes/internal/image	2.415s
+2026-11-09T22:33:10.8384930Z ok  	github.com/e6qu/fun-with-sandboxes/internal/libsystem	10.741s
+2026-11-09T22:33:10.8490930Z ok  	github.com/e6qu/fun-with-sandboxes/internal/logfile	1.034s
+2026-11-09T22:33:10.8614820Z ok  	github.com/e6qu/fun-with-sandboxes/internal/members	1.086s
+2026-11-09T22:33:11.2013360Z ok  	github.com/e6qu/fun-with-sandboxes/internal/netstat	7.576s
+2026-11-09T22:35:48.2484090Z ok  	github.com/e6qu/fun-with-sandboxes/internal/pathmap	164.535s
+2026-11-09T22:35:48.2490580Z ok  	github.com/e6qu/fun-with-sandboxes/internal/pidns	1.596s
+2026-11-09T22:35:48.2491970Z ok  	github.com/e6qu/fun-with-sandboxes/internal/portproxy	1.121s
+2026-11-09T22:35:48.2493300Z ok  	github.com/e6qu/fun-with-sandboxes/internal/procs	1.484s
+2026-11-09T22:35:48.2496230Z ?   	github.com/e6qu/fun-with-sandboxes/internal/roles	[no test files]
+2026-11-09T22:35:48.2498050Z ok  	github.com/e6qu/fun-with-sandboxes/internal/rootfs	1.103s
+2026-11-09T22:35:48.2499250Z ok  	github.com/e6qu/fun-with-sandboxes/internal/router	1.131s
+2026-11-09T22:35:48.2500430Z ok  	github.com/e6qu/fun-with-sandboxes/internal/runtime	11.706s
+2026-11-09T22:35:48.2501690Z ?   	github.com/e6qu/fun-with-sandboxes/internal/sandboxenv	[no test files]
+2026-11-09T22:35:48.2503020Z ok  	github.com/e6qu/fun-with-sandboxes/internal/seatbelt	21.011s
+2026-11-09T22:35:48.2504050Z ok  	github.com/e6qu/fun-with-sandboxes/internal/shim	21.284s
+2026-11-09T22:35:48.2506140Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/api/services/control	[no test files]
+2026-11-09T22:35:48.2507900Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/api/types	[no test files]
+2026-11-09T22:35:48.2509270Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache	[no test files]
+2026-11-09T22:35:48.2510900Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/config	[no test files]
+2026-11-09T22:35:48.2512490Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/contenthash	[no test files]
+2026-11-09T22:35:48.2513970Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/metadata	[no test files]
+2026-11-09T22:35:48.2515570Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/remotecache	[no test files]
+2026-11-09T22:35:48.2519000Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/remotecache/gha/ghatypes	[no test files]
+2026-11-09T22:35:48.2521100Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/remotecache/inline	[no test files]
+2026-11-09T22:35:48.2528890Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/remotecache/local	[no test files]
+2026-11-09T22:35:48.2531140Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/remotecache/registry	[no test files]
+2026-11-09T22:35:48.2532960Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/remotecache/v1	[no test files]
+2026-11-09T22:35:48.2534860Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/remotecache/v1/types	[no test files]
+2026-11-09T22:35:48.2536630Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cache/util	[no test files]
+2026-11-09T22:35:48.2538280Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/client	[no test files]
+2026-11-09T22:35:48.2539930Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/client/buildid	[no test files]
+2026-11-09T22:35:48.2541460Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/client/connhelper	[no test files]
+2026-11-09T22:35:48.2542300Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/client/llb	[no test files]
+2026-11-09T22:35:48.2543000Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/client/llb/imagemetaresolver	[no test files]
+2026-11-09T22:35:48.2543870Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/client/llb/sourceresolver	[no test files]
+2026-11-09T22:35:48.2544720Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/client/ociindex	[no test files]
+2026-11-09T22:35:48.2545480Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/cmd/buildkitd/config	[no test files]
+2026-11-09T22:35:48.2546170Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/control	[no test files]
+2026-11-09T22:35:48.2546910Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/control/gateway	[no test files]
+2026-11-09T22:35:48.2547510Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/errdefs	[no test files]
+2026-11-09T22:35:48.2548620Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/executor	[no test files]
+2026-11-09T22:35:48.2549360Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/executor/resources	[no test files]
+2026-11-09T22:35:48.2550040Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/executor/resources/types	[no test files]
+2026-11-09T22:35:48.2550700Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter	[no test files]
+2026-11-09T22:35:48.2551460Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/attestation	[no test files]
+2026-11-09T22:35:48.2552170Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/containerimage	[no test files]
+2026-11-09T22:35:48.2552950Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/containerimage/exptypes	[no test files]
+2026-11-09T22:35:48.2554110Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/exptypes	[no test files]
+2026-11-09T22:35:48.2554730Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/local	[no test files]
+2026-11-09T22:35:48.2555390Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/oci	[no test files]
+2026-11-09T22:35:48.2556180Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/tar	[no test files]
+2026-11-09T22:35:48.2556820Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/util/epoch	[no test files]
+2026-11-09T22:35:48.2557600Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/exporter/verifier	[no test files]
+2026-11-09T22:35:48.2558180Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend	[no test files]
+2026-11-09T22:35:48.2558860Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/attestations	[no test files]
+2026-11-09T22:35:48.2559710Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/attestations/sbom	[no test files]
+2026-11-09T22:35:48.2560800Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/dockerfile/builder	[no test files]
+2026-11-09T22:35:48.2561980Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/dockerfile/command	[no test files]
+2026-11-09T22:35:48.2562760Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/dockerfile/dfgitutil	[no test files]
+2026-11-09T22:35:48.2563470Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/dockerfile/dockerfile2llb	[no test files]
+2026-11-09T22:35:48.2564250Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/dockerfile/instructions	[no test files]
+2026-11-09T22:35:48.2565020Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/dockerfile/linter	[no test files]
+2026-11-09T22:35:48.2565850Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/dockerfile/parser	[no test files]
+2026-11-09T22:35:48.2566570Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/dockerfile/shell	[no test files]
+2026-11-09T22:35:48.2567340Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/dockerfile/version	[no test files]
+2026-11-09T22:35:48.2568000Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/dockerui	[no test files]
+2026-11-09T22:35:48.2568760Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/gateway	[no test files]
+2026-11-09T22:35:48.2569510Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/gateway/client	[no test files]
+2026-11-09T22:35:48.2570550Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/gateway/container	[no test files]
+2026-11-09T22:35:48.2571470Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/gateway/forwarder	[no test files]
+2026-11-09T22:35:48.2572940Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/gateway/grpcclient	[no test files]
+2026-11-09T22:35:48.2573920Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/gateway/pb	[no test files]
+2026-11-09T22:35:48.2574960Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/subrequests	[no test files]
+2026-11-09T22:35:48.2575800Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/subrequests/convertllb	[no test files]
+2026-11-09T22:35:48.2576490Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/subrequests/lint	[no test files]
+2026-11-09T22:35:48.2577230Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/subrequests/outline	[no test files]
+2026-11-09T22:35:48.2577930Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/frontend/subrequests/targets	[no test files]
+2026-11-09T22:35:48.2578640Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/identity	[no test files]
+2026-11-09T22:35:48.2579290Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/session	[no test files]
+2026-11-09T22:35:48.2579850Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/session/auth	[no test files]
+2026-11-09T22:35:48.2580540Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/session/content	[no test files]
+2026-11-09T22:35:48.2581250Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/session/exporter	[no test files]
+2026-11-09T22:35:48.2581860Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/session/filesync	[no test files]
+2026-11-09T22:35:48.2582520Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/session/grpchijack	[no test files]
+2026-11-09T22:35:48.2583450Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/session/secrets	[no test files]
+2026-11-09T22:35:48.2584330Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/session/sshforward	[no test files]
+2026-11-09T22:35:48.2585160Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/session/upload	[no test files]
+2026-11-09T22:35:48.2585820Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/snapshot	[no test files]
+2026-11-09T22:35:48.2586420Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/snapshot/containerd	[no test files]
+2026-11-09T22:35:48.2587500Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/snapshot/imagerefchecker	[no test files]
+2026-11-09T22:35:48.2588090Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver	[no test files]
+2026-11-09T22:35:48.2588760Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/bboltcachestorage	[no test files]
+2026-11-09T22:35:48.2589440Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/errdefs	[no test files]
+2026-11-09T22:35:48.2590240Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/internal/pipe	[no test files]
+2026-11-09T22:35:48.2590960Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver	[no test files]
+2026-11-09T22:35:48.2591670Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/cdidevices	[no test files]
+2026-11-09T22:35:48.2596540Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/compat	[no test files]
+2026-11-09T22:35:48.2600660Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/errdefs	[no test files]
+2026-11-09T22:35:48.2601570Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/file	[no test files]
+2026-11-09T22:35:48.2602180Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/history	[no test files]
+2026-11-09T22:35:48.2602830Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/linuxresources	[no test files]
+2026-11-09T22:35:48.2603500Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/mounts	[no test files]
+2026-11-09T22:35:48.2604080Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/ops	[no test files]
+2026-11-09T22:35:48.2605850Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/ops/fileoptypes	[no test files]
+2026-11-09T22:35:48.2607030Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/ops/opsutils	[no test files]
+2026-11-09T22:35:48.2607860Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/proc	[no test files]
+2026-11-09T22:35:48.2608460Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/provenance	[no test files]
+2026-11-09T22:35:48.2653190Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/llbsolver/provenance/types	[no test files]
+2026-11-09T22:35:48.2654400Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/pb	[no test files]
+2026-11-09T22:35:48.2655040Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/solver/result	[no test files]
+2026-11-09T22:35:48.2655600Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/source	[no test files]
+2026-11-09T22:35:48.2656130Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/source/containerblob	[no test files]
+2026-11-09T22:35:48.2656790Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/source/containerblob/blobfetch	[no test files]
+2026-11-09T22:35:48.2657500Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/source/containerimage	[no test files]
+2026-11-09T22:35:48.2658120Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/source/git	[no test files]
+2026-11-09T22:35:48.2658790Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/source/http	[no test files]
+2026-11-09T22:35:48.2659370Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/source/local	[no test files]
+2026-11-09T22:35:48.2659940Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/source/types	[no test files]
+2026-11-09T22:35:48.2660850Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/source/util/pathutil	[no test files]
+2026-11-09T22:35:48.2661490Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/sourcepolicy	[no test files]
+2026-11-09T22:35:48.2662070Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/sourcepolicy/pb	[no test files]
+2026-11-09T22:35:48.2663100Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/sourcepolicy/policysession	[no test files]
+2026-11-09T22:35:48.2663770Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/apicaps	[no test files]
+2026-11-09T22:35:48.2664320Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/apicaps/pb	[no test files]
+2026-11-09T22:35:48.2664860Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/appdefaults	[no test files]
+2026-11-09T22:35:48.2665550Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/archiveutil	[no test files]
+2026-11-09T22:35:48.2666180Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/archutil	[no test files]
+2026-11-09T22:35:48.2666820Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/attestation	[no test files]
+2026-11-09T22:35:48.2667690Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/bklog	[no test files]
+2026-11-09T22:35:48.2668270Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/bkmaps	[no test files]
+2026-11-09T22:35:48.2668850Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/bkslices	[no test files]
+2026-11-09T22:35:48.2669370Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/cachedigest	[no test files]
+2026-11-09T22:35:48.2670300Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/compression	[no test files]
+2026-11-09T22:35:48.2670860Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/cond	[no test files]
+2026-11-09T22:35:48.2671530Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/contentutil	[no test files]
+2026-11-09T22:35:48.2672100Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/converter	[no test files]
+2026-11-09T22:35:48.2672770Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/converter/tarconverter	[no test files]
+2026-11-09T22:35:48.2674210Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/cpuset	[no test files]
+2026-11-09T22:35:48.2674850Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/db	[no test files]
+2026-11-09T22:35:48.2675480Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/db/boltutil	[no test files]
+2026-11-09T22:35:48.2676150Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/db/compaction	[no test files]
+2026-11-09T22:35:48.2676680Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/disk	[no test files]
+2026-11-09T22:35:48.2677250Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/entitlements	[no test files]
+2026-11-09T22:35:48.2679150Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/errutil	[no test files]
+2026-11-09T22:35:48.2679810Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/estargz	[no test files]
+2026-11-09T22:35:48.2680510Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/flightcontrol	[no test files]
+2026-11-09T22:35:48.2681090Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/gitutil	[no test files]
+2026-11-09T22:35:48.2681760Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/gitutil/gitobject	[no test files]
+2026-11-09T22:35:48.2682390Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/gitutil/gitsign	[no test files]
+2026-11-09T22:35:48.2682940Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/gogo/proto	[no test files]
+2026-11-09T22:35:48.2683570Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/grpcerrors	[no test files]
+2026-11-09T22:35:48.2684210Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/imageutil	[no test files]
+2026-11-09T22:35:48.2684790Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/iohelper	[no test files]
+2026-11-09T22:35:48.2685420Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/leaseutil	[no test files]
+2026-11-09T22:35:48.2686330Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/network	[no test files]
+2026-11-09T22:35:48.2687910Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/openfile	[no test files]
+2026-11-09T22:35:48.2688550Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/overlay	[no test files]
+2026-11-09T22:35:48.2689240Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/pgpsign	[no test files]
+2026-11-09T22:35:48.2690050Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/pools	[no test files]
+2026-11-09T22:35:48.2690760Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/progress	[no test files]
+2026-11-09T22:35:48.2691480Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/progress/controller	[no test files]
+2026-11-09T22:35:48.2692210Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/progress/logs	[no test files]
+2026-11-09T22:35:48.2693330Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/pull	[no test files]
+2026-11-09T22:35:48.2694030Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/pull/pullprogress	[no test files]
+2026-11-09T22:35:48.2694770Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/purl	[no test files]
+2026-11-09T22:35:48.2695400Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/push	[no test files]
+2026-11-09T22:35:48.2696090Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/registrar	[no test files]
+2026-11-09T22:35:48.2696760Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/resolver	[no test files]
+2026-11-09T22:35:48.2697420Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/resolver/config	[no test files]
+2026-11-09T22:35:48.2698100Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/resolver/limited	[no test files]
+2026-11-09T22:35:48.2698780Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/resolver/retryhandler	[no test files]
+2026-11-09T22:35:48.2700490Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/rootless/mountopts	[no test files]
+2026-11-09T22:35:48.2701200Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/sshutil	[no test files]
+2026-11-09T22:35:48.2701850Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/stack	[no test files]
+2026-11-09T22:35:48.2702550Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/staticfs	[no test files]
+2026-11-09T22:35:48.2703060Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/suggest	[no test files]
+2026-11-09T22:35:48.2703760Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/system	[no test files]
+2026-11-09T22:35:48.2704340Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/throttle	[no test files]
+2026-11-09T22:35:48.2704950Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/tracing	[no test files]
+2026-11-09T22:35:48.2705620Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/tracing/detect	[no test files]
+2026-11-09T22:35:48.2706260Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/tracing/forwarder	[no test files]
+2026-11-09T22:35:48.2707030Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/tracing/otlptracegrpc	[no test files]
+2026-11-09T22:35:48.2707760Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/tracing/transform	[no test files]
+2026-11-09T22:35:48.2708500Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/urlutil	[no test files]
+2026-11-09T22:35:48.2709150Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/wildcard	[no test files]
+2026-11-09T22:35:48.2709820Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/util/winlayers	[no test files]
+2026-11-09T22:35:48.2710320Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/version	[no test files]
+2026-11-09T22:35:48.2710930Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/worker	[no test files]
+2026-11-09T22:35:48.2711930Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/worker/base	[no test files]
+2026-11-09T22:35:48.2712570Z ?   	github.com/e6qu/fun-with-sandboxes/third_party/buildkit/worker/label	[no test files]
+2026-11-09T22:35:48.3765850Z ##[group]Run go test -run '^$' -bench . ./internal/pathmap
+2026-11-09T22:35:48.3766440Z [36;1mgo test -run '^$' -bench . ./internal/pathmap[0m
+2026-11-09T22:35:48.4144530Z shell: /bin/bash -e {0}
+2026-11-09T22:35:48.4145060Z ##[endgroup]
+2026-11-09T22:35:54.3249050Z goos: darwin
+2026-11-09T22:35:54.3249760Z goarch: arm64
+2026-11-09T22:35:54.3252790Z pkg: github.com/e6qu/fun-with-sandboxes/internal/pathmap
+2026-11-09T22:35:54.3254450Z cpu: Apple M1 (Virtual)
+2026-11-09T22:35:55.9463450Z BenchmarkCalls/getpid/native-3         	281212486	         4.144 ns/op	         4.100 ns/call
+2026-11-09T22:35:57.7333540Z BenchmarkCalls/getpid/empty-3          	158986188	         7.839 ns/op	         7.800 ns/call
+2026-11-09T22:35:59.4169980Z BenchmarkCalls/getpid/bare-3           	207466407	         7.088 ns/op	         7.000 ns/call
+2026-11-09T22:36:01.0746420Z BenchmarkCalls/getpid/fwsroot-3        	116775062	        10.85 ns/op	        10.80 ns/call
+2026-11-09T22:36:02.4618210Z BenchmarkCalls/getuid/native-3         	 5056632	       223.7 ns/op	       222.8 ns/call
+2026-11-09T22:36:04.8814640Z BenchmarkCalls/getuid/empty-3          	 5423019	       218.7 ns/op	       217.3 ns/call
+2026-11-09T22:36:06.4059610Z BenchmarkCalls/getuid/bare-3           	136925397	         8.039 ns/op	         8.000 ns/call
+2026-11-09T22:36:08.3602850Z BenchmarkCalls/getuid/fwsroot-3        	87338593	        13.10 ns/op	        13.00 ns/call
+2026-11-09T22:36:10.6999870Z BenchmarkCalls/open/native-3           	  173150	      7331 ns/op	      7307 ns/call
+2026-11-09T22:36:12.0520920Z BenchmarkCalls/open/empty-3            	  183418	      6920 ns/op	      6878 ns/call
+2026-11-09T22:36:13.1979260Z BenchmarkCalls/open/bare-3             	  132871	      7849 ns/op	      7773 ns/call
+2026-11-09T22:36:15.1796680Z BenchmarkCalls/open/fwsroot-3          	  136698	      8206 ns/op	      8122 ns/call
+2026-11-09T22:36:17.1264040Z BenchmarkCalls/stat/native-3           	  832501	      1403 ns/op	      1399 ns/call
+2026-11-09T22:36:19.1255240Z BenchmarkCalls/stat/empty-3            	  690367	      1639 ns/op	      1619 ns/call
+2026-11-09T22:36:21.0148890Z BenchmarkCalls/stat/bare-3             	  648326	      1924 ns/op	      1898 ns/call
+2026-11-09T22:36:23.0821380Z BenchmarkCalls/stat/fwsroot-3          	  588030	      1743 ns/op	      1726 ns/call
+2026-11-09T22:36:25.1526830Z BenchmarkCalls/stat-missing/native-3   	 1156777	      1049 ns/op	      1043 ns/call
+2026-11-09T22:36:27.1751870Z BenchmarkCalls/stat-missing/empty-3    	 1036656	      1070 ns/op	      1063 ns/call
+2026-11-09T22:36:28.9697490Z BenchmarkCalls/stat-missing/bare-3     	 1107310	      1117 ns/op	      1108 ns/call
+2026-11-09T22:36:31.2537740Z BenchmarkCalls/stat-missing/fwsroot-3  	  444214	      2913 ns/op	      2885 ns/call
+2026-11-09T22:36:33.0450580Z BenchmarkCalls/fstat/native-3          	 1877340	       671.6 ns/op	       669.6 ns/call
+2026-11-09T22:36:34.6549500Z BenchmarkCalls/fstat/empty-3           	 2117787	       572.3 ns/op	       569.1 ns/call
+2026-11-09T22:36:36.4306340Z BenchmarkCalls/fstat/bare-3            	 2088252	       580.5 ns/op	       575.5 ns/call
+2026-11-09T22:36:38.2909690Z BenchmarkCalls/fstat/fwsroot-3         	 2210422	       601.1 ns/op	       597.1 ns/call
+2026-11-09T22:36:40.2311140Z BenchmarkCalls/pread/native-3          	 1844210	       687.6 ns/op	       684.4 ns/call
+2026-11-09T22:36:41.7406710Z BenchmarkCalls/pread/empty-3           	 1710808	       730.1 ns/op	       724.0 ns/call
+2026-11-09T22:36:43.3897420Z BenchmarkCalls/pread/bare-3            	 1620672	       717.6 ns/op	       709.5 ns/call
+2026-11-09T22:36:45.3649060Z BenchmarkCalls/pread/fwsroot-3         	 1934954	       727.3 ns/op	       720.8 ns/call
+2026-11-09T22:36:46.7062300Z BenchmarkCalls/readdir/native-3        	   88026	     13558 ns/op	     13494 ns/call
+2026-11-09T22:36:48.3100490Z BenchmarkCalls/readdir/empty-3         	  101658	     14403 ns/op	     14347 ns/call
+2026-11-09T22:36:50.8641720Z BenchmarkCalls/readdir/bare-3          	   98457	     16993 ns/op	     16776 ns/call
+2026-11-09T22:36:52.2640940Z BenchmarkCalls/readdir/fwsroot-3       	   78080	     16361 ns/op	     16243 ns/call
+2026-11-09T22:36:53.8889970Z BenchmarkCalls/socket/native-3         	  288649	      5450 ns/op	      5430 ns/call
+2026-11-09T22:36:58.3600820Z BenchmarkCalls/socket/empty-3          	  443872	      4239 ns/op	      4197 ns/call
+2026-11-09T22:37:00.0266810Z BenchmarkCalls/socket/bare-3           	  440473	      3232 ns/op	      3203 ns/call
+2026-11-09T22:37:01.8107350Z BenchmarkCalls/socket/fwsroot-3        	  331783	      4740 ns/op	      4696 ns/call
+2026-11-09T22:37:03.2569200Z BenchmarkCalls/spawn/native-3          	     418	   2753158 ns/op	   2737791 ns/call
+2026-11-09T22:37:05.4285060Z BenchmarkCalls/spawn/empty-3           	     190	   8063808 ns/op	   8023537 ns/call
+2026-11-09T22:37:08.0105990Z BenchmarkCalls/spawn/bare-3            	     122	  10201191 ns/op	  10120015 ns/call
+2026-11-09T22:37:09.8267130Z BenchmarkCalls/spawn/fwsroot-3         	     139	   8567511 ns/op	   8510345 ns/call
+2026-11-09T22:37:11.4465980Z BenchmarkCalls/started/native-3        	     278	   4271719 ns/op	   3852719 ns/call
+2026-11-09T22:37:14.6645920Z BenchmarkCalls/started/empty-3         	     175	   7949171 ns/op	   7550246 ns/call
+2026-11-09T22:37:16.4703230Z BenchmarkCalls/started/bare-3          	     123	   9467659 ns/op	   9034992 ns/call
+2026-11-09T22:37:18.4193770Z BenchmarkCalls/started/fwsroot-3       	     118	   8898422 ns/op	   8493407 ns/call
+2026-11-09T22:37:18.4208210Z PASS
+2026-11-09T22:37:18.4221310Z ok  	github.com/e6qu/fun-with-sandboxes/internal/pathmap	86.879s
+2026-11-09T22:37:18.4974800Z ##[group]Run go test -run '^$' -bench . -benchtime 20x ./internal/runtime
+2026-11-09T22:37:18.4975310Z [36;1mgo test -run '^$' -bench . -benchtime 20x ./internal/runtime[0m
+2026-11-09T22:37:18.5212160Z shell: /bin/bash -e {0}
+2026-11-09T22:37:18.5212580Z ##[endgroup]
+2026-11-09T22:37:21.5525910Z goos: darwin
+2026-11-09T22:37:21.5526300Z goarch: arm64
+2026-11-09T22:37:21.5526770Z pkg: github.com/e6qu/fun-with-sandboxes/internal/runtime
+2026-11-09T22:37:21.5527220Z cpu: Apple M1 (Virtual)
+2026-11-09T22:37:21.9893790Z BenchmarkStart/sandbox-3         	      20	  21810225 ns/op	  21365965 ns/start
+2026-11-09T22:37:22.4517540Z BenchmarkStart/library-3         	      20	  21851083 ns/op	  21504390 ns/start
+2026-11-09T22:37:23.1755330Z BenchmarkStart/anchor-3          	      20	  34628615 ns/op	  33914110 ns/start
+2026-11-09T22:37:23.8656030Z BenchmarkStart/container-3       	      20	  32666671 ns/op	  31975540 ns/start
+2026-11-09T22:37:23.8673010Z PASS
+2026-11-09T22:37:23.8698420Z ok  	github.com/e6qu/fun-with-sandboxes/internal/runtime	4.588s
+2026-11-09T22:37:23.9123440Z Post job cleanup.
+2026-11-09T22:37:24.2816140Z (node:9992) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-09T22:37:24.2817190Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-09T22:37:24.2892240Z [command]/Users/runner/hostedtoolcache/go/1.26.8/arm64/bin/go env GOMODCACHE
+2026-11-09T22:37:24.2942980Z [command]/Users/runner/hostedtoolcache/go/1.26.8/arm64/bin/go env GOCACHE
+2026-11-09T22:37:24.3061670Z /Users/runner/Library/Caches/go-build
+2026-11-09T22:37:24.3064670Z /Users/runner/go/pkg/mod
+2026-11-09T22:37:24.3066940Z Cache hit occurred on the primary key setup-go-macOS-arm64-go-1.26.8-f778fe922bb3d6e73e64f9945420d64e9a19955e46d81b47a5e0ef48ff2f647f, not saving cache.
+2026-11-09T22:37:24.3197130Z Post job cleanup.
+2026-11-09T22:37:24.4077700Z [command]/opt/homebrew/bin/git version
+2026-11-09T22:37:24.4150060Z git version 2.56.0
+2026-11-09T22:37:24.4172940Z Copying '/Users/runner/.gitconfig' to '/Users/runner/work/_temp/f5c7bb17-75ef-42c0-bcef-5fe4686a2ede/.gitconfig'
+2026-11-09T22:37:24.4186990Z Temporarily overriding HOME='/Users/runner/work/_temp/f5c7bb17-75ef-42c0-bcef-5fe4686a2ede' before making global git config changes
+2026-11-09T22:37:24.4188770Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-09T22:37:24.4196080Z [command]/opt/homebrew/bin/git config --global --add safe.directory /Users/runner/work/fun-with-sandboxes/fun-with-sandboxes
+2026-11-09T22:37:24.4272780Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-09T22:37:24.4337470Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-09T22:37:24.5280060Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-09T22:37:24.5345930Z http.https://github.com/.extraheader
+2026-11-09T22:37:24.5353280Z [command]/opt/homebrew/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-11-09T22:37:24.5441270Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-09T22:37:24.6291430Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-09T22:37:24.6357160Z [command]/opt/homebrew/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-09T22:37:24.7819850Z Cleaning up orphan processes
+2026-11-09T22:37:25.6531510Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-go@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
