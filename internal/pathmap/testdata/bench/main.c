@@ -61,8 +61,13 @@ int main(int argc, char **argv) {
 		} else if (!strcmp(op, "spawn")) {
 			char *args[] = {"bench", "getpid", "1", (char *)dir, NULL};
 			pid_t pid;
-			if (posix_spawn(&pid, self, NULL, NULL, args, environ) != 0) {
-				perror("posix_spawn");
+			posix_spawn_file_actions_t fa;
+			posix_spawn_file_actions_init(&fa);
+			posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+			int e = posix_spawn(&pid, self, &fa, NULL, args, environ);
+			posix_spawn_file_actions_destroy(&fa);
+			if (e != 0) {
+				fprintf(stderr, "posix_spawn: %s\n", strerror(e));
 				return 1;
 			}
 			waitpid(pid, NULL, 0);

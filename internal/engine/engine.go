@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -97,6 +98,19 @@ func Open(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	cfg.Root = root
+	// Files an earlier engine's containers and images recorded an owner or
+	// a mode on lack the flag the container library now reads first.
+	marked := filepath.Join(root, ".meta-flags")
+	if _, err := os.Stat(marked); errors.Is(err, fs.ErrNotExist) {
+		if err := image.MarkTree(root); err != nil {
+			return nil, fmt.Errorf("mark %s: %w", root, err)
+		}
+		if err := os.WriteFile(marked, nil, 0o600); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
 	a, err := alloc.Open(alloc.Config{Root: root, PortBase: cfg.PortBase, PortLimit: cfg.PortLimit, BlockSize: cfg.BlockSize})
 	if err != nil {
 		return nil, err

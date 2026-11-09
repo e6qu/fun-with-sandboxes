@@ -74,6 +74,16 @@ func run(check string) string {
 		}
 		st := fi.Sys().(*syscall.Stat_t)
 		return fmt.Sprintf("%d:%d", st.Uid, st.Gid)
+	case "chflags":
+		if err := unix.Chflags("/etc/marker", 0); err != nil {
+			return result("", err)
+		}
+		fi, err := os.Stat("/etc/marker")
+		if err != nil {
+			return result("", err)
+		}
+		st := fi.Sys().(*syscall.Stat_t)
+		return fmt.Sprintf("%d:%d flags=%d", st.Uid, st.Gid, st.Flags)
 	case "hostname":
 		h, err := os.Hostname()
 		return result(h, err)

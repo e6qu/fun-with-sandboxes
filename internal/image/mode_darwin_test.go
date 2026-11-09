@@ -6,7 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
+
+func flagged(t *testing.T, p string) bool {
+	t.Helper()
+	var st unix.Stat_t
+	if err := unix.Lstat(p, &st); err != nil {
+		t.Fatal(err)
+	}
+	return st.Flags&MetaFlag != 0
+}
 
 // Extraction keeps the owner's read and write on disk and records the
 // archive's mode, which archives of the files carry again.
@@ -30,6 +41,37 @@ func TestExtractRecordsNarrowModes(t *testing.T) {
 		}
 		if fi.Mode().Perm() != want[0] || RecordedMode(p, fi) != want[1] {
 			t.Errorf("%s: on disk %o, recorded %o; want %o, %o", name, fi.Mode().Perm(), RecordedMode(p, fi), want[0], want[1])
+		}
+		// The library reads a recorded mode only from a flagged file.
+		if got := flagged(t, p); got != (want[0] != want[1]) {
+			t.Errorf("%s: flagged %v", name, got)
+		}
+	}
+}
+
+// MarkTree flags the files an earlier engine recorded an owner or a mode
+// on, a link among them, and leaves the rest.
+func TestMarkTreeFlagsRecordedFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"mode", "owner", "plain"} {
+		if err := os.WriteFile(filepath.Join(dir, f), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("plain", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	unix.Lsetxattr(filepath.Join(dir, "mode"), ModeXattr, []byte("444"), 0)
+	unix.Lsetxattr(filepath.Join(dir, "owner"), ownerXattr, []byte("999:999"), 0)
+	if err := unix.Lsetxattr(filepath.Join(dir, "link"), ownerXattr, []byte("999:999"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkTree(dir); err != nil {
+		t.Fatal(err)
+	}
+	for f, want := range map[string]bool{"mode": true, "owner": true, "link": true, "plain": false} {
+		if got := flagged(t, filepath.Join(dir, f)); got != want {
+			t.Errorf("%s: flagged %v, want %v", f, got, want)
 		}
 	}
 }

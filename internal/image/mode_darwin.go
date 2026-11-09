@@ -13,7 +13,10 @@ func recordMode(path string, perm, onDisk os.FileMode) error {
 	if perm == onDisk {
 		return nil
 	}
-	return unix.Lsetxattr(path, ModeXattr, []byte(strconv.FormatUint(uint64(perm), 8)), 0)
+	if err := unix.Lsetxattr(path, ModeXattr, []byte(strconv.FormatUint(uint64(perm), 8)), 0); err != nil {
+		return err
+	}
+	return Mark(path)
 }
 
 // RecordedMode is path's mode as its container sees it: the one its image

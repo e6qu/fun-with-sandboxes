@@ -613,6 +613,25 @@ static const char *fws_map(const char *p, char *buf, int follow) {
     if (host_side(p)) {
         return p;
     }
+    if (!strstr(p, "/..")) {
+        // One lookup settles the common case, a file the container holds
+        // with no link on its way, which place would otherwise look up
+        // again after linked.
+        const char *q = host_of(p, buf);
+        if (!q) {
+            return p;
+        }
+        char c[PATH_MAX];
+        const char *probe = in_root(q) && join(c, sizeof c, croot, q + rootlen, "") ? c : q;
+        struct stat st;
+        if (fstatat(AT_FDCWD, probe, &st, AT_SYMLINK_NOFOLLOW_ANY) == 0) {
+            if (!S_ISLNK(st.st_mode)) {
+                return q;
+            }
+        } else if (errno != ELOOP) {
+            return place(p, buf);
+        }
+    }
     if (strstr(p, "/..") || linked(p)) {
         char c[PATH_MAX];
         if (resolve(p, follow, c)) {
@@ -944,6 +963,30 @@ INTERPOSE(fws_readlinkat, readlinkat);
 // A chmod sets the mode on disk, which then stands for the one extraction
 // recorded (MODE_XATTR).
 #define MODE_XATTR "com.fws.mode"
+
+// META_FLAG marks a file that holds an owner or a mode of the container's
+// in an extended attribute, so that stat reads the attributes only for
+// such a file: stat returns the flag at no cost, where reading an absent
+// attribute costs a call of its own. The image store sets it beside the
+// mode it records; the library hides it from the container and keeps it
+// through the container's own chflags.
+#define META_FLAG UF_NODUMP
+
+// mark sets META_FLAG on a file, by descriptor when fd is set.
+static void mark(const char *path, int fd, int nofollow) {
+    struct stat st;
+    int r = fd >= 0 ? fstat(fd, &st) : nofollow ? lstat(path, &st) : stat(path, &st);
+    if (r != 0 || (st.st_flags & META_FLAG)) {
+        return;
+    }
+    if (fd >= 0) {
+        fchflags(fd, st.st_flags | META_FLAG);
+    } else if (nofollow) {
+        lchflags(path, st.st_flags | META_FLAG);
+    } else {
+        chflags(path, st.st_flags | META_FLAG);
+    }
+}
 static int fws_chmod(const char *path, mode_t mode) {
     const char *p = MAP(path);
     int r = chmod(p, mode);
@@ -987,8 +1030,28 @@ static int fws_mkfifo(const char *path, mode_t mode) {
     return r;
 }
 INTERPOSE(fws_mkfifo, mkfifo);
-static int fws_chflags(const char *path, unsigned int flags) { return chflags(MAP(path), flags); }
+// kept is flags with META_FLAG kept where the file has it, so a container's
+// chflags leaves the library's mark.
+static unsigned int kept(int r, const struct stat *st, unsigned int flags) {
+    return r == 0 && st->st_uid == getuid_real() ? (flags & ~(unsigned int)META_FLAG) | (st->st_flags & META_FLAG) : flags;
+}
+static int fws_chflags(const char *path, unsigned int flags) {
+    const char *p = MAP(path);
+    struct stat st;
+    return chflags(p, kept(stat(p, &st), &st, flags));
+}
 INTERPOSE(fws_chflags, chflags);
+static int fws_lchflags(const char *path, unsigned int flags) {
+    const char *p = LMAP(path);
+    struct stat st;
+    return lchflags(p, kept(lstat(p, &st), &st, flags));
+}
+INTERPOSE(fws_lchflags, lchflags);
+static int fws_fchflags(int fd, unsigned int flags) {
+    struct stat st;
+    return fchflags(fd, kept(fstat(fd, &st), &st, flags));
+}
+INTERPOSE(fws_fchflags, fchflags);
 static ssize_t fws_getxattr(const char *path, const char *name, void *v, size_t n, uint32_t pos, int o) { return getxattr(MAPF(path, !(o & XATTR_NOFOLLOW)), name, v, n, pos, o); }
 INTERPOSE(fws_getxattr, getxattr);
 static int fws_setxattr(const char *path, const char *name, const void *v, size_t n, uint32_t pos, int o) { return setxattr(MAPF(path, !(o & XATTR_NOFOLLOW)), name, v, n, pos, o); }
@@ -1437,10 +1500,10 @@ static int read_owner(const char *path, int fd, int nofollow, uid_t *uid, gid_t 
 static void write_owner(const char *path, int fd, int nofollow, uid_t uid, gid_t gid) {
     char v[32];
     int n = snprintf(v, sizeof v, "%u:%u", uid, gid);
-    if (fd >= 0) {
-        fsetxattr(fd, OWNER_XATTR, v, (size_t)n, 0, 0);
-    } else {
-        setxattr(path, OWNER_XATTR, v, (size_t)n, 0, nofollow ? XATTR_NOFOLLOW : 0);
+    int r = fd >= 0 ? fsetxattr(fd, OWNER_XATTR, v, (size_t)n, 0, 0)
+                    : setxattr(path, OWNER_XATTR, v, (size_t)n, 0, nofollow ? XATTR_NOFOLLOW : 0);
+    if (r == 0) {
+        mark(path, fd, nofollow);
     }
 }
 
@@ -1458,6 +1521,12 @@ static void own(struct stat *st, const char *path, int fd, int nofollow) {
         st->st_gid = 0;
         return;
     }
+    if (!(st->st_flags & META_FLAG)) {
+        st->st_uid = 0;
+        st->st_gid = 0;
+        return;
+    }
+    st->st_flags &= ~(uint32_t)META_FLAG;
     if (read_owner(path, fd, nofollow, &u, &g)) {
         st->st_uid = u;
         st->st_gid = g;

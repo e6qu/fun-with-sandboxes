@@ -122,6 +122,11 @@ func TestIdentityAndOwnership(t *testing.T) {
 	if got := probe(t, root, nil, "owner"); got["owner"] != "1000:50" {
 		t.Errorf("owner after chown, in a new process: %q", got["owner"])
 	}
+	// The container's own chflags keeps the owner, and sees no flag of the
+	// library's.
+	if got := probe(t, root, nil, "chflags"); got["chflags"] != "1000:50 flags=0" {
+		t.Errorf("owner after chflags: %q", got["chflags"])
+	}
 	// A user other than root sees itself, and may not give its files away.
 	got = probe(t, root, []string{"FWS_UID=1000", "FWS_GID=50"}, "ids", "user", "write")
 	if got["ids"] != "1000:50" || got["user"] != "app:/home/app" {

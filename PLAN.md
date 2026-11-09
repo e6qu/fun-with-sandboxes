@@ -207,6 +207,20 @@ the suite runs the engine with `-debug` and ends with its time per
 endpoint (requests, total, mean, longest). CRI's `ImageFsInfo` walked every
 file of every image on each call; it now walks each image root once.
 
+The first measurement on a macOS runner, natively and through the library:
+`stat` 1.9 µs and 23.2 µs, `fstat` 0.84 µs and 18.4 µs, `stat` of a missing
+file 1.4 µs and 5.9 µs, `readdir` 13.8 µs and 20.9 µs, `open` 7.7 µs and
+9.6 µs, a process start 2.0 ms and 6.7 ms. Each `stat` read two extended
+attributes, the owner and the mode, at about 9 µs apiece, whether the file
+had them or not. The library now reads them only from a file marked with
+`UF_NODUMP`, which `stat` returns with the rest; the image store and the
+library mark each file they record either on, and the engine marks, once,
+the files of a state directory an earlier engine wrote. Mapping a path
+looked the file up twice, once for links on its way and once for whether
+the container holds it; one lookup now settles a file the container holds
+with no link on its way. A process start still costs 4.7 ms more than
+natively.
+
 Left as they are, each with its reason in `LIMITATIONS.md`:
 
 - tmpfs mounts are directories on disk. The one memory-backed filesystem

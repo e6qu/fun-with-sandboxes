@@ -92,6 +92,10 @@ machine — and from what macOS offers an unprivileged process under them.
     engine's user, so a container's non-root user can do what its root can,
     and `chown` records an owner in an extended attribute that `stat`
     reports rather than changing the file's owner.
+  - The library keeps the `nodump` file flag (`UF_NODUMP`) for itself: it
+    marks the files whose owner or mode it records, so that `stat` reads
+    the record only for them. A container's processes never see the flag
+    and cannot set or clear it.
   - A script's `#!` interpreter runs from the root when the root holds it,
     else from the host.
 - The engine builds the library with clang on the first container start:
