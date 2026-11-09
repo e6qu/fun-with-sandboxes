@@ -282,12 +282,16 @@ bash=$(pkg_with bash bash)
 gnugrep=$(pkg_with gnugrep grep)
 gzip=$(pkg_with gzip gunzip)
 wget=$(pkg_with wget wget)
+# The time zones Debian's tzdata installs, which ClickHouse resolves TZ in.
+for tzdata in $("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#tzdata"); do
+  [ -d "$tzdata/share/zoneinfo" ] && break
+done
 closure "$clickhouse" "$coreutils" "$bash" "$gnugrep" "$gzip" "$wget" > "$build/clickhouse.closure"
 mkimage $(accounts clickhouse clickhouse 101 101 /var/lib/clickhouse) -spec images/clickhouse/image.json -closure "$build/clickhouse.closure" \
   -pkg "$clickhouse" -pkg "$coreutils" -pkg "$bash" -pkg "$gnugrep" -pkg "$gzip" -pkg "$wget" -link /usr/bin/env=../../bin/env \
   -file "/etc/clickhouse-server/config.xml=$build/clickhouse/config.xml" -file "/etc/clickhouse-server/users.xml=$build/clickhouse/users.xml" \
   -file "/etc/clickhouse-server/config.d/docker_related_config.xml=$build/clickhouse/docker_related_config.xml" \
-  -file "/entrypoint.sh=$build/clickhouse/entrypoint.sh" -out "$out/clickhouse.tar"
+  -file "/usr/share/zoneinfo=$tzdata/share/zoneinfo" -file "/entrypoint.sh=$build/clickhouse/entrypoint.sh" -out "$out/clickhouse.tar"
 
 # InfluxDB 2 with the influx CLI its image carries, the image's default
 # configuration and an entrypoint that does what its script does;
