@@ -141,8 +141,7 @@ int main(int argc, char **argv) {
     printf("local=%s %s\n", buf, addr(&s));
 
     // A connection that writes nothing, as the library's probe of whether a
-    // listener lives, never reaches the program, whose accept fails at once
-    // rather than waiting for the next one.
+    // listener lives, reaches the program as one its loopback client closed.
     {
         int pr0 = socket(AF_UNIX, SOCK_STREAM, 0);
         struct sockaddr_un pu;
@@ -157,7 +156,10 @@ int main(int argc, char **argv) {
         int pa = accept(l, (void *)&s, &n);
         int pe = errno;
         alarm(0);
-        printf("probe=%d %s\n", pa, pa < 0 && pe == ECONNABORTED ? "ECONNABORTED" : strerror(pe));
+        char pb[8];
+        ssize_t pr = pa < 0 ? -1 : read(pa, pb, sizeof pb);
+        printf("probe=%s %s\n", pa < 0 ? strerror(pe) : pr == 0 ? "closed" : "open", pa < 0 ? "-" : addr(&s));
+        if (pa >= 0) close(pa);
     }
     char sf[128];
     sent(k, c, sf, sizeof sf);

@@ -1094,8 +1094,10 @@ func TestDiffSizeDiskUsageAndSearch(t *testing.T) {
 	const changed, fresh = "fws-e2e-diff", "fws-e2e-fresh"
 	mustDocker(t, "run", "--name", changed, "fws/toolbox:1", "put", "/made.txt", "hi")
 	defer docker(t, "rm", "-f", changed)
-	mustDocker(t, "create", "--name", fresh, "fws/toolbox:1")
-	defer docker(t, "rm", "-f", fresh)
+	// Create's mount points and hosts files are its init layer's, which
+	// docker diff leaves out.
+	mustDocker(t, "create", "--name", fresh, "-v", "/fws-e2e/deep/data", "--tmpfs", "/etc/fws-e2e", "fws/toolbox:1")
+	defer docker(t, "rm", "-f", "-v", fresh)
 	if out := mustDocker(t, "diff", changed); !strings.Contains(out, "A /made.txt") {
 		t.Fatalf("docker diff of a container that wrote /made.txt:\n%s", out)
 	}

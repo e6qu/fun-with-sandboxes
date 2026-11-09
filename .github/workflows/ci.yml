@@ -60,6 +60,9 @@ jobs:
       # library interposes, beside the same call made natively.
       - name: system calls through the path library
         run: go test -run '^$' -bench . ./internal/pathmap
+      # How long a container's main process takes to start, part by part.
+      - name: container start
+        run: go test -run '^$' -bench . -benchtime 20x ./internal/runtime
 
   # Nix builds MySQL and MariaDB from source, with their vendors'
   # compilation comment (images/servers.nix), which no binary cache holds.

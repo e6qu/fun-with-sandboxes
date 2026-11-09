@@ -4803,37 +4803,38 @@ INTERPOSE(fws_sendfile, sendfile);
 
 // take_client reads the client's address and port, which the router
 // writes before the stream of a connection it makes to a listener on a port
-// without a host port, and reports whether c carried them: the library's
-// own probes of a listener connect and write nothing.
-static int take_client(int c) {
+// without a host port. The library's own probes of a listener connect and
+// write nothing: such a connection reaches the program as one its loopback
+// client closed at once, as Linux hands over a connection its client
+// abandoned.
+static void take_client(int c) {
     unsigned char h[CLIENT_HEADER];
     size_t got = 0;
     while (got < sizeof h) {
         struct pollfd p = {c, POLLIN, 0};
         int r = poll(&p, 1, 10000);
         if (r == -1 && errno == EINTR) continue;
-        if (r != 1) return 0;
+        if (r != 1) break;
         ssize_t n = recv(c, h + got, sizeof h - got, 0);
         if (n == -1 && (errno == EINTR || errno == EAGAIN)) continue;
-        if (n <= 0) return 0;
+        if (n <= 0) break;
         got += (size_t)n;
     }
-    if (c < NET_FDS) {
-        memcpy(&net_peer[c], h, 4);
-        net_dport[c] = (unsigned short)(h[4] << 8 | h[5]);
+    if (c >= NET_FDS) return;
+    if (got < sizeof h) {
+        net_peer[c] = htonl(INADDR_LOOPBACK);
+        net_dport[c] = 0;
+        return;
     }
-    return 1;
+    memcpy(&net_peer[c], h, 4);
+    net_dport[c] = (unsigned short)(h[4] << 8 | h[5]);
 }
 
 // accepted completes a connection c that fd accepted, with k its peer as
-// the kernel reports it, and reports whether the program gets it.
-static int accepted(int fd, int c, const struct sockaddr_storage *k, socklen_t kn, struct sockaddr *sa, socklen_t *len) {
+// the kernel reports it.
+static void accepted(int fd, int c, const struct sockaddr_storage *k, socklen_t kn, struct sockaddr *sa, socklen_t *len) {
     int e = errno;
-    if ((state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_STREAM && !take_client(c)) {
-        close(c);
-        errno = e;
-        return 0;
-    }
+    if ((state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_STREAM) take_client(c);
     set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
     if (c < NET_FDS && fd < NET_FDS) {
         net_port[c] = net_port[fd];
@@ -4841,20 +4842,14 @@ static int accepted(int fd, int c, const struct sockaddr_storage *k, socklen_t k
     }
     present(c, k, kn, sa, len, 0);
     errno = e;
-    return 1;
 }
 
-// A connection the library drops, a probe of whether a listener lives,
-// ended before the program took it: accept fails with ECONNABORTED, as for
-// any connection a client abandons first, rather than waiting for the next
-// one, which would hold a server that polls, then accepts, from its loop.
 static int fws_accept(int fd, struct sockaddr *sa, socklen_t *len) {
     struct sockaddr_storage k;
     socklen_t kn = sizeof k;
     int c = accept(fd, (struct sockaddr *)&k, &kn);
-    if (c < 0 || accepted(fd, c, &k, kn, sa, len)) return c;
-    errno = ECONNABORTED;
-    return -1;
+    if (c >= 0) accepted(fd, c, &k, kn, sa, len);
+    return c;
 }
 INTERPOSE(fws_accept, accept);
 
@@ -5114,9 +5109,8 @@ static int fws_accept_nocancel(int fd, struct sockaddr *sa, socklen_t *len) {
     struct sockaddr_storage k;
     socklen_t kn = sizeof k;
     int c = accept_nocancel(fd, (struct sockaddr *)&k, &kn);
-    if (c < 0 || accepted(fd, c, &k, kn, sa, len)) return c;
-    errno = ECONNABORTED;
-    return -1;
+    if (c >= 0) accepted(fd, c, &k, kn, sa, len);
+    return c;
 }
 INTERPOSE(fws_accept_nocancel, accept_nocancel);
 

@@ -192,8 +192,12 @@ listeners that writes nothing, its own probe of whether a listener lives,
 and its `accept` then waited for the next connection, where Poco's
 acceptor polls, accepts and checks whether it is to stop: the real
 server's probe of the port left the init server's acceptor in `accept` for
-good. `accept` now fails with `ECONNABORTED` for a connection it drops, as
-for any a client abandons before the program takes it.
+good. Failing such an `accept` with `ECONNABORTED` instead made Poco log an
+error for each probe, and the real server, which listens on `::` and then
+on `0.0.0.0` and so probes its own listener, ended in `std::terminate`
+with exit code 134. Linux hands a program a connection its client
+abandoned; the library now does the same with its probe, a connection from
+loopback that is closed when the program reads it.
 
 A port a nested engine published inside a privileged container answered
 `400 Bad Request`: the shim's proxy from the container's port directory to
@@ -201,10 +205,28 @@ the inner container passed on the client address the container's router
 writes before each connection's stream, which only the library's
 listeners read. The proxy now reads it.
 
+The test of it checked that `wget -S -O-` printed the body last, where
+wget prints its progress after the body; it now looks for the status line
+and the body.
+
 The Kubernetes test's dump of each component's log read the CLI's standard
 output alone, where `docker logs` writes a container's standard error to
 its own: etcd's and the kubelet's logs, all on standard error, came out
-empty. It now reads both, with each container's state.
+empty. It now reads both, with each container's state. They showed why
+the node never registered: the kubelet's shell read the unquoted
+`--eviction-hard=memory.available<10Mi` as a redirection from a file
+named `10Mi`, and the container restarted with exit code 2 until the
+test's limit. The test quotes the argument.
+
+MongoDB's tests failed with `No such container` as they started the
+container they had created: create took 10 s, cloning the image's root,
+which mongosh's Node.js modules make large, once into place and once more,
+under the engine's lock, as the record of the initial root that `docker
+diff` compares against. The previous subtest's Testcontainers reaper,
+which removes its session's containers once its connection drops, removed
+the new one in that time. Create now makes both clones before it takes
+the lock, side by side, and then copies into the record only what it
+wrote into the root under the lock: the hosts files and the mount points.
 
 Open bug: `docker-compose up --build`, which builds through `buildx bake`,
 stalls for minutes after loading its bake definitions, while `docker build`
@@ -274,6 +296,17 @@ The image store now measures a root once, as it unpacks it, and keeps the
 measure in the image's record; CRI walks only a root an earlier store
 unpacked, once. The walk of the containers' roots on each call remains:
 each root is a clone of its image's, with as many files.
+
+Every container start took about 1.15 s, nearly all of it in the shim's
+step from starting the spawn helper to the helper's `exec` of the
+container's command, in which the helper applies the limits, enters the
+sandbox and starts the exec anchor through a launcher it waits for: three
+Go processes, in the suite race-instrumented, one after another.
+`go test -bench . ./internal/runtime` measures that start with the
+sandbox alone, with the container library, with the anchor and with both,
+to find the share of each. The suite's 46 image archives took about 7 of
+its 42 minutes to load into the race-instrumented engine, which
+decompresses and unpacks each layer.
 
 Open bug: with a pids limit, every `fork` and `posix_spawn` lists every
 process of the engine's user and checks each, to count the container's

@@ -334,8 +334,16 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		return container.CreateResponse{}, err
 	}
 	defer os.RemoveAll(staged)
-	stagedRoot := filepath.Join(staged, "r")
-	if err := e.images.Clone(img.ID, stagedRoot); err != nil {
+	// The root and the record of its initial state, which create completes
+	// with what it writes into the root.
+	stagedRoot, stagedInit := filepath.Join(staged, "r"), filepath.Join(staged, "init")
+	initDone := make(chan error, 1)
+	go func() { initDone <- e.images.Clone(img.ID, stagedInit) }()
+	err = e.images.Clone(img.ID, stagedRoot)
+	if initErr := <-initDone; err == nil && initErr != nil {
+		err = fmt.Errorf("record the initial root: %w", initErr)
+	}
+	if err != nil {
 		return container.CreateResponse{}, fmt.Errorf("clone image root: %w", err)
 	}
 	st.mark("clone")
@@ -472,7 +480,10 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		return container.CreateResponse{}, err
 	}
 	st.mark("prepare")
-	if err := image.CloneDir(c.root(), c.initDir()); err != nil {
+	if err := os.Rename(stagedInit, c.initDir()); err != nil {
+		return container.CreateResponse{}, err
+	}
+	if err := layInit(c.root(), c.initDir(), initPaths(mounts)); err != nil {
 		return container.CreateResponse{}, fmt.Errorf("record the initial root: %w", err)
 	}
 	st.mark("record")

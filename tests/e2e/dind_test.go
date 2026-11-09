@@ -121,7 +121,7 @@ func TestDockerInDocker(t *testing.T) {
 	if out := inDind(t, name, "docker", "compose", "-f", "/work/compose.yaml", "-p", "inner", "exec", "-T", "client", "/toolbox", "fetch", "http://web:8080/healthz"); out != "200 OK\n" {
 		t.Errorf("the inner client reached web: %q", out)
 	}
-	if out, err := docker(t, "exec", name, "sh", "-c", "wget -S -O- http://localhost:8080/healthz 2>&1"); err != nil || !strings.HasSuffix(out, "\nok\n") {
+	if out, err := docker(t, "exec", name, "sh", "-c", "wget -S -O- http://localhost:8080/healthz 2>&1"); err != nil || !strings.Contains(out, " 200 OK\n") || !strings.Contains(out, "\nok\n") {
 		t.Errorf("the published port in the dind container: %v\n%s", err, out)
 	}
 	// The engines keep their containers apart.

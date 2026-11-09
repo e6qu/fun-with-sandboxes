@@ -115,8 +115,9 @@ The checks CI runs, in the order to run them locally:
 CI runs these jobs on every push:
 
 - `linux`: formatting, cross-builds, vet and the portable unit tests;
-- `macos`: the unit tests on macOS, and what a container's processes pay
-  for each system call the path library interposes;
+- `macos`: the unit tests on macOS, what a container's processes pay
+  for each system call the path library interposes, and how long a
+  container's main process takes to start, part by part;
 - `servers`: the MySQL and MariaDB builds, cached by derivation;
 - `images`: the catalog's archives and a local registry that takes them,
   cached under a hash of the files the build reads
