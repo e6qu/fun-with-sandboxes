@@ -1,6 +1,6 @@
 name: end-to-end snapshot
 description: >
-  Waits for the end-to-end suite to finish, for ten minutes at most, and
+  Waits for the end-to-end suite to finish, for four minutes at most, and
   keeps its output so far and the runner's resource samples as an artifact,
   which outlives a runner that then dies.
 inputs:
@@ -12,7 +12,7 @@ runs:
   steps:
     - shell: bash
       run: |
-        for _ in $(seq 600); do
+        for _ in $(seq 240); do
           [ -e "$RUNNER_TEMP/e2e/exit" ] && break
           sleep 1
         done

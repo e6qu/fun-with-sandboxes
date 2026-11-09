@@ -221,7 +221,9 @@ jobs:
           nohup sh -c 'go test -tags e2e -v -count=1 -timeout 90m ./...; echo $? > "$RUNNER_TEMP/e2e/exit"' \
             > "$RUNNER_TEMP/e2e/test.log" 2>&1 < /dev/null &
           nohup sh -c 'while [ ! -e "$RUNNER_TEMP/e2e/exit" ]; do
-              date; df -h /; vm_stat; ps -axro pid,ppid,rss,%cpu,etime,comm | head -25; sleep 30
+              date; df -h /; sysctl vm.swapusage kern.memorystatus_level; vm_stat
+              ps -o pid,ppid,pgid,stat,rss,%cpu,etime,comm -p "$(pgrep -d, -f "Runner\.|provjobd")"
+              ps -axro pid,ppid,pgid,stat,rss,%cpu,etime,comm | head -25; sleep 15
             done' > "$RUNNER_TEMP/e2e/samples.log" 2>&1 < /dev/null &
       - uses: ./.github/actions/e2e-snapshot
         with:
@@ -253,6 +255,51 @@ jobs:
       - uses: ./.github/actions/e2e-snapshot
         with:
           name: e2e-10
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-11
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-12
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-13
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-14
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-15
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-16
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-17
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-18
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-19
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-20
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-21
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-22
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-23
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-24
+      - uses: ./.github/actions/e2e-snapshot
+        with:
+          name: e2e-25
       - name: end-to-end tests
         run: |
           cat "$RUNNER_TEMP/e2e/test.log"
