@@ -123,7 +123,7 @@ func TestCRIPodSandbox(t *testing.T) {
 			"image":    map[string]any{"image": "fws/toolbox:1"},
 			"args":     args,
 			"log_path": name + ".log",
-			"envs":     []map[string]string{{"key": "GREETING", "value": "hello"}},
+			"envs":     []map[string]string{{"key": "SANDBOX_GREETING", "value": "hello"}},
 			"linux":    map[string]any{},
 		})
 		id := strings.TrimSpace(mustCrictl(t, "create", sandbox, cfg, pod))
@@ -154,7 +154,7 @@ func TestCRIPodSandbox(t *testing.T) {
 	if res.StatusCode != 200 {
 		t.Errorf("the sandbox's published port answered %s", res.Status)
 	}
-	if out := mustCrictl(t, "exec", "--sync", "--timeout", "10", client, "/bin/sh", "-c", "echo $GREETING"); out != "hello\n" {
+	if out := mustCrictl(t, "exec", "--sync", "--timeout", "10", client, "/toolbox", "env"); !strings.Contains("\n"+out, "\nSANDBOX_GREETING=hello\n") {
 		t.Errorf("crictl exec --sync: %q", out)
 	}
 	if _, err := crictl(t, "exec", "--sync", client, "/toolbox", "fetch", "http://127.0.0.1:1/"); err == nil {
@@ -162,10 +162,10 @@ func TestCRIPodSandbox(t *testing.T) {
 	}
 	// The runtime's stream server runs a streamed exec, and forwards a
 	// local port to the pod's.
-	if out := mustCrictl(t, "exec", client, "/bin/sh", "-c", "echo streamed $GREETING"); out != "streamed hello\n" {
+	if out := mustCrictl(t, "exec", client, "/toolbox", "env"); !strings.Contains("\n"+out, "\nSANDBOX_GREETING=hello\n") {
 		t.Errorf("crictl exec: %q", out)
 	}
-	if _, err := crictl(t, "exec", client, "/bin/sh", "-c", "exit 3"); err == nil {
+	if _, err := crictl(t, "exec", client, "/toolbox", "fetch", "http://127.0.0.1:1/"); err == nil {
 		t.Error("a streamed exec's exit status was lost")
 	}
 	fl, err := net.Listen("tcp", "127.0.0.1:0")

@@ -108,6 +108,7 @@ func TestDockerInDocker(t *testing.T) {
   client:
     image: fws/toolbox:1
     command: ["hold"]
+    healthcheck: {disable: true}
     depends_on:
       web: {condition: service_healthy}
 `
