@@ -47,6 +47,11 @@ static void fail(const char *step) {
     exit(0);
 }
 
+static void failed(const char *step, const char *call, int code) {
+    printf("%s=error %s %d\n", step, call, code);
+    exit(0);
+}
+
 // sent sends a file's 4096 bytes from one end of a stream to the other
 // with sendfile, as Java's FileChannel.transferTo does, and writes into out
 // what sendfile returned and whether the bytes arrived.
@@ -140,12 +145,18 @@ int main(int argc, char **argv) {
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof hints);
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo("peer", "7100", &hints, &res)) fail("peer");
+    int gai;
+    if ((gai = getaddrinfo("peer", "7100", &hints, &res))) failed("peer", "getaddrinfo", gai);
     int p = socket(res->ai_family, SOCK_STREAM, 0);
-    if (connect(p, res->ai_addr, res->ai_addrlen)) fail("peer");
+    if (connect(p, res->ai_addr, res->ai_addrlen)) failed("peer", "connect", errno);
     freeaddrinfo(res);
     memset(buf, 0, sizeof buf);
-    if (read(p, buf, 5) != 5) fail("peer");
+    // A stream may deliver the greeting in pieces.
+    for (int got = 0; got < 5;) {
+        ssize_t r = read(p, buf + got, 5 - got);
+        if (r <= 0) failed("peer", r == 0 ? "eof" : "read", r == 0 ? got : errno);
+        got += r;
+    }
     n = sizeof s;
     getpeername(p, (void *)&s, &n);
     printf("peer=%s %s\n", buf, addr(&s));

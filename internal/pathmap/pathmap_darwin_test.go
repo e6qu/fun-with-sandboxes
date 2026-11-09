@@ -535,7 +535,11 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 			if err != nil {
 				return
 			}
-			c.Write([]byte("hello"))
+			// Read the client header first, as a member's router does: a
+			// close with it unread can fail the router's write of it.
+			if _, err := router.ReadClient(c); err == nil {
+				c.Write([]byte("hello"))
+			}
 			c.Close()
 		}
 	}()
