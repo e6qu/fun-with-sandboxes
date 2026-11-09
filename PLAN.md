@@ -174,6 +174,17 @@ ephemeral loopback port, which Seatbelt would then have to allow every
 container, beyond the ports it is granted; a record made after the
 connection would race the server's `accept`.
 
+Open bug: a container can leave processes behind when it ends. The shim
+ends the main process's group and every process whose environment carries
+the container's tag. PostgreSQL's `pg_ctl` starts the server in a session
+of its own, and the server writes its process titles over its arguments
+and environment, so the server and its children carry neither the group
+nor a readable tag. On CI, three children of the temporary server that
+PostgreSQL's image runs to initialise the database outlived their
+container, with launchd as their parent. The fix is a mark the kernel
+keeps for the process's life, such as its Seatbelt sandbox, which every
+descendant inherits and none can drop.
+
 Left as they are, each with its reason in `LIMITATIONS.md`:
 
 - tmpfs mounts are directories on disk. The one memory-backed filesystem
