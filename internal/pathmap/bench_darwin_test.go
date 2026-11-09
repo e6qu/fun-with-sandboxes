@@ -8,9 +8,10 @@ import (
 	"testing"
 )
 
-// BenchmarkCalls times system calls a container's processes make, natively
-// and through the library, which a container's processes pay on every
-// call it interposes. Each reports the nanoseconds one call took.
+// BenchmarkCalls times system calls a container's processes make: natively,
+// with an empty library inserted, and through fwsroot, which a container's
+// processes pay on every call it interposes. Each reports the nanoseconds
+// one call took.
 func BenchmarkCalls(b *testing.B) {
 	root := containerRoot(b)
 	bin := filepath.Join(root, "bin", "bench")
@@ -21,11 +22,19 @@ func BenchmarkCalls(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	empty := filepath.Join(b.TempDir(), "empty.dylib")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-dynamiclib", "-o", empty, "testdata/empty/empty.c").CombinedOutput(); err != nil {
+		b.Fatalf("build the empty library: %v\n%s", err, out)
+	}
 	for _, op := range []string{"getpid", "getuid", "open", "stat", "stat-missing", "fstat", "pread", "readdir", "socket", "spawn"} {
-		for _, mode := range []string{"native", "fwsroot"} {
+		// empty inserts a library that does nothing: what the loader costs.
+		for _, mode := range []string{"native", "empty", "fwsroot"} {
 			b.Run(op+"/"+mode, func(b *testing.B) {
 				dir, env := root, []string(nil)
-				if mode == "fwsroot" {
+				switch mode {
+				case "empty":
+					env = []string{"DYLD_INSERT_LIBRARIES=" + empty}
+				case "fwsroot":
 					dir, env = "", []string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_ROOT=" + root}
 				}
 				cmd := exec.Command(bin, op, strconv.Itoa(b.N), dir)
