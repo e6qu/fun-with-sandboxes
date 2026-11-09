@@ -114,7 +114,10 @@ func TestKubernetesControlPlane(t *testing.T) {
 	const network = "e2e-k8s"
 	dir := t.TempDir()
 	pki(t, dir, "https://kube-apiserver:6443")
-	mustDocker(t, "network", "create", network)
+	// The API server advertises an address of its interfaces, which only
+	// a network with a subnet of its own gives out: as kind does, the
+	// network names one.
+	mustDocker(t, "network", "create", "--subnet", "172.30.7.0/24", network)
 	defer docker(t, "network", "rm", network)
 	run := func(name string, args ...string) {
 		t.Helper()

@@ -232,7 +232,10 @@ machine — and from what macOS offers an unprivileged process under them.
     addresses while it exists, where Docker gives a stopped container's
     back to the pool; `docker inspect` reports none for a stopped one, as
     Docker does. A network without a subnet reports `127.88.0.0/16`, the
-    member addresses' block, which every such network shares.
+    member addresses' block, which every such network shares. Those are
+    loopback addresses, so a program that advertises its first global
+    unicast address, such as Kubernetes' API server, finds none on such
+    a network: create it with a subnet, as kind does.
 - **A container's interfaces are presented.** `getifaddrs`, `if_nameindex`,
   the `SIOCGIF*` ioctls and the routing sysctl Go's `net.Interfaces` reads
   list the loopback interface and, on a network, `eth0` onwards, one for
