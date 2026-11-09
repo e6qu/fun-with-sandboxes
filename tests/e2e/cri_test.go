@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -19,19 +20,28 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
 // crictl runs cri-tools' CRI client against the engine, which serves the
-// Container Runtime Interface on its socket beside Docker's API.
+// Container Runtime Interface on its socket beside Docker's API, and
+// returns what it printed on stdout; its warnings go to stderr, which a
+// failure's error carries.
 func crictl(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "crictl", append([]string{
+	cmd := exec.CommandContext(ctx, "crictl", append([]string{
 		"--runtime-endpoint", dockerHost, "--image-endpoint", dockerHost, "--timeout", "2m",
-	}, args...)...).CombinedOutput()
+	}, args...)...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		err = fmt.Errorf("%w\n%s", err, stderr.String())
+	}
 	return string(out), err
 }
 
@@ -254,7 +264,19 @@ func TestCRIPodSandbox(t *testing.T) {
 func TestCRIImages(t *testing.T) {
 	host := basicAuthRegistry(t, "fws", "s3cret")
 	tag, _ := name.NewTag("fws/toolbox:1")
-	img, err := tarball.ImageFromPath(filepath.Join(os.Getenv("FWS_E2E_IMAGES"), "toolbox.tar"), &tag)
+	base, err := tarball.ImageFromPath(filepath.Join(os.Getenv("FWS_E2E_IMAGES"), "toolbox.tar"), &tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An image of its own: removing an image removes every name its ID
+	// has, and the suite runs fws/toolbox:1 throughout.
+	cfg, err := base.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = cfg.DeepCopy()
+	cfg.Config.Labels = map[string]string{"e2e": "cri"}
+	img, err := mutate.ConfigFile(base, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,4 +302,5 @@ func TestCRIImages(t *testing.T) {
 	if _, err := crictl(t, "inspecti", ref); err == nil {
 		t.Error("a removed image was inspected")
 	}
+	mustDocker(t, "image", "inspect", "fws/toolbox:1")
 }
