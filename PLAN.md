@@ -197,6 +197,16 @@ of the same Dockerfile takes seconds; `TestComposeWatch` takes 220 to 300
 seconds against a five-minute limit. A command that outlives its limit now
 prints every Go process's goroutines, to show what bake waits on.
 
+Open bug: the end-to-end suite takes about 45 minutes, and a container
+runs slower than the same program run natively. The engine's goal is
+native speed, so an overhead of microseconds on a call that takes
+nanoseconds natively is a bug. Two measurements find them:
+`go test -bench . ./internal/pathmap` reports the nanoseconds a system call
+takes through the path library beside the same call made natively, and
+the suite runs the engine with `-debug` and ends with its time per
+endpoint (requests, total, mean, longest). CRI's `ImageFsInfo` walked every
+file of every image on each call; it now walks each image root once.
+
 Left as they are, each with its reason in `LIMITATIONS.md`:
 
 - tmpfs mounts are directories on disk. The one memory-backed filesystem

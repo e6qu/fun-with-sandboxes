@@ -36,6 +36,7 @@ func main() {
 	egress := flag.Bool("egress", true, "give each stack an HTTP proxy to the internet that refuses destinations on this host")
 	withBuildKit := flag.Bool("buildkit", true, "serve BuildKit for docker build, buildx and docker compose build")
 	liveRestore := flag.Bool("live-restore", false, "keep containers running while the engine stops, and reconnect to them when it starts")
+	debug := flag.Bool("debug", false, "log each API request, with its status and how long the engine took to serve it")
 	flag.Parse()
 
 	if os.Geteuid() == 0 {
@@ -50,7 +51,7 @@ func main() {
 	}
 	roles.Use(helper)
 	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress, LiveRestore: *liveRestore}
-	if err := run(cfg, *socket, *withBuildKit); err != nil {
+	if err := run(cfg, *socket, *withBuildKit, *debug); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -89,9 +90,13 @@ func startBuildKit(e *engine.Engine) (*buildkit.Service, error) {
 // apiServer serves the engine's APIs: Docker's and Podman's over HTTP/1.1,
 // and the Container Runtime Interface over HTTP/2 without TLS, which its
 // gRPC clients speak to a Unix socket.
-func apiServer(e *engine.Engine, bk api.BuildKit) (*http.Server, *api.Server) {
+func apiServer(e *engine.Engine, bk api.BuildKit, debug bool) (*http.Server, *api.Server) {
 	h := api.New(e, bk)
-	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second, Protocols: new(http.Protocols)}
+	var handler http.Handler = h
+	if debug {
+		handler = logRequests(h)
+	}
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 30 * time.Second, Protocols: new(http.Protocols)}
 	srv.Protocols.SetHTTP1(true)
 	srv.Protocols.SetUnencryptedHTTP2(true)
 	return srv, h
@@ -117,7 +122,7 @@ func (n *nestedAPI) Close() error {
 	return err
 }
 
-func serveNested(withBuildKit bool) func(*engine.Engine, string) (io.Closer, error) {
+func serveNested(withBuildKit, debug bool) func(*engine.Engine, string) (io.Closer, error) {
 	return func(e *engine.Engine, socket string) (io.Closer, error) {
 		n := &nestedAPI{}
 		var bk api.BuildKit
@@ -133,14 +138,14 @@ func serveNested(withBuildKit bool) func(*engine.Engine, string) (io.Closer, err
 			n.Close()
 			return nil, err
 		}
-		n.srv, n.api = apiServer(e, bk)
+		n.srv, n.api = apiServer(e, bk, debug)
 		go n.srv.Serve(l)
 		return n, nil
 	}
 }
 
-func run(cfg engine.Config, socket string, withBuildKit bool) error {
-	cfg.Serve = serveNested(withBuildKit)
+func run(cfg engine.Config, socket string, withBuildKit, debug bool) error {
+	cfg.Serve = serveNested(withBuildKit, debug)
 	e, err := engine.Open(cfg)
 	if err != nil {
 		return err
@@ -169,7 +174,7 @@ func run(cfg engine.Config, socket string, withBuildKit bool) error {
 	if err := os.Chmod(socket, 0o600); err != nil {
 		return err
 	}
-	srv, h := apiServer(e, bk)
+	srv, h := apiServer(e, bk, debug)
 	defer h.Close()
 
 	sigs := make(chan os.Signal, 1)

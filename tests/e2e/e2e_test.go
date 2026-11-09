@@ -16,7 +16,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -82,7 +84,7 @@ func run(m *testing.M) int {
 	}
 	sock := filepath.Join(home, ".e2e.sock")
 	defer os.Remove(sock)
-	daemon := exec.Command(bin, "-root", root, "-socket", sock, "-port-base", "30000", "-port-limit", "31000", "-block-size", "50")
+	daemon := exec.Command(bin, "-root", root, "-socket", sock, "-port-base", "30000", "-port-limit", "31000", "-block-size", "50", "-debug")
 	// The engine runs in a session of its own, as a daemon does, so a
 	// signal it sends its own process group ends it, and the suite reports
 	// that, rather than reaching the suite and the CI runner's agent.
@@ -105,12 +107,19 @@ func run(m *testing.M) int {
 	ready := make(chan struct{})
 	logged := make(chan struct{})
 	var crashes []string
+	reqs := requestTimes{}
 	go func() {
 		defer close(logged)
 		sc := bufio.NewScanner(stderr)
 		announced := false
 		for sc.Scan() {
 			line := sc.Text()
+			if d, ok := reqs.add(line); ok {
+				if d >= time.Second {
+					fmt.Fprintln(os.Stderr, "fwsd:", line)
+				}
+				continue
+			}
 			fmt.Fprintln(os.Stderr, "fwsd:", line)
 			if !announced && strings.Contains(line, "serving the Docker API") {
 				announced = true
@@ -177,11 +186,71 @@ func run(m *testing.M) int {
 		code = 1
 	}
 	<-logged
+	reqs.report(os.Stderr)
 	if len(crashes) > 0 {
 		fmt.Fprintf(os.Stderr, "fwsd crashed while the suite ran:\n  %s\n", strings.Join(crashes, "\n  "))
 		code = 1
 	}
 	return code
+}
+
+// requestTimes totals the time the engine took to serve each endpoint,
+// from the requests its -debug log lists.
+type requestTimes map[string]*endpointTime
+
+type endpointTime struct {
+	n     int
+	total time.Duration
+	max   time.Duration
+}
+
+// idSegment matches what a path names by ID or name rather than by
+// endpoint: the segment after a collection.
+var idSegment = regexp.MustCompile(`/(containers|images|networks|volumes|exec|pods|distribution|plugins|secrets|configs|services|nodes|tasks|session)/[^/?]+`)
+
+// add totals a log line of a request, and reports how long it took.
+func (rt requestTimes) add(line string) (time.Duration, bool) {
+	f := strings.Fields(line)
+	if len(f) != 6 {
+		return 0, false
+	}
+	switch f[2] {
+	case "GET", "HEAD", "POST", "PUT", "DELETE":
+	default:
+		return 0, false
+	}
+	d, err := time.ParseDuration(f[5])
+	if err != nil {
+		return 0, false
+	}
+	path, _, _ := strings.Cut(f[3], "?")
+	path = idSegment.ReplaceAllString(versionPath.ReplaceAllString(path, ""), "/$1/{}")
+	key := f[2] + " " + path
+	e := rt[key]
+	if e == nil {
+		e = &endpointTime{}
+		rt[key] = e
+	}
+	e.n++
+	e.total += d
+	e.max = max(e.max, d)
+	return d, true
+}
+
+var versionPath = regexp.MustCompile(`^/v\d+\.\d+`)
+
+// report prints the endpoints the engine spent the most time serving.
+func (rt requestTimes) report(w io.Writer) {
+	keys := make([]string, 0, len(rt))
+	for k := range rt {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return rt[keys[i]].total > rt[keys[j]].total })
+	fmt.Fprintln(w, "the engine's time by endpoint (requests, total, mean, longest):")
+	for _, k := range keys[:min(len(keys), 40)] {
+		e := rt[k]
+		fmt.Fprintf(w, "  %6d %10s %10s %10s  %s\n", e.n, e.total.Round(time.Millisecond), (e.total / time.Duration(e.n)).Round(time.Microsecond), e.max.Round(time.Millisecond), k)
+	}
 }
 
 // crashLine reports a log line that marks a panic, recovered or not, or a

@@ -109,20 +109,20 @@ The checks CI runs, in the order to run them locally:
    ```
 
    The suite starts an engine of its own, under a state directory of its
-   own, so it leaves `~/.fws` alone. To run one of CI's shards of it, pass
-   `-run "$(./shard.sh N)"`.
+   own, so it leaves `~/.fws` alone. It runs the engine with `-debug` and
+   ends with the time the engine took to serve each endpoint.
 
 CI runs these jobs on every push:
 
 - `linux`: formatting, cross-builds, vet and the portable unit tests;
-- `macos`: the unit tests on macOS;
+- `macos`: the unit tests on macOS, and what a container's processes pay
+  for each system call the path library interposes;
 - `servers`: the MySQL and MariaDB builds, cached by derivation;
 - `images`: the catalog's archives and a local registry that takes them,
   cached under a hash of the files the build reads
   (`scripts/build-images.sh --inputs`), so a push that changes none of
   them skips the build;
-- `e2e`: the end-to-end suite in four shards on runners of their own
-  (`tests/e2e/shard.sh`).
+- `e2e`: the end-to-end suite.
 
 When `e2e` fails, its last step prints the crash reports and every distinct
 Seatbelt denial. [SEATBELT](docs/SEATBELT.md) shows how to read the same

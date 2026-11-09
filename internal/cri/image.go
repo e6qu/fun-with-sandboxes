@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -158,23 +159,70 @@ func (s *Service) RemoveImage(ctx context.Context, req *runtimeapi.RemoveImageRe
 	return &runtimeapi.RemoveImageResponse{}, nil
 }
 
-// usage is what the files under dir take: their bytes on disk and their
-// inodes.
-func usage(dir string) (uint64, uint64) {
-	var bytes, inodes uint64
+// diskUsage is what files take: their bytes on disk and their inodes.
+type diskUsage struct{ bytes, inodes uint64 }
+
+func (u *diskUsage) add(v diskUsage) {
+	u.bytes += v.bytes
+	u.inodes += v.inodes
+}
+
+// usage is what the files under dir take, dir included.
+func usage(dir string) diskUsage {
+	var u diskUsage
 	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		inodes++
+		u.inodes++
 		if info, err := d.Info(); err == nil {
 			if st, ok := info.Sys().(*syscall.Stat_t); ok {
-				bytes += uint64(st.Blocks) * 512
+				u.bytes += uint64(st.Blocks) * 512
 			}
 		}
 		return nil
 	})
-	return bytes, inodes
+	return u
+}
+
+// imageUsage is what the image store takes. It walks each unpacked root
+// once, and every other file each time.
+func (s *Service) imageUsage() diskUsage {
+	dir := filepath.Join(s.e.Root(), "images")
+	u := diskUsage{inodes: 1}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.Name() != "roots" {
+			u.add(usage(filepath.Join(dir, e.Name())))
+		}
+	}
+	roots := filepath.Join(dir, "roots")
+	entries, _ = os.ReadDir(roots)
+	u.inodes++
+	s.rootsMu.Lock()
+	defer s.rootsMu.Unlock()
+	present := map[string]bool{}
+	for _, e := range entries {
+		name := e.Name()
+		// A root the store is still unpacking is staged under a dot name.
+		if strings.HasPrefix(name, ".") {
+			u.add(usage(filepath.Join(roots, name)))
+			continue
+		}
+		present[name] = true
+		ru, ok := s.rootUsage[name]
+		if !ok {
+			ru = usage(filepath.Join(roots, name))
+			s.rootUsage[name] = ru
+		}
+		u.add(ru)
+	}
+	for name := range s.rootUsage {
+		if !present[name] {
+			delete(s.rootUsage, name)
+		}
+	}
+	return u
 }
 
 // ImageFsInfo reports the filesystems the runtime keeps its images and
@@ -182,17 +230,17 @@ func usage(dir string) (uint64, uint64) {
 // files in each take.
 func (s *Service) ImageFsInfo(ctx context.Context, req *runtimeapi.ImageFsInfoRequest) (*runtimeapi.ImageFsInfoResponse, error) {
 	now := time.Now().UnixNano()
-	fsUsage := func(dir string) *runtimeapi.FilesystemUsage {
-		b, n := usage(dir)
+	fsUsage := func(dir string, u diskUsage) *runtimeapi.FilesystemUsage {
 		return &runtimeapi.FilesystemUsage{
 			Timestamp:  now,
 			FsId:       &runtimeapi.FilesystemIdentifier{Mountpoint: dir},
-			UsedBytes:  &runtimeapi.UInt64Value{Value: b},
-			InodesUsed: &runtimeapi.UInt64Value{Value: n},
+			UsedBytes:  &runtimeapi.UInt64Value{Value: u.bytes},
+			InodesUsed: &runtimeapi.UInt64Value{Value: u.inodes},
 		}
 	}
+	stacks := filepath.Join(s.e.Root(), "stacks")
 	return &runtimeapi.ImageFsInfoResponse{
-		ImageFilesystems:     []*runtimeapi.FilesystemUsage{fsUsage(filepath.Join(s.e.Root(), "images"))},
-		ContainerFilesystems: []*runtimeapi.FilesystemUsage{fsUsage(filepath.Join(s.e.Root(), "stacks"))},
+		ImageFilesystems:     []*runtimeapi.FilesystemUsage{fsUsage(filepath.Join(s.e.Root(), "images"), s.imageUsage())},
+		ContainerFilesystems: []*runtimeapi.FilesystemUsage{fsUsage(stacks, usage(stacks))},
 	}, nil
 }

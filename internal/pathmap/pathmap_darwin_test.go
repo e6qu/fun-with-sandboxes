@@ -36,7 +36,7 @@ func probe(t *testing.T, root string, env []string, checks ...string) map[string
 	return got
 }
 
-func containerRoot(t *testing.T) string {
+func containerRoot(t testing.TB) string {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

@@ -59,11 +59,17 @@ type Service struct {
 
 	mu   sync.Mutex
 	logs map[string]*logCopy
+
+	// rootUsage remembers what each image root takes: the store names a
+	// root by its image's digest and never changes one it has unpacked.
+	rootsMu   sync.Mutex
+	rootUsage map[string]diskUsage
 }
 
 // New serves CRI over e. Its sandboxes run sandboxImage.
 func New(e *engine.Engine, sandboxImage string) *Service {
-	s := &Service{e: e, sandboxImage: sandboxImage, grpc: grpc.NewServer(), logs: map[string]*logCopy{}}
+	s := &Service{e: e, sandboxImage: sandboxImage, grpc: grpc.NewServer(), logs: map[string]*logCopy{},
+		rootUsage: map[string]diskUsage{}}
 	runtimeapi.RegisterRuntimeServiceServer(s.grpc, s)
 	runtimeapi.RegisterImageServiceServer(s.grpc, s)
 	s.streamsErr = s.openStreams()
