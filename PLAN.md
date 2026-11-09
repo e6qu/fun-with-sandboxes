@@ -269,7 +269,11 @@ removal moves the container's directory to a trash directory under the
 lock and deletes it after. With `-debug` the engine logs the time of each
 step of a create and a start, and the shim the steps of its own start.
 CRI's `ImageFsInfo` took 66 s on its first call and 4.1 s on average: it
-walks every container's root on each call.
+walked every image's root once, and every container's root on each call.
+The image store now measures a root once, as it unpacks it, and keeps the
+measure in the image's record; CRI walks only a root an earlier store
+unpacked, once. The walk of the containers' roots on each call remains:
+each root is a clone of its image's, with as many files.
 
 Open bug: with a pids limit, every `fork` and `posix_spawn` lists every
 process of the engine's user and checks each, to count the container's

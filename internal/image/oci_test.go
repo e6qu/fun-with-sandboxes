@@ -96,6 +96,10 @@ func TestSaveAndLoadKeepLayers(t *testing.T) {
 	if loaded[0].ID != wantID.String() || len(loaded[0].LayerSizes) != 3 {
 		t.Fatalf("loaded %+v, want ID %s with 3 layers", loaded[0], wantID)
 	}
+	// The store measures the root once, as it unpacks it.
+	if u := loaded[0].RootUsage; u == nil || *u != DiskUsage(s.Root(loaded[0].ID)) || u.Inodes < 2 {
+		t.Errorf("recorded root usage %+v, on disk %+v", u, DiskUsage(s.Root(loaded[0].ID)))
+	}
 	stored, _, err := s.V1Image("layered:1")
 	if err != nil {
 		t.Fatal(err)
