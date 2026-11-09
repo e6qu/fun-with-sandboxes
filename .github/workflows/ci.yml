@@ -37,6 +37,8 @@ jobs:
           (cd tests/e2e && GOOS=darwin GOARCH=arm64 go vet -tags e2e ./...)
       - name: portable unit tests
         run: go test -race -count=3 ./...
+      - name: the end-to-end shards name existing files
+        run: for n in 1 2 3 4; do tests/e2e/shard.sh $n > /dev/null; done
       - name: third_party/buildkit matches its sync script
         run: |
           scripts/sync-buildkit.sh
@@ -99,12 +101,16 @@ jobs:
           path: ~/fws-servers/${{ matrix.server }}
           key: ${{ steps.drv.outputs.key }}
 
-  # The image build takes from twenty minutes to an hour on a macOS
-  # runner, and the suite up to its own ninety.
-  e2e:
+  # The catalog's image archives, kept in the Actions cache under a hash of
+  # every file their build reads (scripts/build-images.sh --inputs). A
+  # macOS runner takes from twenty minutes to an hour to build them, so a
+  # run builds them only when one of those files changes.
+  images:
     needs: servers
     runs-on: macos-15
-    timeout-minutes: 180
+    timeout-minutes: 120
+    outputs:
+      key: ${{ steps.key.outputs.key }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -112,53 +118,65 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: the archives' inputs
+        id: key
+        run: |
+          scripts/build-images.sh --inputs > "$RUNNER_TEMP/inputs"
+          echo "key=images-$(xargs shasum -a 256 < "$RUNNER_TEMP/inputs" | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: images
+        with:
+          path: ~/fws-images
+          key: ${{ steps.key.outputs.key }}
+          lookup-only: true
       - uses: cachix/install-nix-action@v31
+        if: steps.images.outputs.cache-hit != 'true'
         with:
           extra_nix_config: trusted-users = root runner
       - name: database server derivations
+        if: steps.images.outputs.cache-hit != 'true'
         id: drv
         run: |
           for s in mysql mariadb; do
             echo "$s=server-$s-$(scripts/build-images.sh --server-derivations $s | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
           done
       - uses: actions/cache/restore@v4
+        if: steps.images.outputs.cache-hit != 'true'
         with:
           path: ~/fws-servers/mysql
           key: ${{ steps.drv.outputs.mysql }}
           fail-on-cache-miss: true
       - uses: actions/cache/restore@v4
+        if: steps.images.outputs.cache-hit != 'true'
         with:
           path: ~/fws-servers/mariadb
           key: ${{ steps.drv.outputs.mariadb }}
           fail-on-cache-miss: true
-      # The images, their archives, a registry's copies and the engines'
-      # stores fill the runner's disk; the runner's SDKs for other
-      # platforms take tens of gigabytes the suite never uses.
+      # The images, their archives and a registry's copies fill the
+      # runner's disk; the runner's SDKs for other platforms take tens of
+      # gigabytes the build never uses.
       - name: free disk space
+        if: steps.images.outputs.cache-hit != 'true'
         run: |
           df -h /
           sudo rm -rf ~/Library/Android /usr/local/share/dotnet ~/.dotnet ~/.ghcup /usr/local/lib/android \
             /Library/Developer/CoreSimulator/Caches ~/Library/Developer/CoreSimulator/Caches
           xcrun simctl delete all || true
           df -h /
-      - name: install the Docker CLI, Docker Compose and buildx
-        run: |
-          brew install docker docker-compose docker-buildx podman podman-compose cri-tools
-          mkdir -p ~/.docker
-          echo "{\"cliPluginsExtraDirs\": [\"$(brew --prefix)/lib/docker/cli-plugins\"]}" > ~/.docker/config.json
-          docker buildx version
       # What the image build makes rather than substitutes from
       # cache.nixos.org: the files the images pin from GitHub releases and
       # repositories, and the packages Hydra does not build, such as Consul
       # and MongoDB under their licences. Nix substitutes by store path, so
       # an earlier run's cache serves every derivation that has not changed.
       - uses: actions/cache/restore@v4
+        if: steps.images.outputs.cache-hit != 'true'
         id: built
         with:
           path: ~/fws-built
           key: built-${{ hashFiles('scripts/build-images.sh', 'images/**') }}
           restore-keys: built-
       - name: build images
+        if: steps.images.outputs.cache-hit != 'true'
         run: |
           substituters="file://$HOME/fws-servers/mysql?trusted=1 file://$HOME/fws-servers/mariadb?trusted=1"
           # The daemon, as root, would claim an empty cache directory that
@@ -167,11 +185,11 @@ jobs:
             substituters="$substituters file://$HOME/fws-built?trusted=1"
           fi
           export NIX_CONFIG="extra-substituters = $substituters"
-          scripts/build-images.sh "$RUNNER_TEMP/images"
+          scripts/build-images.sh ~/fws-images
       # The store paths this run built, added to what the restored cache
       # holds.
       - name: keep what the build made
-        if: steps.built.outputs.cache-hit != 'true'
+        if: steps.images.outputs.cache-hit != 'true' && steps.built.outputs.cache-hit != 'true'
         run: |
           built=$(nix --extra-experimental-features nix-command path-info --json --all | python3 -c '
           import json, sys
@@ -184,13 +202,12 @@ jobs:
           fi
           du -sh ~/fws-built
       - uses: actions/cache/save@v4
-        if: steps.built.outputs.cache-hit != 'true'
+        if: steps.images.outputs.cache-hit != 'true' && steps.built.outputs.cache-hit != 'true'
         with:
           path: ~/fws-built
           key: ${{ steps.built.outputs.cache-primary-key }}
-      # The suite needs neither the build's store paths, which the cache
-      # holds for the next run, nor the caches it substituted from.
       - name: free what the build left
+        if: steps.images.outputs.cache-hit != 'true'
         run: |
           rm -rf ~/fws-built ~/fws-servers
           nix-store --gc
@@ -198,6 +215,7 @@ jobs:
       # crane's registry keeps every blob in memory, so it stops once it
       # has shown the archives publish.
       - name: publish images to a local registry
+        if: steps.images.outputs.cache-hit != 'true'
         run: |
           GOBIN="$RUNNER_TEMP/bin" go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
           crane="$RUNNER_TEMP/bin/crane"
@@ -205,20 +223,54 @@ jobs:
           registry=$!
           trap 'kill $registry' EXIT
           until curl -sf 127.0.0.1:5000/v2/ >/dev/null; do sleep 1; done
-          scripts/publish-images.sh "$RUNNER_TEMP/images" 127.0.0.1:5000/e6qu
+          scripts/publish-images.sh ~/fws-images 127.0.0.1:5000/e6qu
           for ref in fws-postgres:16 fws-postgres:18 fws-redis:8 fws-nginx:1 fws-mariadb:11 fws-python:3.14 fws-node:26 fws-bun:1 fws-gitea:1 fws-dynamodb-local:2 fws-rabbitmq:4 fws-lambda/python:3.14 fws-lambda/nodejs:24 fws-lambda/java:17 fws-playwright:1.59 fws-toolbox:1 fws-ryuk:0.14.0 fws-mysql:8.4 fws-valkey:9 fws-memcached:1.6 fws-nats:2.14 fws-seaweedfs:4.36 fws-etcd:3.6 fws-consul:2.1 fws-vault:2.0 fws-mongo:8.2 fws-kafka:4.2 fws-mailpit:1.32 fws-meilisearch:1.43 fws-qdrant:1.17 fws-neo4j:2026.02 fws-clickhouse:26.5 fws-influxdb:2.7 fws-opensearch:3.5 fws-toxiproxy:2.12 fws-dind:29 fws-kube-apiserver:1.35 fws-kube-controller-manager:1.35 fws-kube-scheduler:1.35 fws-kubectl:1.35 fws-pause:3.10.1 fws-kubelet:1.35; do
             "$crane" config "127.0.0.1:5000/e6qu/$ref" | grep -q '"os":"darwin"'
           done
+      - uses: actions/cache/save@v4
+        if: steps.images.outputs.cache-hit != 'true'
+        with:
+          path: ~/fws-images
+          key: ${{ steps.key.outputs.key }}
+
+  # The suite runs in four shards on runners of their own (tests/e2e/shard.sh),
+  # each about a quarter of its running time.
+  e2e:
+    needs: images
+    runs-on: macos-15
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/fws-images
+          key: ${{ needs.images.outputs.key }}
+          fail-on-cache-miss: true
+      - name: install the Docker CLI, Docker Compose and buildx
+        run: |
+          brew install docker docker-compose docker-buildx podman podman-compose cri-tools
+          mkdir -p ~/.docker
+          echo "{\"cliPluginsExtraDirs\": [\"$(brew --prefix)/lib/docker/cli-plugins\"]}" > ~/.docker/config.json
+          docker buildx version
       # A runner that dies takes its job's log with it. The suite runs in
       # the background, and each snapshot keeps its output so far and the
       # runner's memory, disk and busiest processes as an artifact.
       - name: start the end-to-end tests
-        env:
-          FWS_E2E_IMAGES: ${{ runner.temp }}/images
         working-directory: tests/e2e
         run: |
           mkdir -p "$RUNNER_TEMP/e2e"
-          nohup sh -c 'go test -tags e2e -v -count=1 -timeout 90m ./...; echo $? > "$RUNNER_TEMP/e2e/exit"' \
+          export FWS_E2E_IMAGES=~/fws-images
+          run=$(./shard.sh ${{ matrix.shard }})
+          nohup sh -c 'go test -tags e2e -v -count=1 -timeout 55m -run "$0" ./...; echo $? > "$RUNNER_TEMP/e2e/exit"' "$run" \
             > "$RUNNER_TEMP/e2e/test.log" 2>&1 < /dev/null &
           nohup sh -c 'while [ ! -e "$RUNNER_TEMP/e2e/exit" ]; do
               date; df -h /; sysctl vm.swapusage kern.memorystatus_level; vm_stat
@@ -227,79 +279,49 @@ jobs:
             done' > "$RUNNER_TEMP/e2e/samples.log" 2>&1 < /dev/null &
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-01
+          name: e2e-${{ matrix.shard }}-01
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-02
+          name: e2e-${{ matrix.shard }}-02
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-03
+          name: e2e-${{ matrix.shard }}-03
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-04
+          name: e2e-${{ matrix.shard }}-04
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-05
+          name: e2e-${{ matrix.shard }}-05
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-06
+          name: e2e-${{ matrix.shard }}-06
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-07
+          name: e2e-${{ matrix.shard }}-07
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-08
+          name: e2e-${{ matrix.shard }}-08
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-09
+          name: e2e-${{ matrix.shard }}-09
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-10
+          name: e2e-${{ matrix.shard }}-10
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-11
+          name: e2e-${{ matrix.shard }}-11
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-12
+          name: e2e-${{ matrix.shard }}-12
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-13
+          name: e2e-${{ matrix.shard }}-13
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-14
+          name: e2e-${{ matrix.shard }}-14
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-15
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-16
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-17
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-18
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-19
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-20
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-21
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-22
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-23
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-24
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-25
+          name: e2e-${{ matrix.shard }}-15
       - name: end-to-end tests
         run: |
           cat "$RUNNER_TEMP/e2e/test.log"

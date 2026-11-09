@@ -6,6 +6,10 @@
 # the database servers Nix builds from source (images/servers.nix), and
 # build-images.sh --servers [NAME...] builds them and prints their outputs,
 # so CI can keep them between runs.
+#
+# build-images.sh --inputs prints the files the build reads: this script,
+# images/, and the Go sources of every package it compiles, so CI can key
+# the archives on their content.
 set -euo pipefail
 
 # nixos-26.05, pinned, so a rebuild makes the same images.
@@ -14,6 +18,24 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 nix=(nix --extra-experimental-features 'nix-command flakes')
 servers=(--impure -f "$here/images/servers.nix" --argstr nixpkgs "$nixpkgs")
 case "${1:-}" in
+--inputs)
+  cd "$here"
+  {
+    echo scripts/build-images.sh
+    echo go.mod
+    echo go.sum
+    git ls-files images
+    # The module's own packages, file by file; go.sum pins the rest.
+    GOOS=darwin GOARCH=arm64 go list -deps -f '{{if .Module}}{{if eq .Module.Path "github.com/e6qu/fun-with-sandboxes"}}{{$d := .Dir}}{{range .GoFiles}}{{$d}}/{{.}}
+{{end}}{{range .CgoFiles}}{{$d}}/{{.}}
+{{end}}{{range .CFiles}}{{$d}}/{{.}}
+{{end}}{{range .HFiles}}{{$d}}/{{.}}
+{{end}}{{range .SFiles}}{{$d}}/{{.}}
+{{end}}{{range .EmbedFiles}}{{$d}}/{{.}}
+{{end}}{{end}}{{end}}' ./cmd/fws-mkimage ./images/... | sed "s|^$here/||"
+  } | sort -u
+  exit
+  ;;
 --server-derivations | --servers)
   mode=$1
   shift
