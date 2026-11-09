@@ -26,6 +26,9 @@ pkgs.buildGoModule {
     KUBE_GIT_VERSION = "v${version}";
     KUBE_GIT_COMMIT = "66452049f3d692768c39c797b21b793dce80314e";
     KUBE_GIT_TREE_STATE = "clean";
+    # Upstream links darwin's kubectl with cgo, against a libresolv the
+    # images do not carry; kind's node binaries are static.
+    CGO_ENABLED = "0";
   };
   buildPhase = ''
     runHook preBuild
