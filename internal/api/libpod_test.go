@@ -75,11 +75,18 @@ func TestLibpodRoutes(t *testing.T) {
 		t.Fatalf("ping: %d %v", res.StatusCode, res.Header)
 	}
 	var e errorBody
-	if res := call(t, ts, "GET", "/v5.8.9/libpod/containers/nope/json", "", &e); res.StatusCode != 404 || e.Cause != "no such container" {
+	if res := call(t, ts, "GET", "/v5.8.9/libpod/containers/nope/json", "", &e); res.StatusCode != 404 || e.Cause != "no such container" ||
+		e.Message != `no container with name or ID "nope" found: no such container` {
 		t.Errorf("a missing container: %d %+v", res.StatusCode, e)
 	}
-	if res := call(t, ts, "GET", "/v5.8.9/libpod/containers/nope/logs", "", &e); res.StatusCode != 404 {
-		t.Errorf("logs, which Docker's handler serves: %d", res.StatusCode)
+	if res := call(t, ts, "GET", "/v5.8.9/libpod/containers/nope/logs", "", &e); res.StatusCode != 404 || e.Message != `no container with name or ID "nope" found: no such container` {
+		t.Errorf("logs, which Docker's handler serves: %d %+v", res.StatusCode, e)
+	}
+	if res := call(t, ts, "GET", "/v1.44/containers/nope/json", "", &e); res.StatusCode != 404 || e.Message != "No such container: nope" {
+		t.Errorf("a missing container on Docker's path: %d %+v", res.StatusCode, e)
+	}
+	if res := call(t, ts, "POST", "/v6.1.4/libpod/exec/nope/remove", `{"Force":false}`, &e); res.StatusCode != 404 || e.Cause != "no such exec session" {
+		t.Errorf("removing a missing exec session: %d %+v", res.StatusCode, e)
 	}
 	var pod map[string]string
 	if res := call(t, ts, "POST", "/v5.8.9/libpod/pods/create", `{"name":"p","no_infra":true}`, &pod); res.StatusCode != http.StatusCreated || pod["Id"] == "" {

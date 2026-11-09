@@ -779,7 +779,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // does, with the cause its clients match and the status: the body of
 // Podman's compatible API too, whose extra fields Docker clients pass over.
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, errorBody{Message: msg, Cause: causeOf(msg), Response: status})
+	cause := causeOf(msg)
+	if _, ok := w.(libpodWriter); ok {
+		msg = libpodMessage(msg)
+	}
+	writeJSON(w, status, errorBody{Message: msg, Cause: cause, Response: status})
 }
 
 type errorBody struct {

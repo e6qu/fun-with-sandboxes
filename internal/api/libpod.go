@@ -1,6 +1,9 @@
 package api
 
 import (
+	"bufio"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -38,12 +41,37 @@ func (s *Server) serveLibpod(w http.ResponseWriter, r *http.Request, p string) {
 	w.Header().Set("Api-Version", engine.APIVersion)
 	w.Header().Set("Server", "Libpod/"+LibpodAPIVersion+" (fun-with-sandboxes "+engine.Version+")")
 	r.URL.Path, r.URL.RawPath = p, ""
+	w = libpodWriter{w}
 	if _, pattern := s.lp.Handler(r); pattern != "" {
 		s.lp.ServeHTTP(w, r)
 		return
 	}
 	// The endpoints libpod shares with Docker's API.
 	s.mux.ServeHTTP(w, r)
+}
+
+// libpodWriter answers a libpod path's errors in libpod's words, whose
+// text Podman's clients match: podman run --rm takes a container already
+// gone for removed by "no such container" in the message.
+type libpodWriter struct{ http.ResponseWriter }
+
+func (w libpodWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w libpodWriter) Flush() { http.NewResponseController(w.ResponseWriter).Flush() }
+
+func (w libpodWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return http.NewResponseController(w.ResponseWriter).Hijack()
+}
+
+// libpodMessage is libpod's message for the engine's Docker-worded one.
+func libpodMessage(msg string) string {
+	if ref, ok := strings.CutPrefix(msg, "No such container: "); ok {
+		return fmt.Sprintf("no container with name or ID %q found: no such container", ref)
+	}
+	if id, ok := strings.CutPrefix(msg, "No such exec instance: "); ok {
+		return fmt.Sprintf("no exec session with ID %s found: no such exec session", id)
+	}
+	return msg
 }
 
 func (s *Server) libpodRoutes() {
