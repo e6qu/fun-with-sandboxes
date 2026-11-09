@@ -54,6 +54,9 @@ func TestClickHouse(t *testing.T) {
 		tcclickhouse.WithDatabase("analytics"), tcclickhouse.WithInitScripts(script))
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {
+		if c != nil {
+			serverLogs(t, c)
+		}
 		t.Fatal(err)
 	}
 	logsOnFailure(t, c)
@@ -188,5 +191,27 @@ func TestToxiproxy(t *testing.T) {
 	res.Body.Close()
 	if took := time.Since(start); took < 700*time.Millisecond {
 		t.Errorf("a response through the latency toxic took %v", took)
+	}
+}
+
+// serverLogs reports the processes of a ClickHouse container that never
+// became ready and the end of its server's own logs.
+func serverLogs(t *testing.T, c testcontainers.Container) {
+	t.Helper()
+	if out, err := docker(t, "top", c.GetContainerID()); err == nil {
+		t.Logf("the container's processes:\n%s", out)
+	}
+	for _, f := range []string{"/var/log/clickhouse-server/clickhouse-server.err.log", "/var/log/clickhouse-server/clickhouse-server.log"} {
+		r, err := c.CopyFileFromContainer(context.Background(), f)
+		if err != nil {
+			t.Logf("%s: %v", f, err)
+			continue
+		}
+		b, _ := io.ReadAll(r)
+		r.Close()
+		if len(b) > 16<<10 {
+			b = b[len(b)-16<<10:]
+		}
+		t.Logf("%s:\n%s", f, b)
 	}
 }
