@@ -283,9 +283,7 @@ gnugrep=$(pkg_with gnugrep grep)
 gzip=$(pkg_with gzip gunzip)
 wget=$(pkg_with wget wget)
 # The time zones Debian's tzdata installs, which ClickHouse resolves TZ in.
-for tzdata in $("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#tzdata"); do
-  [ -d "$tzdata/share/zoneinfo" ] && break
-done
+tzdata=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#tzdata.out")
 closure "$clickhouse" "$coreutils" "$bash" "$gnugrep" "$gzip" "$wget" > "$build/clickhouse.closure"
 mkimage $(accounts clickhouse clickhouse 101 101 /var/lib/clickhouse) -spec images/clickhouse/image.json -closure "$build/clickhouse.closure" \
   -pkg "$clickhouse" -pkg "$coreutils" -pkg "$bash" -pkg "$gnugrep" -pkg "$gzip" -pkg "$wget" -link /usr/bin/env=../../bin/env \
