@@ -225,6 +225,8 @@ jobs:
             head -c 20000 "$f"
             echo
           done
-          # Each distinct denial once, by process.
-          log show --last 2h --style compact --predicate 'sender == "Sandbox"' |
+          # Each distinct denial once, by process, from the suite's last
+          # minutes: reading hours of the unified log starves the runner
+          # until it loses its connection, and the job's log with it.
+          perl -e 'alarm 120; exec @ARGV' log show --last 20m --style compact --predicate 'sender == "Sandbox"' |
             sed -n 's/.*Sandbox: \([^(]*\)([0-9]*) \(deny.*\)/\1 \2/p' | sort | uniq -c | sort -rn
