@@ -24,26 +24,36 @@ func TestLayInitMatchesTheCreatedRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(img, "etc/hostname"), []byte("image\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("usr/lib", filepath.Join(img, "lib")); err != nil {
+	// A link in the image leads on inside the container's root, never on
+	// the host, wherever its absolute target names a host directory.
+	host := filepath.Join(dir, "host")
+	if err := os.Mkdir(host, 0o755); err != nil {
 		t.Fatal(err)
+	}
+	for link, target := range map[string]string{"lib": "usr/lib", "srv": "/data", "out": host} {
+		if err := os.Symlink(target, filepath.Join(img, link)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, d := range []string{root, init} {
 		if err := image.CloneDir(img, d); err != nil {
 			t.Fatal(err)
 		}
 	}
-	mounts := []mountRec{{Destination: "/data/db"}, {Destination: "/new/deep/dir"}, {Destination: "/lib/x"}}
+	mounts := []mountRec{
+		{Destination: "/data/db"}, {Destination: "/new/deep/dir"}, {Destination: "/lib/x"},
+		{Destination: "/srv/y"}, {Destination: "/out/z"}, {Destination: "/out/deep/z"},
+	}
 	for _, m := range mounts {
-		dest := filepath.Join(root, m.Destination)
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		if err := placeMount(root, m.Destination, dir); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.RemoveAll(dest); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(dir, dest); err != nil {
-			t.Fatal(err)
-		}
+	}
+	if entries, err := os.ReadDir(host); err != nil || len(entries) > 0 {
+		t.Fatalf("mounts wrote to the host through the image's link: %v, %v", entries, err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "data/y")); err != nil {
+		t.Fatalf("the mount through /srv: %v", err)
 	}
 	if err := writeHostsFiles(root, "box", "", nil, nil, nil, mounts); err != nil {
 		t.Fatal(err)

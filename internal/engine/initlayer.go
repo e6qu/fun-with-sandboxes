@@ -46,8 +46,8 @@ func layInit(root, init string, paths []string) error {
 
 // layPath copies the first component of p that differs between root and
 // init, and with it everything create wrote below it, from root to init.
-// A relative link both share leads on in the root, as create's writes
-// followed it.
+// A link both share leads on in the root, as rootfs.Join led create's
+// writes: an absolute one from the root, a relative one from its directory.
 func layPath(root, init, p string, walked map[string]bool, links int) error {
 	parts := strings.Split(strings.TrimPrefix(path.Clean("/"+p), "/"), "/")
 	cur := ""
@@ -65,11 +65,14 @@ func layPath(root, init, p string, walked map[string]bool, links int) error {
 				s, serr := os.Readlink(src)
 				d, derr := os.Readlink(dst)
 				if serr == nil && derr == nil && s == d {
-					if path.IsAbs(s) || links >= 40 {
-						// Create's write left the root.
+					if links >= 40 {
 						return nil
 					}
-					rest := path.Join(append([]string{path.Dir(cur), s}, parts[i+1:]...)...)
+					from := path.Dir(cur)
+					if path.IsAbs(s) {
+						from = "/"
+					}
+					rest := path.Join(append([]string{from, s}, parts[i+1:]...)...)
 					return layPath(root, init, rest, walked, links+1)
 				}
 			}

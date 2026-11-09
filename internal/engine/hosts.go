@@ -3,11 +3,14 @@ package engine
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/moby/moby/api/types/network"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 )
 
 // writeHosts writes c's /etc/hosts and /etc/hostname as it starts, as
@@ -96,8 +99,12 @@ func writeHostsFiles(root, hostname, domain string, addresses, extra, links []st
 		if mounted[p] {
 			continue
 		}
-		dst := filepath.Join(root, p)
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		dir, err := rootfs.Join(root, path.Dir(p))
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(dir, path.Base(p))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 		// The image's file may be a symlink, which must not be followed out

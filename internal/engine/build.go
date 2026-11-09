@@ -750,7 +750,7 @@ func (b *builder) copy(ctx context.Context, s *stage, in dockerfile.Instruction,
 			if destIsDir && !fi.IsDir() {
 				target = filepath.Join(destHost, filepath.Base(m))
 			}
-			if err := copyInto(m, target, mode); err != nil {
+			if err := copyInto(s.root, m, target, mode); err != nil {
 				return err
 			}
 		}
@@ -868,21 +868,36 @@ func (b *builder) applyCached(s *stage, e cacheEntry) error {
 	return nil
 }
 
-// copyInto copies a file, symlink or directory's contents to dst, applying
-// mode when it is non-zero.
-func copyInto(src, dst string, mode os.FileMode) error {
+// copyInto copies a file, symlink or directory's contents to dst, a path
+// in root, applying mode when it is non-zero. It resolves each target in
+// root, so a link the root holds below dst leads on inside it, not out to
+// the host.
+func copyInto(root, src, dst string, mode os.FileMode) error {
+	inRoot, err := filepath.Rel(root, dst)
+	if err != nil {
+		return err
+	}
 	return filepath.Walk(src, func(p string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		rel, _ := filepath.Rel(src, p)
-		target := filepath.Join(dst, rel)
+		name := filepath.Join("/", inRoot, rel)
+		dir, err := rootfs.Join(root, filepath.Dir(name))
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dir, filepath.Base(name))
 		perm := fi.Mode().Perm()
 		if mode != 0 {
 			perm = mode
 		}
 		switch {
 		case fi.IsDir():
+			// A directory the root has as a link takes the copy at its target.
+			if target, err = rootfs.Join(root, name); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}

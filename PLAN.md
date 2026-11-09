@@ -228,6 +228,14 @@ the new one in that time. Create now makes both clones before it takes
 the lock, side by side, and then copies into the record only what it
 wrote into the root under the lock: the hosts files and the mount points.
 
+The engine wrote into a container's root through links the image holds
+as the host resolves them: a mount point, the hosts files, the home
+directory, a build's `COPY` into a directory and a fresh volume's copy-up
+all followed an absolute link to the host's path of that name, so an
+image with `/data -> /Users/me` and a volume at `/data/x` replaced the
+host's `/Users/me/x`. Each now resolves the path inside the root, as a
+chroot would and as the container sees it.
+
 Open bug: `docker-compose up --build`, which builds through `buildx bake`,
 stalls for minutes after loading its bake definitions, while `docker build`
 of the same Dockerfile takes seconds; `TestComposeWatch` takes 220 to 300

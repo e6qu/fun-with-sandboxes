@@ -967,7 +967,6 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 
 	for i := range mounts {
 		m := &mounts[i]
-		dest := filepath.Join(root, m.Destination)
 		switch m.Type {
 		case mount.TypeBind:
 			src, err := e.hostPath(m.Source)
@@ -1010,7 +1009,11 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 			if v.Fresh && m.Subpath == "" && !m.NoCopy && emptyDir(src) {
 				// A new, empty volume starts with the image's content at the
 				// mount point, as Docker's copy-up does.
-				if err := copyTree(filepath.Join(e.images.Root(img.ID), m.Destination), src); err != nil {
+				from, err := rootfs.Join(e.images.Root(img.ID), m.Destination)
+				if err != nil {
+					return nil, err
+				}
+				if err := copyTree(from, src); err != nil {
 					return nil, err
 				}
 				v.Fresh = false
@@ -1032,23 +1035,35 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 				return nil, err
 			}
 		}
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return nil, err
-		}
-		if err := os.RemoveAll(dest); err != nil {
-			return nil, err
-		}
-		// The link names the source by its real path, which a program in the
-		// container that follows it walks on the host.
-		real, err := filepath.EvalSymlinks(m.Source)
-		if err != nil {
-			return nil, err
-		}
-		if err := os.Symlink(real, dest); err != nil {
+		if err := placeMount(root, m.Destination, m.Source); err != nil {
 			return nil, err
 		}
 	}
 	return mounts, nil
+}
+
+// placeMount links source at destination in root. It resolves the
+// destination's directory as the container sees it, so no link in the
+// image leads the writes out of the root.
+func placeMount(root, destination, source string) error {
+	dir, err := rootfs.Join(root, path.Dir(destination))
+	if err != nil {
+		return err
+	}
+	dest := filepath.Join(dir, path.Base(destination))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return err
+	}
+	// The link names the source by its real path, which a program in the
+	// container that follows it walks on the host.
+	real, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		return err
+	}
+	return os.Symlink(real, dest)
 }
 
 // placeInit links the engine's helper binary, which runs as the init by
@@ -1203,7 +1218,11 @@ func (e *Engine) environment(c, net *Container, extra []string, tty bool, links 
 	if h := vars["HOME"]; !strings.HasPrefix(h, root) {
 		vars["HOME"] = filepath.Join(root, h)
 	}
-	os.MkdirAll(vars["HOME"], 0o755)
+	home, err := rootfs.Join(root, strings.TrimPrefix(vars["HOME"], root))
+	if err != nil {
+		return nil, err
+	}
+	os.MkdirAll(home, 0o755)
 	set("SANDBOX_ROOT=" + root)
 	set("SANDBOX_STACK=" + c.rec.Stack)
 	set("SANDBOX_HOST=127.0.0.1")
