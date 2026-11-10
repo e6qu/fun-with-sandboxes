@@ -72,15 +72,24 @@ func run(m *testing.M) int {
 	}
 	bin := filepath.Join(binDir, "fwsd")
 	fwsdBin = bin
-	// The race detector turns a data race in the engine into a report the
-	// suite fails on, rather than a crash some later run might hit. fwsd
-	// runs its helper processes from fws-shim beside it.
-	build := exec.Command("go", "build", "-race", "-o", binDir+"/", "./cmd/fwsd", "./cmd/fws-shim")
-	// The engine is its own module; this suite only drives its binary.
-	build.Dir = "../.."
-	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build fwsd: %v\n%s", err, out)
-		return 1
+	// The race detector turns a data race in the engine, which serves every
+	// request concurrently, into a report the suite fails on, rather than a
+	// crash some later run might hit. fwsd runs its helper processes from
+	// fws-shim beside it, built without the detector: a race-built binary
+	// takes half a second to start on macOS, and every container start runs
+	// two. The shim's own races are the unit tests' to find, which run with
+	// the detector.
+	for _, b := range [][]string{
+		{"build", "-race", "-o", binDir + "/", "./cmd/fwsd"},
+		{"build", "-o", binDir + "/", "./cmd/fws-shim"},
+	} {
+		build := exec.Command("go", b...)
+		// The engine is its own module; this suite only drives its binaries.
+		build.Dir = "../.."
+		if out, err := build.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "go %v: %v\n%s", b, err, out)
+			return 1
+		}
 	}
 	sock := filepath.Join(home, ".e2e.sock")
 	defer os.Remove(sock)

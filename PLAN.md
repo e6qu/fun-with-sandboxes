@@ -307,14 +307,20 @@ each root is a clone of its image's, with as many files.
 
 Every container start took about 1.15 s, nearly all of it in the shim's
 step from starting the spawn helper to the helper's `exec` of the
-container's command, in which the helper applies the limits, enters the
-sandbox and starts the exec anchor through a launcher it waits for: three
-Go processes, in the suite race-instrumented, one after another.
-`go test -bench . ./internal/runtime` measures that start with the
-sandbox alone, with the container library, with the anchor and with both,
-to find the share of each. The suite's 46 image archives took about 7 of
-its 42 minutes to load into the race-instrumented engine, which
+container's command. `go test -bench . ./internal/runtime` measures that
+start: 17 ms with the sandbox alone, 15 ms with the container library,
+19 ms with the exec anchor and 21 ms with both, and 1.15 s through an
+`fws-shim` built with the race detector, as the suite built it: a
+race-built Go binary takes about half a second to start on macOS, and a
+start runs two, the helper and the anchor's launcher. The suite now builds
+fwsd alone with the detector. The suite's 46 image archives took about 7
+of its 42 minutes to load into the race-instrumented engine, which
 decompresses and unpacks each layer.
+
+Open bug: a container's process starts in about 20 ms, where the same
+`posix_spawn` natively takes 2 ms. The helper and the anchor's launcher
+are Go processes, started one after the other, each with the runtime's
+start-up; the library adds the loader's 4 ms for an inserted library.
 
 Open bug: with a pids limit, every `fork` and `posix_spawn` lists every
 process of the engine's user and checks each, to count the container's
