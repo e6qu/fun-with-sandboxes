@@ -274,6 +274,11 @@ directory as the engine opened, before the container's shim made that
 directory, which the shim also clears as it starts. The service now opens
 the listener on the first exec, attach or port-forward, once the
 container runs.
+The stream server then answered the kubelet's exec with `400 Bad
+Request`: the router writes the client's address before each
+connection's stream on a port's socket, which the container library
+strips for a container's own listeners and the engine's Go listener
+read as the start of the request. The engine's listener now strips it.
 
 MongoDB's tests failed with `No such container` as they started the
 container they had created: create took 10 s, cloning the image's root,

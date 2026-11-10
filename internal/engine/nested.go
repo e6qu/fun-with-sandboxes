@@ -248,5 +248,10 @@ func (e *Engine) ListenStreams() (net.Listener, string, error) {
 	path := router.SocketPath(dir, StreamPort)
 	os.Remove(path)
 	l, err := net.Listen("unix", path)
-	return l, addr, err
+	if err != nil {
+		return nil, "", err
+	}
+	// The router writes each client's address before its stream, which
+	// the container library strips for a container's own listeners.
+	return router.Listener(l), addr, nil
 }

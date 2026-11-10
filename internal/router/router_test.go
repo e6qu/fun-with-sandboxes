@@ -75,6 +75,47 @@ func TestJoinsToTheListener(t *testing.T) {
 	}
 }
 
+// A process outside the container library listening on a port's socket
+// reads the client's stream without the router's header, and sees the
+// client as its peer.
+func TestListenerStripsTheClientHeader(t *testing.T) {
+	dir := portDir(t)
+	ul, err := net.Listen("unix", SocketPath(dir, 7000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := Listener(ul)
+	defer l.Close()
+	peers := make(chan string, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		line, _ := bufio.NewReader(c).ReadString('\n')
+		peers <- c.RemoteAddr().String()
+		c.Write([]byte("echo " + line))
+	}()
+	r, err := Listen("127.0.0.1:0", dir, listenFlow, Network{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	c, err := Dial(r.Addr().String(), 7000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Write([]byte("GET / HTTP/1.1\n"))
+	if got, _ := bufio.NewReader(c).ReadString('\n'); got != "echo GET / HTTP/1.1\n" {
+		t.Errorf("got %q", got)
+	}
+	if peer, want := <-peers, c.LocalAddr().String(); peer != want {
+		t.Errorf("the listener's peer is %v, want %v", peer, want)
+	}
+}
+
 // A client looks up a UDP port's flow port and exchanges datagrams with it;
 // the container's socket sees each with its source, and its answers leave
 // from the flow port.

@@ -571,3 +571,56 @@ func Dial(addr string, port int) (net.Conn, error) {
 }
 
 var errRefused = &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", errors.New("connection refused"))}
+
+// Listener is a listener on a port's socket in a port directory for a
+// process outside the container library, which strips the client's
+// address the router writes before each connection's stream: its
+// connections read the client's stream alone and report the client as
+// their remote address.
+func Listener(l net.Listener) net.Listener { return clientListener{l} }
+
+type clientListener struct{ net.Listener }
+
+func (l clientListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &clientConn{Conn: c}, nil
+}
+
+// clientConn reads the router's header on its first read or the first
+// call for its remote address, so a slow client holds up no other
+// connection's accept.
+type clientConn struct {
+	net.Conn
+	once   sync.Once
+	client net.Addr
+	err    error
+}
+
+func (c *clientConn) header() error {
+	c.once.Do(func() {
+		from, err := ReadClient(c.Conn)
+		if err != nil {
+			c.err = fmt.Errorf("reading the router's client header: %w", err)
+			return
+		}
+		c.client = net.TCPAddrFromAddrPort(from)
+	})
+	return c.err
+}
+
+func (c *clientConn) Read(b []byte) (int, error) {
+	if err := c.header(); err != nil {
+		return 0, err
+	}
+	return c.Conn.Read(b)
+}
+
+func (c *clientConn) RemoteAddr() net.Addr {
+	if c.header() != nil {
+		return c.Conn.RemoteAddr()
+	}
+	return c.client
+}
