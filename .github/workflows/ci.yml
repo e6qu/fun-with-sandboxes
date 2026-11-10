@@ -364,11 +364,34 @@ jobs:
         run: |
           df -h /
           vm_stat
+          # Each crash report's reason, where an uncaught exception was
+          # thrown, the faulting thread and every distinct thread stack.
           for f in ~/Library/Logs/DiagnosticReports/*.ips; do
             [ -e "$f" ] || continue
             echo "== $f"
-            head -c 20000 "$f"
-            echo
+            python3 - "$f" <<'PY'
+          import collections, json, sys
+          text = open(sys.argv[1]).read()
+          header, _, body = text.partition("\n")
+          r = json.loads(body)
+          def frames(fs):
+              return [x.get("symbol", "?") for x in fs]
+          print(json.dumps({k: r.get(k) for k in ("procPath", "parentProc", "exception", "asi", "termination")}))
+          if "lastExceptionBacktrace" in r:
+              print("thrown at:")
+              for s in frames(r["lastExceptionBacktrace"])[:30]:
+                  print("   ", s)
+          threads = r.get("threads", [])
+          ft = r.get("faultingThread")
+          if ft is not None and ft < len(threads):
+              print("faulting thread", ft, ":")
+              for s in frames(threads[ft].get("frames", []))[:30]:
+                  print("   ", s)
+          stacks = collections.Counter(" <- ".join(frames(t.get("frames", []))[:12]) for t in threads)
+          print(len(threads), "threads")
+          for s, n in stacks.most_common(15):
+              print(n, s)
+          PY
           done
           # Each distinct denial once, by process, from the suite's last
           # minutes: reading hours of the unified log starves the runner
