@@ -3185,6 +3185,8 @@ static unsigned short container_port(int type, unsigned short hport) {
 // NET_P6: an IPv6 socket that reached a member at an IPv6 address, whose
 // members' addresses read as theirs on IPv6.
 #define NET_P6 64
+// NET_HELD: a socket listen_unix bound to its port's Unix socket file.
+#define NET_HELD 128
 // What the router puts before a datagram on a Unix one: the IPv4 address
 // and port it came from, or goes to.
 #define DGRAM_HEADER 6
@@ -3997,6 +3999,22 @@ static int host_held(const struct sockaddr *sa, unsigned short port) {
     return r == -1 && e == EADDRINUSE;
 }
 
+// held reports whether a socket of this process other than fd holds the
+// Unix socket file u names, as one bound to IPv6's wildcard address holds a
+// port a bind to IPv4's then asks for.
+static int held(int fd, unsigned short port, const struct sockaddr_un *u) {
+    for (int i = 0; i < NET_FDS; i++) {
+        if (i == fd || !(net_state[i] & NET_HELD) || net_port[i] != port) continue;
+        struct sockaddr_un b;
+        socklen_t n = sizeof b;
+        if (getsockname(i, (struct sockaddr *)&b, &n) == 0 && b.sun_family == AF_UNIX &&
+            strncmp(b.sun_path, u->sun_path, sizeof b.sun_path) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // listen_unix puts a Unix socket of fd's type in its place and binds it
 // where the library listens on port. With reclaim set, it takes over a
 // socket file no listener holds.
@@ -4031,6 +4049,12 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
     if (fd < NET_FDS) net_port[fd] = port;
     int r = bind(fd, (struct sockaddr *)&u, u.sun_len);
     if (r == -1 && errno == EADDRINUSE && reclaim) {
+        // A socket of this process holds the file: the probe below would
+        // reach its listener as a connection no client made.
+        if (held(fd, port, &u)) {
+            errno = EADDRINUSE;
+            return -1;
+        }
         // A socket no listener holds is a stale one, which a listener that
         // ended left behind.
         int t = socket(AF_UNIX, type, 0);
@@ -4043,6 +4067,7 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
         unlink(u.sun_path);
         r = bind(fd, (struct sockaddr *)&u, u.sun_len);
     }
+    if (r == 0) set_state(fd, state_of(fd) | NET_HELD);
     return r;
 }
 

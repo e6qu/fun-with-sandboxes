@@ -633,3 +633,142 @@ index 00000000..ec5305c6
 +	JMP	libc_host_statistics64(SB)
 +GLOBL	·libc_host_statistics64_trampoline_addr(SB), RODATA, $8
 +DATA	·libc_host_statistics64_trampoline_addr(SB)/8, $libc_host_statistics64_trampoline<>(SB)
+diff --git a/pkg/volume/util/hostutil/hostutil_darwin.go b/pkg/volume/util/hostutil/hostutil_darwin.go
+new file mode 100644
+index 00000000..9f7e20f8
+--- /dev/null
++++ b/pkg/volume/util/hostutil/hostutil_darwin.go
+@@ -0,0 +1,121 @@
++//go:build darwin
++
++package hostutil
++
++import (
++	"bytes"
++	"fmt"
++	"os"
++	"path"
++	"path/filepath"
++	"strings"
++	"syscall"
++
++	"golang.org/x/sys/unix"
++	"k8s.io/klog/v2"
++	"k8s.io/mount-utils"
++	utilpath "k8s.io/utils/path"
++)
++
++// HostUtil implements HostUtils for macOS, which has one mount namespace
++// and no SELinux.
++type HostUtil struct{}
++
++func NewHostUtil() *HostUtil {
++	return &HostUtil{}
++}
++
++// DeviceOpened reports whether a mounted filesystem's source is the device.
++func (hu *HostUtil) DeviceOpened(pathname string) (bool, error) {
++	n, err := unix.Getfsstat(nil, unix.MNT_NOWAIT)
++	if err != nil {
++		return false, err
++	}
++	fs := make([]unix.Statfs_t, n)
++	if n, err = unix.Getfsstat(fs, unix.MNT_NOWAIT); err != nil {
++		return false, err
++	}
++	for _, f := range fs[:n] {
++		from := f.Mntfromname[:]
++		if i := bytes.IndexByte(from, 0); i >= 0 {
++			from = from[:i]
++		}
++		if string(from) == pathname {
++			return true, nil
++		}
++	}
++	return false, nil
++}
++
++func (hu *HostUtil) PathIsDevice(pathname string) (bool, error) {
++	pathType, err := hu.GetFileType(pathname)
++	return pathType == FileTypeCharDev || pathType == FileTypeBlockDev, err
++}
++
++func (hu *HostUtil) GetDeviceNameFromMount(mounter mount.Interface, mountPath, pluginMountDir string) (string, error) {
++	return getDeviceNameFromMount(mounter, mountPath, pluginMountDir)
++}
++
++func getDeviceNameFromMount(mounter mount.Interface, mountPath, pluginMountDir string) (string, error) {
++	refs, err := mounter.GetMountRefs(mountPath)
++	if err != nil {
++		klog.V(4).Infof("GetMountRefs failed for mount path %q: %v", mountPath, err)
++		return "", err
++	}
++	if len(refs) == 0 {
++		return "", fmt.Errorf("directory %s is not mounted", mountPath)
++	}
++	for _, ref := range refs {
++		if strings.HasPrefix(ref, pluginMountDir) {
++			return filepath.Rel(pluginMountDir, ref)
++		}
++	}
++	return path.Base(mountPath), nil
++}
++
++// MakeRShared has nothing to do: macOS has a single mount namespace, so
++// every mount under path reaches every process, as rshared propagation
++// makes it on Linux.
++func (hu *HostUtil) MakeRShared(path string) error {
++	_, err := os.Stat(path)
++	return err
++}
++
++func (hu *HostUtil) GetFileType(pathname string) (FileType, error) {
++	return getFileType(pathname)
++}
++
++func (hu *HostUtil) PathExists(pathname string) (bool, error) {
++	return utilpath.Exists(utilpath.CheckFollowSymlink, pathname)
++}
++
++func (hu *HostUtil) EvalHostSymlinks(pathname string) (string, error) {
++	return filepath.EvalSymlinks(pathname)
++}
++
++func (hu *HostUtil) GetOwner(pathname string) (int64, int64, error) {
++	info, err := os.Stat(pathname)
++	if err != nil {
++		return -1, -1, err
++	}
++	st := info.Sys().(*syscall.Stat_t)
++	return int64(st.Uid), int64(st.Gid), nil
++}
++
++// GetSELinuxSupport is false: macOS has no SELinux.
++func (hu *HostUtil) GetSELinuxSupport(pathname string) (bool, error) {
++	return false, nil
++}
++
++func (hu *HostUtil) GetMode(pathname string) (os.FileMode, error) {
++	info, err := os.Stat(pathname)
++	if err != nil {
++		return 0, err
++	}
++	return info.Mode(), nil
++}
++
++// GetSELinuxMountContext is empty: macOS has no SELinux.
++func (hu *HostUtil) GetSELinuxMountContext(pathname string) (string, error) {
++	return "", nil
++}
+diff --git a/pkg/volume/util/hostutil/hostutil_unsupported.go b/pkg/volume/util/hostutil/hostutil_unsupported.go
+index c5ff9c0b..9e5e32c3 100644
+--- a/pkg/volume/util/hostutil/hostutil_unsupported.go
++++ b/pkg/volume/util/hostutil/hostutil_unsupported.go
+@@ -1,5 +1,5 @@
+-//go:build !linux && !windows
+-// +build !linux,!windows
++//go:build !linux && !windows && !darwin
++// +build !linux,!windows,!darwin
+ 
+ /*
+ Copyright 2014 The Kubernetes Authors.

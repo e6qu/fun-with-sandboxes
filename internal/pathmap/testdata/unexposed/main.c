@@ -10,6 +10,7 @@
 #define __APPLE_USE_RFC_3542
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -160,6 +161,24 @@ int main(int argc, char **argv) {
         ssize_t pr = pa < 0 ? -1 : read(pa, pb, sizeof pb);
         printf("probe=%s %s\n", pa < 0 ? strerror(pe) : pr == 0 ? "closed" : "open", pa < 0 ? "-" : addr(&s));
         if (pa >= 0) close(pa);
+    }
+    // A bind to IPv4's wildcard address on the port the IPv6 listener holds
+    // fails, as on Linux, and leaves no connection on that listener.
+    {
+        int v4 = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in a4;
+        memset(&a4, 0, sizeof a4);
+        a4.sin_len = sizeof a4;
+        a4.sin_family = AF_INET;
+        a4.sin_port = htons(7000);
+        int br = bind(v4, (void *)&a4, sizeof a4), be = errno;
+        close(v4);
+        int fl = fcntl(l, F_GETFL);
+        fcntl(l, F_SETFL, fl | O_NONBLOCK);
+        int qa = accept(l, NULL, NULL), qe = errno;
+        fcntl(l, F_SETFL, fl);
+        if (qa >= 0) close(qa);
+        printf("rebind=%s %s\n", br == 0 ? "bound" : strerror(be), qa >= 0 ? "connection" : qe == EAGAIN ? "none" : strerror(qe));
     }
     char sf[128];
     sent(k, c, sf, sizeof sf);

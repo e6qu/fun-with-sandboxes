@@ -195,9 +195,16 @@ server's probe of the port left the init server's acceptor in `accept` for
 good. Failing such an `accept` with `ECONNABORTED` instead made Poco log an
 error for each probe, and the real server, which listens on `::` and then
 on `0.0.0.0` and so probes its own listener, ended in `std::terminate`
-with exit code 134. Linux hands a program a connection its client
-abandoned; the library now does the same with its probe, a connection from
-loopback that is closed when the program reads it.
+with exit code 134. Handing the probe over as a connection its loopback client closed, as
+Linux hands over a connection its client abandoned, failed too: on macOS
+`getpeername` and `setsockopt` fail with `EINVAL` on a Unix socket whose
+peer is gone, which Poco reports as errors, and the server again ended
+with exit code 134. The probe that reached ClickHouse was its own: it
+listens on `::` and then on `0.0.0.0` at one port, which the library binds
+to one socket file, so the second bind found the file taken and probed
+it. The library now refuses that bind with `EADDRINUSE`, as Linux does,
+without a probe, when a socket of the process holds the file; it probes
+only a file no socket of the process holds.
 
 A port a nested engine published inside a privileged container answered
 `400 Bad Request`: the shim's proxy from the container's port directory to
@@ -216,7 +223,13 @@ empty. It now reads both, with each container's state. They showed why
 the node never registered: the kubelet's shell read the unquoted
 `--eviction-hard=memory.available<10Mi` as a redirection from a file
 named `10Mi`, and the container restarted with exit code 2 until the
-test's limit. The test quotes the argument.
+test's limit. The test quotes the argument. The kubelet then ended at
+start with exit code 1: Kubernetes' `hostutil` package, which the kubelet
+asks to make its root directory's mount `rshared`, has no darwin
+implementation, and its stub for other systems fails every call. The
+kubelet patch adds one: macOS has one mount namespace, so every mount
+reaches every process as `rshared` propagation makes it on Linux, and no
+SELinux.
 
 MongoDB's tests failed with `No such container` as they started the
 container they had created: create took 10 s, cloning the image's root,
