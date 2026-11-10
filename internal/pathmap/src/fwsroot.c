@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <poll.h>
+#include <os/lock.h>
 #include <pthread.h>
 #include <pwd.h>
 #include <sys/utsname.h>
@@ -42,6 +43,7 @@
 #include <servers/bootstrap.h>
 #include <spawn.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2119,19 +2121,26 @@ static int ns_kill(pid_t hp, int sig) {
 static pid_t to_host(pid_t p) { return init_pid && p == 1 ? init_pid : p; }
 static pid_t to_container(pid_t p) { return init_pid && p == init_pid ? 1 : p; }
 
-// host_pid makes getpid in this thread return the host pid, for the
-// libSystem functions that pass it to the kernel.
-static __thread int host_pid;
+// naming is the thread pthread_setname_np runs in, whose getpid returns the
+// host pid: libpthread names the thread through proc_info of getpid's pid,
+// which in the main process would be launchd's. A thread-local would do,
+// but an inserted library's thread-locals are not set up before the first
+// calls of getpid.
+static _Atomic(pthread_t) naming;
+static os_unfair_lock naming_lock = OS_UNFAIR_LOCK_INIT;
 
-static pid_t fws_getpid(void) { return host_pid ? getpid() : to_container(getpid()); }
+static pid_t fws_getpid(void) {
+    pid_t p = getpid();
+    return atomic_load(&naming) == pthread_self() ? p : to_container(p);
+}
 INTERPOSE(fws_getpid, getpid);
 
-// pthread_setname_np names the thread through proc_info of getpid's pid,
-// which in the main process is launchd's.
 static int fws_pthread_setname_np(const char *name) {
-    host_pid = 1;
+    os_unfair_lock_lock(&naming_lock);
+    atomic_store(&naming, pthread_self());
     int r = pthread_setname_np(name);
-    host_pid = 0;
+    atomic_store(&naming, (pthread_t)NULL);
+    os_unfair_lock_unlock(&naming_lock);
     return r;
 }
 INTERPOSE(fws_pthread_setname_np, pthread_setname_np);
