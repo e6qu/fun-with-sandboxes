@@ -573,7 +573,7 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 		"udp-connect=0 peer-is-client\nudp-connected-send=send writ wriv\nudp-isconn=-1 EISCONN\nudp-filter=mine\n" +
 		"udp-disconnect=0 ENOTCONN\nudp-disconnected=ot hr\nudp-pktinfo6=1 pk6 ::ffff:127.0.0.1\n" +
 		"udp-dstaddr=127.0.0.1 pktinfo=127.0.0.1 truncated=yes\nudp-peer=hello 127.88.0.3:7100\n" +
-		"loopback-only=127.0.0.1:7200 ping own=refused wildcard=EADDRINUSE then=0.0.0.0:7200\nsendfile-tcp=0 4096 - arrived\n"
+		"loopback-only=127.0.0.1:7200 ping own=refused wildcard=EADDRINUSE then=0.0.0.0:7200\nsendfile-tcp=0 4096 - arrived\ntcp-closed=client options\n"
 	if string(out) != want {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}

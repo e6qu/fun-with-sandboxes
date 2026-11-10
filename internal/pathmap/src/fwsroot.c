@@ -3224,6 +3224,20 @@ static int cmsg_flag(int level, int name) {
 // path below their mount or the root.
 static char *unix_names[NET_FDS], *unix_peers[NET_FDS];
 
+// acc_peers holds the peer the kernel named as accept took each connection,
+// which getpeername names once Darwin refuses to: after the connection shut
+// down both ways, where Linux still names a TCP connection's client.
+static struct sockaddr_storage *acc_peers[NET_FDS];
+
+static void set_peer(int fd, const struct sockaddr_storage *k) {
+    if (fd < 0 || fd >= NET_FDS || acc_peers[fd] == k) return;
+    free(acc_peers[fd]);
+    acc_peers[fd] = NULL;
+    if (k && (k->ss_family == AF_INET || k->ss_family == AF_INET6) && (acc_peers[fd] = malloc(sizeof *k))) {
+        memcpy(acc_peers[fd], k, sizeof *k);
+    }
+}
+
 static void set_name(char **table, int fd, const char *name) {
     if (fd < 0 || fd >= NET_FDS || table[fd] == name) return;
     free(table[fd]);
@@ -4027,13 +4041,6 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
     int s = socket(AF_UNIX, type, 0);
     if (s < 0) {
         return -1;
-    }
-    if (type == SOCK_STREAM) {
-        // Darwin refuses options on a socket shut down both ways, where
-        // Linux sets them on a TCP connection whose client closed; a
-        // listener's connections inherit this flag, which lifts that.
-        struct so_np_extensions x = {SONPX_SETOPTSHUT, SONPX_SETOPTSHUT};
-        setsockopt(s, SOL_SOCKET, SO_NP_EXTENSIONS, &x, sizeof x);
     }
     if (type == SOCK_DGRAM) {
         // A Unix datagram is bounded by its sender's buffer, and the router
@@ -4867,6 +4874,7 @@ static void take_client(int c) {
 static void accepted(int fd, int c, const struct sockaddr_storage *k, socklen_t kn, struct sockaddr *sa, socklen_t *len) {
     int e = errno;
     if ((state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_STREAM) take_client(c);
+    set_peer(c, k);
     set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
     if (c < NET_FDS && fd < NET_FDS) {
         net_port[c] = net_port[fd];
@@ -4884,6 +4892,16 @@ static int fws_accept(int fd, struct sockaddr *sa, socklen_t *len) {
     return c;
 }
 INTERPOSE(fws_accept, accept);
+
+// Darwin refuses options on a socket shut down both ways, where Linux sets
+// them on a TCP connection whose client closed; a listener's connections
+// inherit this flag, which lifts that.
+static int fws_listen(int fd, int backlog) {
+    struct so_np_extensions x = {SONPX_SETOPTSHUT, SONPX_SETOPTSHUT};
+    setsockopt(fd, SOL_SOCKET, SO_NP_EXTENSIONS, &x, sizeof x);
+    return listen(fd, backlog);
+}
+INTERPOSE(fws_listen, listen);
 
 static int fws_getsockname(int fd, struct sockaddr *sa, socklen_t *len) {
     struct sockaddr_storage k;
@@ -4910,13 +4928,17 @@ static int fws_getpeername(int fd, struct sockaddr *sa, socklen_t *len) {
     struct sockaddr_storage k;
     socklen_t kn = sizeof k;
     int r = getpeername(fd, (struct sockaddr *)&k, &kn);
+    // Darwin refuses the peer of a socket shut down both ways, where Linux
+    // names a TCP connection's client after it closed: the library names
+    // the client the router recorded, or the one accept named.
     if (r == -1 && errno == EINVAL && (state_of(fd) & (NET_UNIX | NET_HELD)) == NET_UNIX) {
-        // Darwin refuses the peer of a socket shut down both ways, where
-        // Linux names a TCP connection's client after it closed: the
-        // library names the client the router recorded.
         memset(&k, 0, sizeof k);
         k.ss_family = AF_UNIX;
         kn = sizeof k;
+        r = 0;
+    } else if (r == -1 && errno == EINVAL && fd >= 0 && fd < NET_FDS && acc_peers[fd]) {
+        memcpy(&k, acc_peers[fd], sizeof k);
+        kn = acc_peers[fd]->ss_len;
         r = 0;
     }
     if (r == 0) present(fd, &k, kn, sa, len, 0);
@@ -5006,6 +5028,7 @@ static void copy_state(int from, int to) {
         net_cmsg[to] = net_cmsg[from];
         set_name(unix_names, to, unix_names[from]);
         set_name(unix_peers, to, unix_peers[from]);
+        set_peer(to, acc_peers[from]);
     }
 }
 
@@ -5017,6 +5040,7 @@ static void forget(int fd) {
         net_cmsg[fd] = 0;
         set_name(unix_names, fd, NULL);
         set_name(unix_peers, fd, NULL);
+        set_peer(fd, NULL);
     }
 }
 

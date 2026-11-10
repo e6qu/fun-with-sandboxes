@@ -210,8 +210,12 @@ check of whether its port listens leaves: Darwin fails `getpeername` and
 `setsockopt` on a socket shut down both ways, where Linux names the
 closed connection's client and sets its options. The library names the
 client the router recorded, and sets `SO_NP_EXTENSIONS`'s
-`SONPX_SETOPTSHUT` on each listener it makes, which its connections
-inherit and which keeps their options settable after a shutdown.
+`SONPX_SETOPTSHUT` on every listener, which its connections inherit and
+which keeps their options settable after a shutdown: the connections a
+published port's TCP listener takes, as well as the library's own. The
+crash report of the server that ended with 134 showed the connection
+thread's exception reach the handler that ends the process, which
+ClickHouse replaces once it has started listening.
 
 A port a nested engine published inside a privileged container answered
 `400 Bad Request`: the shim's proxy from the container's port directory to
@@ -237,6 +241,14 @@ implementation, and its stub for other systems fails every call. The
 kubelet patch adds one: macOS has one mount namespace, so every mount
 reaches every process as `rshared` propagation makes it on Linux, and no
 SELinux.
+The node then registered, and its pods never started: the kubelet sets up
+each pod's service account token in a projected volume, on an `emptyDir`
+in memory, which it mounts as a tmpfs, and Kubernetes' `mount-utils` had
+no darwin implementation either. The patch adds one that reads the
+kernel's mount table with `getfsstat`, finds the mount point of a path
+with `statfs`, and refuses to mount, which macOS allows no unprivileged
+process; a memory-backed `emptyDir` is a directory on disk on darwin, as
+a container's tmpfs is under the engine.
 
 MongoDB's tests failed with `No such container` as they started the
 container they had created: create took 10 s, cloning the image's root,

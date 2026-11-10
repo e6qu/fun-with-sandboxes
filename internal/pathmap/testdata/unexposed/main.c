@@ -406,5 +406,26 @@ int main(int argc, char **argv) {
     getsockname(pw, (void *)&s, &n);
     printf(" then=%s\n", addr(&s));
     printf("sendfile-tcp=%s\n", sf);
+    // A TCP connection whose client closed before the server took it still
+    // names its client and sets its options, as on Linux.
+    {
+        int tc = socket(AF_INET, SOCK_STREAM, 0);
+        if (connect(tc, (void *)&pub, sizeof pub)) fail("tcp-closed");
+        struct sockaddr_in tcl;
+        socklen_t tn = sizeof tcl;
+        getsockname(tc, (void *)&tcl, &tn);
+        close(tc);
+        int ta = accept(pw, NULL, NULL);
+        char tb[8];
+        if (ta < 0 || read(ta, tb, sizeof tb) != 0) fail("tcp-closed");
+        struct sockaddr_storage tp;
+        tn = sizeof tp;
+        int tg = getpeername(ta, (void *)&tp, &tn), tge = errno;
+        struct timeval tv = {5, 0};
+        int ts = setsockopt(ta, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv), tse = errno;
+        printf("tcp-closed=%s %s\n", tg == 0 ? (((struct sockaddr_in *)&tp)->sin_port == tcl.sin_port ? "client" : addr(&tp)) : strerror(tge),
+               ts == 0 ? "options" : strerror(tse));
+        close(ta);
+    }
     return 0;
 }
