@@ -249,6 +249,12 @@ kernel's mount table with `getfsstat`, finds the mount point of a path
 with `statfs`, and refuses to mount, which macOS allows no unprivileged
 process; a memory-backed `emptyDir` is a directory on disk on darwin, as
 a container's tmpfs is under the engine.
+The pods' sandboxes then failed for want of the kubelet container's
+`/etc/resolv.conf`, which the kubelet reads for each pod's DNS settings:
+the engine wrote `/etc/hosts` and `/etc/hostname` and no `resolv.conf`,
+where Docker writes all three. The engine now writes it as Docker does for
+its default bridge: the host's, without the nameservers on loopback, with
+Google's public ones when none remain.
 
 MongoDB's tests failed with `No such container` as they started the
 container they had created: create took 10 s, cloning the image's root,
@@ -370,6 +376,13 @@ start. The step reads the stack, IPC, shared-memory, PID-namespace and
 network records, most under the engine's lock, so another request may
 have held the lock that long; the debug log does not time the waits on
 it.
+
+Open bug: in one run, MongoDB's replica set with a root user failed as
+the image's `entry` created the root user: `mongosh`, started with
+`--host 127.0.0.1 --port 27017` against the temporary server that listened
+there and had accepted its connections, ended with `MongoNetworkError:
+connect ECONNREFUSED 127.0.0.1:65535`. Nothing else in the run names port
+65535, and the subtest passed in the runs before.
 
 Open bug: with a pids limit, every `fork` and `posix_spawn` lists every
 process of the engine's user and checks each, to count the container's

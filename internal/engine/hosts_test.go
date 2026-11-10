@@ -48,3 +48,24 @@ func TestWriteHostsFiles(t *testing.T) {
 		t.Error("accepted --add-host without an address")
 	}
 }
+
+// A container's resolv.conf is the host's without its loopback nameservers,
+// with Google's public ones when none remain, as Docker writes it.
+func TestResolvConf(t *testing.T) {
+	for _, c := range []struct{ host, want string }{
+		{"# comment\nnameserver 192.168.1.1\nnameserver 127.0.0.53\nsearch lan\noptions ndots:2\n", "# comment\nnameserver 192.168.1.1\nsearch lan\noptions ndots:2\n"},
+		{"nameserver 127.0.0.1\nnameserver ::1\nsearch lan\n", "search lan\nnameserver 8.8.8.8\nnameserver 8.8.4.4\n"},
+		{"", "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"},
+	} {
+		if got := resolvConf([]byte(c.host)); got != c.want {
+			t.Errorf("resolvConf(%q) = %q, want %q", c.host, got, c.want)
+		}
+	}
+	root := t.TempDir()
+	if err := writeHostsFiles(root, "x", "", nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(root, "etc", "resolv.conf")); err != nil || !strings.Contains(string(b), "nameserver ") {
+		t.Errorf("/etc/resolv.conf: %q, %v", b, err)
+	}
+}

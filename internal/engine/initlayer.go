@@ -11,10 +11,10 @@ import (
 )
 
 // initPaths are the paths create writes into a container's root: the hosts
-// files and the mount points, which Docker keeps in a container's init
-// layer.
+// files, resolv.conf and the mount points, which Docker keeps in a
+// container's init layer.
 func initPaths(mounts []mountRec) []string {
-	out := []string{"/etc/hosts", "/etc/hostname"}
+	out := []string{"/etc/hosts", "/etc/hostname", "/etc/resolv.conf"}
 	for _, m := range mounts {
 		out = append(out, m.Destination)
 	}

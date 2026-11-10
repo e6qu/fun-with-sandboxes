@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -94,7 +95,11 @@ func writeHostsFiles(root, hostname, domain string, addresses, extra, links []st
 	for _, l := range links {
 		b.WriteString(l + "\n")
 	}
-	files := map[string]string{"/etc/hosts": b.String(), "/etc/hostname": hostname + "\n"}
+	host, err := os.ReadFile("/etc/resolv.conf")
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	files := map[string]string{"/etc/hosts": b.String(), "/etc/hostname": hostname + "\n", "/etc/resolv.conf": resolvConf(host)}
 	for p, content := range files {
 		if mounted[p] {
 			continue
@@ -117,4 +122,29 @@ func writeHostsFiles(root, hostname, domain string, addresses, extra, links []st
 		}
 	}
 	return nil
+}
+
+// resolvConf is a container's /etc/resolv.conf, as Docker writes it for a
+// container on its default bridge: the host's, without the nameservers on
+// loopback, which would be the container's own, and Google's public ones
+// when none remain.
+func resolvConf(host []byte) string {
+	var b strings.Builder
+	servers := 0
+	for _, line := range strings.Split(string(host), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "nameserver" {
+			if ip := net.ParseIP(f[1]); ip != nil && ip.IsLoopback() {
+				continue
+			}
+			servers++
+		}
+		if strings.TrimSpace(line) != "" {
+			b.WriteString(line + "\n")
+		}
+	}
+	if servers == 0 {
+		b.WriteString("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
+	}
+	return b.String()
 }
