@@ -352,6 +352,13 @@ Open bug: a container's process starts in about 20 ms, where the same
 are Go processes, started one after the other, each with the runtime's
 start-up; the library adds the loader's 4 ms for an inserted library.
 
+Open bug: one start in an end-to-end run, of Testcontainers' reaper, took
+3.8 s in its `profile` step, which takes about 80 µs in every other
+start. The step reads the stack, IPC, shared-memory, PID-namespace and
+network records, most under the engine's lock, so another request may
+have held the lock that long; the debug log does not time the waits on
+it.
+
 Open bug: with a pids limit, every `fork` and `posix_spawn` lists every
 process of the engine's user and checks each, to count the container's
 against the limit, where a pids cgroup keeps a count. Docker sets no
