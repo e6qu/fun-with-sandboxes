@@ -772,3 +772,196 @@ index c5ff9c0b..9e5e32c3 100644
  
  /*
  Copyright 2014 The Kubernetes Authors.
+diff --git a/pkg/volume/emptydir/empty_dir.go b/pkg/volume/emptydir/empty_dir.go
+index d5c29b1..cd956b7 100644
+--- a/pkg/volume/emptydir/empty_dir.go
++++ b/pkg/volume/emptydir/empty_dir.go
+@@ -20,6 +20,7 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 
+ 	"k8s.io/kubernetes/pkg/features"
+ 	"k8s.io/kubernetes/pkg/kubelet/util/swap"
+@@ -151,6 +152,11 @@ func (plugin *emptyDirPlugin) newMounterInternal(spec *volume.Spec, pod *v1.Pod,
+ 			}
+ 			sizeLimit = calculateEmptyDirMemorySize(nodeAllocatable.Memory(), spec, pod)
+ 		}
++		// macOS lets no unprivileged process mount a tmpfs: memory-backed
++		// storage is a directory on disk there.
++		if medium == v1.StorageMediumMemory && runtime.GOOS == "darwin" {
++			medium = v1.StorageMediumDefault
++		}
+ 	}
+ 	return &emptyDir{
+ 		pod:             pod,
+diff --git a/staging/src/k8s.io/mount-utils/mount_darwin.go b/staging/src/k8s.io/mount-utils/mount_darwin.go
+new file mode 100644
+index 0000000..a43e773
+--- /dev/null
++++ b/staging/src/k8s.io/mount-utils/mount_darwin.go
+@@ -0,0 +1,151 @@
++//go:build darwin
++
++package mount
++
++import (
++	"bytes"
++	"errors"
++	"os"
++	"path/filepath"
++
++	"golang.org/x/sys/unix"
++)
++
++// Mounter implements mount.Interface on macOS, which lets no unprivileged
++// process mount: it reads the kernel's mount table and refuses to mount.
++type Mounter struct {
++	mounterPath string
++}
++
++var errUnprivileged = errors.New("util/mount: macOS lets no unprivileged process mount or unmount")
++
++func New(mounterPath string) Interface {
++	return &Mounter{mounterPath: mounterPath}
++}
++
++func (mounter *Mounter) Mount(source string, target string, fstype string, options []string) error {
++	return errUnprivileged
++}
++
++func (mounter *Mounter) MountSensitive(source string, target string, fstype string, options []string, sensitiveOptions []string) error {
++	return errUnprivileged
++}
++
++func (mounter *Mounter) MountSensitiveWithoutSystemd(source string, target string, fstype string, options []string, sensitiveOptions []string) error {
++	return errUnprivileged
++}
++
++func (mounter *Mounter) MountSensitiveWithoutSystemdWithMountFlags(source string, target string, fstype string, options []string, sensitiveOptions []string, mountFlags []string) error {
++	return errUnprivileged
++}
++
++func (mounter *Mounter) Unmount(target string) error {
++	return errUnprivileged
++}
++
++func cString(b []byte) string {
++	if i := bytes.IndexByte(b, 0); i >= 0 {
++		b = b[:i]
++	}
++	return string(b)
++}
++
++// List reads the kernel's mount table.
++func (mounter *Mounter) List() ([]MountPoint, error) {
++	n, err := unix.Getfsstat(nil, unix.MNT_NOWAIT)
++	if err != nil {
++		return nil, err
++	}
++	fs := make([]unix.Statfs_t, n)
++	if n, err = unix.Getfsstat(fs, unix.MNT_NOWAIT); err != nil {
++		return nil, err
++	}
++	out := make([]MountPoint, 0, n)
++	for _, f := range fs[:n] {
++		var opts []string
++		if f.Flags&unix.MNT_RDONLY != 0 {
++			opts = append(opts, "ro")
++		} else {
++			opts = append(opts, "rw")
++		}
++		out = append(out, MountPoint{Device: cString(f.Mntfromname[:]), Path: cString(f.Mntonname[:]), Type: cString(f.Fstypename[:]), Opts: opts})
++	}
++	return out, nil
++}
++
++// mountOf is the mount point of the filesystem file is on, as statfs names
++// it, and file with its symlinks resolved.
++func mountOf(file string) (string, string, error) {
++	real, err := filepath.EvalSymlinks(file)
++	if err != nil {
++		return "", "", err
++	}
++	var st unix.Statfs_t
++	if err := unix.Statfs(real, &st); err != nil {
++		return "", "", &os.PathError{Op: "statfs", Path: file, Err: err}
++	}
++	return cString(st.Mntonname[:]), real, nil
++}
++
++// IsLikelyNotMountPoint is exact on macOS, whose statfs names the mount
++// point a path is on.
++func (mounter *Mounter) IsLikelyNotMountPoint(file string) (bool, error) {
++	mp, real, err := mountOf(file)
++	if err != nil {
++		return true, err
++	}
++	return mp != real, nil
++}
++
++func (mounter *Mounter) CanSafelySkipMountPointCheck() bool {
++	return false
++}
++
++func (mounter *Mounter) IsMountPoint(file string) (bool, error) {
++	notMnt, err := mounter.IsLikelyNotMountPoint(file)
++	return !notMnt, err
++}
++
++// GetMountRefs is the other mount points of the device mounted at pathname:
++// none, as macOS has no bind mounts, or none when pathname is no mount point.
++func (mounter *Mounter) GetMountRefs(pathname string) ([]string, error) {
++	mp, real, err := mountOf(pathname)
++	if os.IsNotExist(err) {
++		return []string{}, nil
++	}
++	if err != nil {
++		return nil, err
++	}
++	if mp != real {
++		return []string{}, nil
++	}
++	mps, err := mounter.List()
++	if err != nil {
++		return nil, err
++	}
++	var device string
++	for _, m := range mps {
++		if m.Path == mp {
++			device = m.Device
++		}
++	}
++	var refs []string
++	for _, m := range mps {
++		if m.Device == device && m.Path != mp {
++			refs = append(refs, m.Path)
++		}
++	}
++	return refs, nil
++}
++
++func (mounter *SafeFormatAndMount) formatAndMountSensitive(source string, target string, fstype string, options []string, sensitiveOptions []string, formatOptions []string) error {
++	return errUnprivileged
++}
++
++func (mounter *SafeFormatAndMount) diskLooksUnformatted(disk string) (bool, error) {
++	return false, errUnprivileged
++}
++
++func (mounter *SafeFormatAndMount) IsMountPoint(file string) (bool, error) {
++	return mounter.Interface.IsMountPoint(file)
++}
+diff --git a/staging/src/k8s.io/mount-utils/mount_unsupported.go b/staging/src/k8s.io/mount-utils/mount_unsupported.go
+index 0345904..60228fa 100644
+--- a/staging/src/k8s.io/mount-utils/mount_unsupported.go
++++ b/staging/src/k8s.io/mount-utils/mount_unsupported.go
+@@ -1,5 +1,5 @@
+-//go:build !linux && !windows
+-// +build !linux,!windows
++//go:build !linux && !windows && !darwin
++// +build !linux,!windows,!darwin
+ 
+ /*
+ Copyright 2014 The Kubernetes Authors.
