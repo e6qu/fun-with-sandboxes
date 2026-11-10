@@ -50,6 +50,21 @@ machine — and from what macOS offers an unprivileged process under them.
   adds plugins as on any distribution. The official image runs the JDK
   bundled for Linux; the catalog links nixpkgs' at the bundled JDK's
   path, `/usr/share/opensearch/jdk`.
+- **Kubernetes' images are its control plane, kubectl and a kubelet.**
+  The catalog carries the API server, the controller manager, the
+  scheduler and kubectl, which a control plane of containers runs as
+  kubeadm's static pods do, and a kubelet for macOS; it carries no
+  kube-proxy, which programs Linux iptables. Upstream's images are
+  distroless, without a shell; the catalog's carry `/bin/sh` and
+  `/bin/nc`, as all its images do.
+- **The kubelet applies no Linux settings to its containers.** On a darwin
+  node it sends the runtime no Linux resources or security context, as
+  upstream's kubelet sends none on an operating system it has no settings
+  for: a container's `resources.limits` and `securityContext.runAsUser`
+  take no effect, and the image's user runs it.
+- **A pod's address is its node's.** A pod sandbox takes its address on
+  the engine that runs it, which other nodes' and the host's engines do
+  not route to; cluster networking is on the roadmap.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
@@ -77,6 +92,10 @@ machine — and from what macOS offers an unprivileged process under them.
     engine's user, so a container's non-root user can do what its root can,
     and `chown` records an owner in an extended attribute that `stat`
     reports rather than changing the file's owner.
+  - The library keeps the `nodump` file flag (`UF_NODUMP`) for itself: it
+    marks the files whose owner or mode it records, so that `stat` reads
+    the record only for them. A container's processes never see the flag
+    and cannot set or clear it.
   - A script's `#!` interpreter runs from the root when the root holds it,
     else from the host.
 - The engine builds the library with clang on the first container start:
@@ -217,7 +236,10 @@ machine — and from what macOS offers an unprivileged process under them.
     addresses while it exists, where Docker gives a stopped container's
     back to the pool; `docker inspect` reports none for a stopped one, as
     Docker does. A network without a subnet reports `127.88.0.0/16`, the
-    member addresses' block, which every such network shares.
+    member addresses' block, which every such network shares. Those are
+    loopback addresses, so a program that advertises its first global
+    unicast address, such as Kubernetes' API server, finds none on such
+    a network: create it with a subnet, as kind does.
 - **A container's interfaces are presented.** `getifaddrs`, `if_nameindex`,
   the `SIOCGIF*` ioctls and the routing sysctl Go's `net.Interfaces` reads
   list the loopback interface and, on a network, `eth0` onwards, one for

@@ -10,6 +10,7 @@
 #define __APPLE_USE_RFC_3542
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -21,6 +22,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 int sandbox_init(const char *profile, uint64_t flags, char **err);
@@ -44,6 +46,11 @@ static const char *addr(const struct sockaddr_storage *a) {
 
 static void fail(const char *step) {
     printf("%s=error\n", step);
+    exit(0);
+}
+
+static void failed(const char *step, const char *call, int code) {
+    printf("%s=error %s %d\n", step, call, code);
     exit(0);
 }
 
@@ -133,6 +140,54 @@ int main(int argc, char **argv) {
     n = sizeof s;
     getpeername(c, (void *)&s, &n);
     printf("local=%s %s\n", buf, addr(&s));
+
+    // A connection that writes nothing, as the library's probe of whether a
+    // listener lives, reaches the program as one its loopback client closed.
+    {
+        int pr0 = socket(AF_UNIX, SOCK_STREAM, 0);
+        struct sockaddr_un pu;
+        memset(&pu, 0, sizeof pu);
+        pu.sun_family = AF_UNIX;
+        snprintf(pu.sun_path, sizeof pu.sun_path, "%s/tcp-7000", argv[1]);
+        pu.sun_len = (unsigned char)SUN_LEN(&pu);
+        if (connect(pr0, (void *)&pu, pu.sun_len)) fail("probe");
+        close(pr0);
+        alarm(5);
+        n = sizeof s;
+        int pa = accept(l, (void *)&s, &n);
+        int pe = errno;
+        alarm(0);
+        char pb[8];
+        ssize_t pr = pa < 0 ? -1 : read(pa, pb, sizeof pb);
+        printf("probe=%s %s\n", pa < 0 ? strerror(pe) : pr == 0 ? "closed" : "open", pa < 0 ? "-" : addr(&s));
+        // A program still names a closed connection's client and sets its
+        // options, as on Linux.
+        struct sockaddr_storage pp;
+        socklen_t pn = sizeof pp;
+        int pg = pa < 0 ? -1 : getpeername(pa, (void *)&pp, &pn), pge = errno;
+        struct timeval tv = {5, 0};
+        int ps = pa < 0 ? -1 : setsockopt(pa, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv), pse = errno;
+        printf("probe-peer=%s %s\n", pg == 0 ? addr(&pp) : strerror(pge), ps == 0 ? "options" : strerror(pse));
+        if (pa >= 0) close(pa);
+    }
+    // A bind to IPv4's wildcard address on the port the IPv6 listener holds
+    // fails, as on Linux, and leaves no connection on that listener.
+    {
+        int v4 = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in a4;
+        memset(&a4, 0, sizeof a4);
+        a4.sin_len = sizeof a4;
+        a4.sin_family = AF_INET;
+        a4.sin_port = htons(7000);
+        int br = bind(v4, (void *)&a4, sizeof a4), be = errno;
+        close(v4);
+        int fl = fcntl(l, F_GETFL);
+        fcntl(l, F_SETFL, fl | O_NONBLOCK);
+        int qa = accept(l, NULL, NULL), qe = errno;
+        fcntl(l, F_SETFL, fl);
+        if (qa >= 0) close(qa);
+        printf("rebind=%s %s\n", br == 0 ? "bound" : strerror(be), qa >= 0 ? "connection" : qe == EAGAIN ? "none" : strerror(qe));
+    }
     char sf[128];
     sent(k, c, sf, sizeof sf);
     printf("sendfile-unix=%s\n", sf);
@@ -140,12 +195,18 @@ int main(int argc, char **argv) {
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof hints);
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo("peer", "7100", &hints, &res)) fail("peer");
+    int gai;
+    if ((gai = getaddrinfo("peer", "7100", &hints, &res))) failed("peer", "getaddrinfo", gai);
     int p = socket(res->ai_family, SOCK_STREAM, 0);
-    if (connect(p, res->ai_addr, res->ai_addrlen)) fail("peer");
+    if (connect(p, res->ai_addr, res->ai_addrlen)) failed("peer", "connect", errno);
     freeaddrinfo(res);
     memset(buf, 0, sizeof buf);
-    if (read(p, buf, 5) != 5) fail("peer");
+    // A stream may deliver the greeting in pieces.
+    for (int got = 0; got < 5;) {
+        ssize_t r = read(p, buf + got, 5 - got);
+        if (r <= 0) failed("peer", r == 0 ? "eof" : "read", r == 0 ? got : errno);
+        got += r;
+    }
     n = sizeof s;
     getpeername(p, (void *)&s, &n);
     printf("peer=%s %s\n", buf, addr(&s));
@@ -345,5 +406,26 @@ int main(int argc, char **argv) {
     getsockname(pw, (void *)&s, &n);
     printf(" then=%s\n", addr(&s));
     printf("sendfile-tcp=%s\n", sf);
+    // A TCP connection whose client closed before the server took it still
+    // names its client and sets its options, as on Linux.
+    {
+        int tc = socket(AF_INET, SOCK_STREAM, 0);
+        if (connect(tc, (void *)&pub, sizeof pub)) fail("tcp-closed");
+        struct sockaddr_in tcl;
+        socklen_t tn = sizeof tcl;
+        getsockname(tc, (void *)&tcl, &tn);
+        close(tc);
+        int ta = accept(pw, NULL, NULL);
+        char tb[8];
+        if (ta < 0 || read(ta, tb, sizeof tb) != 0) fail("tcp-closed");
+        struct sockaddr_storage tp;
+        tn = sizeof tp;
+        int tg = getpeername(ta, (void *)&tp, &tn), tge = errno;
+        struct timeval tv = {5, 0};
+        int ts = setsockopt(ta, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv), tse = errno;
+        printf("tcp-closed=%s %s\n", tg == 0 ? (((struct sockaddr_in *)&tp)->sin_port == tcl.sin_port ? "client" : addr(&tp)) : strerror(tge),
+               ts == 0 ? "options" : strerror(tse));
+        close(ta);
+    }
     return 0;
 }

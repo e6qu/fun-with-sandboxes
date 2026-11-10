@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -40,6 +41,9 @@ type Config struct {
 	// LiveRestore keeps containers running when the engine stops, as
 	// dockerd's live-restore does; the next engine reconnects to them.
 	LiveRestore bool
+	// Debug logs how long each step of a container's create, start and
+	// removal takes.
+	Debug bool
 	// Serve serves an engine's API on a Unix socket: the API of the engine
 	// nested in each privileged container, which it serves until closed.
 	Serve func(e *Engine, socket string) (io.Closer, error)
@@ -97,6 +101,22 @@ func Open(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	cfg.Root = root
+	// Files an earlier engine's containers and images recorded an owner or
+	// a mode on lack the flag the container library now reads first.
+	marked := filepath.Join(root, ".meta-flags")
+	if _, err := os.Stat(marked); errors.Is(err, fs.ErrNotExist) {
+		if err := image.MarkTree(root); err != nil {
+			return nil, fmt.Errorf("mark %s: %w", root, err)
+		}
+		if err := os.WriteFile(marked, nil, 0o600); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	if err := clearScratch(root); err != nil {
+		return nil, err
+	}
 	a, err := alloc.Open(alloc.Config{Root: root, PortBase: cfg.PortBase, PortLimit: cfg.PortLimit, BlockSize: cfg.BlockSize})
 	if err != nil {
 		return nil, err

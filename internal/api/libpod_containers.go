@@ -437,6 +437,13 @@ func (s *Server) libpodContainerRoutes() {
 	m.HandleFunc("DELETE /containers/{id}", s.libpodRemove)
 	m.HandleFunc("GET /containers/{id}/logs", func(w http.ResponseWriter, r *http.Request) { s.logs(w, r, true) })
 	m.HandleFunc("POST /containers/{id}/wait", s.libpodWait)
+	m.HandleFunc("POST /exec/{id}/remove", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Force bool }
+		if !decode(w, r, &body) {
+			return
+		}
+		respondStatus(w, http.StatusOK, s.e.ExecRemove(r.PathValue("id"), body.Force))
+	})
 	m.HandleFunc("POST /containers/{id}/stop", s.simple(func(r *http.Request) error {
 		q := r.URL.Query()
 		var t *int

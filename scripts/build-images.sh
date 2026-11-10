@@ -6,6 +6,10 @@
 # the database servers Nix builds from source (images/servers.nix), and
 # build-images.sh --servers [NAME...] builds them and prints their outputs,
 # so CI can keep them between runs.
+#
+# build-images.sh --inputs prints the files the build reads: this script,
+# images/, and the Go sources of every package it compiles, so CI can key
+# the archives on their content.
 set -euo pipefail
 
 # nixos-26.05, pinned, so a rebuild makes the same images.
@@ -14,6 +18,24 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 nix=(nix --extra-experimental-features 'nix-command flakes')
 servers=(--impure -f "$here/images/servers.nix" --argstr nixpkgs "$nixpkgs")
 case "${1:-}" in
+--inputs)
+  cd "$here"
+  {
+    echo scripts/build-images.sh
+    echo go.mod
+    echo go.sum
+    git ls-files images
+    # The module's own packages, file by file; go.sum pins the rest.
+    GOOS=darwin GOARCH=arm64 go list -deps -f '{{if .Module}}{{if eq .Module.Path "github.com/e6qu/fun-with-sandboxes"}}{{$d := .Dir}}{{range .GoFiles}}{{$d}}/{{.}}
+{{end}}{{range .CgoFiles}}{{$d}}/{{.}}
+{{end}}{{range .CFiles}}{{$d}}/{{.}}
+{{end}}{{range .HFiles}}{{$d}}/{{.}}
+{{end}}{{range .SFiles}}{{$d}}/{{.}}
+{{end}}{{range .EmbedFiles}}{{$d}}/{{.}}
+{{end}}{{end}}{{end}}' ./cmd/fws-mkimage ./images/... | sed "s|^$here/||"
+  } | sort -u
+  exit
+  ;;
 --server-derivations | --servers)
   mode=$1
   shift
@@ -282,12 +304,14 @@ bash=$(pkg_with bash bash)
 gnugrep=$(pkg_with gnugrep grep)
 gzip=$(pkg_with gzip gunzip)
 wget=$(pkg_with wget wget)
+# The time zones Debian's tzdata installs, which ClickHouse resolves TZ in.
+tzdata=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#tzdata.out")
 closure "$clickhouse" "$coreutils" "$bash" "$gnugrep" "$gzip" "$wget" > "$build/clickhouse.closure"
 mkimage $(accounts clickhouse clickhouse 101 101 /var/lib/clickhouse) -spec images/clickhouse/image.json -closure "$build/clickhouse.closure" \
   -pkg "$clickhouse" -pkg "$coreutils" -pkg "$bash" -pkg "$gnugrep" -pkg "$gzip" -pkg "$wget" -link /usr/bin/env=../../bin/env \
   -file "/etc/clickhouse-server/config.xml=$build/clickhouse/config.xml" -file "/etc/clickhouse-server/users.xml=$build/clickhouse/users.xml" \
   -file "/etc/clickhouse-server/config.d/docker_related_config.xml=$build/clickhouse/docker_related_config.xml" \
-  -file "/entrypoint.sh=$build/clickhouse/entrypoint.sh" -out "$out/clickhouse.tar"
+  -file "/usr/share/zoneinfo=$tzdata/share/zoneinfo" -file "/entrypoint.sh=$build/clickhouse/entrypoint.sh" -out "$out/clickhouse.tar"
 
 # InfluxDB 2 with the influx CLI its image carries, the image's default
 # configuration and an entrypoint that does what its script does;
@@ -485,5 +509,27 @@ chmod -R u+w "$build/ryuk-src"
 (cd "$build/ryuk-src" && GOFLAGS=-mod=mod go build -o "$build/ryuk" .)
 "$build/fws-mkimage" -spec images/ryuk/image.json -file "/bin/ryuk=$build/ryuk" \
   -file "/bin/nc=$build/nc" -out "$out/ryuk.tar"
+
+# Kubernetes' control-plane images as its release lays them out: each
+# binary in /usr/local/bin over go-runner as the entrypoint, with distroless
+# static's accounts and CA bundle. An image holds its own binary and the
+# data files the build references, not the other components.
+k8s=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/kubernetes.nix --argstr nixpkgs "$nixpkgs")
+go_runner=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/go-runner.nix --argstr nixpkgs "$nixpkgs")
+cacert=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#cacert")
+closure $(nix-store -qR "$k8s" | grep -v "^$k8s$") > "$build/kubernetes.closure"
+for c in kube-apiserver kube-controller-manager kube-scheduler kubectl; do
+  mkimage $(accounts "$c" nonroot 65532 65532 /home/nonroot) -spec "images/$c/image.json" -closure "$build/kubernetes.closure" \
+    -file "/go-runner=$go_runner/bin/go-runner" -file "/usr/local/bin/$c=$k8s/bin/$c" \
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/$c.tar"
+done
+pause=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/pause.nix --argstr nixpkgs "$nixpkgs")
+closure "$pause" > "$build/pause.closure"
+mkimage $(accounts pause) -spec images/pause/image.json -closure "$build/pause.closure" -file "/pause=$pause/bin/pause" -out "$out/pause.tar"
+kubelet=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/kubelet.nix --argstr nixpkgs "$nixpkgs")
+closure $(nix-store -qR "$kubelet" | grep -v "^$kubelet$") > "$build/kubelet.closure"
+mkimage $(accounts kubelet) -spec images/kubelet/image.json -closure "$build/kubelet.closure" \
+  -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" \
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/kubelet.tar"
 
 ls -l "$out"

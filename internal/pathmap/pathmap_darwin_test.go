@@ -36,7 +36,7 @@ func probe(t *testing.T, root string, env []string, checks ...string) map[string
 	return got
 }
 
-func containerRoot(t *testing.T) string {
+func containerRoot(t testing.TB) string {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -55,8 +55,8 @@ func containerRoot(t *testing.T) string {
 
 func TestPathsNameTheRoot(t *testing.T) {
 	root := containerRoot(t)
-	got := probe(t, root, nil, "read", "system", "write", "list", "cwd", "exec")
-	for k, want := range map[string]string{"read": "inside", "system": "ok", "write": "ok", "cwd": "/made", "exec": "read=inside"} {
+	got := probe(t, root, nil, "read", "system", "missing", "write", "list", "cwd", "exec")
+	for k, want := range map[string]string{"read": "inside", "system": "ok", "missing": "true,true,true", "write": "ok", "cwd": "/made", "exec": "read=inside"} {
 		if got[k] != want {
 			t.Errorf("%s: %q, want %q", k, got[k], want)
 		}
@@ -121,6 +121,11 @@ func TestIdentityAndOwnership(t *testing.T) {
 	// The owner persists with the file, for the next process.
 	if got := probe(t, root, nil, "owner"); got["owner"] != "1000:50" {
 		t.Errorf("owner after chown, in a new process: %q", got["owner"])
+	}
+	// The container's own chflags keeps the owner, and sees no flag of the
+	// library's.
+	if got := probe(t, root, nil, "chflags"); got["chflags"] != "1000:50 flags=0" {
+		t.Errorf("owner after chflags: %q", got["chflags"])
 	}
 	// A user other than root sees itself, and may not give its files away.
 	got = probe(t, root, []string{"FWS_UID=1000", "FWS_GID=50"}, "ids", "user", "write")
@@ -468,7 +473,7 @@ func TestMainProcessIsPidOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init: %v\n%s", err, out)
 	}
-	if want := "pid=1 ppid=0\nchild-ppid=1 kill1=0\ntable1=1\n"; string(out) != want {
+	if want := "pid=1 ppid=0\nchild-ppid=1 kill1=0\ntable1=1\nthread-name=0 fws-init\n"; string(out) != want {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
@@ -535,7 +540,11 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 			if err != nil {
 				return
 			}
-			c.Write([]byte("hello"))
+			// Read the client header first, as a member's router does: a
+			// close with it unread can fail the router's write of it.
+			if _, err := router.ReadClient(c); err == nil {
+				c.Write([]byte("hello"))
+			}
 			c.Close()
 		}
 	}()
@@ -558,13 +567,13 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexposed: %v\n%s", err, out)
 	}
-	want := "listen=[::]:7000\nclient=its-own\nlocal=ping 127.0.0.1:7000\nsendfile-unix=0 4096 - arrived\npeer=hello 127.88.0.3:7100\nrefused=-1\n" +
+	want := "listen=[::]:7000\nclient=its-own\nlocal=ping 127.0.0.1:7000\nprobe=closed [::ffff:127.0.0.1]:0\nprobe-peer=[::ffff:127.0.0.1]:0 options\nrebind=Address already in use none\nsendfile-unix=0 4096 - arrived\npeer=hello 127.88.0.3:7100\nrefused=-1\n" +
 		"ephemeral=ping in-range\nudp-ephemeral=in-range\n" +
 		"udp-listen=[::]:7000\nudp-local=ping from-loopback\nudp-reply=pong 127.0.0.1:7000\n" +
 		"udp-connect=0 peer-is-client\nudp-connected-send=send writ wriv\nudp-isconn=-1 EISCONN\nudp-filter=mine\n" +
 		"udp-disconnect=0 ENOTCONN\nudp-disconnected=ot hr\nudp-pktinfo6=1 pk6 ::ffff:127.0.0.1\n" +
 		"udp-dstaddr=127.0.0.1 pktinfo=127.0.0.1 truncated=yes\nudp-peer=hello 127.88.0.3:7100\n" +
-		"loopback-only=127.0.0.1:7200 ping own=refused wildcard=EADDRINUSE then=0.0.0.0:7200\nsendfile-tcp=0 4096 - arrived\n"
+		"loopback-only=127.0.0.1:7200 ping own=refused wildcard=EADDRINUSE then=0.0.0.0:7200\nsendfile-tcp=0 4096 - arrived\ntcp-closed=client options\n"
 	if string(out) != want {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}

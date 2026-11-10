@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -327,4 +328,29 @@ func (b *limitedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// ExecRemove forgets exec session id, as libpod's exec remove does: a
+// session still running stays unless force, which kills its process first.
+func (e *Engine) ExecRemove(id string, force bool) error {
+	x, _, err := e.exec(id)
+	if err != nil {
+		return err
+	}
+	x.mu.Lock()
+	running, pid := x.running, x.pid
+	x.mu.Unlock()
+	if running {
+		if !force {
+			return conflict("exec session %s is still running", id)
+		}
+		if pid > 0 {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+		<-x.done
+	}
+	e.mu.Lock()
+	delete(e.execs, id)
+	e.mu.Unlock()
+	return nil
 }

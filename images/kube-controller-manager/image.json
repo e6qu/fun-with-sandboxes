@@ -1,0 +1,23 @@
+{
+  "tag": "fws/kube-controller-manager:1.35",
+  "files": {},
+  "dirs": [
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ],
+    "Entrypoint": [
+      "/go-runner"
+    ],
+    "WorkingDir": "/",
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    },
+    "ExposedPorts": {
+      "10257/tcp": {}
+    }
+  }
+}

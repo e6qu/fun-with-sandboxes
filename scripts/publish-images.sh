@@ -6,7 +6,12 @@ set -euo pipefail
 
 dir=${1:?usage: publish-images.sh IMAGE_DIR REGISTRY_PREFIX}
 prefix=${2:?usage: publish-images.sh IMAGE_DIR REGISTRY_PREFIX}
-crane=(go run github.com/google/go-containerregistry/cmd/crane@v0.22.1)
+bin=$(mktemp -d)
+trap 'rm -rf "$bin"' EXIT
+# Build crane once: go run resolves the version on every call, so each push
+# would depend on reaching the module proxy.
+GOBIN="$bin" go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
+crane=("$bin/crane")
 
 for archive in "$dir"/*.tar; do
   tag=$(tar -xOf "$archive" manifest.json | sed -E 's/.*"RepoTags":\["([^"]+)".*/\1/')

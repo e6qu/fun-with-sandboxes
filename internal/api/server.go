@@ -23,6 +23,7 @@ import (
 	"github.com/moby/moby/api/types/volume"
 	"golang.org/x/net/websocket"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/cri"
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
 )
 
@@ -42,19 +43,31 @@ type Server struct {
 	lp      *http.ServeMux
 	pods    *podStore
 	started time.Time
+	cri     *cri.Service
 }
 
 // New serves the engine's API; bk, when set, also serves BuildKit.
 func New(e *engine.Engine, bk BuildKit) *Server {
-	s := &Server{e: e, bk: bk, mux: http.NewServeMux(), lp: http.NewServeMux(), pods: openPods(e.Root()), started: time.Now()}
+	s := &Server{e: e, bk: bk, mux: http.NewServeMux(), lp: http.NewServeMux(), pods: openPods(e.Root()), started: time.Now(),
+		cri: cri.New(e, cri.DefaultSandboxImage)}
 	s.routes()
 	s.libpodRoutes()
 	return s
 }
 
+// Close stops what the server runs beside its handlers: the CRI's stream
+// server and its log copies.
+func (s *Server) Close() { s.cri.Close() }
+
 var versionPrefix = regexp.MustCompile(`^/v(\d+\.\d+)(/.*)$`)
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// The socket serves the Container Runtime Interface too, as gRPC over
+	// HTTP/2, where the kubelet's --container-runtime-endpoint names it.
+	if cri.Serves(r) {
+		s.cri.ServeHTTP(w, r)
+		return
+	}
 	if p, ok := libpodPath(r.URL.Path); ok {
 		s.serveLibpod(w, r, p)
 		return
@@ -766,7 +779,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // does, with the cause its clients match and the status: the body of
 // Podman's compatible API too, whose extra fields Docker clients pass over.
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, errorBody{Message: msg, Cause: causeOf(msg), Response: status})
+	cause := causeOf(msg)
+	if _, ok := w.(libpodWriter); ok {
+		msg = libpodMessage(msg)
+	}
+	writeJSON(w, status, errorBody{Message: msg, Cause: cause, Response: status})
 }
 
 type errorBody struct {

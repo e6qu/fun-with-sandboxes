@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -77,6 +78,13 @@ func serve(path string) int {
 
 func (s *server) run(report func(Ready)) (int, error) {
 	cfg := s.cfg
+	var steps []string
+	last := time.Now()
+	mark := func(step string) {
+		now := time.Now()
+		steps = append(steps, step+" "+now.Sub(last).Round(time.Microsecond).String())
+		last = now
+	}
 	os.Remove(cfg.Socket)
 	l, err := net.Listen("unix", cfg.Socket)
 	if err != nil {
@@ -103,6 +111,7 @@ func (s *server) run(report func(Ready)) (int, error) {
 	}
 	defer logs.Close()
 	logs.Notify = s.notifyLogs
+	mark("listen")
 
 	// Watch the kernel's socket counts before the container's first process
 	// opens a socket.
@@ -112,6 +121,7 @@ func (s *server) run(report func(Ready)) (int, error) {
 		return 1, err
 	}
 	defer traffic.Close()
+	mark("traffic")
 
 	var proxies []io.Closer
 	closeProxies := func() {
@@ -125,7 +135,11 @@ func (s *server) run(report func(Ready)) (int, error) {
 		var cl io.Closer
 		var port int
 		if b.Dir != "" {
-			cl, port, err = portproxy.ListenUnix(func(p int) string { return router.SocketPath(b.Dir, p) }, b.Lo, b.Hi, b.Upstream)
+			// The container's router writes the client's address before
+			// each connection's stream, which only the container library's
+			// listeners take.
+			cl, port, err = portproxy.ListenUnix(func(p int) string { return router.SocketPath(b.Dir, p) }, b.Lo, b.Hi, b.Upstream,
+				func(r io.Reader) error { _, err := router.ReadClient(r); return err })
 		} else {
 			cl, port, err = portproxy.Listen(b.Proto, b.IP, b.Lo, b.Hi, b.Upstream, dial)
 		}
@@ -181,6 +195,7 @@ func (s *server) run(report func(Ready)) (int, error) {
 		traffic.AddEndpoint(os.Getpid(), uint16(cfg.Router))
 	}
 
+	mark("ports")
 	spec := cfg.Spec
 	stdout := &logfile.LineWriter{Stream: "stdout", To: logs}
 	stderr := &logfile.LineWriter{Stream: "stderr", To: logs}
@@ -228,7 +243,9 @@ func (s *server) run(report func(Ready)) (int, error) {
 		spec.AnchorListener = f
 		defer os.Remove(cfg.Anchor)
 	}
+	mark("io")
 	proc, err := runtime.Start(spec)
+	mark("process")
 	if spec.AnchorListener != nil {
 		spec.AnchorListener.Close()
 	}
@@ -251,7 +268,7 @@ func (s *server) run(report func(Ready)) (int, error) {
 		}()
 	}
 	s.enf = newEnforcer(cfg.Tag, proc.Pid(), cfg.Resources, traffic)
-	report(Ready{Pid: proc.Pid(), Ports: ports})
+	report(Ready{Pid: proc.Pid(), Ports: ports, Steps: strings.Join(steps, ", ")})
 	go s.accept(l)
 
 	<-proc.Done()

@@ -1,0 +1,26 @@
+{
+  "tag": "fws/kubelet:1.35",
+  "files": {},
+  "dirs": [
+    "/tmp",
+    "/etc/kubernetes/manifests",
+    "/var/lib/kubelet",
+    "/var/log/pods"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
+    ],
+    "Entrypoint": [
+      "/usr/local/bin/kubelet"
+    ],
+    "WorkingDir": "/",
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    },
+    "ExposedPorts": {
+      "10250/tcp": {}
+    }
+  }
+}

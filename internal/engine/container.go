@@ -327,8 +327,30 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		portKey += "#" + n
 	}
 
+	st := e.steps("create " + id[:12])
+	defer st.log()
+	staged, err := os.MkdirTemp(stagingDir(e.cfg.Root), id[:12]+"-")
+	if err != nil {
+		return container.CreateResponse{}, err
+	}
+	defer os.RemoveAll(staged)
+	// The root and the record of its initial state, which create completes
+	// with what it writes into the root.
+	stagedRoot, stagedInit := filepath.Join(staged, "r"), filepath.Join(staged, "init")
+	initDone := make(chan error, 1)
+	go func() { initDone <- e.images.Clone(img.ID, stagedInit) }()
+	err = e.images.Clone(img.ID, stagedRoot)
+	if initErr := <-initDone; err == nil && initErr != nil {
+		err = fmt.Errorf("record the initial root: %w", initErr)
+	}
+	if err != nil {
+		return container.CreateResponse{}, fmt.Errorf("clone image root: %w", err)
+	}
+	st.mark("clone")
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	st.mark("lock")
 	for _, other := range e.containers {
 		if other.rec.Name == name {
 			return container.CreateResponse{}, conflict("Conflict. The container name \"/%s\" is already in use by container \"%s\". You have to remove (or rename) that container to be able to reuse that name.", name, other.rec.ID)
@@ -380,8 +402,8 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			e.releaseStackIfEmptyLocked(stack)
 		}
 	}()
-	if err := e.images.Clone(img.ID, c.root()); err != nil {
-		return container.CreateResponse{}, fmt.Errorf("clone image root: %w", err)
+	if err := os.Rename(stagedRoot, c.root()); err != nil {
+		return container.CreateResponse{}, err
 	}
 
 	ports := map[string]int{}
@@ -457,9 +479,14 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err := c.save(); err != nil {
 		return container.CreateResponse{}, err
 	}
-	if err := image.CloneDir(c.root(), c.initDir()); err != nil {
+	st.mark("prepare")
+	if err := os.Rename(stagedInit, c.initDir()); err != nil {
+		return container.CreateResponse{}, err
+	}
+	if err := layInit(c.root(), c.initDir(), initPaths(mounts)); err != nil {
 		return container.CreateResponse{}, fmt.Errorf("record the initial root: %w", err)
 	}
+	st.mark("record")
 	e.containers[id] = c
 	if err := e.writeNetworkLocked(stack); err != nil {
 		delete(e.containers, id)
@@ -940,7 +967,6 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 
 	for i := range mounts {
 		m := &mounts[i]
-		dest := filepath.Join(root, m.Destination)
 		switch m.Type {
 		case mount.TypeBind:
 			src, err := e.hostPath(m.Source)
@@ -983,7 +1009,11 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 			if v.Fresh && m.Subpath == "" && !m.NoCopy && emptyDir(src) {
 				// A new, empty volume starts with the image's content at the
 				// mount point, as Docker's copy-up does.
-				if err := copyTree(filepath.Join(e.images.Root(img.ID), m.Destination), src); err != nil {
+				from, err := rootfs.Join(e.images.Root(img.ID), m.Destination)
+				if err != nil {
+					return nil, err
+				}
+				if err := copyTree(from, src); err != nil {
 					return nil, err
 				}
 				v.Fresh = false
@@ -1005,23 +1035,35 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 				return nil, err
 			}
 		}
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return nil, err
-		}
-		if err := os.RemoveAll(dest); err != nil {
-			return nil, err
-		}
-		// The link names the source by its real path, which a program in the
-		// container that follows it walks on the host.
-		real, err := filepath.EvalSymlinks(m.Source)
-		if err != nil {
-			return nil, err
-		}
-		if err := os.Symlink(real, dest); err != nil {
+		if err := placeMount(root, m.Destination, m.Source); err != nil {
 			return nil, err
 		}
 	}
 	return mounts, nil
+}
+
+// placeMount links source at destination in root. It resolves the
+// destination's directory as the container sees it, so no link in the
+// image leads the writes out of the root.
+func placeMount(root, destination, source string) error {
+	dir, err := rootfs.Join(root, path.Dir(destination))
+	if err != nil {
+		return err
+	}
+	dest := filepath.Join(dir, path.Base(destination))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return err
+	}
+	// The link names the source by its real path, which a program in the
+	// container that follows it walks on the host.
+	real, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		return err
+	}
+	return os.Symlink(real, dest)
 }
 
 // placeInit links the engine's helper binary, which runs as the init by
@@ -1176,7 +1218,11 @@ func (e *Engine) environment(c, net *Container, extra []string, tty bool, links 
 	if h := vars["HOME"]; !strings.HasPrefix(h, root) {
 		vars["HOME"] = filepath.Join(root, h)
 	}
-	os.MkdirAll(vars["HOME"], 0o755)
+	home, err := rootfs.Join(root, strings.TrimPrefix(vars["HOME"], root))
+	if err != nil {
+		return nil, err
+	}
+	os.MkdirAll(home, 0o755)
 	set("SANDBOX_ROOT=" + root)
 	set("SANDBOX_STACK=" + c.rec.Stack)
 	set("SANDBOX_HOST=127.0.0.1")
@@ -1362,6 +1408,7 @@ func (c *Container) start(e *Engine) error {
 		c.mu.Unlock()
 	}()
 
+	st := e.steps("start " + c.rec.ID[:12])
 	argv := c.argv()
 	if len(argv) == 0 {
 		return invalid("no command specified")
@@ -1375,6 +1422,7 @@ func (c *Container) start(e *Engine) error {
 	if err != nil {
 		return err
 	}
+	st.mark("profile")
 	limits, res, err := containerLimits(c.rec.HostConfig.Resources)
 	if err != nil {
 		return err
@@ -1406,11 +1454,13 @@ func (c *Container) start(e *Engine) error {
 	if err := e.writeHosts(c); err != nil {
 		return err
 	}
+	st.mark("files")
 	if e.hasEgress(c) {
 		if _, err := e.ensureEgress(c.rec.Stack); err != nil {
 			return err
 		}
 	}
+	st.mark("egress")
 	plan, err := e.publishPlan(c)
 	if err != nil {
 		return err
@@ -1460,7 +1510,9 @@ func (c *Container) start(e *Engine) error {
 	for _, p := range plan {
 		cfg.Publish = append(cfg.Publish, p.binding)
 	}
+	st.mark("prepare")
 	task, ready, err := shim.Launch(c.dir, cfg)
+	st.mark("launch")
 	if err != nil {
 		if errors.Is(err, shim.ErrPortInUse) {
 			return conflict("%v", err)
@@ -1492,6 +1544,8 @@ func (c *Container) start(e *Engine) error {
 	c.mu.Unlock()
 	e.publishContainer(c, events.ActionStart, nil)
 	go e.watch(c, task, done)
+	st.mark("record")
+	st.log("shim: " + ready.Steps)
 	return nil
 }
 
@@ -1909,7 +1963,7 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 		}
 	}
 	c.logs.close()
-	if err := os.RemoveAll(c.dir); err != nil {
+	if err := e.discard(c.dir); err != nil {
 		return err
 	}
 	if opts.RemoveVolumes {

@@ -96,8 +96,8 @@ tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite
 
 A Nix-built catalog for `aarch64-darwin`/`x86_64-darwin`, converted to OCI
 layers with a `darwin/<arch>` platform entry: `bun`, `clickhouse`, `consul`, `dind`, `dynamodb`,
-`etcd`, `gitea`, `influxdb`, `kafka`, `lambda`, `mailpit`, `mariadb`, `meilisearch`, `memcached`, `mongo`, `mysql`, `nats`,
-`neo4j`, `nginx`, `node`, `opensearch`, `playwright`, `postgres`, `python`, `qdrant`, `rabbitmq`, `redis`,
+`etcd`, `gitea`, `influxdb`, `kafka`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`, `kubectl`, `kubelet`, `lambda`, `mailpit`, `mariadb`, `meilisearch`, `memcached`, `mongo`, `mysql`, `nats`,
+`neo4j`, `nginx`, `node`, `opensearch`, `pause`, `playwright`, `postgres`, `python`, `qdrant`, `rabbitmq`, `redis`,
 `ryuk` (Testcontainers' reaper), `seaweedfs`, `toolbox`, `toxiproxy`, `valkey` and
 `vault`. SeaweedFS is the catalog's S3 server: nixpkgs marks MinIO insecure,
 abandoned upstream with unfixed vulnerabilities. Compose
@@ -122,24 +122,30 @@ official `kindest/node` image is Linux (systemd, containerd, kubelet), so
 it needs a VM; the roadmap builds the same contract from macOS parts, in
 dependency order:
 
-1. **Nested engines and `fws/dind`** (in progress): a privileged
+1. **Nested engines and `fws/dind`** (done): a privileged
    container gets an engine of its own, which a node's pods run on, each
    in a sandbox the outer engine applies.
-2. **Podman's API** (in progress): kind's `podman` provider, and
+2. **Podman's API** (done): kind's `podman` provider, and
    `podman-compose`, drive fwsd as well as its `docker` provider does.
-3. **Kubernetes control plane for darwin**: `etcd` (in the catalog),
-   `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`,
-   `kubectl` and `kubeadm`, built for `darwin/arm64` and `darwin/amd64`
-   with Nix from upstream sources at the release `kindest/node` ships, and
-   images for each.
-4. **A kubelet for macOS**: upstream kubelet manages Linux cgroups and
-   namespaces and does not run on macOS. The node runs a kubelet that
-   speaks the API server's node and pod contract and runs pods through the
-   node's nested engine: the pod's containers share a network as
-   `--network container:` shares one, its volumes are the engine's
-   volumes and bind mounts, and probes, logs, exec and port-forward pass
-   to the engine. CRI, the kubelet's runtime interface, is served by fwsd
-   for it.
+3. **Kubernetes control plane for darwin** (done): `etcd` (in the
+   catalog), `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`,
+   `kubectl` and `kubeadm` 1.35.0, the release kind 0.31's `kindest/node`
+   ships, built with Nix from upstream's sources by upstream's make
+   (`images/kubernetes`), and images for the four upstream publishes, over
+   go-runner. A control plane of them turns Deployments into Pods, which
+   wait for a node.
+4. **A kubelet for macOS** (done): upstream's kubelet
+   with the darwin parts its tree lacks (`images/kubernetes/kubelet-darwin.patch`):
+   machine information and node CPU, memory and filesystem use from
+   macOS's kernel in cAdvisor's shapes, a container manager for a node
+   without cgroups, and the static pod manifests' watcher on kqueue. fwsd
+   serves CRI on its sockets, nested engines' among them (`internal/cri`):
+   pod sandboxes are `fws/pause` containers, their containers join the
+   sandbox's network, and the engine writes CRI logs where the kubelet
+   asks, and its stream server, on containerd's port 10010 in a node's
+   container, serves exec, attach and port-forward. A kubelet in a
+   privileged container joins the control plane as a node and runs
+   Deployments' pods.
 5. **Cluster networking and services**: pod addresses from the engine's
    IPAM per node network, a kube-proxy replacement that maps Service
    ClusterIPs and NodePorts onto the routers the engine already runs, and
@@ -167,6 +173,259 @@ client's source port, made before it connects. That takes binding an
 ephemeral loopback port, which Seatbelt would then have to allow every
 container, beyond the ports it is granted; a record made after the
 connection would race the server's `accept`.
+
+Open bug: a container can leave processes behind when it ends. The shim
+ends the main process's group and every process whose environment carries
+the container's tag. PostgreSQL's `pg_ctl` starts the server in a session
+of its own, and the server writes its process titles over its arguments
+and environment, so the server and its children carry neither the group
+nor a readable tag. On CI, three children of the temporary server that
+PostgreSQL's image runs to initialise the database outlived their
+container, with launchd as their parent. The fix is a mark the kernel
+keeps for the process's life, such as its Seatbelt sandbox, which every
+descendant inherits and none can drop.
+
+ClickHouse's temporary init server took the SIGTERM its image's
+entrypoint sends once the init scripts ran, and its shutdown waited on its
+TCP server's acceptor thread. The library drops a connection on one of its
+listeners that writes nothing, its own probe of whether a listener lives,
+and its `accept` then waited for the next connection, where Poco's
+acceptor polls, accepts and checks whether it is to stop: the real
+server's probe of the port left the init server's acceptor in `accept` for
+good. Failing such an `accept` with `ECONNABORTED` instead made Poco log an
+error for each probe, and the real server, which listens on `::` and then
+on `0.0.0.0` and so probes its own listener, ended in `std::terminate`
+with exit code 134. Handing the probe over as a connection its loopback client closed, as
+Linux hands over a connection its client abandoned, failed too: on macOS
+`getpeername` and `setsockopt` fail with `EINVAL` on a Unix socket whose
+peer is gone, which Poco reports as errors, and the server again ended
+with exit code 134. The probe that reached ClickHouse was its own: it
+listens on `::` and then on `0.0.0.0` at one port, which the library binds
+to one socket file, so the second bind found the file taken and probed
+it. The library now refuses that bind with `EADDRINUSE`, as Linux does,
+without a probe, when a socket of the process holds the file; it probes
+only a file no socket of the process holds.
+ClickHouse still met connections whose client had already closed, as a
+check of whether its port listens leaves: Darwin fails `getpeername` and
+`setsockopt` on a socket shut down both ways, where Linux names the
+closed connection's client and sets its options. The library names the
+client the router recorded, and sets `SO_NP_EXTENSIONS`'s
+`SONPX_SETOPTSHUT` on every listener, which its connections inherit and
+which keeps their options settable after a shutdown: the connections a
+published port's TCP listener takes, as well as the library's own. The
+crash reports, which CI now summarises whole, showed the cause of the
+134 that remained: every thread of ClickHouse's real server threw as it
+started, its pool's 512 workers among them. ClickHouse names each thread
+and throws when it cannot, and libpthread's `pthread_setname_np` names
+the calling thread through `proc_info` of the pid `getpid` returns, which
+the library makes 1 in the container's main process: the kernel refused
+to name a thread of launchd. The init server, a child of the entrypoint,
+named its threads. The library now has `getpid` return the host pid in
+the thread that names itself.
+
+A port a nested engine published inside a privileged container answered
+`400 Bad Request`: the shim's proxy from the container's port directory to
+the inner container passed on the client address the container's router
+writes before each connection's stream, which only the library's
+listeners read. The proxy now reads it.
+
+The test of it checked that `wget -S -O-` printed the body last, where
+wget prints its progress after the body; it now looks for the status line
+and the body.
+
+The Kubernetes test's dump of each component's log read the CLI's standard
+output alone, where `docker logs` writes a container's standard error to
+its own: etcd's and the kubelet's logs, all on standard error, came out
+empty. It now reads both, with each container's state. They showed why
+the node never registered: the kubelet's shell read the unquoted
+`--eviction-hard=memory.available<10Mi` as a redirection from a file
+named `10Mi`, and the container restarted with exit code 2 until the
+test's limit. The test quotes the argument. The kubelet then ended at
+start with exit code 1: Kubernetes' `hostutil` package, which the kubelet
+asks to make its root directory's mount `rshared`, has no darwin
+implementation, and its stub for other systems fails every call. The
+kubelet patch adds one: macOS has one mount namespace, so every mount
+reaches every process as `rshared` propagation makes it on Linux, and no
+SELinux.
+The node then registered, and its pods never started: the kubelet sets up
+each pod's service account token in a projected volume, on an `emptyDir`
+in memory, which it mounts as a tmpfs, and Kubernetes' `mount-utils` had
+no darwin implementation either. The patch adds one that reads the
+kernel's mount table with `getfsstat`, finds the mount point of a path
+with `statfs`, and refuses to mount, which macOS allows no unprivileged
+process; a memory-backed `emptyDir` is a directory on disk on darwin, as
+a container's tmpfs is under the engine.
+The pods' sandboxes then failed for want of the kubelet container's
+`/etc/resolv.conf`, which the kubelet reads for each pod's DNS settings:
+the engine wrote `/etc/hosts` and `/etc/hostname` and no `resolv.conf`,
+where Docker writes all three. The engine now writes it as Docker does for
+its default bridge: the host's, without the nameservers on loopback, with
+Google's public ones when none remain.
+The kubelet then passed those nameservers to each pod's sandbox, which
+the engine refuses, as a container reaches no DNS server of its own and
+resolves names through the host's resolver. An empty `--resolv-conf` did
+not help: the kubelet then gives each pod the nameserver `127.0.0.1` and
+the search domain `.`, to disable lookups through Docker's default. The
+test's kubelet reads `/dev/null` as its `resolv.conf`, which passes pods
+no nameservers, search domains or options.
+The pods then ran, and `kubectl exec` failed: the nested engine's CRI
+service bound its stream listener in the privileged container's port
+directory as the engine opened, before the container's shim made that
+directory, which the shim also clears as it starts. The service now opens
+the listener on the first exec, attach or port-forward, once the
+container runs.
+The stream server then answered the kubelet's exec with `400 Bad
+Request`: the router writes the client's address before each
+connection's stream on a port's socket, which the container library
+strips for a container's own listeners and the engine's Go listener
+read as the start of the request. The engine's listener now strips it.
+Exec and logs then passed, and the scaled-down pods never went: the
+kubelet cleans each volume's subpaths as it unmounts the volume, and
+Kubernetes' `subpath` package fails every call on systems other than
+Linux and Windows. The kubelet patch adds a darwin implementation without
+bind mounts: a subPath reaches the runtime as its path in the volume,
+refused where a link leads out of it, cleaning removes the pod's empty
+subpath directories, and a subPath's directories are made one at a time
+without following a link that leaves the volume.
+
+MongoDB's tests failed with `No such container` as they started the
+container they had created: create took 10 s, cloning the image's root,
+which mongosh's Node.js modules make large, once into place and once more,
+under the engine's lock, as the record of the initial root that `docker
+diff` compares against. The previous subtest's Testcontainers reaper,
+which removes its session's containers once its connection drops, removed
+the new one in that time. Create now makes both clones before it takes
+the lock, side by side, and then copies into the record only what it
+wrote into the root under the lock: the hosts files and the mount points.
+
+The engine wrote into a container's root through links the image holds
+as the host resolves them: a mount point, the hosts files, the home
+directory, a build's `COPY` into a directory and a fresh volume's copy-up
+all followed an absolute link to the host's path of that name, so an
+image with `/data -> /Users/me` and a volume at `/data/x` replaced the
+host's `/Users/me/x`. Each now resolves the path inside the root, as a
+chroot would and as the container sees it.
+
+Open bug: `docker-compose up --build`, which builds through `buildx bake`,
+stalls for minutes after loading its bake definitions, while `docker build`
+of the same Dockerfile takes seconds; `TestComposeWatch` takes 220 to 300
+seconds against a five-minute limit. A command that outlives its limit now
+prints every Go process's goroutines, to show what bake waits on.
+The engine's log shows every BuildKit session failing its health check
+with `only one connection allowed` and ending 10 s after it began, and
+the test's `POST /grpc` taking 3 min 39 s. The sessions are no cause:
+buildx opens two per build and closes the first at once, and BuildKit
+notices a closed session at its second failed health check, 10 s on, as
+it does under dockerd; a build of 15 s against the engine on Linux kept
+its second session for 25 s and exported through it. A test of the
+engine's HTTP server with BuildKit's session manager syncs a 64 MiB build
+context through a session and checks its health after. The stall is
+inside the solve. A run that went over the limit showed where: the
+`FROM fws/python:3.14` step took 289 s to unpack the image's layers,
+dozens of them as Nix builds it, adding 6 to 7 s per layer however small:
+the snapshotter measured each snapshot as it committed, walking every
+file of a clone of all the layers below. It now measures what a snapshot
+holds that its parent does not, when BuildKit first asks, as BuildKit
+expects of a snapshotter and containerd defines a snapshot's usage.
+
+Open bug: the end-to-end suite takes about 45 minutes, and a container
+runs slower than the same program run natively. The engine's goal is
+native speed, so an overhead of microseconds on a call that takes
+nanoseconds natively is a bug. Two measurements find them:
+`go test -bench . ./internal/pathmap` reports the nanoseconds a system call
+takes through the path library beside the same call made natively, and
+the suite runs the engine with `-debug` and ends with its time per
+endpoint (requests, total, mean, longest). CRI's `ImageFsInfo` walked every
+file of every image on each call; it now walks each image root once.
+
+The first measurement on a macOS runner, natively and through the library:
+`stat` 1.9 µs and 23.2 µs, `fstat` 0.84 µs and 18.4 µs, `stat` of a missing
+file 1.4 µs and 5.9 µs, `readdir` 13.8 µs and 20.9 µs, `open` 7.7 µs and
+9.6 µs, a process start 2.0 ms and 6.7 ms. Each `stat` read two extended
+attributes, the owner and the mode, at about 9 µs apiece, whether the file
+had them or not. The library now reads them only from a file marked with
+`UF_NODUMP`, which `stat` returns with the rest; the image store and the
+library mark each file they record either on, and the engine marks, once,
+the files of a state directory an earlier engine wrote. Mapping a path
+looked the file up twice, once for links on its way and once for whether
+the container holds it; one lookup now settles a file the container holds
+with no link on its way. A process start still costs 4.7 ms more than
+natively.
+
+A second measurement, with the flag: `fstat` 0.56 µs natively and
+0.54 µs through the library, `stat` 1.09 µs and 2.58 µs, `stat` of a
+missing file 1.01 µs and 4.65 µs, `readdir` 9.7 µs and 10.9 µs, a process
+start 2.6 ms natively, 4.7 ms with an empty library inserted and 8.1 ms
+with fwsroot: inserting any library costs the dynamic loader 2.1 ms, and
+fwsroot 3.3 ms more. `stat`, `lstat`, `fstatat` and `open` without
+`O_CREAT` now first make the call itself on the container's file with the
+kernel refusing any link on the way, so a file the container holds costs
+no lookup of the library's, and a missing one whose parent the container
+holds costs one. The benchmark's `started` reports a process's time from
+the kernel's start of it to `main`, to tell the loader's and the
+constructor's share of a process start from the spawning call's.
+
+A third measurement: `stat` 2.0 µs natively and 1.4 µs through the
+library, `open` 8.5 µs and 9.1 µs, `fstat` and `readdir` as natively, a
+missing file's `stat` 1.0 µs and 2.5 µs. A process reached `main` 2.9 ms
+after the kernel started it natively, 7.3 ms with an empty library
+inserted and 10.4 ms with fwsroot: the loader's 4.4 ms for an inserted
+library and fwsroot's own 3.1 ms remain open.
+
+The engine's time per endpoint over the suite, beside the requests that
+wait on a container by design (`wait`, `attach`, `events`, BuildKit's
+session): `docker rm` 2.38 s on average over 153 removals, a start 1.16 s
+over 253, with a median of 1.165 s and a 90th percentile of 1.233 s, and a
+create 368 ms over 278. A removal deleted the container's root, a clone of
+its image's with as many files, under the engine's lock, which every
+create, start and network change also takes; a create cloned the image's
+root under it. A create now clones the root into a staging directory
+before it takes the lock and moves it into place with a rename, and a
+removal moves the container's directory to a trash directory under the
+lock and deletes it after. With `-debug` the engine logs the time of each
+step of a create and a start, and the shim the steps of its own start.
+CRI's `ImageFsInfo` took 66 s on its first call and 4.1 s on average: it
+walked every image's root once, and every container's root on each call.
+The image store now measures a root once, as it unpacks it, and keeps the
+measure in the image's record; CRI walks only a root an earlier store
+unpacked, once. The walk of the containers' roots on each call remains:
+each root is a clone of its image's, with as many files.
+
+Every container start took about 1.15 s, nearly all of it in the shim's
+step from starting the spawn helper to the helper's `exec` of the
+container's command. `go test -bench . ./internal/runtime` measures that
+start: 17 ms with the sandbox alone, 15 ms with the container library,
+19 ms with the exec anchor and 21 ms with both, and 1.15 s through an
+`fws-shim` built with the race detector, as the suite built it: a
+race-built Go binary takes about half a second to start on macOS, and a
+start runs two, the helper and the anchor's launcher. The suite now builds
+fwsd alone with the detector. The suite's 46 image archives took about 7
+of its 42 minutes to load into the race-instrumented engine, which
+decompresses and unpacks each layer.
+
+Open bug: a container's process starts in about 20 ms, where the same
+`posix_spawn` natively takes 2 ms. The helper and the anchor's launcher
+are Go processes, started one after the other, each with the runtime's
+start-up; the library adds the loader's 4 ms for an inserted library.
+
+Open bug: one start in an end-to-end run, of Testcontainers' reaper, took
+3.8 s in its `profile` step, which takes about 80 µs in every other
+start. The step reads the stack, IPC, shared-memory, PID-namespace and
+network records, most under the engine's lock, so another request may
+have held the lock that long; the debug log does not time the waits on
+it.
+
+Open bug: in one run, MongoDB's replica set with a root user failed as
+the image's `entry` created the root user: `mongosh`, started with
+`--host 127.0.0.1 --port 27017` against the temporary server that listened
+there and had accepted its connections, ended with `MongoNetworkError:
+connect ECONNREFUSED 127.0.0.1:65535`. Nothing else in the run names port
+65535, and the subtest passed in the runs before.
+
+Open bug: with a pids limit, every `fork` and `posix_spawn` lists every
+process of the engine's user and checks each, to count the container's
+against the limit, where a pids cgroup keeps a count. Docker sets no
+limit by default, and no test of the suite sets one.
 
 Left as they are, each with its reason in `LIMITATIONS.md`:
 

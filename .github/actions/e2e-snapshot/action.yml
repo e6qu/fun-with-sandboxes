@@ -1,0 +1,24 @@
+name: end-to-end snapshot
+description: >
+  Waits for the end-to-end suite to finish, for four minutes at most, and
+  keeps its output so far and the runner's resource samples as an artifact,
+  which outlives a runner that then dies.
+inputs:
+  name:
+    description: the artifact's name
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        for _ in $(seq 240); do
+          [ -e "$RUNNER_TEMP/e2e/exit" ] && break
+          sleep 1
+        done
+        tail -n 3 "$RUNNER_TEMP/e2e/test.log" || true
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ runner.temp }}/e2e
+        retention-days: 7

@@ -61,24 +61,40 @@ func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpath
 	return info, err
 }
 
-func (o *snapshotter) Usage(ctx context.Context, key string) (usage snapshots.Usage, err error) {
-	var id string
-	var info snapshots.Info
-	err = o.ms.WithTransaction(ctx, false, func(ctx context.Context) error {
-		id, info, usage, err = storage.GetInfo(ctx, key)
+// Usage measures what a snapshot holds that its parent does not, as
+// containerd defines a snapshot's usage, when BuildKit first asks for it,
+// as BuildKit expects: a snapshot is a clone of its parent, and measuring
+// each whole as it committed walked every file below it once per layer.
+func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, error) {
+	var id, parentID string
+	err := o.ms.WithTransaction(ctx, false, func(ctx context.Context) error {
+		var info snapshots.Info
+		var err error
+		if id, info, _, err = storage.GetInfo(ctx, key); err != nil || info.Parent == "" {
+			return err
+		}
+		parentID, _, _, err = storage.GetInfo(ctx, info.Parent)
 		return err
 	})
 	if err != nil {
 		return snapshots.Usage{}, err
 	}
-	if info.Kind == snapshots.KindActive {
+	if parentID == "" {
 		du, err := fs.DiskUsage(ctx, o.dir(id))
-		if err != nil {
-			return snapshots.Usage{}, err
-		}
-		usage = snapshots.Usage(du)
+		return snapshots.Usage(du), err
 	}
-	return usage, nil
+	var u snapshots.Usage
+	err = fs.Changes(ctx, o.dir(parentID), o.dir(id), func(k fs.ChangeKind, _ string, fi os.FileInfo, err error) error {
+		if err != nil || k == fs.ChangeKindDelete {
+			return err
+		}
+		u.Inodes++
+		if fi.Mode().IsRegular() {
+			u.Size += fi.Size()
+		}
+		return nil
+	})
+	return u, err
 }
 
 func (o *snapshotter) Prepare(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
@@ -103,15 +119,7 @@ func (o *snapshotter) Mounts(ctx context.Context, key string) (_ []mount.Mount, 
 
 func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snapshots.Opt) error {
 	return o.ms.WithTransaction(ctx, true, func(ctx context.Context) error {
-		id, _, _, err := storage.GetInfo(ctx, key)
-		if err != nil {
-			return err
-		}
-		du, err := fs.DiskUsage(ctx, o.dir(id))
-		if err != nil {
-			return err
-		}
-		_, err = storage.CommitActive(ctx, key, name, snapshots.Usage(du), opts...)
+		_, err := storage.CommitActive(ctx, key, name, snapshots.Usage{}, opts...)
 		return err
 	})
 }

@@ -30,6 +30,13 @@ func run(check string) string {
 	case "system":
 		_, err := os.Stat("/System/Library/CoreServices/SystemVersion.plist")
 		return result("ok", err)
+	case "missing":
+		// A file the root lacks where it holds the parent is missing; a
+		// path whose parent the root lacks too is the host's.
+		_, err := os.Stat("/etc/missing")
+		_, oerr := os.Open("/etc/missing")
+		_, herr := os.Stat("/usr/bin/true")
+		return fmt.Sprintf("%v,%v,%v", os.IsNotExist(err), os.IsNotExist(oerr), herr == nil)
 	case "write":
 		err := os.WriteFile("/made/new", []byte("x"), 0o644)
 		return result("ok", err)
@@ -74,6 +81,16 @@ func run(check string) string {
 		}
 		st := fi.Sys().(*syscall.Stat_t)
 		return fmt.Sprintf("%d:%d", st.Uid, st.Gid)
+	case "chflags":
+		if err := unix.Chflags("/etc/marker", 0); err != nil {
+			return result("", err)
+		}
+		fi, err := os.Stat("/etc/marker")
+		if err != nil {
+			return result("", err)
+		}
+		st := fi.Sys().(*syscall.Stat_t)
+		return fmt.Sprintf("%d:%d flags=%d", st.Uid, st.Gid, st.Flags)
 	case "hostname":
 		h, err := os.Hostname()
 		return result(h, err)

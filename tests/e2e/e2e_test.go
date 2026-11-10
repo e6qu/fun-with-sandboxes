@@ -16,7 +16,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -70,19 +72,28 @@ func run(m *testing.M) int {
 	}
 	bin := filepath.Join(binDir, "fwsd")
 	fwsdBin = bin
-	// The race detector turns a data race in the engine into a report the
-	// suite fails on, rather than a crash some later run might hit. fwsd
-	// runs its helper processes from fws-shim beside it.
-	build := exec.Command("go", "build", "-race", "-o", binDir+"/", "./cmd/fwsd", "./cmd/fws-shim")
-	// The engine is its own module; this suite only drives its binary.
-	build.Dir = "../.."
-	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build fwsd: %v\n%s", err, out)
-		return 1
+	// The race detector turns a data race in the engine, which serves every
+	// request concurrently, into a report the suite fails on, rather than a
+	// crash some later run might hit. fwsd runs its helper processes from
+	// fws-shim beside it, built without the detector: a race-built binary
+	// takes half a second to start on macOS, and every container start runs
+	// two. The shim's own races are the unit tests' to find, which run with
+	// the detector.
+	for _, b := range [][]string{
+		{"build", "-race", "-o", binDir + "/", "./cmd/fwsd"},
+		{"build", "-o", binDir + "/", "./cmd/fws-shim"},
+	} {
+		build := exec.Command("go", b...)
+		// The engine is its own module; this suite only drives its binaries.
+		build.Dir = "../.."
+		if out, err := build.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "go %v: %v\n%s", b, err, out)
+			return 1
+		}
 	}
 	sock := filepath.Join(home, ".e2e.sock")
 	defer os.Remove(sock)
-	daemon := exec.Command(bin, "-root", root, "-socket", sock, "-port-base", "30000", "-port-limit", "31000", "-block-size", "50")
+	daemon := exec.Command(bin, "-root", root, "-socket", sock, "-port-base", "30000", "-port-limit", "31000", "-block-size", "50", "-debug")
 	// The engine runs in a session of its own, as a daemon does, so a
 	// signal it sends its own process group ends it, and the suite reports
 	// that, rather than reaching the suite and the CI runner's agent.
@@ -105,12 +116,19 @@ func run(m *testing.M) int {
 	ready := make(chan struct{})
 	logged := make(chan struct{})
 	var crashes []string
+	reqs := requestTimes{}
 	go func() {
 		defer close(logged)
 		sc := bufio.NewScanner(stderr)
 		announced := false
 		for sc.Scan() {
 			line := sc.Text()
+			if d, ok := reqs.add(line); ok {
+				if d >= time.Second {
+					fmt.Fprintln(os.Stderr, "fwsd:", line)
+				}
+				continue
+			}
 			fmt.Fprintln(os.Stderr, "fwsd:", line)
 			if !announced && strings.Contains(line, "serving the Docker API") {
 				announced = true
@@ -177,11 +195,81 @@ func run(m *testing.M) int {
 		code = 1
 	}
 	<-logged
+	reqs.report(os.Stderr)
 	if len(crashes) > 0 {
 		fmt.Fprintf(os.Stderr, "fwsd crashed while the suite ran:\n  %s\n", strings.Join(crashes, "\n  "))
 		code = 1
 	}
 	return code
+}
+
+// requestTimes totals the time the engine took to serve each endpoint,
+// from the requests its -debug log lists.
+type requestTimes map[string]*endpointTime
+
+type endpointTime struct {
+	n     int
+	total time.Duration
+	max   time.Duration
+}
+
+// idSegment matches what a path names by ID or name rather than by
+// endpoint: the segment after a collection.
+var idSegment = regexp.MustCompile(`/(containers|images|networks|volumes|exec|pods|distribution|plugins|secrets|configs|services|nodes|tasks|session)/[^/?]+`)
+
+// add totals a log line of a request, and reports how long it took.
+func (rt requestTimes) add(line string) (time.Duration, bool) {
+	f := strings.Fields(line)
+	if len(f) != 6 {
+		return 0, false
+	}
+	switch f[2] {
+	case "GET", "HEAD", "POST", "PUT", "DELETE":
+	default:
+		return 0, false
+	}
+	d, err := time.ParseDuration(f[5])
+	if err != nil {
+		return 0, false
+	}
+	path, _, _ := strings.Cut(f[3], "?")
+	path = idSegment.ReplaceAllStringFunc(versionPath.ReplaceAllString(path, ""), func(seg string) string {
+		collection, name, _ := strings.Cut(strings.TrimPrefix(seg, "/"), "/")
+		if collectionVerbs[name] {
+			return seg
+		}
+		return "/" + collection + "/{}"
+	})
+	key := f[2] + " " + path
+	e := rt[key]
+	if e == nil {
+		e = &endpointTime{}
+		rt[key] = e
+	}
+	e.n++
+	e.total += d
+	e.max = max(e.max, d)
+	return d, true
+}
+
+// collectionVerbs are the endpoints on a collection itself, which a path
+// names where it would name a member.
+var collectionVerbs = map[string]bool{"create": true, "json": true, "load": true, "get": true, "prune": true, "search": true}
+
+var versionPath = regexp.MustCompile(`^/v\d+\.\d+`)
+
+// report prints the endpoints the engine spent the most time serving.
+func (rt requestTimes) report(w io.Writer) {
+	keys := make([]string, 0, len(rt))
+	for k := range rt {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return rt[keys[i]].total > rt[keys[j]].total })
+	fmt.Fprintln(w, "the engine's time by endpoint (requests, total, mean, longest):")
+	for _, k := range keys[:min(len(keys), 40)] {
+		e := rt[k]
+		fmt.Fprintf(w, "  %6d %10s %10s %10s  %s\n", e.n, e.total.Round(time.Millisecond), (e.total / time.Duration(e.n)).Round(time.Microsecond), e.max.Round(time.Millisecond), k)
+	}
 }
 
 // crashLine reports a log line that marks a panic, recovered or not, or a
@@ -205,7 +293,7 @@ func dockerAt(t *testing.T, host string, args ...string) (string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := stacksOnTimeout(exec.CommandContext(ctx, "docker", args...))
 	if host != "" {
 		cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
 	}
@@ -216,6 +304,16 @@ func dockerAt(t *testing.T, host string, args ...string) (string, error) {
 		return out.String(), fmt.Errorf("docker %s: %v: %s", strings.Join(args, " "), err, errb.String())
 	}
 	return out.String(), nil
+}
+
+// stacksOnTimeout makes a command that outlives its context, and its
+// children, print every goroutine's stack before they are killed, which Go
+// programs do on SIGQUIT.
+func stacksOnTimeout(cmd *exec.Cmd) *exec.Cmd {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGQUIT) }
+	cmd.WaitDelay = 15 * time.Second
+	return cmd
 }
 
 func mustDocker(t *testing.T, args ...string) string {

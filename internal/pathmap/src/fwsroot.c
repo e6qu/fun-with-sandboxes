@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <poll.h>
+#include <os/lock.h>
 #include <pthread.h>
 #include <pwd.h>
 #include <sys/utsname.h>
@@ -42,6 +43,7 @@
 #include <servers/bootstrap.h>
 #include <spawn.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -613,6 +615,25 @@ static const char *fws_map(const char *p, char *buf, int follow) {
     if (host_side(p)) {
         return p;
     }
+    if (!strstr(p, "/..")) {
+        // One lookup settles the common case, a file the container holds
+        // with no link on its way, which place would otherwise look up
+        // again after linked.
+        const char *q = host_of(p, buf);
+        if (!q) {
+            return p;
+        }
+        char c[PATH_MAX];
+        const char *probe = in_root(q) && join(c, sizeof c, croot, q + rootlen, "") ? c : q;
+        struct stat st;
+        if (fstatat(AT_FDCWD, probe, &st, AT_SYMLINK_NOFOLLOW_ANY) == 0) {
+            if (!S_ISLNK(st.st_mode)) {
+                return q;
+            }
+        } else if (errno != ELOOP) {
+            return place(p, buf);
+        }
+    }
     if (strstr(p, "/..") || linked(p)) {
         char c[PATH_MAX];
         if (resolve(p, follow, c)) {
@@ -711,6 +732,91 @@ static int follows(int flags) {
     return !(flags & (O_NOFOLLOW | O_SYMLINK)) && (flags & (O_CREAT | O_EXCL)) != (O_CREAT | O_EXCL);
 }
 
+// direct writes to buf container path p's host path in the root, for a
+// call that the kernel then resolves refusing any link on its way: the
+// common case, a file the container holds, costs no lookup of the
+// library's. It reports 0 for a path the mapping must handle: relative,
+// on the host's side, on a mount, in a host tree, or through "..".
+static int direct(const char *p, char *buf) {
+    if (!rootlen || !p || p[0] != '/' || host_side(p) || in_host_tree(p) || strstr(p, "/..")) {
+        return 0;
+    }
+    for (size_t i = 0; i < nmounts; i++) {
+        if (under(p, mounts[i].dest, mounts[i].destlen)) {
+            return 0;
+        }
+    }
+    size_t cl = strlen(croot), n = strlen(p);
+    if (cl + n + 1 > PATH_MAX) {
+        return 0;
+    }
+    memcpy(buf, croot, cl);
+    memcpy(buf + cl, p, n + 1);
+    return 1;
+}
+
+// rooted is container path p's host path under the root as the library
+// names it, which own matches, given d, its path under the resolved root.
+static const char *rooted(const char *p, char *d) {
+    if (strcmp(root, croot) != 0) {
+        memcpy(d, root, rootlen);
+        strcpy(d + rootlen, p);
+    }
+    return d;
+}
+
+// missing settles a direct call that found no file at host path d: the
+// container's answer is ENOENT where the root holds d's parent, as the
+// mapping finds. It reports 0 where the mapping must decide, as the host
+// may hold the path.
+static int missing(char *d) {
+    char *slash = strrchr(d, '/');
+    if (!slash) {
+        return 0;
+    }
+    struct stat st;
+    *slash = 0;
+    int parent = lstat(d, &st) == 0;
+    *slash = '/';
+    if (!parent) {
+        return 0;
+    }
+    errno = ENOENT;
+    return 1;
+}
+
+static void own(struct stat *st, const char *path, int fd, int nofollow);
+
+// settle_stat makes a stat, or with nofollow an lstat, of container path
+// path directly where it can, and reports whether it did, with *r its
+// result.
+static int settle_stat(const char *path, struct stat *st, int nofollow, int *r) {
+    char d[PATH_MAX];
+    if (!direct(path, d)) {
+        return 0;
+    }
+    if (fstatat(AT_FDCWD, d, st, AT_SYMLINK_NOFOLLOW_ANY) == 0) {
+        // A link the final component names is lstat's answer, and stat's
+        // to resolve in the container.
+        if (S_ISLNK(st->st_mode) && !nofollow) {
+            return 0;
+        }
+        own(st, rooted(path, d), -1, nofollow);
+        *r = 0;
+        return 1;
+    }
+    if (errno == ENOENT && missing(d)) {
+        *r = -1;
+        return 1;
+    }
+    return 0;
+}
+
+// settle_open opens container path path directly where it can, for an
+// open that follows links and makes no file, and reports whether it did,
+// with *fd the result. nocancel opens without a cancellation point.
+static int settle_open(const char *path, int flags, int nocancel, int *fd);
+
 static int fws_open(const char *path, int flags, ...) {
     mode_t mode = 0;
     if (flags & O_CREAT) {
@@ -719,6 +825,8 @@ static int fws_open(const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
+    int sfd;
+    if (settle_open(path, flags, 0, &sfd)) return sfd;
     const char *p = MAPF(path, follows(flags));
     int fresh = creating(p, flags);
     int fd = open(p, flags, mode);
@@ -736,6 +844,8 @@ static int fws_open_nocancel(const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
+    int sfd;
+    if (settle_open(path, flags, 1, &sfd)) return sfd;
     const char *p = MAPF(path, follows(flags));
     int fresh = creating(p, flags);
     int fd = open_nocancel(p, flags, mode);
@@ -752,6 +862,8 @@ static int fws_openat(int fd, const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
+    int sfd;
+    if (settle_open(path, flags, 0, &sfd)) return sfd;
     const char *p = AT_MAPF(fd, path, follows(flags));
     int fresh = (p[0] == '/' || fd == AT_FDCWD) && creating(p, flags);
     int r = openat(fd, p, flags, mode);
@@ -763,6 +875,22 @@ INTERPOSE(fws_openat, openat);
 // Bun, among others, opens files through the cancellation-point-free
 // variants.
 extern int openat_nocancel(int, const char *, int, ...) __asm("_openat$NOCANCEL");
+static int settle_open(const char *path, int flags, int nocancel, int *fd) {
+    char d[PATH_MAX];
+    if ((flags & O_CREAT) || !follows(flags) || !direct(path, d)) {
+        return 0;
+    }
+    int r = nocancel ? openat_nocancel(AT_FDCWD, d, flags | O_NOFOLLOW_ANY) : openat(AT_FDCWD, d, flags | O_NOFOLLOW_ANY);
+    if (r >= 0) {
+        *fd = r;
+        return 1;
+    }
+    if (errno == ENOENT && missing(d)) {
+        *fd = -1;
+        return 1;
+    }
+    return 0;
+}
 static int fws_openat_nocancel(int fd, const char *path, int flags, ...) {
     mode_t mode = 0;
     if (flags & O_CREAT) {
@@ -771,6 +899,8 @@ static int fws_openat_nocancel(int fd, const char *path, int flags, ...) {
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
+    int sfd;
+    if (settle_open(path, flags, 1, &sfd)) return sfd;
     const char *p = AT_MAPF(fd, path, follows(flags));
     int fresh = (p[0] == '/' || fd == AT_FDCWD) && creating(p, flags);
     int r = openat_nocancel(fd, p, flags, mode);
@@ -812,6 +942,8 @@ static uid_t getuid_real(void) {
 static void own(struct stat *st, const char *path, int fd, int nofollow);
 
 static int fws_stat(const char *path, struct stat *st) {
+    int sr;
+    if (settle_stat(path, st, 0, &sr)) return sr;
     const char *p = MAP(path);
     int r = stat(p, st);
     if (r == 0) own(st, p, -1, 0);
@@ -819,6 +951,8 @@ static int fws_stat(const char *path, struct stat *st) {
 }
 INTERPOSE(fws_stat, stat);
 static int fws_lstat(const char *path, struct stat *st) {
+    int sr;
+    if (settle_stat(path, st, 1, &sr)) return sr;
     const char *p = LMAP(path);
     int r = lstat(p, st);
     if (r == 0) own(st, p, -1, 1);
@@ -832,6 +966,8 @@ static int fws_fstat(int fd, struct stat *st) {
 }
 INTERPOSE(fws_fstat, fstat);
 static int fws_fstatat(int fd, const char *path, struct stat *st, int flag) {
+    int sr;
+    if ((flag & ~AT_SYMLINK_NOFOLLOW) == 0 && settle_stat(path, st, flag & AT_SYMLINK_NOFOLLOW, &sr)) return sr;
     const char *p = AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW));
     int r = fstatat(fd, p, st, flag);
     if (r == 0) {
@@ -856,6 +992,8 @@ extern int fstatat64(int, const char *, void *, int);
 // Their struct stat64 is the struct stat this library builds with.
 extern int fstat64(int, void *);
 static int fws_stat64(const char *path, void *st) {
+    int sr;
+    if (settle_stat(path, st, 0, &sr)) return sr;
     const char *p = MAP(path);
     int r = stat64(p, st);
     if (r == 0) own(st, p, -1, 0);
@@ -863,6 +1001,8 @@ static int fws_stat64(const char *path, void *st) {
 }
 INTERPOSE(fws_stat64, stat64);
 static int fws_lstat64(const char *path, void *st) {
+    int sr;
+    if (settle_stat(path, st, 1, &sr)) return sr;
     const char *p = LMAP(path);
     int r = lstat64(p, st);
     if (r == 0) own(st, p, -1, 1);
@@ -876,6 +1016,8 @@ static int fws_fstat64(int fd, void *st) {
 }
 INTERPOSE(fws_fstat64, fstat64);
 static int fws_fstatat64(int fd, const char *path, void *st, int flag) {
+    int sr;
+    if ((flag & ~AT_SYMLINK_NOFOLLOW) == 0 && settle_stat(path, st, flag & AT_SYMLINK_NOFOLLOW, &sr)) return sr;
     const char *p = AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW));
     int r = fstatat64(fd, p, st, flag);
     if (r == 0 && (p[0] == '/' || fd == AT_FDCWD)) own(st, p, -1, flag & AT_SYMLINK_NOFOLLOW);
@@ -944,6 +1086,30 @@ INTERPOSE(fws_readlinkat, readlinkat);
 // A chmod sets the mode on disk, which then stands for the one extraction
 // recorded (MODE_XATTR).
 #define MODE_XATTR "com.fws.mode"
+
+// META_FLAG marks a file that holds an owner or a mode of the container's
+// in an extended attribute, so that stat reads the attributes only for
+// such a file: stat returns the flag at no cost, where reading an absent
+// attribute costs a call of its own. The image store sets it beside the
+// mode it records; the library hides it from the container and keeps it
+// through the container's own chflags.
+#define META_FLAG UF_NODUMP
+
+// mark sets META_FLAG on a file, by descriptor when fd is set.
+static void mark(const char *path, int fd, int nofollow) {
+    struct stat st;
+    int r = fd >= 0 ? fstat(fd, &st) : nofollow ? lstat(path, &st) : stat(path, &st);
+    if (r != 0 || (st.st_flags & META_FLAG)) {
+        return;
+    }
+    if (fd >= 0) {
+        fchflags(fd, st.st_flags | META_FLAG);
+    } else if (nofollow) {
+        lchflags(path, st.st_flags | META_FLAG);
+    } else {
+        chflags(path, st.st_flags | META_FLAG);
+    }
+}
 static int fws_chmod(const char *path, mode_t mode) {
     const char *p = MAP(path);
     int r = chmod(p, mode);
@@ -987,8 +1153,28 @@ static int fws_mkfifo(const char *path, mode_t mode) {
     return r;
 }
 INTERPOSE(fws_mkfifo, mkfifo);
-static int fws_chflags(const char *path, unsigned int flags) { return chflags(MAP(path), flags); }
+// keep_mark is flags with the file's own META_FLAG, so a container's
+// chflags leaves the library's mark.
+static unsigned int keep_mark(int r, const struct stat *st, unsigned int flags) {
+    return r == 0 && st->st_uid == getuid_real() ? (flags & ~(unsigned int)META_FLAG) | (st->st_flags & META_FLAG) : flags;
+}
+static int fws_chflags(const char *path, unsigned int flags) {
+    const char *p = MAP(path);
+    struct stat st;
+    return chflags(p, keep_mark(stat(p, &st), &st, flags));
+}
 INTERPOSE(fws_chflags, chflags);
+static int fws_lchflags(const char *path, unsigned int flags) {
+    const char *p = LMAP(path);
+    struct stat st;
+    return lchflags(p, keep_mark(lstat(p, &st), &st, flags));
+}
+INTERPOSE(fws_lchflags, lchflags);
+static int fws_fchflags(int fd, unsigned int flags) {
+    struct stat st;
+    return fchflags(fd, keep_mark(fstat(fd, &st), &st, flags));
+}
+INTERPOSE(fws_fchflags, fchflags);
 static ssize_t fws_getxattr(const char *path, const char *name, void *v, size_t n, uint32_t pos, int o) { return getxattr(MAPF(path, !(o & XATTR_NOFOLLOW)), name, v, n, pos, o); }
 INTERPOSE(fws_getxattr, getxattr);
 static int fws_setxattr(const char *path, const char *name, const void *v, size_t n, uint32_t pos, int o) { return setxattr(MAPF(path, !(o & XATTR_NOFOLLOW)), name, v, n, pos, o); }
@@ -1437,10 +1623,10 @@ static int read_owner(const char *path, int fd, int nofollow, uid_t *uid, gid_t 
 static void write_owner(const char *path, int fd, int nofollow, uid_t uid, gid_t gid) {
     char v[32];
     int n = snprintf(v, sizeof v, "%u:%u", uid, gid);
-    if (fd >= 0) {
-        fsetxattr(fd, OWNER_XATTR, v, (size_t)n, 0, 0);
-    } else {
-        setxattr(path, OWNER_XATTR, v, (size_t)n, 0, nofollow ? XATTR_NOFOLLOW : 0);
+    int r = fd >= 0 ? fsetxattr(fd, OWNER_XATTR, v, (size_t)n, 0, 0)
+                    : setxattr(path, OWNER_XATTR, v, (size_t)n, 0, nofollow ? XATTR_NOFOLLOW : 0);
+    if (r == 0) {
+        mark(path, fd, nofollow);
     }
 }
 
@@ -1458,6 +1644,12 @@ static void own(struct stat *st, const char *path, int fd, int nofollow) {
         st->st_gid = 0;
         return;
     }
+    if (!(st->st_flags & META_FLAG)) {
+        st->st_uid = 0;
+        st->st_gid = 0;
+        return;
+    }
+    st->st_flags &= ~(uint32_t)META_FLAG;
     if (read_owner(path, fd, nofollow, &u, &g)) {
         st->st_uid = u;
         st->st_gid = g;
@@ -1929,8 +2121,29 @@ static int ns_kill(pid_t hp, int sig) {
 static pid_t to_host(pid_t p) { return init_pid && p == 1 ? init_pid : p; }
 static pid_t to_container(pid_t p) { return init_pid && p == init_pid ? 1 : p; }
 
-static pid_t fws_getpid(void) { return to_container(getpid()); }
+// naming is the thread pthread_setname_np runs in, whose getpid returns the
+// host pid: libpthread names the thread through proc_info of getpid's pid,
+// which in the main process would be launchd's. A thread-local would do,
+// but an inserted library's thread-locals are not set up before the first
+// calls of getpid.
+static _Atomic(pthread_t) naming;
+static os_unfair_lock naming_lock = OS_UNFAIR_LOCK_INIT;
+
+static pid_t fws_getpid(void) {
+    pid_t p = getpid();
+    return atomic_load(&naming) == pthread_self() ? p : to_container(p);
+}
 INTERPOSE(fws_getpid, getpid);
+
+static int fws_pthread_setname_np(const char *name) {
+    os_unfair_lock_lock(&naming_lock);
+    atomic_store(&naming, pthread_self());
+    int r = pthread_setname_np(name);
+    atomic_store(&naming, (pthread_t)NULL);
+    os_unfair_lock_unlock(&naming_lock);
+    return r;
+}
+INTERPOSE(fws_pthread_setname_np, pthread_setname_np);
 
 // Init's parent is outside the container: 0, as in a PID namespace.
 static pid_t fws_getppid(void) { return init_pid && getpid() == init_pid ? 0 : to_container(getppid()); }
@@ -2995,6 +3208,8 @@ static unsigned short container_port(int type, unsigned short hport) {
 // NET_P6: an IPv6 socket that reached a member at an IPv6 address, whose
 // members' addresses read as theirs on IPv6.
 #define NET_P6 64
+// NET_HELD: a socket listen_unix bound to its port's Unix socket file.
+#define NET_HELD 128
 // What the router puts before a datagram on a Unix one: the IPv4 address
 // and port it came from, or goes to.
 #define DGRAM_HEADER 6
@@ -3031,6 +3246,20 @@ static int cmsg_flag(int level, int name) {
 // bound, or connected, by relative names, whose addresses hold only the
 // path below their mount or the root.
 static char *unix_names[NET_FDS], *unix_peers[NET_FDS];
+
+// acc_peers holds the peer the kernel named as accept took each connection,
+// which getpeername names once Darwin refuses to: after the connection shut
+// down both ways, where Linux still names a TCP connection's client.
+static struct sockaddr_storage *acc_peers[NET_FDS];
+
+static void set_peer(int fd, const struct sockaddr_storage *k) {
+    if (fd < 0 || fd >= NET_FDS || acc_peers[fd] == k) return;
+    free(acc_peers[fd]);
+    acc_peers[fd] = NULL;
+    if (k && (k->ss_family == AF_INET || k->ss_family == AF_INET6) && (acc_peers[fd] = malloc(sizeof *k))) {
+        memcpy(acc_peers[fd], k, sizeof *k);
+    }
+}
 
 static void set_name(char **table, int fd, const char *name) {
     if (fd < 0 || fd >= NET_FDS || table[fd] == name) return;
@@ -3807,6 +4036,22 @@ static int host_held(const struct sockaddr *sa, unsigned short port) {
     return r == -1 && e == EADDRINUSE;
 }
 
+// held reports whether a socket of this process other than fd holds the
+// Unix socket file u names, as one bound to IPv6's wildcard address holds a
+// port a bind to IPv4's then asks for.
+static int held(int fd, unsigned short port, const struct sockaddr_un *u) {
+    for (int i = 0; i < NET_FDS; i++) {
+        if (i == fd || !(net_state[i] & NET_HELD) || net_port[i] != port) continue;
+        struct sockaddr_un b;
+        socklen_t n = sizeof b;
+        if (getsockname(i, (struct sockaddr *)&b, &n) == 0 && b.sun_family == AF_UNIX &&
+            strncmp(b.sun_path, u->sun_path, sizeof b.sun_path) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // listen_unix puts a Unix socket of fd's type in its place and binds it
 // where the library listens on port. With reclaim set, it takes over a
 // socket file no listener holds.
@@ -3841,6 +4086,12 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
     if (fd < NET_FDS) net_port[fd] = port;
     int r = bind(fd, (struct sockaddr *)&u, u.sun_len);
     if (r == -1 && errno == EADDRINUSE && reclaim) {
+        // A socket of this process holds the file: the probe below would
+        // reach its listener as a connection no client made.
+        if (held(fd, port, &u)) {
+            errno = EADDRINUSE;
+            return -1;
+        }
         // A socket no listener holds is a stale one, which a listener that
         // ended left behind.
         int t = socket(AF_UNIX, type, 0);
@@ -3853,6 +4104,7 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
         unlink(u.sun_path);
         r = bind(fd, (struct sockaddr *)&u, u.sun_len);
     }
+    if (r == 0) set_state(fd, state_of(fd) | NET_HELD);
     return r;
 }
 
@@ -4613,37 +4865,39 @@ INTERPOSE(fws_sendfile, sendfile);
 
 // take_client reads the client's address and port, which the router
 // writes before the stream of a connection it makes to a listener on a port
-// without a host port, and reports whether c carried them: the library's
-// own probes of a listener connect and write nothing.
-static int take_client(int c) {
+// without a host port. The library's own probes of a listener connect and
+// write nothing: such a connection reaches the program as one its loopback
+// client closed at once, as Linux hands over a connection its client
+// abandoned.
+static void take_client(int c) {
     unsigned char h[CLIENT_HEADER];
     size_t got = 0;
     while (got < sizeof h) {
         struct pollfd p = {c, POLLIN, 0};
         int r = poll(&p, 1, 10000);
         if (r == -1 && errno == EINTR) continue;
-        if (r != 1) return 0;
+        if (r != 1) break;
         ssize_t n = recv(c, h + got, sizeof h - got, 0);
         if (n == -1 && (errno == EINTR || errno == EAGAIN)) continue;
-        if (n <= 0) return 0;
+        if (n <= 0) break;
         got += (size_t)n;
     }
-    if (c < NET_FDS) {
-        memcpy(&net_peer[c], h, 4);
-        net_dport[c] = (unsigned short)(h[4] << 8 | h[5]);
+    if (c >= NET_FDS) return;
+    if (got < sizeof h) {
+        net_peer[c] = htonl(INADDR_LOOPBACK);
+        net_dport[c] = 0;
+        return;
     }
-    return 1;
+    memcpy(&net_peer[c], h, 4);
+    net_dport[c] = (unsigned short)(h[4] << 8 | h[5]);
 }
 
 // accepted completes a connection c that fd accepted, with k its peer as
-// the kernel reports it, and reports whether the program gets it.
-static int accepted(int fd, int c, const struct sockaddr_storage *k, socklen_t kn, struct sockaddr *sa, socklen_t *len) {
+// the kernel reports it.
+static void accepted(int fd, int c, const struct sockaddr_storage *k, socklen_t kn, struct sockaddr *sa, socklen_t *len) {
     int e = errno;
-    if ((state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_STREAM && !take_client(c)) {
-        close(c);
-        errno = e;
-        return 0;
-    }
+    if ((state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_STREAM) take_client(c);
+    set_peer(c, k);
     set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
     if (c < NET_FDS && fd < NET_FDS) {
         net_port[c] = net_port[fd];
@@ -4651,18 +4905,26 @@ static int accepted(int fd, int c, const struct sockaddr_storage *k, socklen_t k
     }
     present(c, k, kn, sa, len, 0);
     errno = e;
-    return 1;
 }
 
 static int fws_accept(int fd, struct sockaddr *sa, socklen_t *len) {
-    for (;;) {
-        struct sockaddr_storage k;
-        socklen_t kn = sizeof k;
-        int c = accept(fd, (struct sockaddr *)&k, &kn);
-        if (c < 0 || accepted(fd, c, &k, kn, sa, len)) return c;
-    }
+    struct sockaddr_storage k;
+    socklen_t kn = sizeof k;
+    int c = accept(fd, (struct sockaddr *)&k, &kn);
+    if (c >= 0) accepted(fd, c, &k, kn, sa, len);
+    return c;
 }
 INTERPOSE(fws_accept, accept);
+
+// Darwin refuses options on a socket shut down both ways, where Linux sets
+// them on a TCP connection whose client closed; a listener's connections
+// inherit this flag, which lifts that.
+static int fws_listen(int fd, int backlog) {
+    struct so_np_extensions x = {SONPX_SETOPTSHUT, SONPX_SETOPTSHUT};
+    setsockopt(fd, SOL_SOCKET, SO_NP_EXTENSIONS, &x, sizeof x);
+    return listen(fd, backlog);
+}
+INTERPOSE(fws_listen, listen);
 
 static int fws_getsockname(int fd, struct sockaddr *sa, socklen_t *len) {
     struct sockaddr_storage k;
@@ -4689,6 +4951,19 @@ static int fws_getpeername(int fd, struct sockaddr *sa, socklen_t *len) {
     struct sockaddr_storage k;
     socklen_t kn = sizeof k;
     int r = getpeername(fd, (struct sockaddr *)&k, &kn);
+    // Darwin refuses the peer of a socket shut down both ways, where Linux
+    // names a TCP connection's client after it closed: the library names
+    // the client the router recorded, or the one accept named.
+    if (r == -1 && errno == EINVAL && (state_of(fd) & (NET_UNIX | NET_HELD)) == NET_UNIX) {
+        memset(&k, 0, sizeof k);
+        k.ss_family = AF_UNIX;
+        kn = sizeof k;
+        r = 0;
+    } else if (r == -1 && errno == EINVAL && fd >= 0 && fd < NET_FDS && acc_peers[fd]) {
+        memcpy(&k, acc_peers[fd], sizeof k);
+        kn = acc_peers[fd]->ss_len;
+        r = 0;
+    }
     if (r == 0) present(fd, &k, kn, sa, len, 0);
     return r;
 }
@@ -4776,6 +5051,7 @@ static void copy_state(int from, int to) {
         net_cmsg[to] = net_cmsg[from];
         set_name(unix_names, to, unix_names[from]);
         set_name(unix_peers, to, unix_peers[from]);
+        set_peer(to, acc_peers[from]);
     }
 }
 
@@ -4787,6 +5063,7 @@ static void forget(int fd) {
         net_cmsg[fd] = 0;
         set_name(unix_names, fd, NULL);
         set_name(unix_peers, fd, NULL);
+        set_peer(fd, NULL);
     }
 }
 
@@ -4917,12 +5194,11 @@ INTERPOSE(fws_recvmsg_nocancel, recvmsg_nocancel);
 
 extern int accept_nocancel(int, struct sockaddr *, socklen_t *) __asm("_accept$NOCANCEL") __attribute__((weak_import));
 static int fws_accept_nocancel(int fd, struct sockaddr *sa, socklen_t *len) {
-    for (;;) {
-        struct sockaddr_storage k;
-        socklen_t kn = sizeof k;
-        int c = accept_nocancel(fd, (struct sockaddr *)&k, &kn);
-        if (c < 0 || accepted(fd, c, &k, kn, sa, len)) return c;
-    }
+    struct sockaddr_storage k;
+    socklen_t kn = sizeof k;
+    int c = accept_nocancel(fd, (struct sockaddr *)&k, &kn);
+    if (c >= 0) accepted(fd, c, &k, kn, sa, len);
+    return c;
 }
 INTERPOSE(fws_accept_nocancel, accept_nocancel);
 

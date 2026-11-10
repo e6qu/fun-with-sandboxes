@@ -13,12 +13,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -54,6 +56,39 @@ type Image struct {
 	Manifest v1.Descriptor `json:"manifest"`
 	// LayerSizes are the uncompressed sizes of the manifest's layers.
 	LayerSizes []int64 `json:"layerSizes"`
+	// RootUsage is what the image's unpacked root takes on disk, which the
+	// store measures once, as it unpacks it.
+	RootUsage *Usage `json:"rootUsage,omitempty"`
+}
+
+// Usage is what files take: their bytes on disk and their inodes.
+type Usage struct {
+	Bytes  uint64 `json:"bytes"`
+	Inodes uint64 `json:"inodes"`
+}
+
+// Add adds v to u.
+func (u *Usage) Add(v Usage) {
+	u.Bytes += v.Bytes
+	u.Inodes += v.Inodes
+}
+
+// DiskUsage is what the files under dir take, dir included.
+func DiskUsage(dir string) Usage {
+	var u Usage
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		u.Inodes++
+		if info, err := d.Info(); err == nil {
+			if st, ok := info.Sys().(*syscall.Stat_t); ok {
+				u.Bytes += uint64(st.Blocks) * 512
+			}
+		}
+		return nil
+	})
+	return u
 }
 
 type Store struct {
@@ -770,6 +805,8 @@ func (s *Store) add(img v1.Image, refs []string, root string) (Image, error) {
 		os.RemoveAll(rec.stage)
 		return out, err
 	}
+	usage := DiskUsage(rec.stage)
+	rec.RootUsage = &usage
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.Rename(rec.stage, s.Root(id)); err != nil {
