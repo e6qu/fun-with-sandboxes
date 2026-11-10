@@ -263,8 +263,11 @@ its default bridge: the host's, without the nameservers on loopback, with
 Google's public ones when none remain.
 The kubelet then passed those nameservers to each pod's sandbox, which
 the engine refuses, as a container reaches no DNS server of its own and
-resolves names through the host's resolver; the test's kubelet runs with
-an empty `--resolv-conf`, which passes pods none.
+resolves names through the host's resolver. An empty `--resolv-conf` did
+not help: the kubelet then gives each pod the nameserver `127.0.0.1` and
+the search domain `.`, to disable lookups through Docker's default. The
+test's kubelet reads `/dev/null` as its `resolv.conf`, which passes pods
+no nameservers, search domains or options.
 
 MongoDB's tests failed with `No such container` as they started the
 container they had created: create took 10 s, cloning the image's root,

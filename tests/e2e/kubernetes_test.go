@@ -225,14 +225,15 @@ func TestKubernetesControlPlane(t *testing.T) {
 
 	// The node registers tainted, as kind's nodes take images it loads
 	// before they run pods; the taint goes once the node's engine holds
-	// the sandbox's pause image and the Deployment's. An empty
-	// --resolv-conf passes the pods no DNS servers, which the engine's
+	// the sandbox's pause image and the Deployment's. A --resolv-conf
+	// with no lines passes the pods no DNS servers, which the engine's
 	// containers cannot reach: they resolve names through the host's
-	// resolver.
+	// resolver. An empty --resolv-conf would not: the kubelet then gives
+	// each pod 127.0.0.1 and the search domain ".".
 	mustDocker(t, "run", "-d", "--privileged", "--restart=on-failure", "--name", "e2e-kubelet", "--network", network, "--network-alias", "node1",
 		"-v", dir+":/etc/kubernetes/pki:ro", "--entrypoint", "/bin/sh", "fws/kubelet:1.35", "-c",
 		"exec kubelet --kubeconfig="+pkiDir+"kubelet.conf --container-runtime-endpoint=unix://$FWS_ENGINE --hostname-override=node1"+
-			" --cgroups-per-qos=false --enforce-node-allocatable= --fail-swap-on=false --eviction-hard='memory.available<10Mi' --resolv-conf="+
+			" --cgroups-per-qos=false --enforce-node-allocatable= --fail-swap-on=false --eviction-hard='memory.available<10Mi' --resolv-conf=/dev/null"+
 			" --register-with-taints=e2e/loading=true:NoSchedule")
 	mustKubectl("wait", "--for=create", "--timeout=2m", "node/node1")
 	mustKubectl("wait", "--for=condition=Ready", "--timeout=2m", "node/node1")
