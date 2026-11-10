@@ -965,3 +965,314 @@ index 0345904..60228fa 100644
  
  /*
  Copyright 2014 The Kubernetes Authors.
+diff --git a/pkg/volume/util/subpath/subpath_darwin.go b/pkg/volume/util/subpath/subpath_darwin.go
+new file mode 100644
+index 0000000..7a4a38b
+--- /dev/null
++++ b/pkg/volume/util/subpath/subpath_darwin.go
+@@ -0,0 +1,190 @@
++//go:build darwin
++
++/*
++Copyright 2026 The Kubernetes Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package subpath
++
++import (
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++
++	"golang.org/x/sys/unix"
++	"k8s.io/klog/v2"
++	"k8s.io/mount-utils"
++)
++
++// On darwin the kubelet makes no bind mounts, as macOS lets no
++// unprivileged process mount: a subPath goes to the runtime as its path
++// in the volume, once that is checked not to leave the volume through a
++// link, and the pod's volume-subpaths directory holds no mounts.
++
++const containerSubPathDirectoryName = "volume-subpaths"
++
++type subpath struct{}
++
++// New returns a subpath.Interface for the current system.
++func New(mount.Interface) Interface {
++	return &subpath{}
++}
++
++// PrepareSafeSubpath gives the subPath's path with its links resolved,
++// which must lie in the volume.
++func (sp *subpath) PrepareSafeSubpath(subPath Subpath) (newHostPath string, cleanupAction func(), err error) {
++	volume, err := filepath.EvalSymlinks(subPath.VolumePath)
++	if err != nil {
++		return "", nil, fmt.Errorf("error resolving volume path %s: %w", subPath.VolumePath, err)
++	}
++	p, err := filepath.EvalSymlinks(subPath.Path)
++	if err != nil {
++		return "", nil, fmt.Errorf("error resolving subpath %s: %w", subPath.Path, err)
++	}
++	if !mount.PathWithinBase(p, volume) {
++		return "", nil, fmt.Errorf("subpath %q not within volume path %q", p, volume)
++	}
++	return p, nil, nil
++}
++
++// CleanSubPaths removes the pod's directories for volumeName's subpaths,
++// which hold no mounts on darwin.
++func (sp *subpath) CleanSubPaths(podDir string, volumeName string) error {
++	podSubPathDir := filepath.Join(podDir, containerSubPathDirectoryName)
++	subPathDir := filepath.Join(podSubPathDir, volumeName)
++	if _, err := os.Lstat(subPathDir); err != nil {
++		if os.IsNotExist(err) {
++			return nil
++		}
++		return err
++	}
++	if err := removeEmptyTree(subPathDir); err != nil {
++		return err
++	}
++	if err := os.Remove(podSubPathDir); err != nil && !os.IsNotExist(err) && !errors.Is(err, unix.ENOTEMPTY) {
++		return fmt.Errorf("error deleting %s: %w", podSubPathDir, err)
++	}
++	return nil
++}
++
++// removeEmptyTree removes dir and the directories under it, refusing
++// anything else: without mounts, a subpath's entry is an empty directory.
++func removeEmptyTree(dir string) error {
++	entries, err := os.ReadDir(dir)
++	if err != nil {
++		return fmt.Errorf("error reading %s: %w", dir, err)
++	}
++	for _, e := range entries {
++		p := filepath.Join(dir, e.Name())
++		if !e.IsDir() {
++			return fmt.Errorf("error cleaning subpaths: %s is not a directory", p)
++		}
++		if err := removeEmptyTree(p); err != nil {
++			return err
++		}
++	}
++	if err := os.Remove(dir); err != nil {
++		return fmt.Errorf("error deleting %s: %w", dir, err)
++	}
++	klog.V(5).Infof("Removed %s", dir)
++	return nil
++}
++
++// SafeMakeDir creates pathname within base one directory at a time,
++// opening each without following a link, so a link the volume's user
++// swaps in cannot move the directories out of base. A link that already
++// stands in the path is followed only where it resolves within base.
++func (sp *subpath) SafeMakeDir(pathname string, base string, perm os.FileMode) error {
++	klog.V(4).Infof("Creating directory %q within base %q", pathname, base)
++	if !mount.PathWithinBase(pathname, base) {
++		return fmt.Errorf("path %s is outside of allowed base %s", pathname, base)
++	}
++	if s, err := os.Stat(pathname); err == nil {
++		if s.IsDir() {
++			return nil
++		}
++		return &os.PathError{Op: "mkdir", Path: pathname, Err: unix.ENOTDIR}
++	}
++	realBase, err := filepath.EvalSymlinks(base)
++	if err != nil {
++		return fmt.Errorf("error resolving base %s: %w", base, err)
++	}
++	rel, err := filepath.Rel(base, pathname)
++	if err != nil {
++		return err
++	}
++	fd, err := unix.Open(realBase, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
++	if err != nil {
++		return fmt.Errorf("cannot open directory %s: %w", realBase, err)
++	}
++	defer func() { unix.Close(fd) }()
++	current := realBase
++	for _, dir := range strings.Split(rel, string(filepath.Separator)) {
++		if dir == "" || dir == "." {
++			continue
++		}
++		next := filepath.Join(current, dir)
++		mkErr := unix.Mkdirat(fd, dir, uint32(perm.Perm()))
++		if mkErr != nil && !errors.Is(mkErr, unix.EEXIST) {
++			return fmt.Errorf("cannot create directory %s: %w", next, mkErr)
++		}
++		child, err := unix.Openat(fd, dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
++		if (errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR)) && mkErr != nil && isLink(next) {
++			// A link that was there before: follow it if it stays in base.
++			resolved, rerr := filepath.EvalSymlinks(next)
++			if rerr != nil {
++				return fmt.Errorf("cannot resolve %s: %w", next, rerr)
++			}
++			if !mount.PathWithinBase(resolved, realBase) {
++				return fmt.Errorf("path %s is outside of allowed base %s", resolved, base)
++			}
++			next = resolved
++			child, err = unix.Open(resolved, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
++		}
++		if err != nil {
++			return fmt.Errorf("cannot open %s: %w", next, err)
++		}
++		unix.Close(fd)
++		fd, current = child, next
++		if mkErr == nil {
++			// mkdirat applied the umask; the subPath needs perm itself.
++			if err := unix.Fchmod(fd, kernelPerm(perm)); err != nil {
++				return fmt.Errorf("chmod %q failed: %w", current, err)
++			}
++		}
++	}
++	return nil
++}
++
++func isLink(p string) bool {
++	s, err := os.Lstat(p)
++	return err == nil && s.Mode()&os.ModeSymlink != 0
++}
++
++func kernelPerm(perm os.FileMode) uint32 {
++	p := uint32(perm & os.ModePerm)
++	if perm&os.ModeSetgid != 0 {
++		p |= unix.S_ISGID
++	}
++	if perm&os.ModeSetuid != 0 {
++		p |= unix.S_ISUID
++	}
++	if perm&os.ModeSticky != 0 {
++		p |= unix.S_ISVTX
++	}
++	return p
++}
+diff --git a/pkg/volume/util/subpath/subpath_darwin_test.go b/pkg/volume/util/subpath/subpath_darwin_test.go
+new file mode 100644
+index 0000000..cabb5d6
+--- /dev/null
++++ b/pkg/volume/util/subpath/subpath_darwin_test.go
+@@ -0,0 +1,97 @@
++//go:build darwin
++
++package subpath
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++func TestCleanSubPaths(t *testing.T) {
++	pod := t.TempDir()
++	sp := New(nil)
++	if err := sp.CleanSubPaths(pod, "vol"); err != nil {
++		t.Fatalf("no subpaths: %v", err)
++	}
++	dir := filepath.Join(pod, containerSubPathDirectoryName, "vol", "c", "0")
++	if err := os.MkdirAll(dir, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := sp.CleanSubPaths(pod, "vol"); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := os.Stat(filepath.Join(pod, containerSubPathDirectoryName)); !os.IsNotExist(err) {
++		t.Errorf("the pod's subpath directory remains: %v", err)
++	}
++	// Another volume's subpaths keep the pod's directory.
++	other := filepath.Join(pod, containerSubPathDirectoryName, "other", "c")
++	os.MkdirAll(other, 0o755)
++	os.MkdirAll(filepath.Join(pod, containerSubPathDirectoryName, "vol", "c"), 0o755)
++	if err := sp.CleanSubPaths(pod, "vol"); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := os.Stat(other); err != nil {
++		t.Errorf("another volume's subpaths: %v", err)
++	}
++	// A file is not a subpath's entry, and stays.
++	f := filepath.Join(pod, containerSubPathDirectoryName, "vol", "c", "data")
++	os.MkdirAll(filepath.Dir(f), 0o755)
++	os.WriteFile(f, []byte("x"), 0o644)
++	if err := sp.CleanSubPaths(pod, "vol"); err == nil {
++		t.Error("a file in the subpaths was removed")
++	}
++	if _, err := os.Stat(f); err != nil {
++		t.Errorf("the file: %v", err)
++	}
++}
++
++func TestPrepareSafeSubpath(t *testing.T) {
++	root := t.TempDir()
++	vol := filepath.Join(root, "vol")
++	os.MkdirAll(filepath.Join(vol, "a"), 0o755)
++	os.Symlink("a", filepath.Join(vol, "in"))
++	os.Symlink(root, filepath.Join(vol, "out"))
++	sp := New(nil)
++	p, cleanup, err := sp.PrepareSafeSubpath(Subpath{VolumePath: vol, Path: filepath.Join(vol, "in")})
++	if err != nil || cleanup != nil {
++		t.Fatalf("a link within the volume: %q %v", p, err)
++	}
++	if want, _ := filepath.EvalSymlinks(filepath.Join(vol, "a")); p != want {
++		t.Errorf("got %q, want %q", p, want)
++	}
++	if _, _, err := sp.PrepareSafeSubpath(Subpath{VolumePath: vol, Path: filepath.Join(vol, "out")}); err == nil {
++		t.Error("a link out of the volume was allowed")
++	}
++}
++
++func TestSafeMakeDir(t *testing.T) {
++	root := t.TempDir()
++	base := filepath.Join(root, "base")
++	os.MkdirAll(filepath.Join(base, "real"), 0o755)
++	os.Symlink("real", filepath.Join(base, "in"))
++	os.Symlink(root, filepath.Join(base, "out"))
++	sp := New(nil)
++	if err := sp.SafeMakeDir(filepath.Join(base, "x", "y"), base, 0o775|os.ModeSetgid); err != nil {
++		t.Fatal(err)
++	}
++	s, err := os.Stat(filepath.Join(base, "x", "y"))
++	if err != nil || !s.IsDir() || s.Mode()&(os.ModePerm|os.ModeSetgid) != 0o775|os.ModeSetgid {
++		t.Errorf("the created directory: %v %v", s.Mode(), err)
++	}
++	if err := sp.SafeMakeDir(filepath.Join(base, "in", "z"), base, 0o755); err != nil {
++		t.Errorf("through a link within base: %v", err)
++	}
++	if _, err := os.Stat(filepath.Join(base, "real", "z")); err != nil {
++		t.Error(err)
++	}
++	if err := sp.SafeMakeDir(filepath.Join(base, "out", "escaped"), base, 0o755); err == nil {
++		t.Error("a link out of base was followed")
++	}
++	if _, err := os.Stat(filepath.Join(root, "escaped")); !os.IsNotExist(err) {
++		t.Errorf("a directory was made out of base: %v", err)
++	}
++	if err := sp.SafeMakeDir(filepath.Join(root, "elsewhere"), base, 0o755); err == nil {
++		t.Error("a path outside base was made")
++	}
++}
+diff --git a/pkg/volume/util/subpath/subpath_unsupported.go b/pkg/volume/util/subpath/subpath_unsupported.go
+index 1771bc1..359f761 100644
+--- a/pkg/volume/util/subpath/subpath_unsupported.go
++++ b/pkg/volume/util/subpath/subpath_unsupported.go
+@@ -1,5 +1,5 @@
+-//go:build !linux && !windows
+-// +build !linux,!windows
++//go:build !linux && !windows && !darwin
++// +build !linux,!windows,!darwin
+ 
+ /*
+ Copyright 2014 The Kubernetes Authors.

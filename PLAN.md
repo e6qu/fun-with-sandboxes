@@ -279,6 +279,14 @@ Request`: the router writes the client's address before each
 connection's stream on a port's socket, which the container library
 strips for a container's own listeners and the engine's Go listener
 read as the start of the request. The engine's listener now strips it.
+Exec and logs then passed, and the scaled-down pods never went: the
+kubelet cleans each volume's subpaths as it unmounts the volume, and
+Kubernetes' `subpath` package fails every call on systems other than
+Linux and Windows. The kubelet patch adds a darwin implementation without
+bind mounts: a subPath reaches the runtime as its path in the volume,
+refused where a link leads out of it, cleaning removes the pod's empty
+subpath directories, and a subPath's directories are made one at a time
+without following a link that leaves the volume.
 
 MongoDB's tests failed with `No such container` as they started the
 container they had created: create took 10 s, cloning the image's root,
