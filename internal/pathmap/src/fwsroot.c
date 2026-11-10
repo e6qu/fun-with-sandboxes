@@ -4028,6 +4028,13 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
     if (s < 0) {
         return -1;
     }
+    if (type == SOCK_STREAM) {
+        // Darwin refuses options on a socket shut down both ways, where
+        // Linux sets them on a TCP connection whose client closed; a
+        // listener's connections inherit this flag, which lifts that.
+        struct so_np_extensions x = {SONPX_SETOPTSHUT, SONPX_SETOPTSHUT};
+        setsockopt(s, SOL_SOCKET, SO_NP_EXTENSIONS, &x, sizeof x);
+    }
     if (type == SOCK_DGRAM) {
         // A Unix datagram is bounded by its sender's buffer, and the router
         // sends UDP's largest with its header.
@@ -4859,13 +4866,7 @@ static void take_client(int c) {
 // the kernel reports it.
 static void accepted(int fd, int c, const struct sockaddr_storage *k, socklen_t kn, struct sockaddr *sa, socklen_t *len) {
     int e = errno;
-    if ((state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_STREAM) {
-        take_client(c);
-        // Darwin refuses options on a socket shut down both ways, where
-        // Linux sets them on a TCP connection whose client closed.
-        struct so_np_extensions x = {SONPX_SETOPTSHUT, SONPX_SETOPTSHUT};
-        setsockopt(c, SOL_SOCKET, SO_NP_EXTENSIONS, &x, sizeof x);
-    }
+    if ((state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_STREAM) take_client(c);
     set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
     if (c < NET_FDS && fd < NET_FDS) {
         net_port[c] = net_port[fd];
