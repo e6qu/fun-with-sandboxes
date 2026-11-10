@@ -4859,7 +4859,13 @@ static void take_client(int c) {
 // the kernel reports it.
 static void accepted(int fd, int c, const struct sockaddr_storage *k, socklen_t kn, struct sockaddr *sa, socklen_t *len) {
     int e = errno;
-    if ((state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_STREAM) take_client(c);
+    if ((state_of(fd) & NET_UNIX) && sock_type(fd) == SOCK_STREAM) {
+        take_client(c);
+        // Darwin refuses options on a socket shut down both ways, where
+        // Linux sets them on a TCP connection whose client closed.
+        struct so_np_extensions x = {SONPX_SETOPTSHUT, SONPX_SETOPTSHUT};
+        setsockopt(c, SOL_SOCKET, SO_NP_EXTENSIONS, &x, sizeof x);
+    }
     set_state(c, state_of(fd) & (NET_V6 | NET_UNIX));
     if (c < NET_FDS && fd < NET_FDS) {
         net_port[c] = net_port[fd];
@@ -4903,6 +4909,15 @@ static int fws_getpeername(int fd, struct sockaddr *sa, socklen_t *len) {
     struct sockaddr_storage k;
     socklen_t kn = sizeof k;
     int r = getpeername(fd, (struct sockaddr *)&k, &kn);
+    if (r == -1 && errno == EINVAL && (state_of(fd) & (NET_UNIX | NET_HELD)) == NET_UNIX) {
+        // Darwin refuses the peer of a socket shut down both ways, where
+        // Linux names a TCP connection's client after it closed: the
+        // library names the client the router recorded.
+        memset(&k, 0, sizeof k);
+        k.ss_family = AF_UNIX;
+        kn = sizeof k;
+        r = 0;
+    }
     if (r == 0) present(fd, &k, kn, sa, len, 0);
     return r;
 }

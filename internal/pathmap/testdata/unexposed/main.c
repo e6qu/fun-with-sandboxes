@@ -160,6 +160,14 @@ int main(int argc, char **argv) {
         char pb[8];
         ssize_t pr = pa < 0 ? -1 : read(pa, pb, sizeof pb);
         printf("probe=%s %s\n", pa < 0 ? strerror(pe) : pr == 0 ? "closed" : "open", pa < 0 ? "-" : addr(&s));
+        // A program still names a closed connection's client and sets its
+        // options, as on Linux.
+        struct sockaddr_storage pp;
+        socklen_t pn = sizeof pp;
+        int pg = pa < 0 ? -1 : getpeername(pa, (void *)&pp, &pn), pge = errno;
+        struct timeval tv = {5, 0};
+        int ps = pa < 0 ? -1 : setsockopt(pa, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv), pse = errno;
+        printf("probe-peer=%s %s\n", pg == 0 ? addr(&pp) : strerror(pge), ps == 0 ? "options" : strerror(pse));
         if (pa >= 0) close(pa);
     }
     // A bind to IPv4's wildcard address on the port the IPv6 listener holds

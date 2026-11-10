@@ -205,6 +205,13 @@ to one socket file, so the second bind found the file taken and probed
 it. The library now refuses that bind with `EADDRINUSE`, as Linux does,
 without a probe, when a socket of the process holds the file; it probes
 only a file no socket of the process holds.
+ClickHouse still met connections whose client had already closed, as a
+check of whether its port listens leaves: Darwin fails `getpeername` and
+`setsockopt` on a socket shut down both ways, where Linux names the
+closed connection's client and sets its options. The library names the
+client the router recorded, and sets `SO_NP_EXTENSIONS`'s
+`SONPX_SETOPTSHUT` on each connection it accepts, which keeps options
+settable after a shutdown.
 
 A port a nested engine published inside a privileged container answered
 `400 Bad Request`: the shim's proxy from the container's port directory to
