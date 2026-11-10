@@ -21,7 +21,7 @@ import (
 
 // openStreams serves exec, attach and port-forward streams, whose URLs
 // Exec, Attach and PortForward hand the kubelet, as containerd's stream
-// server does.
+// server does. The caller holds streamsMu.
 func (s *Service) openStreams() error {
 	l, addr, err := s.e.ListenStreams()
 	if err != nil {
@@ -41,9 +41,19 @@ func (s *Service) openStreams() error {
 	return nil
 }
 
+// streamServer is the stream server, which it opens on the first call: an
+// engine nested in a privileged container can listen only once that
+// container runs.
 func (s *Service) streamServer() (streaming.Server, error) {
+	s.streamsMu.Lock()
+	defer s.streamsMu.Unlock()
+	if s.streamsClosed {
+		return nil, status.Error(codes.Unavailable, "the runtime serves no streams: it is shutting down")
+	}
 	if s.streams == nil {
-		return nil, status.Errorf(codes.Unavailable, "the runtime serves no streams: %v", s.streamsErr)
+		if err := s.openStreams(); err != nil {
+			return nil, status.Errorf(codes.Unavailable, "the runtime serves no streams: %v", err)
+		}
 	}
 	return s.streams, nil
 }

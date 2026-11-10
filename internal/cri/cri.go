@@ -54,9 +54,13 @@ type Service struct {
 	sandboxImage string
 	grpc         *grpc.Server
 
-	streams    streaming.Server
-	streamHTTP *http.Server
-	streamsErr error
+	// streams serves exec, attach and port-forward, from the first call
+	// that needs it: a nested engine opens before its privileged
+	// container's shim makes the directory the listener binds in.
+	streamsMu     sync.Mutex
+	streams       streaming.Server
+	streamHTTP    *http.Server
+	streamsClosed bool
 
 	mu   sync.Mutex
 	logs map[string]*logCopy
@@ -74,7 +78,6 @@ func New(e *engine.Engine, sandboxImage string) *Service {
 		rootUsage: map[string]image.Usage{}}
 	runtimeapi.RegisterRuntimeServiceServer(s.grpc, s)
 	runtimeapi.RegisterImageServiceServer(s.grpc, s)
-	s.streamsErr = s.openStreams()
 	s.resumeLogs()
 	return s
 }
@@ -90,9 +93,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Close stops serving streams and copying the containers' logs.
 func (s *Service) Close() {
+	s.streamsMu.Lock()
+	s.streamsClosed = true
 	if s.streamHTTP != nil {
 		s.streamHTTP.Close()
 	}
+	s.streamsMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, l := range s.logs {

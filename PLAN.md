@@ -268,6 +268,12 @@ not help: the kubelet then gives each pod the nameserver `127.0.0.1` and
 the search domain `.`, to disable lookups through Docker's default. The
 test's kubelet reads `/dev/null` as its `resolv.conf`, which passes pods
 no nameservers, search domains or options.
+The pods then ran, and `kubectl exec` failed: the nested engine's CRI
+service bound its stream listener in the privileged container's port
+directory as the engine opened, before the container's shim made that
+directory, which the shim also clears as it starts. The service now opens
+the listener on the first exec, attach or port-forward, once the
+container runs.
 
 MongoDB's tests failed with `No such container` as they started the
 container they had created: create took 10 s, cloning the image's root,
