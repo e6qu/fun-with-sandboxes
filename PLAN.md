@@ -254,6 +254,16 @@ stalls for minutes after loading its bake definitions, while `docker build`
 of the same Dockerfile takes seconds; `TestComposeWatch` takes 220 to 300
 seconds against a five-minute limit. A command that outlives its limit now
 prints every Go process's goroutines, to show what bake waits on.
+The engine's log shows every BuildKit session failing its health check
+with `only one connection allowed` and ending 10 s after it began, and
+the test's `POST /grpc` taking 3 min 39 s. The sessions are no cause:
+buildx opens two per build and closes the first at once, and BuildKit
+notices a closed session at its second failed health check, 10 s on, as
+it does under dockerd; a build of 15 s against the engine on Linux kept
+its second session for 25 s and exported through it. A test of the
+engine's HTTP server with BuildKit's session manager syncs a 64 MiB build
+context through a session and checks its health after. The stall is
+inside the solve.
 
 Open bug: the end-to-end suite takes about 45 minutes, and a container
 runs slower than the same program run natively. The engine's goal is

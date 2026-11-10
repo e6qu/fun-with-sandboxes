@@ -92,14 +92,17 @@ func startBuildKit(e *engine.Engine) (*buildkit.Service, error) {
 // gRPC clients speak to a Unix socket.
 func apiServer(e *engine.Engine, bk api.BuildKit, debug bool) (*http.Server, *api.Server) {
 	h := api.New(e, bk)
-	var handler http.Handler = h
+	return newHTTPServer(h, debug), h
+}
+
+func newHTTPServer(h http.Handler, debug bool) *http.Server {
 	if debug {
-		handler = logRequests(h)
+		h = logRequests(h)
 	}
-	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 30 * time.Second, Protocols: new(http.Protocols)}
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second, Protocols: new(http.Protocols)}
 	srv.Protocols.SetHTTP1(true)
 	srv.Protocols.SetUnencryptedHTTP2(true)
-	return srv, h
+	return srv
 }
 
 // nestedAPI serves the API of the engine nested in a privileged container
