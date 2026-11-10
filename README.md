@@ -46,7 +46,11 @@ stops, for an upgrade say, and the next `fwsd` takes them back.
 Images are macOS-native (`darwin/arm64` or `darwin/amd64`). Linux images
 cannot run without a VM. `scripts/build-images.sh` builds the catalog from
 Nix packages into archives for `docker load`, and `scripts/publish-images.sh`
-pushes them to a registry the engine can pull from. MySQL and MariaDB are
+pushes them to a registry the engine can pull from. CI publishes the
+images each push to `main` passes its tests with to GitHub's container
+registry, as `ghcr.io/e6qu/fws-<name>:<tag>` for `fws/<name>:<tag>`
+(`docker pull ghcr.io/e6qu/fws-postgres:16`), built for `darwin/arm64`.
+MySQL and MariaDB are
 built from source, with the compilation comment their vendors' builds
 carry (`images/servers.nix`), so the first build compiles them, as it does
 Consul, which no binary cache holds, and Kubernetes, whose nixpkgs package

@@ -398,3 +398,34 @@ jobs:
           # until it loses its connection, and the job's log with it.
           perl -e 'alarm 120; exec @ARGV' log show --last 20m --style compact --predicate 'sender == "Sandbox"' |
             sed -n 's/.*Sandbox: \([^(]*\)([0-9]*) \(deny.*\)/\1 \2/p' | sort | uniq -c | sort -rn
+
+  # The images main's tests passed, on GitHub's container registry as
+  # ghcr.io/<owner>/fws-<name>:<tag>, which the engine pulls from.
+  publish:
+    needs: [images, e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/fws-images
+          key: ${{ needs.images.outputs.key }}
+          fail-on-cache-miss: true
+      - name: log in to ghcr.io
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
+          echo "$TOKEN" | "$RUNNER_TEMP/bin/crane" auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: publish images to ghcr.io
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          scripts/publish-images.sh ~/fws-images "ghcr.io/$owner"
