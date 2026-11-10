@@ -1,7 +1,8 @@
 // init runs as a container's main process does, with its own host pid as
 // FWS_INIT, and reports how it and a child of its see pid 1: its pid, its
 // parent's, the child's parent, a signal to pid 1 from the child, and the
-// process table's entry for pid 1.
+// process table's entry for pid 1, and whether it names its thread.
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,5 +32,9 @@ int main(int argc, char **argv) {
     size_t len = sizeof kp;
     int found = sysctl(mib, 4, &kp, &len, NULL, 0) == 0 && len == sizeof kp;
     printf("table1=%d\n", found ? kp.kp_proc.p_pid : -1);
+    int named = pthread_setname_np("fws-init");
+    char name[64] = "";
+    pthread_getname_np(pthread_self(), name, sizeof name);
+    printf("thread-name=%d %s\n", named, name);
     return 0;
 }

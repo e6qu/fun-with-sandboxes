@@ -473,7 +473,7 @@ func TestMainProcessIsPidOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init: %v\n%s", err, out)
 	}
-	if want := "pid=1 ppid=0\nchild-ppid=1 kill1=0\ntable1=1\n"; string(out) != want {
+	if want := "pid=1 ppid=0\nchild-ppid=1 kill1=0\ntable1=1\nthread-name=0 fws-init\n"; string(out) != want {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}
 }

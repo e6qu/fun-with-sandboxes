@@ -2119,8 +2119,22 @@ static int ns_kill(pid_t hp, int sig) {
 static pid_t to_host(pid_t p) { return init_pid && p == 1 ? init_pid : p; }
 static pid_t to_container(pid_t p) { return init_pid && p == init_pid ? 1 : p; }
 
-static pid_t fws_getpid(void) { return to_container(getpid()); }
+// host_pid makes getpid in this thread return the host pid, for the
+// libSystem functions that pass it to the kernel.
+static __thread int host_pid;
+
+static pid_t fws_getpid(void) { return host_pid ? getpid() : to_container(getpid()); }
 INTERPOSE(fws_getpid, getpid);
+
+// pthread_setname_np names the thread through proc_info of getpid's pid,
+// which in the main process is launchd's.
+static int fws_pthread_setname_np(const char *name) {
+    host_pid = 1;
+    int r = pthread_setname_np(name);
+    host_pid = 0;
+    return r;
+}
+INTERPOSE(fws_pthread_setname_np, pthread_setname_np);
 
 // Init's parent is outside the container: 0, as in a PID namespace.
 static pid_t fws_getppid(void) { return init_pid && getpid() == init_pid ? 0 : to_container(getppid()); }

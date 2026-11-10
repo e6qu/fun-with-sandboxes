@@ -47,3 +47,36 @@ func TestSnapshotterClones(t *testing.T) {
 		t.Fatalf("removed snapshot's directory survived: %v", err)
 	}
 }
+
+// A snapshot's usage is what it holds that its parent does not.
+func TestSnapshotterUsage(t *testing.T) {
+	ctx := context.Background()
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	sn, err := newSnapshotter(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sn.Close()
+	ms, err := sn.Prepare(ctx, "base-active", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, ms[0].Source, "big", string(make([]byte, 4096)))
+	if err := sn.Commit(ctx, "base", "base-active"); err != nil {
+		t.Fatal(err)
+	}
+	child, err := sn.Prepare(ctx, "child-active", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, child[0].Source, "small", "0123456789")
+	if err := sn.Commit(ctx, "child", "child-active"); err != nil {
+		t.Fatal(err)
+	}
+	if u, err := sn.Usage(ctx, "child"); err != nil || u.Size != 10 || u.Inodes != 1 {
+		t.Errorf("the child's usage: %+v, %v; want its one file of 10 bytes", u, err)
+	}
+	if u, err := sn.Usage(ctx, "base"); err != nil || u.Size < 4096 {
+		t.Errorf("the base's usage: %+v, %v; want its file of 4096 bytes", u, err)
+	}
+}

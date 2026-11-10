@@ -213,9 +213,15 @@ client the router recorded, and sets `SO_NP_EXTENSIONS`'s
 `SONPX_SETOPTSHUT` on every listener, which its connections inherit and
 which keeps their options settable after a shutdown: the connections a
 published port's TCP listener takes, as well as the library's own. The
-crash report of the server that ended with 134 showed the connection
-thread's exception reach the handler that ends the process, which
-ClickHouse replaces once it has started listening.
+crash reports, which CI now summarises whole, showed the cause of the
+134 that remained: every thread of ClickHouse's real server threw as it
+started, its pool's 512 workers among them. ClickHouse names each thread
+and throws when it cannot, and libpthread's `pthread_setname_np` names
+the calling thread through `proc_info` of the pid `getpid` returns, which
+the library makes 1 in the container's main process: the kernel refused
+to name a thread of launchd. The init server, a child of the entrypoint,
+named its threads. The library now has `getpid` return the host pid in
+the thread that names itself.
 
 A port a nested engine published inside a privileged container answered
 `400 Bad Request`: the shim's proxy from the container's port directory to
@@ -255,6 +261,10 @@ the engine wrote `/etc/hosts` and `/etc/hostname` and no `resolv.conf`,
 where Docker writes all three. The engine now writes it as Docker does for
 its default bridge: the host's, without the nameservers on loopback, with
 Google's public ones when none remain.
+The kubelet then passed those nameservers to each pod's sandbox, which
+the engine refuses, as a container reaches no DNS server of its own and
+resolves names through the host's resolver; the test's kubelet runs with
+an empty `--resolv-conf`, which passes pods none.
 
 MongoDB's tests failed with `No such container` as they started the
 container they had created: create took 10 s, cloning the image's root,
@@ -288,7 +298,13 @@ it does under dockerd; a build of 15 s against the engine on Linux kept
 its second session for 25 s and exported through it. A test of the
 engine's HTTP server with BuildKit's session manager syncs a 64 MiB build
 context through a session and checks its health after. The stall is
-inside the solve.
+inside the solve. A run that went over the limit showed where: the
+`FROM fws/python:3.14` step took 289 s to unpack the image's layers,
+dozens of them as Nix builds it, adding 6 to 7 s per layer however small:
+the snapshotter measured each snapshot as it committed, walking every
+file of a clone of all the layers below. It now measures what a snapshot
+holds that its parent does not, when BuildKit first asks, as BuildKit
+expects of a snapshotter and containerd defines a snapshot's usage.
 
 Open bug: the end-to-end suite takes about 45 minutes, and a container
 runs slower than the same program run natively. The engine's goal is
