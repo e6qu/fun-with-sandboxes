@@ -63,6 +63,10 @@ jobs:
       # How long a container's main process takes to start, part by part.
       - name: container start
         run: go test -run '^$' -bench . -benchtime 20x ./internal/runtime
+      # How long Seatbelt takes to compile a container's profile, which each
+      # of its processes pays.
+      - name: profile compile
+        run: go test -run '^$' -bench . -benchtime 50x ./internal/seatbelt
 
   # Nix builds MySQL and MariaDB from source, with their vendors'
   # compilation comment (images/servers.nix), which no binary cache holds.
