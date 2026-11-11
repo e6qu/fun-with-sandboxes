@@ -83,6 +83,7 @@ type Service struct {
 type ServicePort struct {
 	Port      int      `json:"port"`
 	Protocol  string   `json:"protocol"`
+	NodePort  int      `json:"nodePort,omitempty"`
 	Endpoints []string `json:"endpoints"`
 }
 
@@ -90,12 +91,14 @@ type ServicePort struct {
 type k8sService struct {
 	Metadata struct{ Name, Namespace string } `json:"metadata"`
 	Spec     struct {
+		Type       string   `json:"type"`
 		ClusterIP  string   `json:"clusterIP"`
 		ClusterIPs []string `json:"clusterIPs"`
 		Ports      []struct {
 			Name     string `json:"name"`
 			Port     int    `json:"port"`
 			Protocol string `json:"protocol"`
+			NodePort int    `json:"nodePort"`
 		} `json:"ports"`
 	} `json:"spec"`
 }
@@ -120,9 +123,10 @@ type endpointSlice struct {
 }
 
 // build turns the cluster's Services and EndpointSlices into the engine's
-// services: each IPv4 cluster IP, with its TCP ports and, behind each, the
-// ready IPv4 endpoints of the slices that name it, at the slice port of
-// the same name. Headless Services have no cluster IP to serve.
+// services: each IPv4 cluster IP, with its TCP ports, their node ports
+// where the Service has them, and, behind each, the ready IPv4 endpoints
+// of the slices that name it, at the slice port of the same name.
+// Headless Services have no cluster IP to serve.
 func build(svcs []k8sService, slices []endpointSlice) []Service {
 	type key struct{ ns, name string }
 	byService := map[key][]endpointSlice{}
@@ -156,6 +160,11 @@ func build(svcs []k8sService, slices []endpointSlice) []Service {
 				continue
 			}
 			sp := ServicePort{Port: p.Port, Protocol: "TCP", Endpoints: []string{}}
+			// A NodePort Service, and a LoadBalancer one, which is one
+			// too, answers on the node's port as well.
+			if k.Spec.Type == "NodePort" || k.Spec.Type == "LoadBalancer" {
+				sp.NodePort = p.NodePort
+			}
 			for _, s := range byService[key{svc.Namespace, svc.Name}] {
 				target := 0
 				for _, q := range s.Ports {

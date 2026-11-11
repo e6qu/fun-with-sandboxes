@@ -155,8 +155,9 @@ dependency order:
    another at their addresses; `fws-kube-proxy` keeps the engine's
    services on that network to the cluster's Services, which pods reach
    at their cluster IPs and DNS names through the container library's
-   resolver, so cluster names need no CoreDNS. Left: NodePorts, the
-   `kubernetes` Service, and pods on other nodes.
+   resolver, so cluster names need no CoreDNS; NodePorts answer at the
+   node container's port, and the `kubernetes` Service reaches the API
+   server on the node container's networks. Left: pods on other nodes.
 6. **`fws/kind-node`**: the node image kind expects, at its paths
    (`/kind/version`, the kubeadm configuration kind writes, the manifests
    directory), with kubeadm's phases run against the components above in

@@ -30,8 +30,13 @@ type Service struct {
 // ServicePort is a TCP port of a service and the endpoints behind it: the
 // addresses of members on the service's network, and their ports.
 type ServicePort struct {
-	Port      int              `json:"port"`
-	Protocol  string           `json:"protocol"`
+	Port     int    `json:"port"`
+	Protocol string `json:"protocol"`
+	// NodePort, when set, is the port of the engine's node where the
+	// service port answers too, as a NodePort Service's does: for an
+	// engine nested in a privileged container, that container's port,
+	// which the members of its networks reach.
+	NodePort  int              `json:"nodePort,omitempty"`
 	Endpoints []netip.AddrPort `json:"endpoints"`
 }
 
@@ -54,6 +59,16 @@ type serviceListener struct {
 	mu  sync.Mutex
 	eps []netip.AddrPort
 	n   int
+	// node listens on the node's port nodePort, where one is set.
+	node     net.Listener
+	nodePort int
+}
+
+func (sl *serviceListener) close() {
+	sl.l.Close()
+	if sl.node != nil {
+		sl.node.Close()
+	}
 }
 
 // services holds the services of each network.
@@ -72,8 +87,8 @@ func checkService(s Service) error {
 		return invalid("service %s/%s: its cluster IP %v is not an IPv4 address", s.Namespace, s.Name, s.ClusterIP)
 	}
 	for _, p := range s.Ports {
-		if p.Port < 1 || p.Port > 65535 {
-			return invalid("service %s/%s: port %d is out of range", s.Namespace, s.Name, p.Port)
+		if p.Port < 1 || p.Port > 65535 || p.NodePort < 0 || p.NodePort > 65535 {
+			return invalid("service %s/%s: port %d (node port %d) is out of range", s.Namespace, s.Name, p.Port, p.NodePort)
 		}
 		if p.Protocol != "" && !strings.EqualFold(p.Protocol, "tcp") {
 			return unsupported("service %s/%s: port %d/%s: only TCP ports are supported", s.Namespace, s.Name, p.Port, p.Protocol)
@@ -126,7 +141,22 @@ func (e *Engine) SetServices(network string, svcs []Service) error {
 				}
 				sl = &serviceListener{l: l}
 				sv.listeners[k] = sl
-				go e.serveService(network, sl)
+				go e.serveService(network, sl, l)
+			}
+			if sl.nodePort != p.NodePort {
+				if sl.node != nil {
+					sl.node.Close()
+					sl.node, sl.nodePort = nil, 0
+				}
+				if p.NodePort != 0 {
+					nl, err := e.listenOnNode(p.NodePort)
+					if err != nil {
+						sv.mu.Unlock()
+						return fmt.Errorf("service %s/%s: node port %d: %w", s.Namespace, s.Name, p.NodePort, err)
+					}
+					sl.node, sl.nodePort = nl, p.NodePort
+					go e.serveService(network, sl, nl)
+				}
 			}
 			sl.mu.Lock()
 			sl.svc, sl.eps = s, append([]netip.AddrPort(nil), p.Endpoints...)
@@ -135,7 +165,7 @@ func (e *Engine) SetServices(network string, svcs []Service) error {
 	}
 	for k, sl := range sv.listeners {
 		if k.network == network && !want[k] {
-			sl.l.Close()
+			sl.close()
 			delete(sv.listeners, k)
 		}
 	}
@@ -171,15 +201,15 @@ func (e *Engine) closeServices() {
 	e.svcs.mu.Lock()
 	defer e.svcs.mu.Unlock()
 	for k, sl := range e.svcs.listeners {
-		sl.l.Close()
+		sl.close()
 		delete(e.svcs.listeners, k)
 	}
 	e.svcs.byNetwork = nil
 }
 
-func (e *Engine) serveService(network string, sl *serviceListener) {
+func (e *Engine) serveService(network string, sl *serviceListener, l net.Listener) {
 	for {
-		c, err := sl.l.Accept()
+		c, err := l.Accept()
 		if err != nil {
 			return
 		}
@@ -228,7 +258,9 @@ func (e *Engine) dialEndpoint(network string, sl *serviceListener) (net.Conn, er
 }
 
 // dialMember connects to port ep.Port of the member at address ep.Addr on
-// network: at its host port, or through its router.
+// network: at its host port, or through its router. An engine nested in
+// a privileged container reaches an address none of its members holds on
+// that container's networks, as a cluster's API server is reached.
 func (e *Engine) dialMember(network string, ep netip.AddrPort) (net.Conn, error) {
 	e.mu.Lock()
 	var hp, rp int
@@ -244,6 +276,8 @@ func (e *Engine) dialMember(network string, ep netip.AddrPort) (net.Conn, error)
 	}
 	e.mu.Unlock()
 	switch {
+	case !found && e.cfg.Nested != nil && e.cfg.Nested.Dial != nil:
+		return e.cfg.Nested.Dial(ep)
 	case !found:
 		return nil, fmt.Errorf("no running member of %s is at %s", network, ep.Addr())
 	case hp != 0:

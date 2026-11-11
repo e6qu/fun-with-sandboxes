@@ -12,9 +12,9 @@ func TestBuild(t *testing.T) {
 	var svcs struct{ Items []k8sService }
 	var slices struct{ Items []endpointSlice }
 	if err := json.Unmarshal([]byte(`{"items":[
-	  {"metadata":{"name":"web","namespace":"default"},"spec":{"clusterIP":"10.96.0.10","ports":[{"name":"http","port":80,"protocol":"TCP"},{"name":"dns","port":53,"protocol":"UDP"}]}},
+	  {"metadata":{"name":"web","namespace":"default"},"spec":{"type":"NodePort","clusterIP":"10.96.0.10","ports":[{"name":"http","port":80,"protocol":"TCP","nodePort":30080},{"name":"dns","port":53,"protocol":"UDP"}]}},
 	  {"metadata":{"name":"headless","namespace":"default"},"spec":{"clusterIP":"None","ports":[{"port":80}]}},
-	  {"metadata":{"name":"api","namespace":"apps"},"spec":{"clusterIPs":["fd00::5","10.96.0.20"],"ports":[{"port":8443}]}}
+	  {"metadata":{"name":"api","namespace":"apps"},"spec":{"type":"ClusterIP","clusterIPs":["fd00::5","10.96.0.20"],"ports":[{"port":8443,"nodePort":31000}]}}
 	]}`), &svcs); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestBuild(t *testing.T) {
 	got := build(svcs.Items, slices.Items)
 	want := []Service{
 		{Name: "api", Namespace: "apps", ClusterIP: "10.96.0.20", Ports: []ServicePort{{Port: 8443, Protocol: "TCP", Endpoints: []string{"10.244.0.9:9443"}}}},
-		{Name: "web", Namespace: "default", ClusterIP: "10.96.0.10", Ports: []ServicePort{{Port: 80, Protocol: "TCP", Endpoints: []string{"10.244.0.5:8080", "10.244.0.6:8080"}}}},
+		{Name: "web", Namespace: "default", ClusterIP: "10.96.0.10", Ports: []ServicePort{{Port: 80, Protocol: "TCP", NodePort: 30080, Endpoints: []string{"10.244.0.5:8080", "10.244.0.6:8080"}}}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("build:\n%+v\nwant:\n%+v", got, want)

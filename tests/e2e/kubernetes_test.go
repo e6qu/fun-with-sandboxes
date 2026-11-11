@@ -253,7 +253,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 	sock := strings.TrimSpace(mustDocker(t, "exec", "e2e-kubelet", "/bin/sh", "-c", "echo $FWS_ENGINE"))
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	save := exec.CommandContext(ctx, "docker", "save", "fws/pause:3.10.1", "fws/nginx:1", "fws/toolbox:1")
+	save := exec.CommandContext(ctx, "docker", "save", "fws/pause:3.10.1", "fws/nginx:1", "fws/toolbox:1", "fws/kubectl:1.35")
 	load := exec.CommandContext(ctx, "docker", "-H", "unix://"+sock, "load")
 	pipe, err := save.StdoutPipe()
 	if err != nil {
@@ -313,6 +313,31 @@ func TestKubernetesControlPlane(t *testing.T) {
 		} else if out := mustKubectl("logs", pod); out != "200 OK\n" {
 			t.Errorf("a pod fetching the Service at %s: %q", url, out)
 		}
+	}
+	// A NodePort Service answers on the node: a container on the
+	// cluster's network reaches it at node1's port, as a client outside a
+	// kind cluster reaches a node's.
+	mustKubectl("expose", "deployment/web", "--type=NodePort", "--port=80", "--name=web-nodeport")
+	nodePort := mustKubectl("get", "service/web-nodeport", "-o", "jsonpath={.spec.ports[0].nodePort}")
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(2 * time.Second) {
+		out, err := docker(t, "run", "--rm", "--network", network, "fws/toolbox:1", "fetch", "http://node1:"+nodePort+"/")
+		if err == nil && out == "200 OK\n" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("node1's node port %s: %q, %v", nodePort, out, err)
+			break
+		}
+	}
+	// The kubernetes Service reaches the API server, beyond the pod
+	// network: an in-cluster client, kubectl with the pod's service
+	// account, asks for its health.
+	mustKubectl("run", "in-cluster", "--image=fws/kubectl:1.35", "--restart=OnFailure", "--command", "--", "kubectl", "get", "--raw", "/healthz")
+	if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/in-cluster"); err != nil {
+		out, _ := kubectl("logs", "in-cluster")
+		t.Errorf("kubectl in a pod, through the kubernetes Service: %v\n%s", err, out)
+	} else if out := mustKubectl("logs", "in-cluster"); out != "ok" && out != "ok\n" {
+		t.Errorf("kubectl in a pod, through the kubernetes Service: %q", out)
 	}
 	// The API server reads a pod's log from the kubelet, which reads the
 	// file the runtime writes.

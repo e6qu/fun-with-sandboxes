@@ -97,6 +97,36 @@ func TestServices(t *testing.T) {
 		t.Errorf("with one endpoint gone: %q", got)
 	}
 
+	// A node port answers on the node: the host's loopback, for an engine
+	// that is not nested.
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodePort := free.Addr().(*net.TCPAddr).Port
+	free.Close()
+	svc.Ports[0].NodePort = nodePort
+	if err := e.SetServices("pods", []Service{svc}); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := client.Get("http://127.0.0.1:" + strconv.Itoa(nodePort) + "/"); err != nil {
+		t.Errorf("the node port: %v", err)
+	} else {
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if string(b) != "b" {
+			t.Errorf("the node port answered %q", b)
+		}
+	}
+	svc.Ports[0].NodePort = 0
+	if err := e.SetServices("pods", []Service{svc}); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(nodePort)); err == nil {
+		c.Close()
+		t.Error("a node port the service no longer has still listens")
+	}
+
 	if err := e.SetServices("pods", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -119,5 +149,44 @@ func TestServices(t *testing.T) {
 	}
 	if err := e.SetServices("missing", nil); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("a missing network: %v", err)
+	}
+}
+
+// A nested engine reaches an endpoint none of its members holds through
+// the engine it is nested in, as a cluster's API server is reached.
+func TestServiceEndpointsBeyondTheNetwork(t *testing.T) {
+	a, err := alloc.Open(alloc.Config{Root: t.TempDir(), PortBase: 30000, PortLimit: 31000, BlockSize: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "api") }))
+	defer srv.Close()
+	asked := make(chan netip.AddrPort, 1)
+	e := &Engine{alloc: a, containers: map[string]*Container{}, networks: map[string]*Network{
+		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: "10.244.0.0/24", Gateway: "10.244.0.1"}},
+	}, cfg: Config{Nested: &Nested{Dial: func(ap netip.AddrPort) (net.Conn, error) {
+		asked <- ap
+		return net.Dial("tcp", srv.Listener.Addr().String())
+	}}}}
+	defer e.closeServices()
+	api := netip.MustParseAddrPort("172.30.7.3:6443")
+	if err := e.SetServices("pods", []Service{{Name: "kubernetes", Namespace: "default", ClusterIP: netip.MustParseAddr("10.96.0.1"),
+		Ports: []ServicePort{{Port: 443, Endpoints: []netip.AddrPort{api}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	var hp int
+	for k, sl := range e.svcs.listeners {
+		if k.name == "kubernetes" {
+			hp = sl.l.Addr().(*net.TCPAddr).Port
+		}
+	}
+	res, err := http.Get("http://127.0.0.1:" + strconv.Itoa(hp) + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if got := <-asked; string(b) != "api" || got != api {
+		t.Errorf("got %q through %v, want the endpoint %v", b, got, api)
 	}
 }

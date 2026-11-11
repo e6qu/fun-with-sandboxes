@@ -227,7 +227,10 @@ network to match (`PUT /fws/networks/fws-pods/services`). A pod reaches a
 Service at its cluster IP and as `name`, `name.namespace`,
 `name.namespace.svc` and `name.namespace.svc.cluster.local`, and the
 engine carries each connection to the Service's ready endpoints by turns,
-as kube-proxy's userspace mode did. The engine writes each
+as kube-proxy's userspace mode did: a pod's, or one on the node
+container's networks, as the API server behind the `kubernetes` Service
+is. A NodePort Service answers at the node container's port too, where
+the members of its networks reach it. The engine writes each
 container's output to the log file the kubelet names, in CRI's format,
 and serves exec, attach and port-forward streams as containerd does: on a
 loopback port of the host, or for an engine nested in a privileged

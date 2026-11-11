@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -39,6 +40,11 @@ type Nested struct {
 	// container's port p listens: the host port of that port, or, for a
 	// port without one, the directory of the container's Unix sockets.
 	Port func(p int) (hostPort int, dir string, err error)
+	// Dial connects to a port of a member the privileged container
+	// shares a network with, at its address on that network: how a
+	// nested engine's service reaches an endpoint beyond its own
+	// members, such as a cluster's API server.
+	Dial func(netip.AddrPort) (net.Conn, error)
 }
 
 // EngineVar gives a privileged container's processes the socket of its
@@ -117,6 +123,7 @@ func (e *Engine) openNested(c *Container) error {
 			Library: lib, RunDir: runDir, StateRoot: e.stateRoot(),
 			Path: func(p string) (string, error) { return e.pathIn(c, p) },
 			Port: func(p int) (int, string, error) { return e.portIn(c, p) },
+			Dial: func(ap netip.AddrPort) (net.Conn, error) { return e.dialFrom(c, ap) },
 		},
 	})
 	if err != nil {
@@ -228,30 +235,78 @@ const StreamPort = 10010
 // port, or for an engine nested in a privileged container, that
 // container's StreamPort on its loopback.
 func (e *Engine) ListenStreams() (net.Listener, string, error) {
-	n := e.cfg.Nested
-	if n == nil {
+	if e.cfg.Nested == nil {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return nil, "", err
 		}
 		return l, l.Addr().String(), nil
 	}
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(StreamPort))
-	hp, dir, err := n.Port(StreamPort)
+	l, err := e.listenOnNode(StreamPort)
+	return l, net.JoinHostPort("127.0.0.1", strconv.Itoa(StreamPort)), err
+}
+
+// listenOnNode listens on port p of the engine's node: for an engine
+// nested in a privileged container, that container's port p, where the
+// members of its networks reach it; else port p of the host's loopback.
+func (e *Engine) listenOnNode(p int) (net.Listener, error) {
+	n := e.cfg.Nested
+	if n == nil {
+		return net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
+	}
+	hp, dir, err := n.Port(p)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if dir == "" {
-		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
-		return l, addr, err
+		return net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
 	}
-	path := router.SocketPath(dir, StreamPort)
+	path := router.SocketPath(dir, p)
 	os.Remove(path)
 	l, err := net.Listen("unix", path)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	// The router writes each client's address before its stream, which
 	// the container library strips for a container's own listeners.
-	return router.Listener(l), addr, nil
+	return router.Listener(l), nil
+}
+
+// dialFrom connects to port ap.Port of the member at ap.Addr that
+// container c shares a network with: at its host port, or through its
+// router.
+func (e *Engine) dialFrom(c *Container, ap netip.AddrPort) (net.Conn, error) {
+	owner, err := e.netOwner(c)
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	var hp, rp int
+	found := false
+	for _, o := range e.containers {
+		if !o.isRunning() || !onNetwork(o) {
+			continue
+		}
+		for n, es := range o.rec.Networks {
+			if n == "none" || n == "host" || owner.rec.Networks[n] == nil || es == nil {
+				continue
+			}
+			if es.IPAddress == ap.Addr() || (o.rec.Address == ap.Addr().String()) {
+				hp, rp, found = o.rec.Ports[fmt.Sprintf("%d/tcp", ap.Port())], o.rec.RouterPort, true
+			}
+		}
+		if found {
+			break
+		}
+	}
+	e.mu.Unlock()
+	switch {
+	case !found:
+		return nil, fmt.Errorf("no running member at %s shares a network with %s", ap.Addr(), c.rec.Name)
+	case hp != 0:
+		return net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
+	case rp != 0:
+		return router.Dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(rp)), int(ap.Port()))
+	}
+	return nil, fmt.Errorf("%s does not listen on port %d", ap.Addr(), ap.Port())
 }
