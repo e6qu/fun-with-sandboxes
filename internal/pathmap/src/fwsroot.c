@@ -4049,9 +4049,9 @@ static int host_held(const struct sockaddr *sa, unsigned short port) {
     return r == -1 && e == EADDRINUSE;
 }
 
-// held reports whether a socket of this process other than fd holds the
+// holder returns the socket of this process other than fd that holds the
 // Unix socket file u names, as one bound to IPv6's wildcard address holds a
-// port a bind to IPv4's then asks for.
+// port a bind to IPv4's then asks for, or -1 for none.
 static int holder(int fd, unsigned short port, const struct sockaddr_un *u) {
     for (int i = 0; i < NET_FDS; i++) {
         if (i == fd || !(net_state[i] & NET_HELD) || net_port[i] != port) continue;
@@ -4064,8 +4064,6 @@ static int holder(int fd, unsigned short port, const struct sockaddr_un *u) {
     }
     return -1;
 }
-
-static int held(int fd, unsigned short port, const struct sockaddr_un *u) { return holder(fd, port, u) != -1; }
 
 // listen_unix puts a Unix socket of fd's type in its place and binds it
 // where the library listens on port. With reclaim set, it takes over a
