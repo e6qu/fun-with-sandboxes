@@ -4050,15 +4050,13 @@ static int host_held(const struct sockaddr *sa, unsigned short port) {
 }
 
 // holder returns the socket of this process other than fd that holds the
-// Unix socket file u names, as one bound to IPv6's wildcard address holds a
-// port a bind to IPv4's then asks for, or -1 for none.
-static int holder(int fd, unsigned short port, const struct sockaddr_un *u) {
+// Unix socket file fd's port and type name, as one bound to IPv6's wildcard
+// address holds a port a bind to IPv4's then asks for, or -1 for none. The
+// file's path follows from the port and type alone, so they identify it:
+// reading the path back with getsockname is not reliable on macOS.
+static int holder(int fd, unsigned short port, int type) {
     for (int i = 0; i < NET_FDS; i++) {
-        if (i == fd || !(net_state[i] & NET_HELD) || net_port[i] != port) continue;
-        struct sockaddr_un b;
-        socklen_t n = sizeof b;
-        if (getsockname(i, (struct sockaddr *)&b, &n) == 0 && b.sun_family == AF_UNIX &&
-            strncmp(b.sun_path, u->sun_path, sizeof b.sun_path) == 0) {
+        if (i != fd && (net_state[i] & NET_HELD) && net_port[i] == port && sock_type(i) == type) {
             return i;
         }
     }
@@ -4109,7 +4107,7 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
     if (r == -1 && errno == EADDRINUSE && reclaim) {
         // A socket of this process holds the file: the probe below would
         // reach its listener as a connection no client made.
-        int h = holder(fd, port, &u);
+        int h = holder(fd, port, type);
         if (h != -1) {
             // An IPv6 socket on the wildcard shares the port of the
             // program's IPv4 listener, as an IPv6-only one does on Linux,
