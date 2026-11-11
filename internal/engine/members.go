@@ -110,6 +110,7 @@ func (e *Engine) writeNetworkLocked(stack string) error {
 			return err
 		}
 	}
+	e.publishLocked()
 	return nil
 }
 
@@ -197,6 +198,17 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 		ms = append(ms, member)
 	}
 	ms = append(ms, e.serviceMembers(nets)...)
+	// Other nodes' pods, on the networks of the same names.
+	if n := e.cfg.Nested; n != nil && n.Peers != nil {
+		for _, p := range n.Peers() {
+			for _, pn := range p.Networks {
+				if nets[pn] {
+					ms = append(ms, p)
+					break
+				}
+			}
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

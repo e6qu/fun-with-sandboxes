@@ -175,18 +175,7 @@ func (e *Engine) SetServices(network string, svcs []Service) error {
 		sv.byNetwork[network] = append([]Service(nil), svcs...)
 	}
 	sv.mu.Unlock()
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	stacks := map[string]bool{}
-	for _, c := range e.containers {
-		stacks[c.rec.Stack] = true
-	}
-	for st := range stacks {
-		if err := e.writeStackNetworkLocked(st); err != nil {
-			return err
-		}
-	}
-	return nil
+	return e.rewriteNetworks()
 }
 
 // Services are the services on network.

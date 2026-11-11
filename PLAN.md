@@ -146,7 +146,7 @@ dependency order:
    container, serves exec, attach and port-forward. A kubelet in a
    privileged container joins the control plane as a node and runs
    Deployments' pods.
-5. **Cluster networking and services**: pod addresses from the engine's
+5. **Cluster networking and services** (done): pod addresses from the engine's
    IPAM per node network, a kube-proxy replacement that maps Service
    ClusterIPs and NodePorts onto the routers the engine already runs, and
    CoreDNS (from nixpkgs) answering cluster names through the container
@@ -157,7 +157,9 @@ dependency order:
    at their cluster IPs and DNS names through the container library's
    resolver, so cluster names need no CoreDNS; NodePorts answer at the
    node container's port, and the `kubernetes` Service reaches the API
-   server on the node container's networks. Left: pods on other nodes.
+   server on the node container's networks; and the engines nested in
+   containers that share a network hand one another their pods, so pods
+   reach other nodes' pods, and Services other nodes' endpoints, over TCP.
 6. **`fws/kind-node`**: the node image kind expects, at its paths
    (`/kind/version`, the kubeadm configuration kind writes, the manifests
    directory), with kubeadm's phases run against the components above in

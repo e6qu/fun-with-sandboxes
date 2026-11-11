@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	stackmembers "github.com/e6qu/fun-with-sandboxes/internal/members"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
@@ -45,6 +46,12 @@ type Nested struct {
 	// nested engine's service reaches an endpoint beyond its own
 	// members, such as a cluster's API server.
 	Dial func(netip.AddrPort) (net.Conn, error)
+	// Publish hands the engine it is nested in this engine's members on
+	// networks with subnets of their own, as they change; Peers are those
+	// the engines nested in the containers its container shares a network
+	// with published (peers.go).
+	Publish func([]stackmembers.Member)
+	Peers   func() []stackmembers.Member
 }
 
 // EngineVar gives a privileged container's processes the socket of its
@@ -121,9 +128,11 @@ func (e *Engine) openNested(c *Container) error {
 		Egress: e.cfg.Egress, LiveRestore: e.cfg.LiveRestore, Serve: e.cfg.Serve,
 		Nested: &Nested{
 			Library: lib, RunDir: runDir, StateRoot: e.stateRoot(),
-			Path: func(p string) (string, error) { return e.pathIn(c, p) },
-			Port: func(p int) (int, string, error) { return e.portIn(c, p) },
-			Dial: func(ap netip.AddrPort) (net.Conn, error) { return e.dialFrom(c, ap) },
+			Path:    func(p string) (string, error) { return e.pathIn(c, p) },
+			Port:    func(p int) (int, string, error) { return e.portIn(c, p) },
+			Dial:    func(ap netip.AddrPort) (net.Conn, error) { return e.dialFrom(c, ap) },
+			Publish: func(ms []stackmembers.Member) { e.publishPeer(c, ms) },
+			Peers:   func() []stackmembers.Member { return e.peersOf(c.rec.ID) },
 		},
 	})
 	if err != nil {
@@ -137,6 +146,7 @@ func (e *Engine) openNested(c *Container) error {
 		return err
 	}
 	e.nested[c.rec.ID] = &nestedEngine{e: sub, serve: srv}
+	go e.refreshPeers("")
 	return nil
 }
 
@@ -150,6 +160,7 @@ func (e *Engine) closeNested(c *Container) {
 	if n == nil {
 		return
 	}
+	e.dropPeer(c)
 	n.serve.Close()
 	n.e.shutdown(true)
 	os.Remove(e.engineSocket(c))
@@ -302,7 +313,8 @@ func (e *Engine) dialFrom(c *Container, ap netip.AddrPort) (net.Conn, error) {
 	e.mu.Unlock()
 	switch {
 	case !found:
-		return nil, fmt.Errorf("no running member at %s shares a network with %s", ap.Addr(), c.rec.Name)
+		// A pod of another node: another nested engine's member.
+		return e.dialPeer(owner, ap)
 	case hp != 0:
 		return net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
 	case rp != 0:
