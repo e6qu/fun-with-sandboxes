@@ -4111,11 +4111,15 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
         // reach its listener as a connection no client made.
         int h = holder(fd, port, &u);
         if (h != -1) {
-            // An IPv6-only socket and an IPv4 one share a port, as nginx's
-            // listen 80 and listen [::]:80 do on Linux: fd takes the
-            // holder's socket, whose connections either one accepts.
+            // An IPv6 socket on the wildcard shares the port of the
+            // program's IPv4 listener, as an IPv6-only one does on Linux,
+            // nginx's listen [::]:80 beside its listen 80: fd takes the
+            // holder's socket, whose connections either one accepts, as the
+            // one Unix socket carries both families'. An IPv4 socket shares
+            // an IPv6 listener's port where that one is IPv6-only; beside a
+            // dual-stack one it fails, as on Linux.
             int hv6 = (net_state[h] & NET_V6) != 0;
-            if (hv6 != v6 && (v6 ? only : net_v6only[h])) {
+            if (hv6 != v6 && (v6 ? any : net_v6only[h])) {
                 if (dup2(h, fd) == -1) {
                     return -1;
                 }
