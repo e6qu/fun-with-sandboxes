@@ -55,8 +55,8 @@ func containerRoot(t testing.TB) string {
 
 func TestPathsNameTheRoot(t *testing.T) {
 	root := containerRoot(t)
-	got := probe(t, root, nil, "read", "system", "missing", "write", "list", "cwd", "exec")
-	for k, want := range map[string]string{"read": "inside", "system": "ok", "missing": "true,true,true", "write": "ok", "cwd": "/made", "exec": "read=inside"} {
+	got := probe(t, root, nil, "read", "system", "missing", "write", "mkdirslash", "list", "cwd", "exec")
+	for k, want := range map[string]string{"read": "inside", "system": "ok", "missing": "true,true,true", "write": "ok", "mkdirslash": "true", "cwd": "/made", "exec": "read=inside"} {
 		if got[k] != want {
 			t.Errorf("%s: %q, want %q", k, got[k], want)
 		}
@@ -66,6 +66,9 @@ func TestPathsNameTheRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "made", "new")); err != nil {
 		t.Errorf("the write did not land in the root: %v", err)
+	}
+	if st, err := os.Stat(filepath.Join(root, "made", "dir")); err != nil || !st.IsDir() {
+		t.Errorf("mkdir with a trailing slash did not land in the root: %v", err)
 	}
 }
 

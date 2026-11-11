@@ -134,6 +134,11 @@ machine — and from what macOS offers an unprivileged process under them.
 
 ## Isolation
 
+- **`PATH` and `HOME` hold host paths.** A container's `PATH` names its
+  directories as the host sees them, in the container's root, and `HOME`
+  its home there, so programs started without the container library, such
+  as Apple's, find the container's commands. A program that prints
+  them, as `which` and `echo $HOME` do, prints the host's paths.
 - **Not a security boundary against hostile code.** Containers run as the
   engine's user. Seatbelt confines them well enough to keep stacks apart and
   the host's data out of reach, but it is a development and test tool.

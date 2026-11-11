@@ -478,7 +478,12 @@ static const char *place(const char *p, char *buf) {
     if (lstat(buf, &st) == 0) {
         return buf;
     }
-    char *slash = strrchr(buf + rootlen, '/');
+    // The parent is what comes before the last component, past any
+    // trailing slashes: mkdir("/a/b/") makes b in /a, as the kernel does.
+    char *end = buf + rootlen + n;
+    while (end > buf + rootlen + 1 && end[-1] == '/') end--;
+    char *slash = end - 1;
+    while (slash > buf + rootlen && *slash != '/') slash--;
     if (slash == buf + rootlen) {
         return buf;
     }

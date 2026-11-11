@@ -197,8 +197,8 @@ func TestShellImages(t *testing.T) {
 	}{
 		{"fws/busybox:1", `echo hello | sed s/hello/world/ | grep world && printf 'b\na\n' | sort | head -n 1 &&
 echo x | awk '{print toupper($0)}' && mkdir -p /tmp/d && echo hi > /tmp/d/f && tar -C /tmp -czf /tmp/d.tgz d &&
-tar -tzf /tmp/d.tgz | grep -c d/f && find /tmp/d -name f && diff /tmp/d/f /tmp/d/f && which wget && echo done`,
-			"world\na\nX\n1\n/tmp/d/f\n/bin/wget\ndone\n"},
+tar -tzf /tmp/d.tgz | grep -c d/f && find /tmp/d -name f && diff /tmp/d/f /tmp/d/f && which wget >/dev/null && echo done`,
+			"world\na\nX\n1\n/tmp/d/f\ndone\n"},
 		{"fws/busybox:1", `busybox echo by name && busybox --list | grep -x sed && busybox nonexistent; echo $?`, "by name\nsed\n127\n"},
 		{"fws/base:1", `bash -c 'echo "bash ${BASH_VERSINFO[0]}"' && jq -n '{a: 41} | .a + 1' &&
 curl -sS -o /dev/null -w '%{http_code}\n' https://github.com/ &&
