@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -194,7 +195,10 @@ func TestKubernetesControlPlane(t *testing.T) {
 		"--bind-address=127.0.0.1", "--leader-elect=true", "--use-service-account-credentials=true",
 		"--service-account-private-key-file="+pkiDir+"sa.key", "--root-ca-file="+pkiDir+"ca.crt",
 		"--cluster-signing-cert-file="+pkiDir+"ca.crt", "--cluster-signing-key-file="+pkiDir+"ca.key",
-		"--controllers=*,bootstrapsigner,tokencleaner")
+		"--controllers=*,bootstrapsigner,tokencleaner",
+		// As kind's: each node takes a /24 of the cluster's pod subnet,
+		// which its runtime's pod network takes as its own.
+		"--allocate-node-cidrs=true", "--cluster-cidr=10.244.0.0/16")
 	run("kube-scheduler", "fws/kube-scheduler:1.35", "kube-scheduler",
 		"--kubeconfig="+pkiDir+"scheduler.conf",
 		"--authentication-kubeconfig="+pkiDir+"scheduler.conf", "--authorization-kubeconfig="+pkiDir+"scheduler.conf",
@@ -262,11 +266,27 @@ func TestKubernetesControlPlane(t *testing.T) {
 	if len(pods) != 2 {
 		t.Fatalf("the Deployment's pods: %q", pods)
 	}
+	// Each pod's address is on the pod network, in its node's pod CIDR.
+	podCIDR := mustKubectl("get", "node/node1", "-o", "jsonpath={.spec.podCIDR}")
+	cidr, err := netip.ParsePrefix(podCIDR)
+	if err != nil || !netip.MustParsePrefix("10.244.0.0/16").Contains(cidr.Addr()) {
+		t.Fatalf("node1's pod CIDR: %q, %v", podCIDR, err)
+	}
 	for _, p := range pods {
 		f := strings.Split(p, "=")
-		if f[1] != "node1" || f[2] == "" {
-			t.Errorf("pod %s ran on %q with address %q", f[0], f[1], f[2])
+		a, err := netip.ParseAddr(f[2])
+		if f[1] != "node1" || err != nil || !cidr.Contains(a) {
+			t.Errorf("pod %s ran on %q with address %q, want one in %s", f[0], f[1], f[2], cidr)
 		}
+	}
+	// A pod reaches another at its address, as on a cluster's pod network.
+	target := strings.Split(pods[1], "=")[2]
+	mustKubectl("run", "fetcher", "--image=fws/toolbox:1", "--restart=Never", "--", "fetch", "http://"+target+"/")
+	if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/fetcher"); err != nil {
+		out, _ := kubectl("logs", "fetcher")
+		t.Errorf("a pod fetching http://%s/ from another: %v\n%s", target, err, out)
+	} else if out := mustKubectl("logs", "fetcher"); out != "200 OK\n" {
+		t.Errorf("a pod fetching http://%s/ from another: %q", target, out)
 	}
 	// kubectl exec reaches the runtime's stream server through the kubelet.
 	web := strings.Split(pods[0], "=")[0]

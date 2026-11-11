@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -146,6 +147,35 @@ func TestCRIPodSandbox(t *testing.T) {
 		}
 		time.Sleep(time.Second)
 	}
+	// Another pod's sandbox reaches the pod at its address on the pod
+	// network.
+	if !netip.MustParsePrefix("10.244.0.0/16").Contains(netip.MustParseAddr(inspect.Status.Network.IP)) {
+		t.Errorf("the sandbox's address %s is not on the pod network", inspect.Status.Network.IP)
+	}
+	peerPod := writeJSON(t, filepath.Join(dir, "peer.json"), map[string]any{
+		"metadata": map[string]any{"name": "peer", "namespace": "e2e", "uid": "e2e-cri-peer", "attempt": 0},
+		"hostname": "peer", "log_directory": logs, "linux": map[string]any{},
+	})
+	peerSandbox := strings.TrimSpace(mustCrictl(t, "runp", peerPod))
+	defer func() {
+		crictl(t, "stopp", peerSandbox)
+		crictl(t, "rmp", peerSandbox)
+	}()
+	peerCfg := writeJSON(t, filepath.Join(dir, "peer-client.json"), map[string]any{
+		"metadata": map[string]any{"name": "peer-client"},
+		"image":    map[string]any{"image": "fws/toolbox:1"},
+		"args":     []string{"hold"},
+		"log_path": "peer-client.log",
+		"linux":    map[string]any{},
+	})
+	peerClient := strings.TrimSpace(mustCrictl(t, "create", peerSandbox, peerCfg, peerPod))
+	mustCrictl(t, "start", peerClient)
+	if out, err := crictl(t, "exec", "--sync", peerClient, "/toolbox", "fetch", "http://"+inspect.Status.Network.IP+":8080/healthz"); err != nil || !strings.Contains(out, "200") {
+		t.Errorf("another pod fetching the pod at %s: %v\n%s", inspect.Status.Network.IP, err, out)
+	}
+	mustCrictl(t, "stopp", peerSandbox)
+	mustCrictl(t, "rmp", peerSandbox)
+
 	res, err := http.Get("http://127.0.0.1:" + strconv.Itoa(hostPort) + "/healthz")
 	if err != nil {
 		t.Fatalf("the sandbox's published port: %v", err)

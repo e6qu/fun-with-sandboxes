@@ -150,7 +150,9 @@ dependency order:
    IPAM per node network, a kube-proxy replacement that maps Service
    ClusterIPs and NodePorts onto the routers the engine already runs, and
    CoreDNS (from nixpkgs) answering cluster names through the container
-   library's resolver.
+   library's resolver. Done so far: a node's pods share its engine's pod
+   network, `fws-pods`, on the pod CIDR the kubelet sends, and reach one
+   another at their addresses.
 6. **`fws/kind-node`**: the node image kind expects, at its paths
    (`/kind/version`, the kubeadm configuration kind writes, the manifests
    directory), with kubeadm's phases run against the components above in

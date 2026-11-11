@@ -71,9 +71,13 @@ machine — and from what macOS offers an unprivileged process under them.
   upstream's kubelet sends none on an operating system it has no settings
   for: a container's `resources.limits` and `securityContext.runAsUser`
   take no effect, and the image's user runs it.
-- **A pod's address is its node's.** A pod sandbox takes its address on
-  the engine that runs it, which other nodes' and the host's engines do
-  not route to; cluster networking is on the roadmap.
+- **A pod's address reaches only its own node's pods.** A pod sandbox
+  takes its address on its node's pod network, where the node's other
+  pods reach it; other nodes' engines and the host's do not route to it.
+  The pod network takes the IPv4 subnet of a dual-stack pod CIDR alone,
+  and keeps its subnet while any sandbox is on it, so a pod CIDR the
+  kubelet sends after its first pod starts applies once its pods are
+  gone. Services, NodePorts and pods on other nodes are on the roadmap.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
