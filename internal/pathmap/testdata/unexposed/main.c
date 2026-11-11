@@ -188,6 +188,43 @@ int main(int argc, char **argv) {
         if (qa >= 0) close(qa);
         printf("rebind=%s %s\n", br == 0 ? "bound" : strerror(be), qa >= 0 ? "connection" : qe == EAGAIN ? "none" : strerror(qe));
     }
+    // An IPv6-only listener on IPv6's wildcard address shares its port with
+    // an IPv4 listener, as nginx's listen 80 and listen [::]:80 do on
+    // Linux, and a client's connection reaches the program through it.
+    {
+        int a4 = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in w4;
+        memset(&w4, 0, sizeof w4);
+        w4.sin_len = sizeof w4;
+        w4.sin_family = AF_INET;
+        w4.sin_port = htons(7300);
+        int b4 = bind(a4, (void *)&w4, sizeof w4) == 0 && listen(a4, 4) == 0;
+        int a6 = socket(AF_INET6, SOCK_STREAM, 0);
+        int yes = 1;
+        setsockopt(a6, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof yes);
+        struct sockaddr_in6 w6;
+        memset(&w6, 0, sizeof w6);
+        w6.sin6_len = sizeof w6;
+        w6.sin6_family = AF_INET6;
+        w6.sin6_port = htons(7300);
+        int b6 = bind(a6, (void *)&w6, sizeof w6), e6 = errno;
+        if (b6 == 0) listen(a6, 4);
+        int only = 0;
+        socklen_t on = sizeof only;
+        getsockopt(a6, IPPROTO_IPV6, IPV6_V6ONLY, &only, &on);
+        struct sockaddr_in to = w4;
+        to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        int c7 = socket(AF_INET, SOCK_STREAM, 0);
+        int cc = connect(c7, (void *)&to, sizeof to);
+        alarm(5);
+        int k7 = b6 == 0 && cc == 0 ? accept(a6, NULL, NULL) : -1;
+        alarm(0);
+        printf("v6only=%s %s only=%d %s\n", b4 ? "v4" : "v4-failed", b6 == 0 ? "v6" : strerror(e6), only, k7 >= 0 ? "accepted" : "none");
+        if (k7 >= 0) close(k7);
+        close(c7);
+        close(a6);
+        close(a4);
+    }
     char sf[128];
     sent(k, c, sf, sizeof sf);
     printf("sendfile-unix=%s\n", sf);

@@ -355,7 +355,10 @@ machine — and from what macOS offers an unprivileged process under them.
     the wildcard or the container's own is refused. A bind to port 0 takes
     a free port of the range macOS draws ephemeral ports from, 49152 to
     65535, the same way, as Seatbelt lets the kernel bind none but the
-    stack's ports.
+    stack's ports. An IPv6-only listener on IPv6's wildcard and the
+    program's IPv4 one share such a port, as nginx's `listen 80` and
+    `listen [::]:80` do on Linux; each accepts connections of either
+    family, as the one Unix socket carries them both.
   - A UDP socket on such a port sends and receives with the socket and
     file calls, connected or not. Of IP-level control messages it takes
     those that report a datagram's destination, `IP_RECVDSTADDR`,

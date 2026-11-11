@@ -3225,6 +3225,10 @@ static unsigned short container_port(int type, unsigned short hport) {
 // for the header's.
 #define DGRAM_IOV 1023
 static unsigned char net_state[NET_FDS];
+// net_v6only: an IPv6 socket listen_unix bound that its program made
+// IPv6-only, which shares its port with the program's IPv4 listener on it,
+// as an IPv6-only and an IPv4 socket share a port on Linux.
+static unsigned char net_v6only[NET_FDS];
 // For NET_UNIX and NET_ROUTED sockets: the container port, and for
 // NET_ROUTED ones the peer's address.
 static unsigned short net_port[NET_FDS];
@@ -3282,7 +3286,11 @@ static void name_unix(char **table, int fd, const struct sockaddr *sa, socklen_t
 static unsigned char state_of(int fd) { return fd >= 0 && fd < NET_FDS ? net_state[fd] : 0; }
 
 static void set_state(int fd, unsigned char st) {
-    if (fd >= 0 && fd < NET_FDS) net_state[fd] = st;
+    if (fd >= 0 && fd < NET_FDS) {
+        net_state[fd] = st;
+        // Only a socket listen_unix holds keeps whether it is IPv6-only.
+        if (!(st & NET_HELD)) net_v6only[fd] = 0;
+    }
 }
 
 static int sock_type(int fd) {
@@ -4044,18 +4052,20 @@ static int host_held(const struct sockaddr *sa, unsigned short port) {
 // held reports whether a socket of this process other than fd holds the
 // Unix socket file u names, as one bound to IPv6's wildcard address holds a
 // port a bind to IPv4's then asks for.
-static int held(int fd, unsigned short port, const struct sockaddr_un *u) {
+static int holder(int fd, unsigned short port, const struct sockaddr_un *u) {
     for (int i = 0; i < NET_FDS; i++) {
         if (i == fd || !(net_state[i] & NET_HELD) || net_port[i] != port) continue;
         struct sockaddr_un b;
         socklen_t n = sizeof b;
         if (getsockname(i, (struct sockaddr *)&b, &n) == 0 && b.sun_family == AF_UNIX &&
             strncmp(b.sun_path, u->sun_path, sizeof b.sun_path) == 0) {
-            return 1;
+            return i;
         }
     }
-    return 0;
+    return -1;
 }
+
+static int held(int fd, unsigned short port, const struct sockaddr_un *u) { return holder(fd, port, u) != -1; }
 
 // listen_unix puts a Unix socket of fd's type in its place and binds it
 // where the library listens on port. With reclaim set, it takes over a
@@ -4065,6 +4075,13 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
     struct sockaddr_un u;
     if (port_path(type, port, &u) == -1) {
         return -1;
+    }
+    // Whether the program made an IPv6 socket IPv6-only, which the Unix
+    // socket in its place cannot say.
+    int only = 0;
+    if (v6 && !(state_of(fd) & NET_V6)) {
+        socklen_t on = sizeof only;
+        if (getsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, &on) != 0) only = 0;
     }
     int s = socket(AF_UNIX, type, 0);
     if (s < 0) {
@@ -4089,11 +4106,25 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
     if (fdfl != -1) fcntl(fd, F_SETFD, fdfl);
     set_state(fd, NET_UNIX | (v6 ? NET_V6 : 0) | (any ? NET_ANY : 0));
     if (fd < NET_FDS) net_port[fd] = port;
+    if (fd < NET_FDS) net_v6only[fd] = (unsigned char)(only != 0);
     int r = bind(fd, (struct sockaddr *)&u, u.sun_len);
     if (r == -1 && errno == EADDRINUSE && reclaim) {
         // A socket of this process holds the file: the probe below would
         // reach its listener as a connection no client made.
-        if (held(fd, port, &u)) {
+        int h = holder(fd, port, &u);
+        if (h != -1) {
+            // An IPv6-only socket and an IPv4 one share a port, as nginx's
+            // listen 80 and listen [::]:80 do on Linux: fd takes the
+            // holder's socket, whose connections either one accepts.
+            int hv6 = (net_state[h] & NET_V6) != 0;
+            if (hv6 != v6 && (v6 ? only : net_v6only[h])) {
+                if (dup2(h, fd) == -1) {
+                    return -1;
+                }
+                if (fdfl != -1) fcntl(fd, F_SETFD, fdfl);
+                set_state(fd, state_of(fd) | NET_HELD);
+                return 0;
+            }
             errno = EADDRINUSE;
             return -1;
         }
@@ -5030,7 +5061,8 @@ static int fws_getsockopt(int fd, int level, int name, void *v, socklen_t *n) {
     }
     if ((state_of(fd) & NET_UNIX) && (level == IPPROTO_TCP || level == IPPROTO_IP || level == IPPROTO_IPV6) && v && n &&
         *n >= (socklen_t)sizeof(int)) {
-        *(int *)v = level == IPPROTO_TCP && name == TCP_NODELAY;
+        *(int *)v = (level == IPPROTO_TCP && name == TCP_NODELAY) ||
+                    (level == IPPROTO_IPV6 && name == IPV6_V6ONLY && fd < NET_FDS && net_v6only[fd]);
         *n = sizeof(int);
         return 0;
     }
