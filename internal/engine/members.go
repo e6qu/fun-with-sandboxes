@@ -158,6 +158,12 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 			}
 		}
 	}
+	nets := map[string]bool{}
+	for _, o := range own {
+		for n := range o.rec.Networks {
+			nets[n] = true
+		}
+	}
 	byAddress := func(cs []*Container) {
 		sort.Slice(cs, func(i, j int) bool { return cs[i].rec.Address < cs[j].rec.Address })
 	}
@@ -190,6 +196,7 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 		}
 		ms = append(ms, member)
 	}
+	ms = append(ms, e.serviceMembers(nets)...)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

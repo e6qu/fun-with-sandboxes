@@ -77,7 +77,18 @@ machine — and from what macOS offers an unprivileged process under them.
   The pod network takes the IPv4 subnet of a dual-stack pod CIDR alone,
   and keeps its subnet while any sandbox is on it, so a pod CIDR the
   kubelet sends after its first pod starts applies once its pods are
-  gone. Services, NodePorts and pods on other nodes are on the roadmap.
+  gone. NodePorts and pods on other nodes are on the roadmap.
+- **Services carry TCP to endpoints on the node's pod network.**
+  `fws-kube-proxy` serves a Service's IPv4 cluster IP and its TCP ports;
+  UDP and SCTP ports, IPv6 cluster IPs, NodePorts, external IPs, load
+  balancers, session affinity and `ExternalName` Services are not served.
+  An endpoint off the pod network, such as the API server behind the
+  `kubernetes` Service, is not reached through it. A Service's short name
+  answers in every namespace, as the container library resolves names,
+  not a search path; a pod reaches another namespace's Service of the
+  same name by the name alone. Connections are balanced by turns, and a
+  refused endpoint passes to the next; the engine learns of a change
+  within the proxy's poll, a second by default.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents

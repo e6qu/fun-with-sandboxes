@@ -220,7 +220,14 @@ network, published ports and DNS, and the pod's containers join that
 network, as cri-dockerd maps CRI onto Docker's. Every sandbox not on its
 node's network joins the engine's pod network, `fws-pods`, whose subnet is
 the node's pod CIDR from the kubelet (`10.244.0.0/16` until one arrives),
-so pods reach one another at their addresses. The engine writes each
+so pods reach one another at their addresses. `fws-kube-proxy`, in
+`fws/kubelet`'s image, is the node's kube-proxy: it polls the cluster's
+Services and EndpointSlices and keeps the engine's services on the pod
+network to match (`PUT /fws/networks/fws-pods/services`). A pod reaches a
+Service at its cluster IP and as `name`, `name.namespace`,
+`name.namespace.svc` and `name.namespace.svc.cluster.local`, and the
+engine carries each connection to the Service's ready endpoints by turns,
+as kube-proxy's userspace mode did. The engine writes each
 container's output to the log file the kubelet names, in CRI's format,
 and serves exec, attach and port-forward streams as containerd does: on a
 loopback port of the host, or for an engine nested in a privileged

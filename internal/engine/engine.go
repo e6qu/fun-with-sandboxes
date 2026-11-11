@@ -80,6 +80,9 @@ type Engine struct {
 	nestedMu sync.Mutex
 	nested   map[string]*nestedEngine
 
+	// svcs are the services on the networks (services.go).
+	svcs services
+
 	mu         sync.Mutex
 	containers map[string]*Container
 	volumes    map[string]*Volume
@@ -205,6 +208,7 @@ func (e *Engine) shutdown(stop bool) {
 	}
 	wg.Wait()
 	e.closeAllEgress()
+	e.closeServices()
 }
 
 func newID() string {

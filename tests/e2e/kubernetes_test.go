@@ -85,6 +85,9 @@ func pki(t *testing.T, dir, server string) {
 		{"controller-manager", "system:kube-controller-manager", ""},
 		{"scheduler", "system:kube-scheduler", ""},
 		{"kubelet", "system:node:node1", "system:nodes"},
+		// kube-proxy's user, whom the bootstrap policy's
+		// system:node-proxier binding lets watch services and endpoints.
+		{"kube-proxy", "system:kube-proxy", ""},
 	} {
 		subject := pkix.Name{CommonName: c.user}
 		if c.group != "" {
@@ -236,7 +239,10 @@ func TestKubernetesControlPlane(t *testing.T) {
 	// each pod 127.0.0.1 and the search domain ".".
 	mustDocker(t, "run", "-d", "--privileged", "--restart=on-failure", "--name", "e2e-kubelet", "--network", network, "--network-alias", "node1",
 		"-v", dir+":/etc/kubernetes/pki:ro", "--entrypoint", "/bin/sh", "fws/kubelet:1.35", "-c",
-		"exec kubelet --kubeconfig="+pkiDir+"kubelet.conf --container-runtime-endpoint=unix://$FWS_ENGINE --hostname-override=node1"+
+		// fws-kube-proxy keeps the node engine's services to the
+		// cluster's, as kube-proxy keeps a node's.
+		"fws-kube-proxy --kubeconfig="+pkiDir+"kube-proxy.conf & "+
+			"exec kubelet --kubeconfig="+pkiDir+"kubelet.conf --container-runtime-endpoint=unix://$FWS_ENGINE --hostname-override=node1"+
 			" --cgroups-per-qos=false --enforce-node-allocatable= --fail-swap-on=false --eviction-hard='memory.available<10Mi' --resolv-conf=/dev/null"+
 			" --register-with-taints=e2e/loading=true:NoSchedule")
 	mustKubectl("wait", "--for=create", "--timeout=2m", "node/node1")
@@ -292,6 +298,21 @@ func TestKubernetesControlPlane(t *testing.T) {
 	web := strings.Split(pods[0], "=")[0]
 	if out := mustKubectl("exec", web, "--", "/bin/sh", "-c", "echo inside $HOSTNAME"); out != "inside "+web+"\n" {
 		t.Errorf("kubectl exec: %q", out)
+	}
+	// A Service: pods reach it by its DNS name and at its cluster IP, and
+	// the engine carries each connection to one of its pods. A fetch
+	// restarts until fws-kube-proxy has passed the Service on.
+	mustKubectl("expose", "deployment/web", "--port=80", "--name=web")
+	clusterIP := mustKubectl("get", "service/web", "-o", "jsonpath={.spec.clusterIP}")
+	for name, url := range map[string]string{"by-name": "http://web.default.svc.cluster.local/", "by-ip": "http://" + clusterIP + "/"} {
+		pod := "service-" + name
+		mustKubectl("run", pod, "--image=fws/toolbox:1", "--restart=OnFailure", "--", "fetch", url)
+		if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/"+pod); err != nil {
+			out, _ := kubectl("logs", pod)
+			t.Errorf("a pod fetching the Service at %s: %v\n%s", url, err, out)
+		} else if out := mustKubectl("logs", pod); out != "200 OK\n" {
+			t.Errorf("a pod fetching the Service at %s: %q", url, out)
+		}
 	}
 	// The API server reads a pod's log from the kubelet, which reads the
 	// file the runtime writes.

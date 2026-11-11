@@ -255,6 +255,10 @@ func (s *Server) routes() {
 		respond(w, res, err)
 	})
 	m.HandleFunc("POST /networks/create", s.networkCreate)
+	// The engine's own: the virtual services on a network, which a
+	// cluster's kube-proxy replacement, fws-kube-proxy, keeps.
+	m.HandleFunc("GET /fws/networks/{name}/services", s.servicesGet)
+	m.HandleFunc("PUT /fws/networks/{name}/services", s.servicesPut)
 	m.HandleFunc("POST /networks/prune", func(w http.ResponseWriter, r *http.Request) {
 		f, err := engine.ParseFilters(r.URL.Query().Get("filters"))
 		if err != nil {
@@ -669,6 +673,28 @@ func (s *Server) networkCreate(w http.ResponseWriter, r *http.Request) {
 		EnableIPv4: req.EnableIPv4, EnableIPv6: req.EnableIPv6, IPAM: req.IPAM, Options: req.Options, Labels: req.Labels,
 	})
 	respondCode(w, http.StatusCreated, res, err)
+}
+
+func (s *Server) servicesGet(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if _, err := s.e.NetworkInspect(name); err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	svcs := s.e.Services(name)
+	if svcs == nil {
+		svcs = []engine.Service{}
+	}
+	writeJSON(w, http.StatusOK, svcs)
+}
+
+// servicesPut replaces the network's services with the body's list.
+func (s *Server) servicesPut(w http.ResponseWriter, r *http.Request) {
+	var svcs []engine.Service
+	if !decode(w, r, &svcs) {
+		return
+	}
+	respondStatus(w, http.StatusNoContent, s.e.SetServices(r.PathValue("name"), svcs))
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
