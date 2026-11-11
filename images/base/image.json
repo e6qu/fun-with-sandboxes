@@ -1,0 +1,23 @@
+{
+  "tag": "fws/base:1",
+  "files": {},
+  "dirs": [
+    "/root",
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "TZ=UTC",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+      "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
+      "GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt"
+    ],
+    "Cmd": [
+      "bash"
+    ],
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}

@@ -27,6 +27,15 @@ machine — and from what macOS offers an unprivileged process under them.
 - **`fws/meilisearch` serves no mini-dashboard and carries no `meilitool`.**
   nixpkgs builds Meilisearch without the dashboard, which its build would
   download, and builds the server alone.
+- **`fws/busybox` is not BusyBox, and `fws/base` is not Alpine.** BusyBox
+  and Alpine are Linux userlands, which run only in a VM. `fws/busybox`
+  holds the commands scripts run in BusyBox's image as separate programs,
+  GNU's and others nixpkgs builds for darwin, so their options are those
+  programs' rather than BusyBox's applets'; its `nc` checks a port
+  (`nc -z`) and does nothing else, and it has no `ps`, `top` or `vi`.
+  `fws/base` has no package manager: `apk` and `apt` install Linux
+  binaries. An image built `FROM` it adds programs with `COPY` or by
+  downloading darwin builds.
 - **`fws/qdrant` serves nixpkgs' web UI.** Qdrant's image fetches the web
   UI's latest release when it is built; the catalog serves the release
   nixpkgs builds from source, an older one, so rebuilds serve the same

@@ -1,0 +1,20 @@
+{
+  "tag": "fws/busybox:1",
+  "files": {},
+  "dirs": [
+    "/root",
+    "/tmp"
+  ],
+  "config": {
+    "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "TZ=UTC"
+    ],
+    "Cmd": [
+      "sh"
+    ],
+    "Labels": {
+      "org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"
+    }
+  }
+}
