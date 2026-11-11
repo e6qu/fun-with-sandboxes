@@ -168,11 +168,54 @@ func TestKubernetesControlPlane(t *testing.T) {
 		}
 		return string(out), nil
 	}
+	// nodeSock is node1's engine's socket, once node1 joins.
+	var nodeSock string
 	// On a failure, the pods as the API server has them and their
 	// containers' logs, the last run's of a container that restarted.
 	defer func() {
 		if !t.Failed() {
 			return
+		}
+		if nodeSock != "" {
+			// What node1's engine holds, and nginx run on it outside a pod,
+			// on the pod network and in a pod's network, to tell where a
+			// pod's container fails.
+			node := func(args ...string) string {
+				out, err := docker(t, append([]string{"-H", "unix://" + nodeSock}, args...)...)
+				if err != nil {
+					return out + err.Error()
+				}
+				return out
+			}
+			ps := node("ps", "-a", "--format", "{{.ID}} {{.Names}} {{.Status}} {{.Ports}}")
+			t.Logf("node1's containers:\n%s", ps)
+			var pause string
+			for _, l := range strings.Split(ps, "\n") {
+				f := strings.Fields(l)
+				if len(f) < 2 || !(strings.HasPrefix(f[1], "k8s_nginx") || strings.HasPrefix(f[1], "k8s_POD_web")) {
+					continue
+				}
+				if strings.HasPrefix(f[1], "k8s_POD_web") && pause == "" {
+					pause = f[0]
+				}
+				t.Logf("%s: %s", f[1], node("inspect", "-f", "exposed={{json .Config.ExposedPorts}} mode={{.HostConfig.NetworkMode}} ports={{json .NetworkSettings.Ports}} bindings={{json .HostConfig.PortBindings}}", f[0]))
+			}
+			for name, args := range map[string][]string{
+				"bridge": {},
+				"pods":   {"--network", "fws-pods"},
+				"in-pod": {"--network", "container:" + pause},
+			} {
+				if name == "in-pod" && pause == "" {
+					continue
+				}
+				c := "e2e-probe-nginx-" + name
+				node(append(append([]string{"run", "-d", "--name", c}, args...), "fws/nginx:1")...)
+				time.Sleep(5 * time.Second)
+				// nginx logs to stderr, which docker logs writes to its own.
+				logs, _ := exec.Command("docker", "-H", "unix://"+nodeSock, "logs", c).CombinedOutput()
+				t.Logf("nginx on node1's engine, %s: %s\n%s", name, node("inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", c), tail(string(logs), 10))
+				node("rm", "-f", c)
+			}
 		}
 		out, _ := kubectl("get", "pods", "-A", "-o", "wide")
 		t.Logf("pods:\n%s", out)
@@ -293,6 +336,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 		return sock
 	}
 	sock := joinNode("node1", "e2e-kubelet")
+	nodeSock = sock
 	mustKubectl("rollout", "status", "--timeout=3m", "deployment/web")
 	pods := strings.Fields(mustKubectl("get", "pods", "-l", "app=web", "-o", "jsonpath={range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP} {end}"))
 	if len(pods) != 2 {
