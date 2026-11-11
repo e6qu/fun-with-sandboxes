@@ -168,6 +168,23 @@ func TestKubernetesControlPlane(t *testing.T) {
 		}
 		return string(out), nil
 	}
+	// On a failure, the pods as the API server has them and their
+	// containers' logs, the last run's of a container that restarted.
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		out, _ := kubectl("get", "pods", "-A", "-o", "wide")
+		t.Logf("pods:\n%s", out)
+		names, _ := kubectl("get", "pods", "-o", "jsonpath={range .items[*]}{.metadata.name} {end}")
+		for _, p := range strings.Fields(names) {
+			prev, _ := kubectl("logs", "--previous", "--all-containers", p)
+			cur, _ := kubectl("logs", "--all-containers", p)
+			t.Logf("%s: previous:\n%s\ncurrent:\n%s", p, tail(prev, 30), tail(cur, 30))
+		}
+		out, _ = kubectl("describe", "pods", "-l", "app=web")
+		t.Logf("web pods:\n%s", tail(out, 80))
+	}()
 	mustKubectl := func(args ...string) string {
 		t.Helper()
 		out, err := kubectl(args...)
