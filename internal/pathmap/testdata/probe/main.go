@@ -40,6 +40,17 @@ func run(check string) string {
 	case "write":
 		err := os.WriteFile("/made/new", []byte("x"), 0o644)
 		return result("ok", err)
+	case "mkdirslash":
+		// A new directory named with a trailing slash, as git's init
+		// names those it copies from its templates.
+		if err := syscall.Mkdir("/made/dir/", 0o755); err != nil {
+			return result("", err)
+		}
+		st, err := os.Stat("/made/dir")
+		if err != nil {
+			return result("", err)
+		}
+		return result(fmt.Sprint(st.IsDir()), nil)
 	case "list":
 		entries, err := os.ReadDir("/")
 		if err != nil {

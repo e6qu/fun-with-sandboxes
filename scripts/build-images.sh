@@ -70,6 +70,7 @@ go build -o "$build/valkey-entry" ./images/valkey/entry
 go build -o "$build/seaweedfs-entry" ./images/seaweedfs/entry
 go build -o "$build/memcached-entry" ./images/memcached/entry
 go build -o "$build/nc" ./images/nc
+go build -o "$build/busybox" ./images/busybox
 go build -o "$build/consul-entry" ./images/consul/entry
 go build -o "$build/vault-entry" ./images/vault/entry
 go build -o "$build/mongo-entry" ./images/mongo/entry
@@ -107,6 +108,8 @@ dash=$(pkg_with dash dash)
 # The network databases a C library reads, which Debian-based official
 # images carry in netbase.
 iana=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#iana-etc")
+# Mozilla's CA bundle, for the images that carry one.
+cacert=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#cacert")
 closure() { nix-store -qR "$@" "$dash" | sort -u; }
 # /bin/nc answers the in-container port check Testcontainers runs, which
 # reads /proc/net/tcp on Linux.
@@ -501,6 +504,33 @@ mkimage $(accounts playwright pwuser 1000 1000 /home/pwuser) -spec images/playwr
 
 "$build/fws-mkimage" -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"
 
+# BusyBox as scripts use its image: a POSIX shell and the commands they run
+# in it, as separate programs from the GNU tools and others nixpkgs builds
+# for darwin, since BusyBox builds for Linux alone, and a busybox command
+# that runs them by name. /usr/bin/env is where scripts' shebangs look.
+busybox_pkgs=()
+for p in coreutils:ls findutils:find diffutils:diff gnugrep:grep gnused:sed gawk:awk gnutar:tar gzip:gzip \
+  bzip2:bzip2 xz:xz unzip:unzip wget:wget which:which; do
+  busybox_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
+done
+closure "${busybox_pkgs[@]}" > "$build/busybox.closure"
+mkimage $(accounts busybox) -spec images/busybox/image.json -closure "$build/busybox.closure" \
+  $(printf -- '-pkg %s ' "${busybox_pkgs[@]}") -file "/bin/busybox=$build/busybox" \
+  -link /usr/bin/env=../../bin/env -out "$out/busybox.tar"
+
+# A general base for images built FROM it, in place of Alpine or Debian,
+# whose Linux userlands and package managers cannot run here: bash, the
+# commands of fws/busybox, and curl, git, jq and less, with Mozilla's CA
+# bundle where Debian's ca-certificates puts it.
+base_pkgs=("${busybox_pkgs[@]}")
+for p in bash:bash curl:curl git:git jq:jq less:less; do
+  base_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
+done
+closure "${base_pkgs[@]}" > "$build/base.closure"
+mkimage $(accounts base) -spec images/base/image.json -closure "$build/base.closure" \
+  $(printf -- '-pkg %s ' "${base_pkgs[@]}") -link /usr/bin/env=../../bin/env \
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/base.tar"
+
 # Ryuk, Testcontainers' reaper, built from its 0.14.0 release.
 ryuk_commit=b3726afd6cc2c36628abcc08e9cabac43f587384
 ryuk_src=$(GOFLAGS=-mod=mod go mod download -json "github.com/testcontainers/moby-ryuk@$ryuk_commit" | sed -n 's/.*"Dir": "\(.*\)",/\1/p')
@@ -516,7 +546,6 @@ chmod -R u+w "$build/ryuk-src"
 # data files the build references, not the other components.
 k8s=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/kubernetes.nix --argstr nixpkgs "$nixpkgs")
 go_runner=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/go-runner.nix --argstr nixpkgs "$nixpkgs")
-cacert=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#cacert")
 closure $(nix-store -qR "$k8s" | grep -v "^$k8s$") > "$build/kubernetes.closure"
 for c in kube-apiserver kube-controller-manager kube-scheduler kubectl; do
   mkimage $(accounts "$c" nonroot 65532 65532 /home/nonroot) -spec "images/$c/image.json" -closure "$build/kubernetes.closure" \

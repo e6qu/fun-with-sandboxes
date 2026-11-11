@@ -186,6 +186,52 @@ print("six", six.__version__)`)
 	}
 }
 
+// fws/busybox runs scripts' everyday commands under its shell, and
+// fws/base adds bash, curl over TLS with its CA bundle, git and jq, and
+// builds an image FROM it whose shell-form RUN steps use them.
+func TestShellImages(t *testing.T) {
+	for _, c := range []struct {
+		image  string
+		script string
+		want   string
+	}{
+		{"fws/busybox:1", `echo hello | sed s/hello/world/ | grep world && printf 'b\na\n' | sort | head -n 1 &&
+echo x | awk '{print toupper($0)}' && mkdir -p /tmp/d && echo hi > /tmp/d/f && tar -C /tmp -czf /tmp/d.tgz d &&
+tar -tzf /tmp/d.tgz | grep -c d/f && find /tmp/d -name f && diff /tmp/d/f /tmp/d/f && which wget >/dev/null && echo done`,
+			"world\na\nX\n1\n/tmp/d/f\ndone\n"},
+		{"fws/busybox:1", `busybox echo by name && busybox --list | grep -x sed && busybox nonexistent; echo $?`, "by name\nsed\n127\n"},
+		{"fws/base:1", `bash -c 'echo "bash ${BASH_VERSINFO[0]}"' && jq -n '{a: 41} | .a + 1' &&
+curl -sS -o /dev/null -w '%{http_code}\n' https://github.com/ &&
+git init -q /tmp/r && git -C /tmp/r -c user.email=e2e@example.com -c user.name=e2e commit -q --allow-empty -m first &&
+git -C /tmp/r log --format=%s`, "bash 5\n42\n200\nfirst\n"},
+	} {
+		out, err := docker(t, "run", "--rm", c.image, "sh", "-c", c.script)
+		if err != nil || out != c.want {
+			t.Errorf("%s: %q, %v; want %q", c.image, out, err, c.want)
+		}
+	}
+	for image, cmd := range map[string]string{"fws/busybox:1": `["sh"]`, "fws/base:1": `["bash"]`} {
+		if out := strings.TrimSpace(mustDocker(t, "image", "inspect", "--format", "{{json .Config.Cmd}}", image)); out != cmd {
+			t.Errorf("%s's command: %s, want %s", image, out, cmd)
+		}
+	}
+
+	dir := t.TempDir()
+	dockerfile := "FROM fws/base:1\nRUN echo built > /built.txt && jq -n '\"jq ran\"' >> /built.txt\nCMD cat /built.txt\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(dockerfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	build := exec.Command("docker", "build", "-t", "e2e/from-base:1", dir)
+	build.Env = append(os.Environ(), "DOCKER_BUILDKIT=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("docker build FROM fws/base:1: %v\n%s", err, out)
+	}
+	defer docker(t, "rmi", "e2e/from-base:1")
+	if out := mustDocker(t, "run", "--rm", "e2e/from-base:1"); out != "built\n\"jq ran\"\n" {
+		t.Errorf("the image built FROM fws/base:1: %q", out)
+	}
+}
+
 func TestGitea(t *testing.T) {
 	const name = "fws-e2e-gitea"
 	waitedRun(t, name, "-p", "127.0.0.1::3000", "-e", "GITEA__security__INSTALL_LOCK=true", "fws/gitea:1")

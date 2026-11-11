@@ -95,7 +95,7 @@ tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite
 ## Image catalog
 
 A Nix-built catalog for `aarch64-darwin`/`x86_64-darwin`, converted to OCI
-layers with a `darwin/<arch>` platform entry: `bun`, `clickhouse`, `consul`, `dind`, `dynamodb`,
+layers with a `darwin/<arch>` platform entry: `base`, `bun`, `busybox`, `clickhouse`, `consul`, `dind`, `dynamodb`,
 `etcd`, `gitea`, `influxdb`, `kafka`, `kube-apiserver`, `kube-controller-manager`, `kube-scheduler`, `kubectl`, `kubelet`, `lambda`, `mailpit`, `mariadb`, `meilisearch`, `memcached`, `mongo`, `mysql`, `nats`,
 `neo4j`, `nginx`, `node`, `opensearch`, `pause`, `playwright`, `postgres`, `python`, `qdrant`, `rabbitmq`, `redis`,
 `ryuk` (Testcontainers' reaper), `seaweedfs`, `toolbox`, `toxiproxy`, `valkey` and
