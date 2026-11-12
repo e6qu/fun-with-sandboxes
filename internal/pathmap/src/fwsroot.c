@@ -3229,6 +3229,10 @@ static unsigned char net_state[NET_FDS];
 // IPv6-only, which shares its port with the program's IPv4 listener on it,
 // as an IPv6-only and an IPv4 socket share a port on Linux.
 static unsigned char net_v6only[NET_FDS];
+// net_own: a socket listen_unix bound to the container's own address
+// rather than loopback, which shares its port with the program's listener
+// on loopback, as two listeners on one port at two addresses do on Linux.
+static unsigned char net_own[NET_FDS];
 // For NET_UNIX and NET_ROUTED sockets: the container port, and for
 // NET_ROUTED ones the peer's address.
 static unsigned short net_port[NET_FDS];
@@ -3288,8 +3292,9 @@ static unsigned char state_of(int fd) { return fd >= 0 && fd < NET_FDS ? net_sta
 static void set_state(int fd, unsigned char st) {
     if (fd >= 0 && fd < NET_FDS) {
         net_state[fd] = st;
-        // Only a socket listen_unix holds keeps whether it is IPv6-only.
-        if (!(st & NET_HELD)) net_v6only[fd] = 0;
+        // Only a socket listen_unix holds keeps whether it is IPv6-only,
+        // and what address it was bound to.
+        if (!(st & NET_HELD)) net_v6only[fd] = net_own[fd] = 0;
     }
 }
 
@@ -3957,9 +3962,10 @@ static int port_path(int type, unsigned short port, struct sockaddr_un *u) {
 // on loopback alone, which the host port would publish; any is whether sa
 // is the wildcard, zero whether sa asks for any port, which unbacked
 // reports as 0, and lo whether sa is loopback on a port with a host port.
-static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len, int *any, int *v6, int *zero, int *lo) {
+static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len, int *any, int *v6, int *zero, int *lo, int *ownp) {
     *zero = 0;
     *lo = 0;
+    *ownp = 0;
     int type = sa && port_dir[0] ? sock_type(fd) : 0;
     if (type != SOCK_STREAM && type != SOCK_DGRAM) {
         return 0;
@@ -3996,6 +4002,7 @@ static unsigned short unbacked(int fd, const struct sockaddr *sa, socklen_t len,
         return 0;
     }
     *any = a == htonl(INADDR_ANY);
+    *ownp = own;
     if (!port) {
         *zero = 1;
         return 0;
@@ -4063,10 +4070,21 @@ static int holder(int fd, unsigned short port, int type) {
     return -1;
 }
 
+// twin reports whether a socket of this process other than fd holds the
+// Unix socket file of port and type bound as fd asks: to the same family's
+// loopback, or its own address, which Linux refuses a second listener on.
+static int twin(int fd, unsigned short port, int type, int v6, int own) {
+    for (int i = 0; i < NET_FDS; i++) {
+        if (i == fd || !(net_state[i] & NET_HELD) || net_port[i] != port || sock_type(i) != type) continue;
+        if (!(net_state[i] & NET_ANY) && ((net_state[i] & NET_V6) != 0) == (v6 != 0) && net_own[i] == (own != 0)) return 1;
+    }
+    return 0;
+}
+
 // listen_unix puts a Unix socket of fd's type in its place and binds it
 // where the library listens on port. With reclaim set, it takes over a
 // socket file no listener holds.
-static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim) {
+static int listen_unix(int fd, unsigned short port, int any, int v6, int own, int reclaim) {
     int type = sock_type(fd);
     struct sockaddr_un u;
     if (port_path(type, port, &u) == -1) {
@@ -4103,6 +4121,7 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
     set_state(fd, NET_UNIX | (v6 ? NET_V6 : 0) | (any ? NET_ANY : 0));
     if (fd < NET_FDS) net_port[fd] = port;
     if (fd < NET_FDS) net_v6only[fd] = (unsigned char)(only != 0);
+    if (fd < NET_FDS) net_own[fd] = (unsigned char)(own != 0);
     int r = bind(fd, (struct sockaddr *)&u, u.sun_len);
     if (r == -1 && errno == EADDRINUSE && reclaim) {
         // A socket of this process holds the file: the probe below would
@@ -4116,8 +4135,13 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int reclaim
             // one Unix socket carries both families'. An IPv4 socket shares
             // an IPv6 listener's port where that one is IPv6-only; beside a
             // dual-stack one it fails, as on Linux.
-            int hv6 = (net_state[h] & NET_V6) != 0;
-            if (hv6 != v6 && (v6 ? any : net_v6only[h])) {
+            // Listeners on one port at two addresses, neither a wildcard,
+            // share it as well, as etcd's on loopback and on its own
+            // address do: the one Unix socket takes connections to either.
+            int hv6 = (net_state[h] & NET_V6) != 0, hany = (net_state[h] & NET_ANY) != 0;
+            int wild = hv6 != v6 && (v6 ? any : net_v6only[h]);
+            int apart = !any && !hany && (hv6 != v6 || net_own[h] != (own != 0)) && !twin(fd, port, type, v6, own);
+            if (wild || apart) {
                 if (dup2(h, fd) == -1) {
                     return -1;
                 }
@@ -4161,7 +4185,7 @@ static int listen_ephemeral(int fd, int any, int v6) {
         // A file there is another socket's, live or not; taking a stale
         // one could race the listener about to hold it.
         if (access(u.sun_path, F_OK) == 0) continue;
-        if (listen_unix(fd, p, any, v6, 0) == 0) return 0;
+        if (listen_unix(fd, p, any, v6, 0, 0) == 0) return 0;
         if (errno != EADDRINUSE) return -1;
     }
     errno = EADDRINUSE;
@@ -4169,14 +4193,14 @@ static int listen_ephemeral(int fd, int any, int v6) {
 }
 
 static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
-    int uany, uv6, zero, lo;
-    unsigned short uport = unbacked(fd, sa, len, &uany, &uv6, &zero, &lo);
+    int uany, uv6, zero, lo, uown;
+    unsigned short uport = unbacked(fd, sa, len, &uany, &uv6, &zero, &lo, &uown);
     if (lo && host_held(sa, host_port(SOCK_STREAM, uport))) {
         errno = EADDRINUSE;
         return -1;
     }
     if (uport || zero) {
-        int r = uport ? listen_unix(fd, uport, uany, uv6, 1) : listen_ephemeral(fd, uany, uv6);
+        int r = uport ? listen_unix(fd, uport, uany, uv6, uown, 1) : listen_ephemeral(fd, uany, uv6);
         if (r == 0) set_state(fd, state_of(fd) | dest_p6(sa));
         return r;
     }
