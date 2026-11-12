@@ -470,9 +470,15 @@ machine — and from what macOS offers an unprivileged process under them.
   read Services as the node; its storage class uses the controller
   manager's host-path provisioner. The control plane's images are the
   catalog's under the names kubeadm writes (`/kind/images.txt`): etcd is
-  nixpkgs' 3.6 release under the tag kubeadm pins. `kind load`,
-  `kind export logs`, `--config` patches of containerd and IPv6 or
-  dual-stack clusters are not supported yet.
+  nixpkgs' 3.6 release under the tag kubeadm pins. A node runs no
+  containerd or systemd: its `ctr` loads and names images in the node's
+  engine, as `kind load docker-image` and `kind load image-archive` ask
+  (`images import`, `tag` and `ls` alone), `containerd config dump`
+  reports a configuration, and `journalctl` reads the node's, the
+  kubelet's and `fws-kube-proxy`'s logs, which the node keeps under
+  `/var/log` for `kind export logs`; `crictl` is upstream's, against the
+  engine's CRI. `containerdConfigPatches` and IPv6 or dual-stack clusters
+  are not supported.
 - **Podman's pods share no namespaces.** A pod's infra container, which
   holds the namespaces its containers share, runs Podman's pause image,
   which the engine does not have, so a pod is created with

@@ -568,8 +568,17 @@ mkimage $(accounts kubelet) -spec images/kubelet/image.json -closure "$build/kub
 # /kind/version and its manifests, and coreutils for the commands kind runs
 # in a node. kubeadm runs through the entrypoint, which skips the addons
 # whose Linux images a node has no use for, and so does the cp kind writes
-# files with, which copies standard input itself.
+# files with, which copies standard input itself. It stands in for ctr,
+# containerd and journalctl too, which kind load and kind export logs run,
+# and GNU tar packs the node's /var/log for kind export logs.
 go build -o "$build/kind-node-entry" ./images/kind-node/entry
+# crictl, upstream's, which kind and its users run in a node against the
+# runtime's CRI, built from its module as the release builds it.
+crictl_src=$(GOFLAGS=-mod=mod go mod download -json "sigs.k8s.io/cri-tools@v1.35.0" | sed -n 's/.*"Dir": "\(.*\)",/\1/p')
+cp -R "$crictl_src" "$build/crictl-src"
+chmod -R u+w "$build/crictl-src"
+(cd "$build/crictl-src" && CGO_ENABLED=0 GOFLAGS=-mod=mod go build -o "$build/crictl" ./cmd/crictl)
+gnutar=$(pkg_with gnutar tar)
 k8s_version=$("$k8s/bin/kubeadm" version -o short)
 "$k8s/bin/kubeadm" config images list --kubernetes-version="$k8s_version" > "$build/kubeadm-images"
 : > "$build/kind-images.txt"
@@ -580,14 +589,16 @@ for c in kube-apiserver kube-controller-manager kube-scheduler etcd pause; do
 done
 cat "$build/kind-images.txt"
 echo "$k8s_version" > "$build/kind-version"
-closure "$coreutils" $(nix-store -qR "$k8s" "$kubelet" | grep -v -e "^$k8s$" -e "^$kubelet$") > "$build/kind-node.closure"
+closure "$coreutils" "$gnutar" $(nix-store -qR "$k8s" "$kubelet" | grep -v -e "^$k8s$" -e "^$kubelet$") > "$build/kind-node.closure"
 images=()
 for c in kube-apiserver kube-controller-manager kube-scheduler etcd pause; do
   images+=(-file "/kind/images/$c.tar=$out/$c.tar")
 done
-mkimage $(accounts kind-node) -spec images/kind-node/image.json -closure "$build/kind-node.closure" -pkg "$coreutils" \
+mkimage $(accounts kind-node) -spec images/kind-node/image.json -closure "$build/kind-node.closure" -pkg "$coreutils" -pkg "$gnutar" \
   -file "/usr/local/bin/entrypoint=$build/kind-node-entry" -file "/usr/local/bin/kubeadm=$build/kind-node-entry" \
-  -file "/usr/local/bin/cp=$build/kind-node-entry" \
+  -file "/usr/local/bin/cp=$build/kind-node-entry" -file "/usr/local/bin/ctr=$build/kind-node-entry" \
+  -file "/usr/local/bin/containerd=$build/kind-node-entry" -file "/usr/local/bin/journalctl=$build/kind-node-entry" \
+  -file "/usr/local/bin/crictl=$build/kind-node-entry" -file "/usr/local/libexec/fws/crictl=$build/crictl" \
   -file "/usr/local/libexec/fws/kubeadm=$k8s/bin/kubeadm" -file "/usr/local/bin/kubectl=$k8s/bin/kubectl" \
   -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" -file "/usr/local/bin/fws-kube-proxy=$build/fws-kube-proxy" \
   -file "/kind/version=$build/kind-version" -file "/kind/images.txt=$build/kind-images.txt" "${images[@]}" \

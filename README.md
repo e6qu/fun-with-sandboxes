@@ -265,9 +265,14 @@ node. kubeadm skips its
 kube-proxy and CoreDNS addons, whose Linux images a node has no use for;
 kind's CNI manifest is a binding that lets `fws-kube-proxy` read
 Services, and its storage class uses the controller manager's host-path
-provisioner. Multi-node clusters (`kind create cluster --config`) and the
-API server on the host's loopback port kind publishes work as with
-kindest/node; [LIMITATIONS.md](LIMITATIONS.md) lists what differs.
+provisioner. Multi-node clusters (`kind create cluster --config`), the
+API server on the host's loopback port kind publishes, node ports a node
+publishes through `extraPortMappings`, `kind load docker-image`,
+`kind export logs` and `kind delete cluster` work as with kindest/node:
+the node's `ctr`, `containerd` and `journalctl` stand in for those kind
+runs against containerd and systemd, and its `crictl` is upstream's,
+against the node's engine. [LIMITATIONS.md](LIMITATIONS.md) lists what
+differs.
 
 ## Develop
 

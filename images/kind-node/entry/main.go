@@ -1,5 +1,5 @@
-// Command entry is fws/kind-node's init, its kubeadm and its cp, by the
-// name it runs as.
+// Command entry is fws/kind-node's init, its kubeadm and cp, and its
+// ctr, containerd and journalctl (tools.go), by the name it runs as.
 //
 // As the entrypoint it does what systemd and its units do in kind's
 // kindest/node: it tells kind the node is up, gives the engine fwsd nests
@@ -68,12 +68,32 @@ func main() {
 		kubeadm(os.Args[1:])
 	case "cp":
 		cp(os.Args[1:])
+	case "journalctl":
+		os.Exit(journalctl(os.Args[1:], os.Stdout))
+	case "containerd":
+		os.Exit(containerd(os.Args[1:], os.Stdout))
+	case "crictl":
+		crictl(os.Args[1:])
+	case "ctr":
+		engine := os.Getenv("FWS_ENGINE")
+		if engine == "" {
+			engine = criSocket
+		}
+		os.Exit(ctr(engineClient(engine), os.Args[1:], os.Stdin, os.Stdout))
 	}
 	log.SetPrefix("fws-kind-node: ")
 	engine := os.Getenv("FWS_ENGINE")
 	if engine == "" {
 		log.Fatal("the node needs its own engine: run it --privileged, as kind does")
 	}
+	// The node's output goes to its log too, which journalctl reads, as
+	// systemd's journal holds it.
+	journal, err := openLog(journalLog)
+	if err != nil {
+		log.Fatal(err)
+	}
+	stdout := io.MultiWriter(os.Stdout, journal)
+	log.SetOutput(io.MultiWriter(os.Stderr, journal))
 	if err := os.MkdirAll(filepath.Dir(criSocket), 0o755); err != nil {
 		log.Fatal(err)
 	}
@@ -84,20 +104,20 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	// kind waits for systemd's word before it runs commands in the node.
-	fmt.Println("Reached target Multi-User System.")
+	fmt.Fprintln(stdout, "Reached target Multi-User System.")
 	if err := loadImages(engineClient(engine)); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Loaded the control plane's images.")
+	fmt.Fprintln(stdout, "Loaded the control plane's images.")
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		supervise(ctx, "kubelet", kubeletReady, func() []string { return kubeletArgs(engine) })
+		supervise(ctx, "kubelet", stdout, kubeletReady, func() []string { return kubeletArgs(engine) })
 	}()
 	go func() {
 		defer wg.Done()
-		supervise(ctx, "fws-kube-proxy", func() bool { return exists(kubeletKubeconfig) }, func() []string {
+		supervise(ctx, "fws-kube-proxy", stdout, func() bool { return exists(kubeletKubeconfig) }, func() []string {
 			return []string{"fws-kube-proxy", "--kubeconfig=" + kubeletKubeconfig}
 		})
 	}()
@@ -223,10 +243,25 @@ func parseFlags(b []byte) []string {
 	return out
 }
 
+// openLog opens the log name under logDir for appending.
+func openLog(name string) (*os.File, error) {
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(filepath.Join(logDir, name), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+}
+
 // supervise runs the command args gives once ready reports true, and runs
 // it again a second after it exits, as systemd restarts the kubelet, until
-// ctx ends.
-func supervise(ctx context.Context, name string, ready func() bool, args func() []string) {
+// ctx ends. Its output goes to out and to its unit's log.
+func supervise(ctx context.Context, name string, out io.Writer, ready func() bool, args func() []string) {
+	unit, err := openLog(name + ".log")
+	if err != nil {
+		log.Printf("%s: %v", name, err)
+	} else {
+		defer unit.Close()
+		out = io.MultiWriter(out, unit)
+	}
 	for ctx.Err() == nil {
 		if !ready() {
 			sleep(ctx, time.Second)
@@ -234,7 +269,7 @@ func supervise(ctx context.Context, name string, ready func() bool, args func() 
 		}
 		a := args()
 		cmd := exec.Command(a[0], a[1:]...)
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		cmd.Stdout, cmd.Stderr = out, out
 		if err := cmd.Start(); err != nil {
 			log.Printf("%s: %v", name, err)
 			sleep(ctx, time.Second)
@@ -319,10 +354,7 @@ func loadImages(api engineAPI) error {
 		if len(f) != 2 {
 			continue
 		}
-		repo, tag := f[1], "latest"
-		if i := strings.LastIndex(repo, ":"); i > strings.LastIndex(repo, "/") {
-			repo, tag = repo[:i], repo[i+1:]
-		}
+		repo, tag := splitRef(f[1])
 		q := url.Values{"repo": {repo}, "tag": {tag}}
 		if err := api.post("/images/"+f[0]+"/tag?"+q.Encode(), nil); err != nil {
 			return fmt.Errorf("naming %s %s: %w", f[0], f[1], err)

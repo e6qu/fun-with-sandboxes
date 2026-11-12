@@ -173,7 +173,13 @@ dependency order:
    read-only `/lib/modules` bind.
 7. **Tests**: kind's own create, load-image, export-logs and delete
    flows, `kubectl apply` of a Deployment and Service reached from the
-   host, and Testcontainers' k3s module, on the macOS runner.
+   host, and Testcontainers' k3s module, on the macOS runner. Done so
+   far: `TestKindCluster` creates a two-node cluster, loads images with
+   `kind load docker-image`, reaches a Deployment through its Service
+   from a pod and through its node port from the host, which the worker
+   publishes as `extraPortMappings` asks, exports the logs and deletes
+   the cluster. Testcontainers' k3s module runs `rancher/k3s`, a Linux
+   image; it needs an `fws/k3s` built as `fws/kind-node` is.
 
 ## Remaining work
 
