@@ -54,8 +54,20 @@ func TestKindCluster(t *testing.T) {
 				t.Logf("kubectl %s:\n%s", strings.Join(args, " "), tail(out, 120))
 			}
 		}
-		if err := provider.Delete(name, kubeconfig); err != nil {
-			t.Errorf("kind delete cluster: %v", err)
+		// A delete that never ends stops the suite; fwsd's goroutines,
+		// which SIGQUIT writes to its log, show where it waits.
+		deleted := make(chan error, 1)
+		go func() { deleted <- provider.Delete(name, kubeconfig) }()
+		select {
+		case err := <-deleted:
+			if err != nil {
+				t.Errorf("kind delete cluster: %v", err)
+			}
+		case <-time.After(5 * time.Minute):
+			t.Errorf("kind delete cluster did not end in 5 minutes; fwsd's goroutines follow in its log")
+			exec.Command("pkill", "-QUIT", "-f", fwsdBin).Run()
+			time.Sleep(10 * time.Second)
+			return
 		}
 		for _, n := range nodes {
 			if out, err := docker(t, "inspect", n); err == nil {
@@ -145,7 +157,8 @@ func TestKindCluster(t *testing.T) {
 		t.Errorf("the Deployment's pods ran on %q", out)
 	}
 	mustKubectl("expose", "deployment/web", "--port=80")
-	mustKubectl("run", "fetcher", "--image=fws/toolbox:1", "--restart=Never", "--", "fetch", "http://web.default.svc.cluster.local/")
+	// The fetch restarts until fws-kube-proxy has passed the Service on.
+	mustKubectl("run", "fetcher", "--image=fws/toolbox:1", "--restart=OnFailure", "--", "fetch", "http://web.default.svc.cluster.local/")
 	if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/fetcher"); err != nil {
 		out, _ := kubectl("logs", "fetcher")
 		t.Errorf("a pod fetching the Service: %v\n%s", err, out)
