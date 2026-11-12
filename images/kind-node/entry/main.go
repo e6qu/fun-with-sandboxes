@@ -1,5 +1,5 @@
-// Command entry is fws/kind-node's init and its kubeadm, by the name it
-// runs as.
+// Command entry is fws/kind-node's init, its kubeadm and its cp, by the
+// name it runs as.
 //
 // As the entrypoint it does what systemd and its units do in kind's
 // kindest/node: it tells kind the node is up, gives the engine fwsd nests
@@ -13,6 +13,12 @@
 // addons at init: fws-kube-proxy keeps the node engine's services to the
 // cluster's, and the container library resolves cluster names, so the
 // Linux images those addons run have no use here.
+//
+// As cp it copies its standard input to a file, as kind writes files into
+// a node with cp /dev/stdin FILE, and runs coreutils' cp for anything
+// else: an exec's standard input is a socket, which macOS's stat of
+// /dev/stdin and fstat of the descriptor that opens it name apart, so
+// coreutils' cp takes it for a file replaced while it copied.
 package main
 
 import (
@@ -57,8 +63,11 @@ const (
 
 func main() {
 	log.SetFlags(0)
-	if filepath.Base(os.Args[0]) == "kubeadm" {
+	switch filepath.Base(os.Args[0]) {
+	case "kubeadm":
 		kubeadm(os.Args[1:])
+	case "cp":
+		cp(os.Args[1:])
 	}
 	log.SetPrefix("fws-kind-node: ")
 	engine := os.Getenv("FWS_ENGINE")
@@ -124,6 +133,40 @@ func kubeadmArgs(args []string) []string {
 		}
 	}
 	return append(rest, "--skip-phases="+skip)
+}
+
+// coreutilsCp is the cp cp runs for what it does not copy itself.
+const coreutilsCp = "/bin/cp"
+
+// cp copies standard input to the file args names, given as /dev/stdin
+// FILE, and runs coreutils' cp with any other arguments.
+func cp(args []string) {
+	if len(args) == 2 && args[0] == "/dev/stdin" {
+		if err := copyStdin(args[1]); err != nil {
+			log.Fatalf("cp: %v", err)
+		}
+		os.Exit(0)
+	}
+	if err := syscall.Exec(coreutilsCp, append([]string{"cp"}, args...), os.Environ()); err != nil {
+		log.Fatalf("cp: %v", err)
+	}
+}
+
+// copyStdin writes standard input to dest, as cp writes a file: over an
+// existing file, keeping its mode, or as a new one with mode 0644.
+func copyStdin(dest string) error {
+	if fi, err := os.Stat(dest); err == nil && fi.IsDir() {
+		dest = filepath.Join(dest, "stdin")
+	}
+	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, os.Stdin); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func exists(p string) bool {
