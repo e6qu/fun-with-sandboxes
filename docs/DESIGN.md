@@ -200,7 +200,8 @@ same knobs, each enforced by a real mechanism or refused:
   as a `docker:dind` container runs dockerd (`internal/engine/nested.go`):
   the outer engine opens an `engine.Engine` whose state is under the
   container's directory and whose allocator holds a range of the outer
-  one's port blocks, and serves its API on a socket in the outer run
+  one's port blocks, cut into smaller blocks so it holds forty stacks, as
+  a kubelet's node makes one for each pod, and serves its API on a socket in the outer run
   directory (`FWS_ENGINE`), which the container's profile lets it reach
   and its `dockerd` relays from the listeners its flags name. macOS
   refuses `sandbox_init` in a process already under a profile that denies

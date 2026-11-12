@@ -62,6 +62,19 @@ const EngineVar = "FWS_ENGINE"
 // engine takes for its stacks.
 const nestedBlocks = 4
 
+// nestedStacks is how many stacks a nested engine's range holds: a
+// kubelet's node makes one for each pod's sandbox, which keeps it until the
+// pod is gone, so the outer engine's blocks are cut smaller. A stack's
+// ports hold only what it publishes and its UDP flows' sources, as the
+// ports its members listen on are Unix sockets.
+const nestedStacks = 40
+
+// nestedBlockSize is the block each of a nested engine's stacks holds, for
+// an outer block of size.
+func nestedBlockSize(size int) int {
+	return max(1, size*nestedBlocks/nestedStacks)
+}
+
 type nestedEngine struct {
 	e     *Engine
 	serve io.Closer
@@ -124,7 +137,7 @@ func (e *Engine) openNested(c *Container) error {
 	}
 	runDir := filepath.Join(e.runDir(), c.rec.ID[:12])
 	sub, err := Open(Config{
-		Root: filepath.Join(c.dir, "engine"), PortBase: base, PortLimit: limit, BlockSize: e.alloc.BlockSize(),
+		Root: filepath.Join(c.dir, "engine"), PortBase: base, PortLimit: limit, BlockSize: nestedBlockSize(e.alloc.BlockSize()),
 		Egress: e.cfg.Egress, LiveRestore: e.cfg.LiveRestore, Serve: e.cfg.Serve,
 		Nested: &Nested{
 			Library: lib, RunDir: runDir, StateRoot: e.stateRoot(),
