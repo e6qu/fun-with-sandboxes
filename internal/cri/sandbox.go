@@ -78,12 +78,16 @@ func (s *Service) RunPodSandbox(ctx context.Context, req *runtimeapi.RunPodSandb
 			config["Hostname"] = cfg.Hostname
 		}
 	}
-	if d := cfg.DnsConfig; d != nil {
-		host["Dns"], host["DnsSearch"], host["DnsOptions"] = d.Servers, d.Searches, d.Options
-	}
+	// The pod's DNS servers, search domains and options go unused: the
+	// container library resolves cluster names, Services' among them,
+	// through the host's resolver, and the engine refuses DNS servers of a
+	// container's own. A pod on the node's network has the node's ports.
 	exposed := map[string]struct{}{}
 	bindings := map[string][]map[string]string{}
 	for _, pm := range cfg.PortMappings {
+		if sc.HostNetwork {
+			break
+		}
 		port := fmt.Sprintf("%d/%s", pm.ContainerPort, strings.ToLower(pm.Protocol.String()))
 		exposed[port] = struct{}{}
 		if pm.HostPort > 0 {

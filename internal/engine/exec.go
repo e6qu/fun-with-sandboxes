@@ -45,8 +45,11 @@ func (e *Engine) ExecCreate(ref string, req container.ExecCreateRequest) (string
 	if len(req.Cmd) == 0 {
 		return "", invalid("No exec command specified")
 	}
-	if req.Privileged {
-		return "", unsupported("privileged exec is not supported")
+	// A privileged container's processes hold what privilege gives here,
+	// its engine's socket, so a privileged exec in one gains nothing more,
+	// as kind's commands in its nodes run.
+	if req.Privileged && !c.rec.HostConfig.Privileged {
+		return "", unsupported("privileged exec is supported only in a privileged container, whose processes hold its engine's socket; this engine grants no other privilege")
 	}
 	if err := e.checkUser(req.User); err != nil {
 		return "", err

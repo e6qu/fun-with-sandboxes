@@ -198,7 +198,7 @@ func (e *Engine) loadContainers() error {
 	stacks := map[string]bool{}
 	for _, c := range e.containers {
 		stacks[c.rec.Stack] = true
-		if c.rec.Address != "" || strings.HasPrefix(string(c.rec.HostConfig.NetworkMode), "container:") {
+		if c.rec.Address != "" || !onNetwork(c) {
 			continue
 		}
 		a, err := e.assignAddressLocked(c.rec.Stack)
@@ -277,6 +277,11 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err := checkHostConfig(req.HostConfig); err != nil {
 		return container.CreateResponse{}, err
 	}
+	// A nested engine puts a container on the host's network mode on the
+	// privileged container's network (below); another refuses the mode.
+	if _, node := e.hostNode(); req.HostConfig.NetworkMode == "host" && node == nil {
+		return container.CreateResponse{}, unsupported("network mode \"host\" is not supported: every container is confined to its own stack's ports")
+	}
 	switch {
 	case req.HostConfig.ShmSize < 0:
 		return container.CreateResponse{}, invalid("SHM size can not be less than 0")
@@ -348,6 +353,20 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	}
 	st.mark("clone")
 
+	// node is the privileged container a nested engine's container on the
+	// host's network mode shares the network of, read before this engine's
+	// lock, as the engine that runs it may hold its lock while it waits on
+	// this one's; the container stays in a stack of its own here.
+	var node *Container
+	var nodeHost, nodeDomain string
+	var nodeAddresses []string
+	if req.HostConfig.NetworkMode == "host" {
+		_, node = e.hostNode()
+		node.mu.Lock()
+		nodeHost, nodeDomain, nodeAddresses = hostnameOf(node), node.rec.Config.Domainname, firstAddresses(node.rec.Address, node.rec.Networks)
+		node.mu.Unlock()
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	st.mark("lock")
@@ -373,7 +392,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		net, stack = o, o.rec.Stack
 	}
 	networks := map[string]*network.EndpointSettings{}
-	if net == nil {
+	if net == nil && node == nil {
 		var err error
 		if networks, err = e.resolveNetworksLocked(stack, name, service, req); err != nil {
 			return container.CreateResponse{}, err
@@ -407,7 +426,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	}
 
 	ports := map[string]int{}
-	if string(req.HostConfig.NetworkMode) != "none" && net == nil {
+	// On the host's network a container's ports are the node's, as Docker
+	// discards the ports a container on the host's network publishes.
+	if string(req.HostConfig.NetworkMode) != "none" && net == nil && node == nil {
 		for _, p := range exposedPorts(cfg, req.HostConfig) {
 			// One host port serves a container port's TCP and UDP alike, so
 			// SANDBOX_PORT_<n> names it whatever the protocol.
@@ -419,7 +440,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		}
 	}
 	routerPort := 0
-	if string(req.HostConfig.NetworkMode) != "none" && net == nil {
+	if string(req.HostConfig.NetworkMode) != "none" && net == nil && node == nil {
 		if routerPort, err = e.alloc.Port(stack, portKey+"/router"); err != nil {
 			return container.CreateResponse{}, err
 		}
@@ -430,7 +451,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		return container.CreateResponse{}, err
 	}
 	address := ""
-	if net == nil {
+	if net == nil && node == nil {
 		if address, err = e.assignAddressLocked(stack); err != nil {
 			return container.CreateResponse{}, err
 		}
@@ -444,6 +465,15 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		// it would its UTS namespace's files in Docker.
 		hostname, domain, extraHosts, hostAddress = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks)
 		cfg.Hostname = hostname
+	}
+	if node != nil {
+		// And on the host's network, its hostname and hosts are the node's,
+		// unless it names a hostname of its own.
+		hostAddress = nodeAddresses
+		if hostname == "" {
+			hostname, domain = nodeHost, nodeDomain
+			cfg.Hostname = hostname
+		}
 	}
 	if hostname == "" {
 		hostname = id[:12]
@@ -517,15 +547,15 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	if id, err = id.AddGroups(c.root(), c.rec.HostConfig.GroupAdd); err != nil {
 		return nil, err
 	}
-	net, err := e.netOwner(c)
+	ne, net, err := e.netOf(c)
 	if err != nil {
 		return nil, err
 	}
-	links, err := e.linksOf(net)
+	links, err := ne.linksOf(net)
 	if err != nil {
 		return nil, err
 	}
-	env, err := e.environment(c, net, extra, tty, linkEnv(links))
+	env, err := e.environment(c, ne, net, extra, tty, linkEnv(links))
 	if err != nil {
 		return nil, err
 	}
@@ -572,13 +602,13 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	}
 	env = append(env, pathmap.PidsVar+"="+c.pidsPath())
 	if onNetwork(net) && net.rec.Address != "" {
-		nf, err := e.networkFile(net.rec.Stack)
+		nf, err := ne.networkFile(net.rec.Stack)
 		if err != nil {
 			return nil, err
 		}
 		env = append(env, pathmap.NetworkVar+"="+nf, pathmap.AddressVar+"="+net.rec.Address)
 		if net.rec.RouterPort != 0 {
-			env = append(env, pathmap.PortDirVar+"="+e.portDir(net), pathmap.RouterVar+"="+strconv.Itoa(net.rec.RouterPort))
+			env = append(env, pathmap.PortDirVar+"="+ne.portDir(net), pathmap.RouterVar+"="+strconv.Itoa(net.rec.RouterPort))
 		}
 	}
 	return env, nil
@@ -664,11 +694,6 @@ func checkHostConfig(hc *container.HostConfig) error {
 	case ipc == "", ipc == "private", ipc == "shareable", ipc == "host", ipc == "none", strings.HasPrefix(ipc, "container:"):
 	default:
 		return invalid("invalid IPC mode: %q", ipc)
-	}
-	mode := string(hc.NetworkMode)
-	switch {
-	case mode == "host":
-		return unsupported("network mode \"host\" is not supported: every container is confined to its own stack's ports")
 	}
 	for p, bs := range hc.PortBindings {
 		if p.Proto() != network.TCP && p.Proto() != network.UDP {
@@ -983,7 +1008,18 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 					return nil, invalid("invalid mount config for type \"bind\": bind source path does not exist: %s", m.Source)
 				}
 				if err := os.MkdirAll(src, 0o755); err != nil {
-					return nil, err
+					// A read-only bind of a path the host cannot hold, as
+					// kind binds /lib/modules, which macOS's sealed root
+					// refuses, mounts an empty directory: what the
+					// container reads there, Linux's kernel modules, the
+					// host has none of.
+					if m.RW || !(errors.Is(err, syscall.EROFS) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES)) {
+						return nil, err
+					}
+					src = filepath.Join(filepath.Dir(root), "absent", strings.ReplaceAll(strings.TrimPrefix(m.Destination, "/"), "/", "_"))
+					if err := os.MkdirAll(src, 0o555); err != nil {
+						return nil, err
+					}
 				}
 			}
 			if src, err = filepath.EvalSymlinks(src); err != nil {
@@ -1182,7 +1218,9 @@ func envName(s string) string {
 // with PATH mapped into the root, plus the variables through which the
 // service learns its root, its own ports and its peers' ports; net is the
 // container whose network it is on.
-func (e *Engine) environment(c, net *Container, extra []string, tty bool, links []string) ([]string, error) {
+// environment is c's environment on net's network, which engine ne runs:
+// its egress proxy and ports are net's stack's.
+func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []string, tty bool, links []string) ([]string, error) {
 	root := c.root()
 	vars := map[string]string{}
 	var order []string
@@ -1231,8 +1269,8 @@ func (e *Engine) environment(c, net *Container, extra []string, tty bool, links 
 	if _, prefix, err := e.ipcMode(c); err == nil && prefix != "" {
 		set("SANDBOX_IPC_PREFIX=" + prefix)
 	}
-	if port := e.egressPort(c.rec.Stack); port != 0 && e.hasEgress(c) {
-		member, password, err := e.egressCredentials(c.rec.Stack, net.rec.Address)
+	if port := ne.egressPort(net.rec.Stack); port != 0 && ne.hasEgress(net) {
+		member, password, err := ne.egressCredentials(net.rec.Stack, net.rec.Address)
 		if err != nil {
 			return nil, err
 		}
@@ -1338,29 +1376,36 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW})
 	}
 	// A container on another's network binds that one's ports and listens
-	// in its port directory, as processes of one network namespace do.
-	net, err := e.netOwner(c)
+	// in its port directory, as processes of one network namespace do; a
+	// nested engine's container on the host's network mode, the
+	// privileged container's, in that one's stack.
+	ne, net, err := e.netOf(c)
 	if err != nil {
 		return seatbelt.Spec{}, err
 	}
 	if net.rec.HostConfig.NetworkMode == "none" {
 		return spec, nil
 	}
-	nf, err := e.networkFile(net.rec.Stack)
+	if ne != e {
+		if s, err = ne.alloc.Stack(net.rec.Stack); err != nil {
+			return seatbelt.Spec{}, err
+		}
+	}
+	nf, err := ne.networkFile(net.rec.Stack)
 	if err != nil {
 		return seatbelt.Spec{}, err
 	}
 	spec.ReadFiles = append(spec.ReadFiles, nf)
 	if net.rec.RouterPort != 0 {
-		spec.PortDir = e.portDir(net)
+		spec.PortDir = ne.portDir(net)
 	}
 	for _, p := range sortedKeys(net.rec.Ports) {
 		spec.BindPorts = append(spec.BindPorts, net.rec.Ports[p])
 	}
 	// Every port of the stack's block is reachable except the egress proxy,
 	// which only containers with internet access may use.
-	proxy := e.egressPort(c.rec.Stack)
-	withEgress := e.hasEgress(c)
+	proxy := ne.egressPort(net.rec.Stack)
+	withEgress := ne.hasEgress(net)
 	for p := s.PortBase; p < s.PortBase+s.BlockSize; p++ {
 		if p == proxy && !withEgress {
 			continue
@@ -1413,7 +1458,7 @@ func (c *Container) start(e *Engine) error {
 	if len(argv) == 0 {
 		return invalid("no command specified")
 	}
-	if net, err := e.netOwner(c); err != nil {
+	if _, net, err := e.netOf(c); err != nil {
 		return err
 	} else if net != c && !net.isRunning() {
 		return conflict("cannot join network namespace of a non running container: %s", net.rec.ID)
@@ -1455,8 +1500,10 @@ func (c *Container) start(e *Engine) error {
 		return err
 	}
 	st.mark("files")
-	if e.hasEgress(c) {
-		if _, err := e.ensureEgress(c.rec.Stack); err != nil {
+	if ne, net, err := e.netOf(c); err != nil {
+		return err
+	} else if ne.hasEgress(net) {
+		if _, err := ne.ensureEgress(net.rec.Stack); err != nil {
 			return err
 		}
 	}

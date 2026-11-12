@@ -18,11 +18,11 @@ import (
 // Docker writes them for each run: those of the container whose network
 // it is on, with that container's legacy links.
 func (e *Engine) writeHosts(c *Container) error {
-	net, err := e.netOwner(c)
+	ne, net, err := e.netOf(c)
 	if err != nil {
 		return err
 	}
-	links, err := e.linksOf(net)
+	links, err := ne.linksOf(net)
 	if err != nil {
 		return err
 	}

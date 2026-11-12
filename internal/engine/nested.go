@@ -52,6 +52,10 @@ type Nested struct {
 	// with published (peers.go).
 	Publish func([]stackmembers.Member)
 	Peers   func() []stackmembers.Member
+	// Node is the engine that runs the privileged container, and the
+	// container: the network of a container on the host's network mode,
+	// as a kubelet's static pods run on their node's.
+	Node func() (*Engine, *Container)
 }
 
 // EngineVar gives a privileged container's processes the socket of its
@@ -146,6 +150,7 @@ func (e *Engine) openNested(c *Container) error {
 			Dial:    func(ap netip.AddrPort) (net.Conn, error) { return e.dialFrom(c, ap) },
 			Publish: func(ms []stackmembers.Member) { e.publishPeer(c, ms) },
 			Peers:   func() []stackmembers.Member { return e.peersOf(c.rec.ID) },
+			Node:    func() (*Engine, *Container) { return e, c },
 		},
 	})
 	if err != nil {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -68,12 +67,9 @@ func (s *Service) CreateContainer(ctx context.Context, req *runtimeapi.CreateCon
 		imageLabel:       cfg.Image.Image,
 		configLabel:      encodeLabel(containerRecord{Mounts: cfg.Mounts}),
 	}
-	// The pod's containers see its hostname, as containerd gives them.
-	hostname := sin.Config.Hostname
-	if sc.HostNetwork {
-		hostname, _ = os.Hostname()
-	}
-	env := []string{"HOSTNAME=" + hostname}
+	// The pod's containers see its hostname, as containerd gives them: on
+	// the node's network, the node's, which the engine gives its sandbox.
+	env := []string{"HOSTNAME=" + sin.Config.Hostname}
 	for _, kv := range cfg.Envs {
 		env = append(env, kv.Key+"="+string(kv.Value))
 	}
