@@ -105,11 +105,14 @@ func (s *Service) Close() {
 		s.streamHTTP.Close()
 	}
 	s.streamsMu.Unlock()
+	// The copies are stopped once the lock is let go: a copy that ends
+	// takes the lock to forget itself, and stop waits for it to end.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id, l := range s.logs {
+	logs := s.logs
+	s.logs = map[string]*logCopy{}
+	s.mu.Unlock()
+	for _, l := range logs {
 		l.stop()
-		delete(s.logs, id)
 	}
 }
 
