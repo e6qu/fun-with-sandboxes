@@ -1017,7 +1017,7 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 						return nil, err
 					}
 					src = filepath.Join(filepath.Dir(root), "absent", strings.ReplaceAll(strings.TrimPrefix(m.Destination, "/"), "/", "_"))
-					if err := os.MkdirAll(src, 0o555); err != nil {
+					if err := os.MkdirAll(src, 0o755); err != nil {
 						return nil, err
 					}
 				}
