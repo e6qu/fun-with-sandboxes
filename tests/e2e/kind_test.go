@@ -192,9 +192,20 @@ func TestKindCluster(t *testing.T) {
 
 	// kind export logs: each node's journal, the kubelet's log, its images
 	// by crictl and its /var/log.
+	for _, n := range nodes {
+		if out, err := docker(t, "exec", n, "crictl", "images"); err != nil || !strings.Contains(out, "fws/nginx") {
+			t.Errorf("crictl images in %s: %v\n%s", n, err, tail(out, 20))
+		}
+	}
 	logs := t.TempDir()
 	if err := provider.CollectLogs(name, logs); err != nil {
 		t.Errorf("kind export logs: %v", err)
+		for _, n := range nodes {
+			for _, f := range []string{"images.log", "journal.log", "kubelet.log"} {
+				b, _ := os.ReadFile(filepath.Join(logs, n, f))
+				t.Logf("%s's exported %s:\n%s", n, f, tail(string(b), 15))
+			}
+		}
 	}
 	for file, want := range map[string]string{
 		"kubelet.log":            "kubelet",
