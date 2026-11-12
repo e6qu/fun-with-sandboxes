@@ -541,7 +541,7 @@ networks:
 	if got := strings.TrimSpace(mustDocker(t, "network", "inspect", "-f", `{{.EnableIPv6}} {{range .IPAM.Config}}{{.Subnet}} {{end}}{{range .Containers}}{{if eq .Name "e2e-ipv6-api-1"}}{{.IPv6Address}}{{end}}{{end}}`, lan)); got != "true 172.30.6.0/24 fd00:30:6::/64 fd00:30:6::10/64" {
 		t.Errorf("network inspect of %s: %q", lan, got)
 	}
-	if got := strings.TrimSpace(mustDocker(t, "network", "inspect", "-f", `{{.EnableIPv6}} {{range .IPAM.Config}}{{.Subnet}} {{end}}`, auto6)); !strings.HasPrefix(got, "true 127.88.0.0/16 fd") || !strings.HasSuffix(got, "::/64") {
+	if got := strings.TrimSpace(mustDocker(t, "network", "inspect", "-f", `{{.EnableIPv6}} {{range .IPAM.Config}}{{.Subnet}} {{end}}`, auto6)); !strings.HasPrefix(got, "true 172.") || !strings.Contains(got, ".0.0/16 fd") || !strings.HasSuffix(got, "::/64") {
 		t.Errorf("network inspect of %s: %q", auto6, got)
 	}
 	if out := run("exec", "-T", "api", "python3", "-c", "print(open('/etc/hosts').read(), end='')"); !strings.Contains(out, "fd00:30:6::10\t") {

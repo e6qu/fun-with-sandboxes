@@ -1,0 +1,17 @@
+# fws/kind-node's network needs no CNI plugin: the engine fwsd nests in
+# each node puts its pods on the node's pod network, and fws-kube-proxy
+# keeps the engine's services to the cluster's. fws-kube-proxy runs as its
+# node, which this lets read Services and EndpointSlices, as kube-proxy's
+# own binding lets its service account.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fws:node-proxier
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:node-proxier
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: system:nodes

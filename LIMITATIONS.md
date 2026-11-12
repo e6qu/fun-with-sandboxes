@@ -63,7 +63,9 @@ machine — and from what macOS offers an unprivileged process under them.
   The catalog carries the API server, the controller manager, the
   scheduler and kubectl, which a control plane of containers runs as
   kubeadm's static pods do, and a kubelet for macOS; it carries no
-  kube-proxy, which programs Linux iptables. Upstream's images are
+  kube-proxy, which programs Linux iptables, nor CoreDNS:
+  `fws-kube-proxy` and the container library stand in for them, and
+  `fws/kind-node` puts them all in a kind node. Upstream's images are
   distroless, without a shell; the catalog's carry `/bin/sh` and
   `/bin/nc`, as all its images do.
 - **The kubelet applies no Linux settings to its containers.** On a darwin
@@ -243,7 +245,11 @@ machine — and from what macOS offers an unprivileged process under them.
   IPv6 address too, of the network's IPv6 subnet, or of a `/64` the
   engine takes from a unique local `/48` of its own, as dockerd does,
   where the network names none; `ipv6_address` or `--ip6` names one in a
-  subnet the network was created with. The container library resolves a
+  subnet the network was created with. A network with IPv6 and no IPv4
+  subnet named is dual-stack, as Docker's are: it takes an IPv4 subnet of
+  Docker's defaults, the first of `172.18.0.0/16` to `172.31.0.0/16` and
+  then `192.168.0.0/16`'s `/20`s that no network and no host interface
+  holds, as kind's `kind` network does. The container library resolves a
   member's names to its address on the first network the two share, and
   over IPv6 to its IPv6 address on the first such network that gives one,
   sorting a unique local IPv6 address after IPv4, as RFC 6724 does. It
@@ -361,6 +367,10 @@ machine — and from what macOS offers an unprivileged process under them.
     an IPv4 one bound after an IPv6-only one does too; each accepts
     connections of either family, as the one Unix socket carries them
     both. An IPv4 bind beside a dual-stack listener fails, as on Linux.
+    Listeners on one port at loopback and at the container's own address
+    share it the same way, as etcd's client listeners do; each accepts
+    connections to either address. A second listener at the same
+    address fails, as on Linux.
   - A UDP socket on such a port sends and receives with the socket and
     file calls, connected or not. Of IP-level control messages it takes
     those that report a datagram's destination, `IP_RECVDSTADDR`,
@@ -438,10 +448,31 @@ machine — and from what macOS offers an unprivileged process under them.
   container's own paths and publishes TCP ports in the container, on the
   container's host port for that port where it has one; it publishes no
   UDP ports. The nested engine takes four of the outer engine's port
-  blocks for its stacks, and stops its containers when the container
-  stops. A Linux `docker:dind`, KinD's `kindest/node` and Podman's own
-  engine run Linux images and namespaces, which need a VM; a KinD node
-  image built from macOS parts is on the roadmap (`PLAN.md`).
+  blocks, cut into forty stacks' blocks, and stops its containers when the
+  container stops. A container the nested engine runs on the host's
+  network mode (`--network host`, a pod's `hostNetwork`) is on the
+  privileged container's network: its ports, addresses, hostname and
+  router are that container's, as a Linux host's processes share its
+  network namespace; an engine that is not nested refuses the mode.
+  `docker exec --privileged` runs in a privileged container as any exec
+  does, its processes holding all that privilege gives here, and is
+  refused in another. A Linux `docker:dind`, kind's `kindest/node` and
+  Podman's own engine run Linux images and namespaces, which need a VM;
+  `fws/kind-node` is a kind node image built from macOS parts.
+- **kind runs on `fws/kind-node`.** `kind create cluster --image
+  fws/kind-node:1.35` brings up single- and multi-node clusters with
+  kind's docker provider, whose nodes carry no systemd or containerd:
+  the image's entrypoint runs the kubelet on what kubeadm writes, and its
+  `kubeadm` skips the kube-proxy and CoreDNS addons, so a cluster has no
+  `kube-proxy` DaemonSet and no `kube-dns` Service; `fws-kube-proxy`
+  serves Services, and the container library resolves cluster names.
+  kind's CNI manifest is a binding that lets each node's `fws-kube-proxy`
+  read Services as the node; its storage class uses the controller
+  manager's host-path provisioner. The control plane's images are the
+  catalog's under the names kubeadm writes (`/kind/images.txt`): etcd is
+  nixpkgs' 3.6 release under the tag kubeadm pins. `kind load`,
+  `kind export logs`, `--config` patches of containerd and IPv6 or
+  dual-stack clusters are not supported yet.
 - **Podman's pods share no namespaces.** A pod's infra container, which
   holds the namespaces its containers share, runs Podman's pause image,
   which the engine does not have, so a pod is created with
@@ -451,7 +482,8 @@ machine — and from what macOS offers an unprivileged process under them.
 - **Settings without a macOS counterpart are refused**, never ignored:
   DNS servers, search domains and options (a container resolves names
   through the host's resolver and reaches the internet through its
-  stack's egress proxy), `--oom-score-adj`, `--storage-opt`, cgroup
+  stack's egress proxy; the CRI drops a pod's, which the kubelet sends
+  for every pod), `--oom-score-adj`, `--storage-opt`, cgroup
   sharing and isolation technologies other than the default. `--cgroupns`
   takes Docker's values and changes nothing, as there are no cgroups to
   show.
@@ -497,6 +529,11 @@ machine — and from what macOS offers an unprivileged process under them.
   ownership options are refused, as nothing would hold them. The one
   memory-backed filesystem an unprivileged user can make, an `hdiutil` RAM
   disk, mounts system-wide under `/Volumes`, in Finder's sight.
+- **A bind's missing source is created, where the host lets it be.** A
+  `-v` bind of a path that does not exist makes the directory, as Docker
+  does; a read-only one of a path the host cannot hold, such as kind's
+  `/lib/modules` on macOS's sealed system volume, mounts an empty
+  directory instead, as a host without kernel modules has nothing there.
 - **Local volumes bind host directories or nothing else.** The local
   driver's `type=none,o=bind,device=<dir>` binds a host directory, which
   must exist; other filesystem types need root and are refused.

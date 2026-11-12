@@ -160,11 +160,17 @@ dependency order:
    server on the node container's networks; and the engines nested in
    containers that share a network hand one another their pods, so pods
    reach other nodes' pods, and Services other nodes' endpoints, over TCP.
-6. **`fws/kind-node`**: the node image kind expects, at its paths
+6. **`fws/kind-node`** (done): the node image kind expects, at its paths
    (`/kind/version`, the kubeadm configuration kind writes, the manifests
    directory), with kubeadm's phases run against the components above in
    place of systemd units, so `kind create cluster --image fws/kind-node`
-   brings up a single- and multi-node cluster.
+   brings up a single- and multi-node cluster. Its entrypoint loads the
+   control plane's images into the node's engine and keeps the kubelet
+   and `fws-kube-proxy` running; kubeadm's static pods run on the node
+   container's network, as a nested engine runs a container on the
+   host's network mode; and the engine serves what kind's docker provider
+   asks of it: privileged execs, a dual-stack `kind` network and the
+   read-only `/lib/modules` bind.
 7. **Tests**: kind's own create, load-image, export-logs and delete
    flows, `kubectl apply` of a Deployment and Service reached from the
    host, and Testcontainers' k3s module, on the macOS runner.

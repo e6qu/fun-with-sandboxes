@@ -327,7 +327,10 @@ func Render(s Spec) (string, error) {
 		w("(allow network-outbound (remote unix-socket (path-literal %q)))", sock)
 	}
 	w("(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/syslog\")))")
-	for _, p := range uniq(s.ConnectPorts) {
+	// A container reaches its own listeners on the ports it binds, as a
+	// published port outside its stack's block is, where kind publishes a
+	// node's API server.
+	for _, p := range uniq(append(append([]int{}, s.ConnectPorts...), s.BindPorts...)) {
 		w("(allow network-outbound (remote ip \"localhost:%d\"))", p)
 	}
 

@@ -562,4 +562,37 @@ mkimage $(accounts kubelet) -spec images/kubelet/image.json -closure "$build/kub
   -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" -file "/usr/local/bin/fws-kube-proxy=$build/fws-kube-proxy" \
   -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/kubelet.tar"
 
+# kind's node image from the parts above: kubeadm, the kubelet, kubectl
+# and fws-kube-proxy, the control plane's images, which the entrypoint
+# loads into the node's engine under the names kubeadm gives them, kind's
+# /kind/version and its manifests, and coreutils for the commands kind runs
+# in a node. kubeadm runs through the entrypoint, which skips the addons
+# whose Linux images a node has no use for, and so does the cp kind writes
+# files with, which copies standard input itself.
+go build -o "$build/kind-node-entry" ./images/kind-node/entry
+k8s_version=$("$k8s/bin/kubeadm" version -o short)
+"$k8s/bin/kubeadm" config images list --kubernetes-version="$k8s_version" > "$build/kubeadm-images"
+: > "$build/kind-images.txt"
+for c in kube-apiserver kube-controller-manager kube-scheduler etcd pause; do
+  name=$(grep -E "/$c:" "$build/kubeadm-images")
+  tag=$(tar -xOf "$out/$c.tar" manifest.json | sed -E 's/.*"RepoTags":\["([^"]+)".*/\1/')
+  echo "$tag $name" >> "$build/kind-images.txt"
+done
+cat "$build/kind-images.txt"
+echo "$k8s_version" > "$build/kind-version"
+closure "$coreutils" $(nix-store -qR "$k8s" "$kubelet" | grep -v -e "^$k8s$" -e "^$kubelet$") > "$build/kind-node.closure"
+images=()
+for c in kube-apiserver kube-controller-manager kube-scheduler etcd pause; do
+  images+=(-file "/kind/images/$c.tar=$out/$c.tar")
+done
+mkimage $(accounts kind-node) -spec images/kind-node/image.json -closure "$build/kind-node.closure" -pkg "$coreutils" \
+  -file "/usr/local/bin/entrypoint=$build/kind-node-entry" -file "/usr/local/bin/kubeadm=$build/kind-node-entry" \
+  -file "/usr/local/bin/cp=$build/kind-node-entry" \
+  -file "/usr/local/libexec/fws/kubeadm=$k8s/bin/kubeadm" -file "/usr/local/bin/kubectl=$k8s/bin/kubectl" \
+  -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" -file "/usr/local/bin/fws-kube-proxy=$build/fws-kube-proxy" \
+  -file "/kind/version=$build/kind-version" -file "/kind/images.txt=$build/kind-images.txt" "${images[@]}" \
+  -file "/kind/manifests/default-cni.yaml=$here/images/kind-node/manifests/default-cni.yaml" \
+  -file "/kind/manifests/default-storage.yaml=$here/images/kind-node/manifests/default-storage.yaml" \
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/kind-node.tar"
+
 ls -l "$out"

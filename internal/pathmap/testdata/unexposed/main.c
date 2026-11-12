@@ -258,6 +258,34 @@ int main(int argc, char **argv) {
         close(a6);
         close(a4);
     }
+    // A listener on loopback and one on the container's own address share
+    // a port, as etcd's client listeners do on Linux, and a client of the
+    // own address reaches the program; a second on loopback fails.
+    {
+        int l1 = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in w = {.sin_len = sizeof w, .sin_family = AF_INET, .sin_port = htons(7302)};
+        w.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        int b1 = bind(l1, (void *)&w, sizeof w) == 0 && listen(l1, 4) == 0;
+        int l2 = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in o = w;
+        inet_pton(AF_INET, "127.88.0.2", &o.sin_addr);
+        int b2 = bind(l2, (void *)&o, sizeof o), e2 = errno;
+        if (b2 == 0) listen(l2, 4);
+        int l3 = socket(AF_INET, SOCK_STREAM, 0);
+        int b3 = bind(l3, (void *)&w, sizeof w), e3 = errno;
+        int c = socket(AF_INET, SOCK_STREAM, 0);
+        int cc = connect(c, (void *)&o, sizeof o);
+        alarm(5);
+        int k = b2 == 0 && cc == 0 ? accept(l2, NULL, NULL) : -1;
+        alarm(0);
+        printf("own-beside-loopback=%s %s %s %s\n", b1 ? "loopback" : "loopback-failed", b2 == 0 ? "own" : strerror(e2),
+               k >= 0 ? "accepted" : "none", b3 == -1 && e3 == EADDRINUSE ? "EADDRINUSE" : "bound");
+        if (k >= 0) close(k);
+        close(c);
+        close(l3);
+        close(l2);
+        close(l1);
+    }
     char sf[128];
     sent(k, c, sf, sizeof sf);
     printf("sendfile-unix=%s\n", sf);

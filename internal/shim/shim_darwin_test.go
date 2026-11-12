@@ -143,7 +143,20 @@ func (h *harness) wait() Exit {
 	go func() {
 		e, err := h.client.Wait(nil)
 		if err != nil {
-			h.t.Error(err)
+			// A container that ended before Wait dialled took its shim's
+			// socket with it; the shim recorded the exit, as the engine
+			// reads it.
+			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+				r, rerr := ReadExit(h.cfg.ExitPath)
+				if rerr == nil {
+					e = r
+					break
+				}
+				if time.Now().After(deadline) {
+					h.t.Errorf("%v, and no exit recorded: %v", err, rerr)
+					break
+				}
+			}
 		}
 		got <- e
 	}()

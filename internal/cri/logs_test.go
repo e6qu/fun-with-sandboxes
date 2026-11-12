@@ -1,6 +1,7 @@
 package cri
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,5 +58,36 @@ func TestMatchesSelector(t *testing.T) {
 		if got := matchesSelector(labels, selector); got != want {
 			t.Errorf("selector %q: %v, want %v", sel, got, want)
 		}
+	}
+}
+
+// Close stops the log copies without holding the lock a copy that ends
+// takes to forget itself, as an engine nested in a node closes its CRI
+// while its pods' logs are copied.
+func TestCloseStopsLogCopies(t *testing.T) {
+	s := &Service{logs: map[string]*logCopy{}}
+	for _, id := range []string{"a", "b"} {
+		ctx, cancel := context.WithCancel(context.Background())
+		l := &logCopy{cancel: cancel, done: make(chan struct{})}
+		s.logs[id] = l
+		go func() {
+			defer close(l.done)
+			<-ctx.Done()
+			s.mu.Lock()
+			if s.logs[id] == l {
+				delete(s.logs, id)
+			}
+			s.mu.Unlock()
+		}()
+	}
+	closed := make(chan struct{})
+	go func() { s.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return")
+	}
+	if len(s.logs) != 0 {
+		t.Errorf("logs left: %v", s.logs)
 	}
 }

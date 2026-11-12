@@ -2,6 +2,7 @@ package engine
 
 import (
 	"crypto/sha256"
+	"net"
 	"net/netip"
 	"path/filepath"
 	"sort"
@@ -113,7 +114,21 @@ func (e *Engine) checkIPAMLocked(n *Network, ipam *network.IPAM, ipv4, ipv6 *boo
 			*slot = c
 		}
 	}
-	if v4 != nil {
+	if v4 == nil && n.EnableIPv6 {
+		// A network with IPv6 is dual-stack, as Docker's are: it takes an
+		// IPv4 subnet of the defaults too, so its members hold an address
+		// of each family on it, as kind's nodes need on its network.
+		subnet, err := e.autoSubnetLocked()
+		if err != nil {
+			return err
+		}
+		p, err := e.checkPoolLocked(network.IPAMConfig{Subnet: subnet})
+		if err != nil {
+			return err
+		}
+		p.Auto = true
+		n.Pool = p
+	} else if v4 != nil {
 		p, err := e.checkPoolLocked(*v4)
 		if err != nil {
 			return err
@@ -224,6 +239,45 @@ func (e *Engine) ulaPrefix() netip.Prefix {
 
 // ulaSubnetLocked is the lowest /64 of the engine's ULA prefix no
 // network's subnet overlaps.
+// autoSubnetLocked is the first of Docker's default IPv4 pools, past
+// docker0's 172.17.0.0/16, that no network holds and no interface of the
+// host's addresses lies in: 172.18.0.0/16 to 172.31.0.0/16, then the /20s
+// of 192.168.0.0/16.
+func (e *Engine) autoSubnetLocked() (netip.Prefix, error) {
+	var candidates []netip.Prefix
+	for b := 18; b <= 31; b++ {
+		candidates = append(candidates, netip.PrefixFrom(netip.AddrFrom4([4]byte{172, byte(b), 0, 0}), 16))
+	}
+	for b := 0; b < 256; b += 16 {
+		candidates = append(candidates, netip.PrefixFrom(netip.AddrFrom4([4]byte{192, 168, byte(b), 0}), 20))
+	}
+	var host []netip.Prefix
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			if ipn, ok := a.(*net.IPNet); ok {
+				if p, err := netip.ParsePrefix(ipn.String()); err == nil && p.Addr().Is4() {
+					host = append(host, p.Masked())
+				}
+			}
+		}
+	}
+next:
+	for _, c := range candidates {
+		for _, o := range e.networks {
+			if o.Pool.Subnet != "" && netip.MustParsePrefix(o.Pool.Subnet).Overlaps(c) {
+				continue next
+			}
+		}
+		for _, h := range host {
+			if h.Overlaps(c) {
+				continue next
+			}
+		}
+		return c, nil
+	}
+	return netip.Prefix{}, forbidden("could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network")
+}
+
 func (e *Engine) ulaSubnetLocked() (netip.Prefix, error) {
 	base := e.ulaPrefix().Addr().As16()
 	for id := 0; id < 1<<16; id++ {
@@ -256,7 +310,7 @@ func (e *Engine) assignNetAddressLocked(n *Network, id string, s *network.Endpoi
 	}
 	s.IPAddress, s.IPPrefixLen, s.Gateway, s.MacAddress = netip.Addr{}, 0, netip.Addr{}, nil
 	s.GlobalIPv6Address, s.GlobalIPv6PrefixLen, s.IPv6Gateway = netip.Addr{}, 0, netip.Addr{}
-	if (static4.IsValid() && n.Subnet == "") || (static6.IsValid() && (n.IPv6.Subnet == "" || n.IPv6.Auto)) {
+	if (static4.IsValid() && (n.Subnet == "" || n.Pool.Auto)) || (static6.IsValid() && (n.IPv6.Subnet == "" || n.IPv6.Auto)) {
 		return invalid("user specified IP address is supported only when connecting to networks with user configured subnets")
 	}
 	if n.Subnet != "" {
@@ -530,7 +584,7 @@ func (e *Engine) NetworkConnect(ref string, req network.ConnectRequest) error {
 	if err != nil {
 		return err
 	}
-	if strings.HasPrefix(string(c.rec.HostConfig.NetworkMode), "container:") {
+	if !onNetwork(c) && c.rec.HostConfig.NetworkMode != "none" {
 		return forbidden("container sharing network namespace with another container or host cannot be connected to any other network")
 	}
 	if _, err := e.checkNetworkLocked(n.Name); err != nil {

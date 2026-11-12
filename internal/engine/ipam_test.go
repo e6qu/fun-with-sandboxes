@@ -195,7 +195,8 @@ func TestIPv6Networks(t *testing.T) {
 	}
 
 	// Without a subnet of its own, a network takes /64s of the ULA prefix
-	// in turn.
+	// in turn, and an IPv4 subnet of Docker's defaults, as its networks
+	// with IPv6 are dual-stack.
 	ula := e.ulaPrefix()
 	if b := ula.Addr().As16(); ula.Bits() != 48 || b[0] != 0xfd {
 		t.Fatalf("ULA prefix %s", ula)
@@ -209,10 +210,16 @@ func TestIPv6Networks(t *testing.T) {
 		subnet := netip.MustParsePrefix(a.IPv6.Subnet)
 		b := ula.Addr().As16()
 		b[7] = byte(i)
-		if subnet != netip.PrefixFrom(netip.AddrFrom16(b), 64) || !a.IPv6.Auto || a.Subnet != "" {
+		v4 := netip.MustParsePrefix(a.Subnet)
+		if subnet != netip.PrefixFrom(netip.AddrFrom16(b), 64) || !a.IPv6.Auto || !a.Pool.Auto || !v4.Addr().IsPrivate() {
 			t.Errorf("%s took %+v", name, a)
 		}
-		if got := a.ipamConfig(); len(got) != 2 || got[0].Subnet.String() != memberSubnet || got[1].Subnet != subnet {
+		for _, o := range autos {
+			if netip.MustParsePrefix(o.Subnet).Overlaps(v4) {
+				t.Errorf("%s took %s, which %s holds", name, v4, o.Name)
+			}
+		}
+		if got := a.ipamConfig(); len(got) != 2 || got[0].Subnet != v4 || got[1].Subnet != subnet {
 			t.Errorf("%s reports %+v", name, got)
 		}
 		e.networks[a.ID] = a
@@ -245,7 +252,11 @@ func TestIPv6Networks(t *testing.T) {
 	if _, err := join(autos[0], "e", netip.MustParsePrefix(autos[0].IPv6.Subnet).Addr().Next().Next().String()); KindOf(err) != KindInvalid {
 		t.Errorf("a static IPv6 address on a network the engine chose the subnet of: %v", err)
 	}
-	if f, err := join(autos[0], "f", ""); err != nil || f.IPAddress.IsValid() || f.GlobalIPv6Address != netip.MustParsePrefix(autos[0].IPv6.Subnet).Addr().Next().Next() {
+	e4 := &network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: netip.MustParsePrefix(autos[0].Subnet).Addr().Next().Next()}}
+	if err := e.assignNetAddressLocked(autos[0], "e4", e4); KindOf(err) != KindInvalid {
+		t.Errorf("a static IPv4 address on a network the engine chose the subnet of: %v", err)
+	}
+	if f, err := join(autos[0], "f", ""); err != nil || f.IPAddress != netip.MustParsePrefix(autos[0].Subnet).Addr().Next().Next() || f.GlobalIPv6Address != netip.MustParsePrefix(autos[0].IPv6.Subnet).Addr().Next().Next() {
 		t.Errorf("a container on a network with an engine-chosen subnet: %+v, %v", f, err)
 	}
 

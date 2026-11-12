@@ -47,7 +47,32 @@ func (e *Engine) networkFile(stack string) (string, error) {
 // network, and not on another container's.
 func onNetwork(c *Container) bool {
 	m := string(c.rec.HostConfig.NetworkMode)
-	return m != "none" && !strings.HasPrefix(m, "container:")
+	return m != "none" && m != "host" && !strings.HasPrefix(m, "container:")
+}
+
+// hostNode is the privileged container an engine nested in it puts the
+// containers on the host's network mode on, and the engine that runs it,
+// or nil for an engine that is not nested, which refuses that mode.
+func (e *Engine) hostNode() (*Engine, *Container) {
+	if e.cfg.Nested == nil || e.cfg.Nested.Node == nil {
+		return nil, nil
+	}
+	return e.cfg.Nested.Node()
+}
+
+// netOf is the container whose network c is on and the engine that runs
+// it: netOwner's, or for a nested engine's container on the host's
+// network mode, the privileged container the engine is nested in, whose
+// ports, addresses and router its processes take as their own, as a
+// process on a Linux host's network namespace shares the host's.
+func (e *Engine) netOf(c *Container) (*Engine, *Container, error) {
+	if c.rec.HostConfig.NetworkMode == "host" {
+		if oe, node := e.hostNode(); node != nil {
+			return oe, node, nil
+		}
+	}
+	net, err := e.netOwner(c)
+	return e, net, err
 }
 
 // netOwner is the container whose network c is on: c, or with network mode
