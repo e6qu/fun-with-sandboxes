@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,11 @@ type Service struct {
 
 	mu   sync.Mutex
 	logs map[string]*logCopy
+
+	// podCIDR is the node's pod CIDR, from the kubelet, which the pod
+	// network takes as its subnet; netMu orders the network's changes.
+	netMu   sync.Mutex
+	podCIDR netip.Prefix
 
 	// rootUsage remembers what each image root an earlier store unpacked
 	// takes: the store names a root by its image's digest and never
@@ -237,8 +243,23 @@ func (s *Service) Status(ctx context.Context, req *runtimeapi.StatusRequest) (*r
 	return res, nil
 }
 
-// UpdateRuntimeConfig takes the node's pod CIDR, which the engine has no
-// use for: it gives each sandbox an address from its own pools.
+// UpdateRuntimeConfig takes the node's pod CIDR, which the controller
+// manager assigns the node: the pod network's subnet, from which each
+// sandbox takes its address.
 func (s *Service) UpdateRuntimeConfig(ctx context.Context, req *runtimeapi.UpdateRuntimeConfigRequest) (*runtimeapi.UpdateRuntimeConfigResponse, error) {
+	cidr := req.GetRuntimeConfig().GetNetworkConfig().GetPodCidr()
+	if cidr == "" {
+		return &runtimeapi.UpdateRuntimeConfigResponse{}, nil
+	}
+	p, err := podSubnet(cidr)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	s.netMu.Lock()
+	s.podCIDR = p
+	s.netMu.Unlock()
+	if err := s.ensurePodNetwork(); err != nil {
+		return nil, grpcError(err)
+	}
 	return &runtimeapi.UpdateRuntimeConfigResponse{}, nil
 }

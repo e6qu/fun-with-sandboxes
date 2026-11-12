@@ -69,8 +69,14 @@ func (s *Service) RunPodSandbox(ctx context.Context, req *runtimeapi.RunPodSandb
 	host := map[string]any{}
 	if sc.HostNetwork {
 		host["NetworkMode"] = "host"
-	} else if cfg.Hostname != "" {
-		config["Hostname"] = cfg.Hostname
+	} else {
+		if err := s.ensurePodNetwork(); err != nil {
+			return nil, grpcError(err)
+		}
+		host["NetworkMode"] = PodNetwork
+		if cfg.Hostname != "" {
+			config["Hostname"] = cfg.Hostname
+		}
 	}
 	if d := cfg.DnsConfig; d != nil {
 		host["Dns"], host["DnsSearch"], host["DnsOptions"] = d.Servers, d.Searches, d.Options

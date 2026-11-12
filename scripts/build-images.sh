@@ -32,7 +32,7 @@ case "${1:-}" in
 {{end}}{{range .HFiles}}{{$d}}/{{.}}
 {{end}}{{range .SFiles}}{{$d}}/{{.}}
 {{end}}{{range .EmbedFiles}}{{$d}}/{{.}}
-{{end}}{{end}}{{end}}' ./cmd/fws-mkimage ./images/... | sed "s|^$here/||"
+{{end}}{{end}}{{end}}' ./cmd/fws-mkimage ./cmd/fws-kube-proxy ./images/... | sed "s|^$here/||"
   } | sort -u
   exit
   ;;
@@ -55,6 +55,7 @@ mkdir -p "$out"
 cd "$here"
 
 go build -o "$build/fws-mkimage" ./cmd/fws-mkimage
+go build -o "$build/fws-kube-proxy" ./cmd/fws-kube-proxy
 go build -o "$build/postgres-entry" ./images/postgres/entry
 go build -o "$build/redis-entry" ./images/redis/entry
 go build -o "$build/nginx-entry" ./images/nginx/entry
@@ -558,7 +559,7 @@ mkimage $(accounts pause) -spec images/pause/image.json -closure "$build/pause.c
 kubelet=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/kubelet.nix --argstr nixpkgs "$nixpkgs")
 closure $(nix-store -qR "$kubelet" | grep -v "^$kubelet$") > "$build/kubelet.closure"
 mkimage $(accounts kubelet) -spec images/kubelet/image.json -closure "$build/kubelet.closure" \
-  -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" \
+  -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" -file "/usr/local/bin/fws-kube-proxy=$build/fws-kube-proxy" \
   -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/kubelet.tar"
 
 ls -l "$out"

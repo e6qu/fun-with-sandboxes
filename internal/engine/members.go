@@ -110,6 +110,7 @@ func (e *Engine) writeNetworkLocked(stack string) error {
 			return err
 		}
 	}
+	e.publishLocked()
 	return nil
 }
 
@@ -158,6 +159,12 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 			}
 		}
 	}
+	nets := map[string]bool{}
+	for _, o := range own {
+		for n := range o.rec.Networks {
+			nets[n] = true
+		}
+	}
 	byAddress := func(cs []*Container) {
 		sort.Slice(cs, func(i, j int) bool { return cs[i].rec.Address < cs[j].rec.Address })
 	}
@@ -189,6 +196,18 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 			}
 		}
 		ms = append(ms, member)
+	}
+	ms = append(ms, e.serviceMembers(nets)...)
+	// Other nodes' pods, on the networks of the same names.
+	if n := e.cfg.Nested; n != nil && n.Peers != nil {
+		for _, p := range n.Peers() {
+			for _, pn := range p.Networks {
+				if nets[pn] {
+					ms = append(ms, p)
+					break
+				}
+			}
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

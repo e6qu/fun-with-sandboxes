@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,7 +84,11 @@ func pki(t *testing.T, dir, server string) {
 		{"admin", "kubernetes-admin", "system:masters"},
 		{"controller-manager", "system:kube-controller-manager", ""},
 		{"scheduler", "system:kube-scheduler", ""},
-		{"kubelet", "system:node:node1", "system:nodes"},
+		{"node1", "system:node:node1", "system:nodes"},
+		{"node2", "system:node:node2", "system:nodes"},
+		// kube-proxy's user, whom the bootstrap policy's
+		// system:node-proxier binding lets watch services and endpoints.
+		{"kube-proxy", "system:kube-proxy", ""},
 	} {
 		subject := pkix.Name{CommonName: c.user}
 		if c.group != "" {
@@ -124,7 +129,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 		mustDocker(t, append([]string{"run", "-d", "--restart=on-failure", "--name", "e2e-" + name, "--network", network, "--network-alias", name,
 			"-v", dir + ":/etc/kubernetes/pki:ro"}, args...)...)
 	}
-	names := []string{"etcd", "kube-apiserver", "kube-controller-manager", "kube-scheduler", "kubelet"}
+	names := []string{"etcd", "kube-apiserver", "kube-controller-manager", "kube-scheduler", "kubelet", "kubelet2"}
 	defer func() {
 		if t.Failed() {
 			for _, n := range names {
@@ -163,6 +168,66 @@ func TestKubernetesControlPlane(t *testing.T) {
 		}
 		return string(out), nil
 	}
+	// nodeSock is node1's engine's socket, once node1 joins.
+	var nodeSock string
+	// On a failure, the pods as the API server has them and their
+	// containers' logs, the last run's of a container that restarted.
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		if nodeSock != "" {
+			// What node1's engine holds, and nginx run on it outside a pod,
+			// on the pod network and in a pod's network, to tell where a
+			// pod's container fails.
+			node := func(args ...string) string {
+				out, err := docker(t, append([]string{"-H", "unix://" + nodeSock}, args...)...)
+				if err != nil {
+					return out + err.Error()
+				}
+				return out
+			}
+			ps := node("ps", "-a", "--format", "{{.ID}} {{.Names}} {{.Status}} {{.Ports}}")
+			t.Logf("node1's containers:\n%s", ps)
+			var pause string
+			for _, l := range strings.Split(ps, "\n") {
+				f := strings.Fields(l)
+				if len(f) < 2 || !(strings.HasPrefix(f[1], "k8s_nginx") || strings.HasPrefix(f[1], "k8s_POD_web")) {
+					continue
+				}
+				if strings.HasPrefix(f[1], "k8s_POD_web") && pause == "" {
+					pause = f[0]
+				}
+				t.Logf("%s: %s", f[1], node("inspect", "-f", "exposed={{json .Config.ExposedPorts}} mode={{.HostConfig.NetworkMode}} ports={{json .NetworkSettings.Ports}} bindings={{json .HostConfig.PortBindings}}", f[0]))
+			}
+			for name, args := range map[string][]string{
+				"bridge": {},
+				"pods":   {"--network", "fws-pods"},
+				"in-pod": {"--network", "container:" + pause},
+			} {
+				if name == "in-pod" && pause == "" {
+					continue
+				}
+				c := "e2e-probe-nginx-" + name
+				node(append(append([]string{"run", "-d", "--name", c}, args...), "fws/nginx:1")...)
+				time.Sleep(5 * time.Second)
+				// nginx logs to stderr, which docker logs writes to its own.
+				logs, _ := exec.Command("docker", "-H", "unix://"+nodeSock, "logs", c).CombinedOutput()
+				t.Logf("nginx on node1's engine, %s: %s\n%s", name, node("inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", c), tail(string(logs), 10))
+				node("rm", "-f", c)
+			}
+		}
+		out, _ := kubectl("get", "pods", "-A", "-o", "wide")
+		t.Logf("pods:\n%s", out)
+		names, _ := kubectl("get", "pods", "-o", "jsonpath={range .items[*]}{.metadata.name} {end}")
+		for _, p := range strings.Fields(names) {
+			prev, _ := kubectl("logs", "--previous", "--all-containers", p)
+			cur, _ := kubectl("logs", "--all-containers", p)
+			t.Logf("%s: previous:\n%s\ncurrent:\n%s", p, tail(prev, 30), tail(cur, 30))
+		}
+		out, _ = kubectl("describe", "pods", "-l", "app=web")
+		t.Logf("web pods:\n%s", tail(out, 80))
+	}()
 	mustKubectl := func(args ...string) string {
 		t.Helper()
 		out, err := kubectl(args...)
@@ -194,7 +259,10 @@ func TestKubernetesControlPlane(t *testing.T) {
 		"--bind-address=127.0.0.1", "--leader-elect=true", "--use-service-account-credentials=true",
 		"--service-account-private-key-file="+pkiDir+"sa.key", "--root-ca-file="+pkiDir+"ca.crt",
 		"--cluster-signing-cert-file="+pkiDir+"ca.crt", "--cluster-signing-key-file="+pkiDir+"ca.key",
-		"--controllers=*,bootstrapsigner,tokencleaner")
+		"--controllers=*,bootstrapsigner,tokencleaner",
+		// As kind's: each node takes a /24 of the cluster's pod subnet,
+		// which its runtime's pod network takes as its own.
+		"--allocate-node-cidrs=true", "--cluster-cidr=10.244.0.0/16")
 	run("kube-scheduler", "fws/kube-scheduler:1.35", "kube-scheduler",
 		"--kubeconfig="+pkiDir+"scheduler.conf",
 		"--authentication-kubeconfig="+pkiDir+"scheduler.conf", "--authorization-kubeconfig="+pkiDir+"scheduler.conf",
@@ -230,48 +298,116 @@ func TestKubernetesControlPlane(t *testing.T) {
 	// containers cannot reach: they resolve names through the host's
 	// resolver. An empty --resolv-conf would not: the kubelet then gives
 	// each pod 127.0.0.1 and the search domain ".".
-	mustDocker(t, "run", "-d", "--privileged", "--restart=on-failure", "--name", "e2e-kubelet", "--network", network, "--network-alias", "node1",
-		"-v", dir+":/etc/kubernetes/pki:ro", "--entrypoint", "/bin/sh", "fws/kubelet:1.35", "-c",
-		"exec kubelet --kubeconfig="+pkiDir+"kubelet.conf --container-runtime-endpoint=unix://$FWS_ENGINE --hostname-override=node1"+
-			" --cgroups-per-qos=false --enforce-node-allocatable= --fail-swap-on=false --eviction-hard='memory.available<10Mi' --resolv-conf=/dev/null"+
-			" --register-with-taints=e2e/loading=true:NoSchedule")
-	mustKubectl("wait", "--for=create", "--timeout=2m", "node/node1")
-	mustKubectl("wait", "--for=condition=Ready", "--timeout=2m", "node/node1")
-	if out := mustKubectl("get", "node/node1", "-o", "jsonpath={.status.nodeInfo.operatingSystem} {.status.nodeInfo.kubeletVersion} {.status.nodeInfo.containerRuntimeVersion}"); !strings.HasPrefix(out, "darwin v1.35.0 fun-with-sandboxes://") {
-		t.Errorf("the node's info: %q", out)
+	// joinNode starts a node's kubelet, and fws-kube-proxy beside it,
+	// which keeps the node engine's services to the cluster's as
+	// kube-proxy keeps a node's; loads the images its pods run into the
+	// node's engine; and lifts its taint. It returns the socket of the
+	// node's engine.
+	joinNode := func(node, container string) string {
+		t.Helper()
+		mustDocker(t, "run", "-d", "--privileged", "--restart=on-failure", "--name", container, "--network", network, "--network-alias", node,
+			"-v", dir+":/etc/kubernetes/pki:ro", "--entrypoint", "/bin/sh", "fws/kubelet:1.35", "-c",
+			"fws-kube-proxy --kubeconfig="+pkiDir+"kube-proxy.conf & "+
+				"exec kubelet --kubeconfig="+pkiDir+node+".conf --container-runtime-endpoint=unix://$FWS_ENGINE --hostname-override="+node+
+				" --cgroups-per-qos=false --enforce-node-allocatable= --fail-swap-on=false --eviction-hard='memory.available<10Mi' --resolv-conf=/dev/null"+
+				" --register-with-taints=e2e/loading=true:NoSchedule")
+		mustKubectl("wait", "--for=create", "--timeout=2m", "node/"+node)
+		mustKubectl("wait", "--for=condition=Ready", "--timeout=2m", "node/"+node)
+		if out := mustKubectl("get", "node/"+node, "-o", "jsonpath={.status.nodeInfo.operatingSystem} {.status.nodeInfo.kubeletVersion} {.status.nodeInfo.containerRuntimeVersion}"); !strings.HasPrefix(out, "darwin v1.35.0 fun-with-sandboxes://") {
+			t.Errorf("%s's info: %q", node, out)
+		}
+		sock := strings.TrimSpace(mustDocker(t, "exec", container, "/bin/sh", "-c", "echo $FWS_ENGINE"))
+		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+		defer cancel()
+		save := exec.CommandContext(ctx, "docker", "save", "fws/pause:3.10.1", "fws/nginx:1", "fws/toolbox:1", "fws/kubectl:1.35")
+		load := exec.CommandContext(ctx, "docker", "-H", "unix://"+sock, "load")
+		pipe, err := save.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		load.Stdin = pipe
+		if err := save.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := load.CombinedOutput(); err != nil || save.Wait() != nil {
+			t.Fatalf("loading images into %s's engine: %v\n%s", node, err, out)
+		}
+		mustKubectl("taint", "nodes", node, "e2e/loading-")
+		return sock
 	}
-	sock := strings.TrimSpace(mustDocker(t, "exec", "e2e-kubelet", "/bin/sh", "-c", "echo $FWS_ENGINE"))
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-	defer cancel()
-	save := exec.CommandContext(ctx, "docker", "save", "fws/pause:3.10.1", "fws/nginx:1", "fws/toolbox:1")
-	load := exec.CommandContext(ctx, "docker", "-H", "unix://"+sock, "load")
-	pipe, err := save.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	load.Stdin = pipe
-	if err := save.Start(); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := load.CombinedOutput(); err != nil || save.Wait() != nil {
-		t.Fatalf("loading images into the node's engine: %v\n%s", err, out)
-	}
-	mustKubectl("taint", "nodes", "node1", "e2e/loading-")
+	sock := joinNode("node1", "e2e-kubelet")
+	nodeSock = sock
 	mustKubectl("rollout", "status", "--timeout=3m", "deployment/web")
 	pods := strings.Fields(mustKubectl("get", "pods", "-l", "app=web", "-o", "jsonpath={range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP} {end}"))
 	if len(pods) != 2 {
 		t.Fatalf("the Deployment's pods: %q", pods)
 	}
+	// Each pod's address is on the pod network, in its node's pod CIDR.
+	podCIDR := mustKubectl("get", "node/node1", "-o", "jsonpath={.spec.podCIDR}")
+	cidr, err := netip.ParsePrefix(podCIDR)
+	if err != nil || !netip.MustParsePrefix("10.244.0.0/16").Contains(cidr.Addr()) {
+		t.Fatalf("node1's pod CIDR: %q, %v", podCIDR, err)
+	}
 	for _, p := range pods {
 		f := strings.Split(p, "=")
-		if f[1] != "node1" || f[2] == "" {
-			t.Errorf("pod %s ran on %q with address %q", f[0], f[1], f[2])
+		a, err := netip.ParseAddr(f[2])
+		if f[1] != "node1" || err != nil || !cidr.Contains(a) {
+			t.Errorf("pod %s ran on %q with address %q, want one in %s", f[0], f[1], f[2], cidr)
 		}
+	}
+	// A pod reaches another at its address, as on a cluster's pod network.
+	target := strings.Split(pods[1], "=")[2]
+	mustKubectl("run", "fetcher", "--image=fws/toolbox:1", "--restart=Never", "--", "fetch", "http://"+target+"/")
+	if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/fetcher"); err != nil {
+		out, _ := kubectl("logs", "fetcher")
+		t.Errorf("a pod fetching http://%s/ from another: %v\n%s", target, err, out)
+	} else if out := mustKubectl("logs", "fetcher"); out != "200 OK\n" {
+		t.Errorf("a pod fetching http://%s/ from another: %q", target, out)
 	}
 	// kubectl exec reaches the runtime's stream server through the kubelet.
 	web := strings.Split(pods[0], "=")[0]
 	if out := mustKubectl("exec", web, "--", "/bin/sh", "-c", "echo inside $HOSTNAME"); out != "inside "+web+"\n" {
 		t.Errorf("kubectl exec: %q", out)
+	}
+	// A Service: pods reach it by its DNS name and at its cluster IP, and
+	// the engine carries each connection to one of its pods. A fetch
+	// restarts until fws-kube-proxy has passed the Service on.
+	mustKubectl("expose", "deployment/web", "--port=80", "--name=web")
+	clusterIP := mustKubectl("get", "service/web", "-o", "jsonpath={.spec.clusterIP}")
+	for name, url := range map[string]string{"by-name": "http://web.default.svc.cluster.local/", "by-ip": "http://" + clusterIP + "/"} {
+		pod := "service-" + name
+		mustKubectl("run", pod, "--image=fws/toolbox:1", "--restart=OnFailure", "--", "fetch", url)
+		if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/"+pod); err != nil {
+			out, _ := kubectl("logs", pod)
+			t.Errorf("a pod fetching the Service at %s: %v\n%s", url, err, out)
+		} else if out := mustKubectl("logs", pod); out != "200 OK\n" {
+			t.Errorf("a pod fetching the Service at %s: %q", url, out)
+		}
+	}
+	// A NodePort Service answers on the node: a container on the
+	// cluster's network reaches it at node1's port, as a client outside a
+	// kind cluster reaches a node's.
+	mustKubectl("expose", "deployment/web", "--type=NodePort", "--port=80", "--name=web-nodeport")
+	nodePort := mustKubectl("get", "service/web-nodeport", "-o", "jsonpath={.spec.ports[0].nodePort}")
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(2 * time.Second) {
+		out, err := docker(t, "run", "--rm", "--network", network, "fws/toolbox:1", "fetch", "http://node1:"+nodePort+"/")
+		if err == nil && out == "200 OK\n" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("node1's node port %s: %q, %v", nodePort, out, err)
+			break
+		}
+	}
+	// The kubernetes Service reaches the API server, beyond the pod
+	// network: an in-cluster client, kubectl with the pod's service
+	// account, asks for its health.
+	mustKubectl("run", "in-cluster", "--image=fws/kubectl:1.35", "--restart=OnFailure", "--command", "--", "kubectl", "get", "--raw", "/healthz")
+	if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/in-cluster"); err != nil {
+		out, _ := kubectl("logs", "in-cluster")
+		t.Errorf("kubectl in a pod, through the kubernetes Service: %v\n%s", err, out)
+	} else if out := mustKubectl("logs", "in-cluster"); out != "ok" && out != "ok\n" {
+		t.Errorf("kubectl in a pod, through the kubernetes Service: %q", out)
 	}
 	// The API server reads a pod's log from the kubelet, which reads the
 	// file the runtime writes.
@@ -279,6 +415,23 @@ func TestKubernetesControlPlane(t *testing.T) {
 	mustKubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/greeter")
 	if out := mustKubectl("logs", "greeter"); out != "from the node\n" {
 		t.Errorf("the greeter's log: %q", out)
+	}
+	// A second node: its pods reach node1's at their addresses, and the
+	// Service, whose pods are node1's, by name, as on a cluster's pod
+	// network across nodes.
+	joinNode("node2", "e2e-kubelet2")
+	if podCIDR2 := mustKubectl("get", "node/node2", "-o", "jsonpath={.spec.podCIDR}"); podCIDR2 == "" || podCIDR2 == podCIDR {
+		t.Errorf("node2's pod CIDR %q, beside node1's %q", podCIDR2, podCIDR)
+	}
+	for name, url := range map[string]string{"pod": "http://" + target + "/", "service": "http://web.default.svc.cluster.local/"} {
+		pod := "node2-to-" + name
+		mustKubectl("run", pod, "--image=fws/toolbox:1", "--restart=OnFailure", `--overrides={"spec":{"nodeName":"node2"}}`, "--", "fetch", url)
+		if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/"+pod); err != nil {
+			out, _ := kubectl("logs", pod)
+			t.Errorf("a pod on node2 fetching %s: %v\n%s", url, err, out)
+		} else if out := mustKubectl("logs", pod); out != "200 OK\n" {
+			t.Errorf("a pod on node2 fetching %s: %q", url, out)
+		}
 	}
 	mustKubectl("scale", "deployment/web", "--replicas=0")
 	mustKubectl("wait", "--for=delete", "--timeout=2m", "pod", "-l", "app=web")

@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	stackmembers "github.com/e6qu/fun-with-sandboxes/internal/members"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
@@ -39,6 +41,17 @@ type Nested struct {
 	// container's port p listens: the host port of that port, or, for a
 	// port without one, the directory of the container's Unix sockets.
 	Port func(p int) (hostPort int, dir string, err error)
+	// Dial connects to a port of a member the privileged container
+	// shares a network with, at its address on that network: how a
+	// nested engine's service reaches an endpoint beyond its own
+	// members, such as a cluster's API server.
+	Dial func(netip.AddrPort) (net.Conn, error)
+	// Publish hands the engine it is nested in this engine's members on
+	// networks with subnets of their own, as they change; Peers are those
+	// the engines nested in the containers its container shares a network
+	// with published (peers.go).
+	Publish func([]stackmembers.Member)
+	Peers   func() []stackmembers.Member
 }
 
 // EngineVar gives a privileged container's processes the socket of its
@@ -48,6 +61,19 @@ const EngineVar = "FWS_ENGINE"
 // nestedBlocks is how many of the outer engine's port blocks a nested
 // engine takes for its stacks.
 const nestedBlocks = 4
+
+// nestedStacks is how many stacks a nested engine's range holds: a
+// kubelet's node makes one for each pod's sandbox, which keeps it until the
+// pod is gone, so the outer engine's blocks are cut smaller. A stack's
+// ports hold only what it publishes and its UDP flows' sources, as the
+// ports its members listen on are Unix sockets.
+const nestedStacks = 40
+
+// nestedBlockSize is the block each of a nested engine's stacks holds, for
+// an outer block of size.
+func nestedBlockSize(size int) int {
+	return max(1, size*nestedBlocks/nestedStacks)
+}
 
 type nestedEngine struct {
 	e     *Engine
@@ -111,12 +137,15 @@ func (e *Engine) openNested(c *Container) error {
 	}
 	runDir := filepath.Join(e.runDir(), c.rec.ID[:12])
 	sub, err := Open(Config{
-		Root: filepath.Join(c.dir, "engine"), PortBase: base, PortLimit: limit, BlockSize: e.alloc.BlockSize(),
+		Root: filepath.Join(c.dir, "engine"), PortBase: base, PortLimit: limit, BlockSize: nestedBlockSize(e.alloc.BlockSize()),
 		Egress: e.cfg.Egress, LiveRestore: e.cfg.LiveRestore, Serve: e.cfg.Serve,
 		Nested: &Nested{
 			Library: lib, RunDir: runDir, StateRoot: e.stateRoot(),
-			Path: func(p string) (string, error) { return e.pathIn(c, p) },
-			Port: func(p int) (int, string, error) { return e.portIn(c, p) },
+			Path:    func(p string) (string, error) { return e.pathIn(c, p) },
+			Port:    func(p int) (int, string, error) { return e.portIn(c, p) },
+			Dial:    func(ap netip.AddrPort) (net.Conn, error) { return e.dialFrom(c, ap) },
+			Publish: func(ms []stackmembers.Member) { e.publishPeer(c, ms) },
+			Peers:   func() []stackmembers.Member { return e.peersOf(c.rec.ID) },
 		},
 	})
 	if err != nil {
@@ -130,6 +159,7 @@ func (e *Engine) openNested(c *Container) error {
 		return err
 	}
 	e.nested[c.rec.ID] = &nestedEngine{e: sub, serve: srv}
+	go e.refreshPeers("")
 	return nil
 }
 
@@ -143,6 +173,7 @@ func (e *Engine) closeNested(c *Container) {
 	if n == nil {
 		return
 	}
+	e.dropPeer(c)
 	n.serve.Close()
 	n.e.shutdown(true)
 	os.Remove(e.engineSocket(c))
@@ -228,30 +259,79 @@ const StreamPort = 10010
 // port, or for an engine nested in a privileged container, that
 // container's StreamPort on its loopback.
 func (e *Engine) ListenStreams() (net.Listener, string, error) {
-	n := e.cfg.Nested
-	if n == nil {
+	if e.cfg.Nested == nil {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return nil, "", err
 		}
 		return l, l.Addr().String(), nil
 	}
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(StreamPort))
-	hp, dir, err := n.Port(StreamPort)
+	l, err := e.listenOnNode(StreamPort)
+	return l, net.JoinHostPort("127.0.0.1", strconv.Itoa(StreamPort)), err
+}
+
+// listenOnNode listens on port p of the engine's node: for an engine
+// nested in a privileged container, that container's port p, where the
+// members of its networks reach it; else port p of the host's loopback.
+func (e *Engine) listenOnNode(p int) (net.Listener, error) {
+	n := e.cfg.Nested
+	if n == nil {
+		return net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
+	}
+	hp, dir, err := n.Port(p)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if dir == "" {
-		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
-		return l, addr, err
+		return net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
 	}
-	path := router.SocketPath(dir, StreamPort)
+	path := router.SocketPath(dir, p)
 	os.Remove(path)
 	l, err := net.Listen("unix", path)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	// The router writes each client's address before its stream, which
 	// the container library strips for a container's own listeners.
-	return router.Listener(l), addr, nil
+	return router.Listener(l), nil
+}
+
+// dialFrom connects to port ap.Port of the member at ap.Addr that
+// container c shares a network with: at its host port, or through its
+// router.
+func (e *Engine) dialFrom(c *Container, ap netip.AddrPort) (net.Conn, error) {
+	owner, err := e.netOwner(c)
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	var hp, rp int
+	found := false
+	for _, o := range e.containers {
+		if !o.isRunning() || !onNetwork(o) {
+			continue
+		}
+		for n, es := range o.rec.Networks {
+			if n == "none" || n == "host" || owner.rec.Networks[n] == nil || es == nil {
+				continue
+			}
+			if es.IPAddress == ap.Addr() || (o.rec.Address == ap.Addr().String()) {
+				hp, rp, found = o.rec.Ports[fmt.Sprintf("%d/tcp", ap.Port())], o.rec.RouterPort, true
+			}
+		}
+		if found {
+			break
+		}
+	}
+	e.mu.Unlock()
+	switch {
+	case !found:
+		// A pod of another node: another nested engine's member.
+		return e.dialPeer(owner, ap)
+	case hp != 0:
+		return net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hp)))
+	case rp != 0:
+		return router.Dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(rp)), int(ap.Port()))
+	}
+	return nil, fmt.Errorf("%s does not listen on port %d", ap.Addr(), ap.Port())
 }

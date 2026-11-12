@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -146,6 +147,79 @@ func TestCRIPodSandbox(t *testing.T) {
 		}
 		time.Sleep(time.Second)
 	}
+	// Another pod's sandbox reaches the pod at its address on the pod
+	// network.
+	if !netip.MustParsePrefix("10.244.0.0/16").Contains(netip.MustParseAddr(inspect.Status.Network.IP)) {
+		t.Errorf("the sandbox's address %s is not on the pod network", inspect.Status.Network.IP)
+	}
+	peerPod := writeJSON(t, filepath.Join(dir, "peer.json"), map[string]any{
+		"metadata": map[string]any{"name": "peer", "namespace": "e2e", "uid": "e2e-cri-peer", "attempt": 0},
+		"hostname": "peer", "log_directory": logs, "linux": map[string]any{},
+	})
+	peerSandbox := strings.TrimSpace(mustCrictl(t, "runp", peerPod))
+	defer func() {
+		crictl(t, "stopp", peerSandbox)
+		crictl(t, "rmp", peerSandbox)
+	}()
+	peerCfg := writeJSON(t, filepath.Join(dir, "peer-client.json"), map[string]any{
+		"metadata": map[string]any{"name": "peer-client"},
+		"image":    map[string]any{"image": "fws/toolbox:1"},
+		"args":     []string{"hold"},
+		"log_path": "peer-client.log",
+		"linux":    map[string]any{},
+	})
+	peerClient := strings.TrimSpace(mustCrictl(t, "create", peerSandbox, peerCfg, peerPod))
+	mustCrictl(t, "start", peerClient)
+	if out, err := crictl(t, "exec", "--sync", peerClient, "/toolbox", "fetch", "http://"+inspect.Status.Network.IP+":8080/healthz"); err != nil || !strings.Contains(out, "200") {
+		t.Errorf("another pod fetching the pod at %s: %v\n%s", inspect.Status.Network.IP, err, out)
+	}
+	// nginx, which listens on IPv4's and IPv6's wildcard addresses, serves
+	// on the pod network too.
+	nginxPod := writeJSON(t, filepath.Join(dir, "nginx-pod.json"), map[string]any{
+		"metadata": map[string]any{"name": "nginx", "namespace": "e2e", "uid": "e2e-cri-nginx", "attempt": 0},
+		"hostname": "nginx", "log_directory": logs, "linux": map[string]any{},
+	})
+	nginxSandbox := strings.TrimSpace(mustCrictl(t, "runp", nginxPod))
+	defer func() {
+		crictl(t, "stopp", nginxSandbox)
+		crictl(t, "rmp", nginxSandbox)
+	}()
+	nginxCfg := writeJSON(t, filepath.Join(dir, "nginx.json"), map[string]any{
+		"metadata": map[string]any{"name": "nginx"},
+		"image":    map[string]any{"image": "fws/nginx:1"},
+		"log_path": "nginx.log",
+		"linux":    map[string]any{},
+	})
+	nginxCtr := strings.TrimSpace(mustCrictl(t, "create", nginxSandbox, nginxCfg, nginxPod))
+	mustCrictl(t, "start", nginxCtr)
+	var nginxInspect struct {
+		Status struct {
+			Network struct {
+				IP string `json:"ip"`
+			} `json:"network"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(mustCrictl(t, "inspectp", "-o", "json", nginxSandbox)), &nginxInspect); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(time.Second) {
+		out, err := crictl(t, "exec", "--sync", peerClient, "/toolbox", "fetch", "http://"+nginxInspect.Status.Network.IP+"/")
+		if err == nil && strings.Contains(out, "200") {
+			break
+		}
+		if time.Now().After(deadline) {
+			logs, _ := crictl(t, "logs", nginxCtr)
+			state, _ := crictl(t, "inspect", "-o", "go-template", "--template", "{{.status.state}} {{.status.exitCode}} {{.status.reason}}", nginxCtr)
+			t.Errorf("another pod fetching nginx at %s: %v\n%s\nnginx (%s):\n%s", nginxInspect.Status.Network.IP, err, out, strings.TrimSpace(state), logs)
+			break
+		}
+	}
+	mustCrictl(t, "stopp", nginxSandbox)
+	mustCrictl(t, "rmp", nginxSandbox)
+
+	mustCrictl(t, "stopp", peerSandbox)
+	mustCrictl(t, "rmp", peerSandbox)
+
 	res, err := http.Get("http://127.0.0.1:" + strconv.Itoa(hostPort) + "/healthz")
 	if err != nil {
 		t.Fatalf("the sandbox's published port: %v", err)

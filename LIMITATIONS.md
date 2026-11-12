@@ -71,9 +71,29 @@ machine — and from what macOS offers an unprivileged process under them.
   upstream's kubelet sends none on an operating system it has no settings
   for: a container's `resources.limits` and `securityContext.runAsUser`
   take no effect, and the image's user runs it.
-- **A pod's address is its node's.** A pod sandbox takes its address on
-  the engine that runs it, which other nodes' and the host's engines do
-  not route to; cluster networking is on the roadmap.
+- **Pods reach other nodes' pods over TCP alone.** A pod sandbox takes
+  its address on its node's pod network, where the node's pods reach it,
+  and the pods of the nodes whose containers share a network with its
+  node's reach it there over TCP, through the routers; a datagram to
+  another node's pod is not carried. The host's engine does not route to
+  a pod's address. The pod network takes the IPv4 subnet of a dual-stack
+  pod CIDR alone, and keeps its subnet while any sandbox is on it, so a
+  pod CIDR the kubelet sends after its first pod starts applies once its
+  pods are gone.
+- **Services carry TCP.** `fws-kube-proxy` serves a Service's IPv4
+  cluster IP, its TCP ports and their node ports, which answer at the
+  node container's port, where the members of its networks reach them;
+  a node port reaches the host where the node container publishes it,
+  as kind's `extraPortMappings` do. UDP and SCTP ports, IPv6 cluster IPs,
+  external IPs, load balancers' external addresses, session affinity and
+  `ExternalName` Services are not served. An endpoint off the pod
+  network, such as the API server behind the `kubernetes` Service, is
+  reached on the node container's networks. A Service's short name
+  answers in every namespace, as the container library resolves names,
+  not a search path; a pod reaches another namespace's Service of the
+  same name by the name alone. Connections are balanced by turns, and a
+  refused endpoint passes to the next; the engine learns of a change
+  within the proxy's poll, a second by default.
 - **A container's view is presented by a library, not the kernel.** Every
   container process loads the engine's container library, which maps
   absolute paths into the container's root (as fakechroot does), presents
@@ -335,7 +355,12 @@ machine — and from what macOS offers an unprivileged process under them.
     the wildcard or the container's own is refused. A bind to port 0 takes
     a free port of the range macOS draws ephemeral ports from, 49152 to
     65535, the same way, as Seatbelt lets the kernel bind none but the
-    stack's ports.
+    stack's ports. A listener on IPv6's wildcard bound after the
+    program's IPv4 one on such a port shares it, as nginx's `listen 80`
+    and `listen [::]:80` do on Linux, whether or not it is IPv6-only, and
+    an IPv4 one bound after an IPv6-only one does too; each accepts
+    connections of either family, as the one Unix socket carries them
+    both. An IPv4 bind beside a dual-stack listener fails, as on Linux.
   - A UDP socket on such a port sends and receives with the socket and
     file calls, connected or not. Of IP-level control messages it takes
     those that report a datagram's destination, `IP_RECVDSTADDR`,
