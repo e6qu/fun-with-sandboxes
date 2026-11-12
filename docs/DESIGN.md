@@ -201,8 +201,8 @@ same knobs, each enforced by a real mechanism or refused:
   the outer engine opens an `engine.Engine` whose state is under the
   container's directory and whose allocator holds a range of the outer
   one's port blocks, cut into smaller blocks so it holds forty stacks, as
-  a kubelet's node makes one for each pod, and serves its API on a socket in the outer run
-  directory (`FWS_ENGINE`), which the container's profile lets it reach
+  a kubelet's node makes one for each pod, and serves its API on a socket
+  in the outer run directory (`FWS_ENGINE`), which the container's profile lets it reach
   and its `dockerd` relays from the listeners its flags name. macOS
   refuses `sandbox_init` in a process already under a profile that denies
   anything, so no engine inside the sandbox could confine containers; the
@@ -212,7 +212,11 @@ same knobs, each enforced by a real mechanism or refused:
   mounts, and publishes a port in the container: on the host port of the
   container's port, or on the Unix socket its port directory holds for a
   port without one, where the container's library connects to its own
-  loopback ports. It ends its containers when the container ends, and
+  loopback ports. A container it runs on the host's network mode, as a
+  kubelet's static pods are, takes the privileged container's network as
+  a container on another's does (`netOf`): the outer engine's network
+  file, port directory, router, ports and egress proxy for that
+  container, which its profile reaches. It ends its containers when the container ends, and
   goes with the container.
 - **Live restore.** The shim and each stack's egress proxy are processes of
   their own, so with `-live-restore` the engine stops without stopping its

@@ -69,6 +69,7 @@ builds for Linux alone:
 | `fws/etcd:3.6` | arguments to `etcd`, with `etcdctl` and `etcdutl`; clients on 2379, peers on 2380 |
 | `fws/kube-apiserver:1.35`, `fws/kube-controller-manager:1.35`, `fws/kube-scheduler:1.35`, `fws/kubectl:1.35` | Kubernetes 1.35.0, the release kind's node image ships, laid out as its release images are: the command and its flags, run through `/go-runner` (its `--log-file` and `--also-stdout`), with the binary in `/usr/local/bin`; the API server on 6443, the controller manager on 10257, the scheduler on 10259 |
 | `fws/kubelet:1.35` | Kubernetes 1.35.0's kubelet with its darwin parts (`images/kubernetes/kubelet-darwin.patch`): the node's capacity and use from macOS's kernel, and no cgroups; run privileged, it runs its pods on the engine nested in its container, through the CRI that engine serves at `$FWS_ENGINE` |
+| `fws/kind-node:1.35` | kind's node image from the parts above: `kind create cluster --image fws/kind-node:1.35` runs kubeadm, the kubelet and `fws-kube-proxy` in each node, with the control plane's images loaded into the node's engine under the names kubeadm gives them (see [kind](#kind)) |
 | `fws/pause:3.10.1` | Kubernetes' pause program, the infra container of a CRI pod sandbox |
 | `fws/consul:2.1` | `CONSUL_LOCAL_CONFIG`, `CONSUL_BIND_INTERFACE`, `CONSUL_CLIENT_INTERFACE`; arguments to `consul` (default `agent -dev -client 0.0.0.0`); HTTP on 8500, DNS on 8600 |
 | `fws/vault:2.0` | `VAULT_DEV_ROOT_TOKEN_ID`, `VAULT_DEV_LISTEN_ADDRESS`, `VAULT_LOCAL_CONFIG`, `VAULT_REDIRECT_INTERFACE`, `VAULT_CLUSTER_INTERFACE`; arguments to `vault` (default `server -dev`); port 8200 |
@@ -216,8 +217,13 @@ crictl --runtime-endpoint unix://$HOME/.fws/docker.sock pods
 ```
 
 A pod sandbox is an `fws/pause:3.10.1` container that holds the pod's
-network, published ports and DNS, and the pod's containers join that
-network, as cri-dockerd maps CRI onto Docker's. Every sandbox not on its
+network and published ports, and the pod's containers join that network,
+as cri-dockerd maps CRI onto Docker's; the container library resolves the
+pod's names, so its DNS servers go unused. A pod on its node's network
+(`hostNetwork`), as kubeadm's static pods are, shares the node
+container's ports, addresses and hostname: an engine nested in a
+privileged container runs a container on the host's network mode on that
+container's network. Every sandbox not on its
 node's network joins the engine's pod network, `fws-pods`, whose subnet is
 the node's pod CIDR from the kubelet (`10.244.0.0/16` until one arrives),
 so pods reach one another at their addresses, and the pods of every node
@@ -237,6 +243,31 @@ container's output to the log file the kubelet names, in CRI's format,
 and serves exec, attach and port-forward streams as containerd does: on a
 loopback port of the host, or for an engine nested in a privileged
 container, on that container's port 10010.
+
+## kind
+
+[kind](https://kind.sigs.k8s.io)'s docker provider drives the engine, with
+`fws/kind-node:1.35` as its node image:
+
+```bash
+export DOCKER_HOST=unix://$HOME/.fws/docker.sock
+kind create cluster --image fws/kind-node:1.35
+kubectl get nodes
+```
+
+Each node is a privileged container whose engine runs its pods. The
+node's entrypoint stands in for kindest/node's systemd: it loads the
+control plane's images into the node's engine under the names kubeadm
+gives them, runs the kubelet on the configuration `kubeadm init` and
+`kubeadm join` write, with the flags a node without cgroups takes, and
+`fws-kube-proxy` beside it, which reads the cluster's Services as the
+node. kubeadm skips its
+kube-proxy and CoreDNS addons, whose Linux images a node has no use for;
+kind's CNI manifest is a binding that lets `fws-kube-proxy` read
+Services, and its storage class uses the controller manager's host-path
+provisioner. Multi-node clusters (`kind create cluster --config`) and the
+API server on the host's loopback port kind publishes work as with
+kindest/node; [LIMITATIONS.md](LIMITATIONS.md) lists what differs.
 
 ## Develop
 

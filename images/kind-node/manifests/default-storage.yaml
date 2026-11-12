@@ -1,0 +1,10 @@
+# The default StorageClass: the controller manager's host-path
+# provisioner, which kind's configuration enables, provisions volumes in
+# the control-plane node.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: kubernetes.io/host-path
