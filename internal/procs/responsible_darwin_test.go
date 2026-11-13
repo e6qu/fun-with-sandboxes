@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -61,9 +62,10 @@ func TestKillEntriesEndsADaemonizedDescendant(t *testing.T) {
 	}
 	defer other.Process.Kill()
 
-	// While the main process lives, the daemon answers to it.
+	// While the main process lives, the daemon answers to it, as may the
+	// launcher, if it has yet to end.
 	pids, err := Responsible(main)
-	if err != nil || len(pids) != 1 || pids[0] != daemon {
+	if err != nil || !slices.Contains(pids, daemon) || slices.Contains(pids, other.Process.Pid) {
 		t.Fatalf("Responsible = %v, %v; want [%d] (the daemon answers to %d)", pids, err, daemon, libsystem.ResponsiblePID(daemon))
 	}
 	d, ok := Find(daemon)
