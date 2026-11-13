@@ -87,7 +87,7 @@ type Engine struct {
 	nodes     nodePeers
 	published []byte
 
-	mu         sync.Mutex
+	mu         timedMutex
 	containers map[string]*Container
 	volumes    map[string]*Volume
 	networks   map[string]*Network
@@ -146,6 +146,7 @@ func Open(cfg Config) (*Engine, error) {
 		networks:   map[string]*Network{},
 		execs:      map[string]*Exec{},
 	}
+	e.mu.timed = cfg.Debug
 	if cfg.Nested != nil {
 		e.libOnce.Do(func() { e.lib = cfg.Nested.Library })
 	}

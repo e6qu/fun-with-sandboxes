@@ -1137,3 +1137,32 @@ func TestProcessesOutsideTheGroupStayContained(t *testing.T) {
 		t.Fatalf("detached process %d outlived docker stop: kill(pid, 0) = %v", pid, err)
 	}
 }
+
+// A daemon started as pg_ctl starts PostgreSQL's server, in a session of
+// its own with a cleared environment and launchd as its parent, carries
+// neither the container's process group nor its tag; macOS still holds the
+// container's main process responsible for it, so docker top lists it and
+// docker stop ends it.
+func TestDaemonsStayContained(t *testing.T) {
+	const name = "fws-e2e-daemon"
+	mustDocker(t, "run", "-d", "--name", name, "fws/toolbox:1", "daemon")
+	defer docker(t, "rm", "-f", name)
+	waitLog(t, name, "daemonized")
+	var pid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(mustDocker(t, "logs", name)), "daemonized %d", &pid); err != nil || pid == 0 {
+		t.Fatalf("the container's log names no daemon: %v", err)
+	}
+	defer syscall.Kill(pid, syscall.SIGKILL)
+	if top := mustDocker(t, "top", name, "-o", "pid"); !strings.Contains(top, strconv.Itoa(pid)) {
+		t.Fatalf("docker top does not list daemon %d:\n%s", pid, top)
+	}
+	mustDocker(t, "stop", "--time", "1", name)
+	// launchd, its parent, reaps it a moment after it ends.
+	deadline := time.Now().Add(5 * time.Second)
+	for err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH); err = syscall.Kill(pid, 0) {
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon %d outlived docker stop: kill(pid, 0) = %v", pid, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

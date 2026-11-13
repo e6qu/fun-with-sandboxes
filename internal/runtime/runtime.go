@@ -224,3 +224,22 @@ func (p *Process) KillAll() {
 }
 
 const groupExitTimeout = 10 * time.Second
+
+// The roles of a container's exec anchor and of the launcher that starts
+// it, which run in the container's sandbox.
+const (
+	anchorLaunchRole = "anchor-launch"
+	anchorRole       = "anchor"
+)
+
+// IsAnchor reports whether env is the environment of a container's exec
+// anchor or its launcher: processes of the engine's in the container's
+// sandbox, which are not the container's own.
+func IsAnchor(env []string) bool {
+	for _, kv := range env {
+		if kv == RoleVar+"="+anchorRole || kv == RoleVar+"="+anchorLaunchRole {
+			return true
+		}
+	}
+	return false
+}

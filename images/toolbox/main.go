@@ -191,6 +191,36 @@ func run(op, arg string) error {
 		}
 		fmt.Println("detached", child.Pid)
 		hold()
+	case "daemon":
+		// Start a daemon as pg_ctl does: through a process that exits, so
+		// launchd becomes its parent, in a session of its own, with a
+		// cleared environment. Print its pid and stay running.
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		launcher, err := os.StartProcess(self, []string{self, "daemon-launch"}, &os.ProcAttr{
+			Env: []string{}, Files: []*os.File{nil, os.Stdout, os.Stderr}, Sys: &syscall.SysProcAttr{Setsid: true},
+		})
+		if err != nil {
+			return err
+		}
+		if st, err := launcher.Wait(); err != nil || !st.Success() {
+			return fmt.Errorf("the daemon's launcher: %v %v", st, err)
+		}
+		hold()
+	case "daemon-launch":
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		child, err := os.StartProcess(self, []string{self, "hold"}, &os.ProcAttr{
+			Env: []string{}, Files: []*os.File{nil, nil, nil},
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Println("daemonized", child.Pid)
 	case "hold":
 		hold()
 	case "alloc":

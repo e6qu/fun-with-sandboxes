@@ -197,16 +197,21 @@ ephemeral loopback port, which Seatbelt would then have to allow every
 container, beyond the ports it is granted; a record made after the
 connection would race the server's `accept`.
 
-Open bug: a container can leave processes behind when it ends. The shim
-ends the main process's group and every process whose environment carries
-the container's tag. PostgreSQL's `pg_ctl` starts the server in a session
-of its own, and the server writes its process titles over its arguments
-and environment, so the server and its children carry neither the group
-nor a readable tag. On CI, three children of the temporary server that
+A container could leave processes behind when it ended. The shim ended
+the main process's group and every process whose environment carried the
+container's tag. PostgreSQL's `pg_ctl` starts the server in a session of
+its own, and the server writes its process titles over its arguments and
+environment, so the server and its children carried neither the group nor
+a readable tag: on CI, three children of the temporary server that
 PostgreSQL's image runs to initialise the database outlived their
-container, with launchd as their parent. The fix is a mark the kernel
-keeps for the process's life, such as its Seatbelt sandbox, which every
-descendant inherits and none can drop.
+container, with launchd as their parent. The mark the kernel keeps for a
+process's life is its responsible process: the main process is spawned
+with its responsibility disclaimed, so macOS holds it responsible for
+every process started under it, its execs too, which the anchor it forked
+starts, and none of them can drop that. The shim now kills, after the group, every
+process the main process answers for, started no earlier than it and
+before any later process took its pid, and counts them against the
+container's limits; `top` and `stats` list them.
 
 ClickHouse's temporary init server took the SIGTERM its image's
 entrypoint sends once the init scripts ran, and its shutdown waited on its
@@ -435,8 +440,9 @@ Open bug: one start in an end-to-end run, of Testcontainers' reaper, took
 3.8 s in its `profile` step, which takes about 80 µs in every other
 start. The step reads the stack, IPC, shared-memory, PID-namespace and
 network records, most under the engine's lock, so another request may
-have held the lock that long; the debug log does not time the waits on
-it.
+have held the lock that long. With `-debug` the engine now logs a wait
+for its lock, or a hold of it, past 100 ms, with the function that waited
+or held it.
 
 Open bug: in one run, MongoDB's replica set with a root user failed as
 the image's `entry` created the root user: `mongosh`, started with

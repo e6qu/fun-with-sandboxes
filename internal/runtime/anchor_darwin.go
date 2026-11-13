@@ -22,8 +22,6 @@ import (
 // sandbox, starts an anchor: a process of the helper's binary, outside the
 // main process's tree, that starts each exec on the engine's request.
 const (
-	anchorLaunchRole = "anchor-launch"
-	anchorRole       = "anchor"
 	// anchorFD is the listening socket the anchor accepts requests on, in
 	// the spawn helper and in the anchor.
 	anchorFD = 4

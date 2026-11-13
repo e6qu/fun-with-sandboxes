@@ -268,15 +268,20 @@ func (s *server) run(report func(Ready)) (int, error) {
 		}()
 	}
 	s.enf = newEnforcer(cfg.Tag, proc.Pid(), cfg.Resources, traffic)
+	main := s.enf.mainProcess()
 	report(Ready{Pid: proc.Pid(), Ports: ports, Steps: strings.Join(steps, ", ")})
 	go s.accept(l)
 
 	<-proc.Done()
 	// The container ends with its main process: whatever it left running
 	// goes with it, in its process group or, having left the group, found
-	// by the tag its environment carries.
+	// by the main process macOS holds responsible for it, or by the tag its
+	// environment carries.
 	s.enf.close()
 	proc.KillAll()
+	if err := procs.KillResponsible(main); err != nil {
+		log.Printf("container %s: %v", cfg.ID, err)
+	}
 	if err := procs.KillTagged(cfg.Tag); err != nil {
 		log.Printf("container %s: %v", cfg.ID, err)
 	}

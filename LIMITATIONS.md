@@ -227,11 +227,17 @@ machine — and from what macOS offers an unprivileged process under them.
   user data.
 - **The host's system shell is executable**, because `popen()` and
   `system()` hard-code `/bin/sh`.
-- **A container's processes are those that started with its root in their
-  environment.** A process that leaves the container's process group, or its
-  session, keeps `SANDBOX_ROOT` in the environment it started with, so a
-  stop still kills it and `top` and `stats` still count it; only one that
-  executes a program with that variable cleared escapes the container.
+- **A container's processes are those macOS holds its main process
+  responsible for.** The main process is spawned with its responsibility
+  disclaimed, and the kernel holds it responsible for every process it and
+  its execs start, for that process's life: a daemon that starts a session
+  of its own, clears its environment and writes its title over its
+  arguments, as PostgreSQL's server does under `pg_ctl`, is still the
+  container's, so a stop kills it and `top` and `stats` count it. Only a
+  process spawned with its own responsibility disclaimed answers to itself,
+  as the containers of an engine nested in a privileged container do; those
+  keep `SANDBOX_ROOT` in the environment they started with, which the
+  engine also tells a container's processes by.
 
 ## Networking
 

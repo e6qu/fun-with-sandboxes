@@ -15,6 +15,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
 	"github.com/e6qu/fun-with-sandboxes/internal/netstat"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
+	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 )
 
 // The enforcer's cadence: the CPU period, as the kernel's default CFS
@@ -33,6 +34,9 @@ const (
 type enforcer struct {
 	tag  string
 	main int
+	// mainEntry is the main process as the first scan found it, which the
+	// container's other processes answer to.
+	mainEntry procs.Entry
 
 	mu       sync.Mutex
 	res      Resources
@@ -190,6 +194,17 @@ func (e *enforcer) scanLocked() {
 			delete(e.others, pid)
 		}
 	}
+	if e.mainEntry.PID == 0 {
+		if p, ok := live[e.main]; ok {
+			e.mainEntry = p
+		} else {
+			e.mainEntry = procs.Entry{PID: e.main}
+		}
+	}
+	var reused int64
+	if p, ok := live[e.main]; ok && p.Start != e.mainEntry.Start {
+		reused = p.Start
+	}
 	var added []int
 	for _, p := range es {
 		if _, ok := e.members[p.PID]; ok {
@@ -199,7 +214,7 @@ func (e *enforcer) scanLocked() {
 			continue
 		}
 		_, parent := e.members[p.PPID]
-		if p.PGID == e.main || parent || e.tagged(p.PID) {
+		if p.PGID == e.main || parent || e.answers(p, reused) || e.tagged(p.PID) {
 			e.members[p.PID] = &member{start: p.Start}
 			added = append(added, p.PID)
 			e.watchLocked(p.PID)
@@ -218,6 +233,16 @@ func (e *enforcer) scanLocked() {
 		pids = append(pids, pid)
 	}
 	e.net.SetMembers(pids)
+}
+
+// answers reports whether macOS holds the main process responsible for p,
+// as it does each of the container's processes, the exec anchor aside.
+func (e *enforcer) answers(p procs.Entry, reused int64) bool {
+	if !procs.Answers(p, e.mainEntry, reused) {
+		return false
+	}
+	env, err := procs.Environ(p.PID)
+	return err != nil || !runtime.IsAnchor(env)
 }
 
 func (e *enforcer) tagged(pid int) bool {
@@ -416,4 +441,11 @@ func (e *enforcer) oomKilled() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.oom
+}
+
+// mainProcess is the main process as the enforcer first found it.
+func (e *enforcer) mainProcess() procs.Entry {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.mainEntry
 }
