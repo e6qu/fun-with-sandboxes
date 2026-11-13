@@ -36,8 +36,7 @@ copy-on-write clones**, and **per-stack resource assignment**.
 - **Not a Linux container runtime.** It runs macOS-native (Mach-O,
   `darwin/<arch>`) images only. Linux ELF images cannot run on macOS without a
   VM or emulation, both excluded; the roadmap (`PLAN.md`) makes darwin images
-  from Linux images and Dockerfiles instead, and studies running
-  `linux/arm64` binaries by translating their system calls in-process.
+  from Linux images and Dockerfiles instead.
 - **Not root-requiring.** No step uses `sudo`, installs a kext, disables SIP,
   adds `lo0` aliases, or writes `pf` rules. If a design choice needs root, it is
   rejected and replaced with an unprivileged equivalent.

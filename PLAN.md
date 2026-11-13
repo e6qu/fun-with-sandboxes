@@ -275,13 +275,8 @@ each lands in pull requests with tests on the macOS runner.
      interpreted applications (Python, Node, Ruby, Java) as they are,
      rebuilding native extensions. An image whose packages Nix builds for
      darwin converts without hand work.
-   - Research: running `linux/arm64` ELF binaries in a process, by a
-     loader that maps them and rewrites their system calls into calls to
-     a Linux-to-Darwin translation, as WSL 1 did on Windows, without a VM.
-     Its obstacles are known: macOS's 16 KiB pages against binaries
-     aligned to 4 KiB, the thread pointer register, and Linux's `futex`,
-     `epoll`, `clone` and `/proc`. `linux/amd64` stays out of reach:
-     Rosetta translates Linux binaries only inside a VM.
+   Running Linux binaries themselves, in a VM or by translating their
+   system calls, is not pursued.
 7. **Shipping and operating** (deferred: not started until asked for):
    signed and notarized releases, prebuilt C parts so a Mac needs no
    Xcode tools, an installer and updates, a `launchd` service, state
