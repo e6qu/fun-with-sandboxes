@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
+	"github.com/e6qu/fun-with-sandboxes/internal/image"
 )
 
 // A line the engine stored whole is F in CRI's log, a part of one P, and
@@ -89,5 +90,39 @@ func TestCloseStopsLogCopies(t *testing.T) {
 	}
 	if len(s.logs) != 0 {
 		t.Errorf("logs left: %v", s.logs)
+	}
+}
+
+// ImageFsInfo's measure of the containers' files never waits on the walk:
+// it answers with the latest, and starts the next once that is old.
+func TestUsageCacheMeasuresInTheBackground(t *testing.T) {
+	var c usageCache
+	release := make(chan struct{})
+	measured := make(chan struct{}, 2)
+	measure := func(string) image.Usage {
+		<-release
+		measured <- struct{}{}
+		return image.Usage{Bytes: 42, Inodes: 3}
+	}
+	start := time.Now()
+	if u := c.get("/x", measure); u != (image.Usage{}) || time.Since(start) > time.Second {
+		t.Fatalf("the first request %+v waited on the measure", u)
+	}
+	// A second request while the first measure runs starts no other.
+	c.get("/x", measure)
+	close(release)
+	<-measured
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if u := c.get("/x", measure); u == (image.Usage{Bytes: 42, Inodes: 3}) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the measure never landed")
+		}
+	}
+	select {
+	case <-measured:
+		t.Fatal("a fresh measure was taken again")
+	default:
 	}
 }

@@ -76,6 +76,11 @@ type Service struct {
 	// changes one it has unpacked.
 	rootsMu   sync.Mutex
 	rootUsage map[string]image.Usage
+
+	// stacks is what the containers' files take, measured in the
+	// background: a walk of every container's root takes seconds, longer
+	// than crictl waits for ImageFsInfo.
+	stacks usageCache
 }
 
 // New serves CRI over e. Its sandboxes run sandboxImage.
