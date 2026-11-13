@@ -17,6 +17,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/dind v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/etcd v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/influxdb v0.44.0
+	github.com/testcontainers/testcontainers-go/modules/k3s v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/kafka v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/mailpit v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/mariadb v0.44.0

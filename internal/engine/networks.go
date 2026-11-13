@@ -402,8 +402,22 @@ func (e *Engine) loadNetworks() error {
 			e.networks[id] = &Network{ID: id, Name: n.name, Driver: n.driver, Created: time.Now().UTC(), Predefined: true, Labels: map[string]string{}, Options: map[string]string{}}
 		}
 	}
+	// The default bridge network holds docker0's subnet, as Docker's does:
+	// its containers hold an address of it beside their member address,
+	// which Kubernetes takes for a node's, as it takes no loopback one. An
+	// engine whose state predates it gives it the subnet unless a network
+	// of its own took it.
+	if b, err := e.networkLocked("bridge"); err == nil && b.Subnet == "" {
+		if p, err := e.checkPoolLocked(network.IPAMConfig{Subnet: bridgeSubnet}); err == nil {
+			p.Auto = true
+			b.Pool = p
+		}
+	}
 	return e.saveNetworksLocked()
 }
+
+// bridgeSubnet is the default bridge network's, docker0's.
+var bridgeSubnet = netip.MustParsePrefix("172.17.0.0/16")
 
 func (e *Engine) saveNetworksLocked() error { return writeJSON(e.networksPath(), e.networks) }
 

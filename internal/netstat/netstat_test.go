@@ -216,3 +216,36 @@ func TestAccountPairsAClientAnnouncedBeforeItConnected(t *testing.T) {
 		t.Fatalf("total %+v after the client closed, want nothing", got)
 	}
 }
+
+// A process that ended before its socket's report was read cannot be told
+// apart: its socket counts for nothing, and the container's socket it is
+// the peer of counts as internal, as a health check's connection to the
+// container's server is.
+func TestAccountTakesAnEndedPeerForTheContainers(t *testing.T) {
+	ended := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := ended.Run(); err != nil {
+		t.Fatal(err)
+	}
+	a := NewAccount("SANDBOX_ROOT=/netstat-test")
+	a.SetMembers([]int{os.Getpid()})
+	feed(t, a,
+		updateMsg(providerTCP, 1, ended.Process.Pid, "127.0.0.1:50001", "127.0.0.1:8000", Counts{1, 119, 1, 103}, 0),
+		updateMsg(providerTCP, 2, os.Getpid(), "127.0.0.1:8000", "127.0.0.1:50001", Counts{1, 103, 1, 119}, 0),
+		// An ended process's socket with no peer of the container's.
+		updateMsg(providerUDP, 3, ended.Process.Pid, "127.0.0.1:9000", "", Counts{9, 900, 9, 900}, 0),
+	)
+	if got := a.total(); got != (Counts{}) {
+		t.Fatalf("total %+v, want nothing", got)
+	}
+	feed(t, a,
+		updateMsg(providerTCP, 1, ended.Process.Pid, "127.0.0.1:50001", "127.0.0.1:8000", Counts{1, 119, 1, 103}, flagClosing),
+		removedMsg(1),
+		updateMsg(providerTCP, 2, os.Getpid(), "127.0.0.1:8000", "127.0.0.1:50001", Counts{1, 103, 1, 119}, flagClosing),
+		removedMsg(2),
+		updateMsg(providerUDP, 3, ended.Process.Pid, "127.0.0.1:9000", "", Counts{9, 900, 9, 900}, flagClosing),
+		removedMsg(3),
+	)
+	if got := a.total(); got != (Counts{}) {
+		t.Fatalf("total after closing %+v, want nothing", got)
+	}
+}

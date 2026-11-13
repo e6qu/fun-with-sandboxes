@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -79,7 +80,9 @@ except ConnectionRefusedError:
     print("closed port refused")
 `
 	out := mustDocker(t, append(append([]string{"run", "--rm"}, labels("client")...), "fws/python:3.14", "python3", "-c", client)...)
-	for _, want := range []string{"web 127.88.", web + " 127.88.", " 200\n", "closed port refused"} {
+	// The default bridge network holds docker0's subnet: its members
+	// resolve one another to their addresses on it.
+	for _, want := range []string{"web 172.17.", web + " 172.17.", " 200\n", "closed port refused"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the client printed %q, want %q in it", out, want)
 		}
@@ -129,10 +132,15 @@ u.sendto(b"from a peer", ("web", 8004))
 print(u.recvfrom(2048))
 `
 	out := mustDocker(t, append(append([]string{"run", "--rm"}, labels("client")...), "fws/python:3.14", "python3", "-c", client)...)
-	for _, want := range []string{"200\n", "('127.88.", ", 8002)", "closed port refused", "(b'FROM A PEER', ('127.88.", ", 8004))"} {
+	for _, want := range []string{"200\n", ", 8002)", "closed port refused", "(b'FROM A PEER', ('", ", 8004))"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the client printed %q, want %q in it", out, want)
 		}
+	}
+	// The peer reads as web, at its address on the default bridge network
+	// or its member address.
+	if !regexp.MustCompile(`\('(172\.17|127\.88)\.[0-9.]+', 8002\)`).MatchString(out) || !regexp.MustCompile(`\(b'FROM A PEER', \('(172\.17|127\.88)\.`).MatchString(out) {
+		t.Errorf("the client read web's address as %q", out)
 	}
 	// The container reaches its own UDP port on loopback.
 	local := `import socket
@@ -413,11 +421,11 @@ time.sleep(600)`, "database:8000", db+":8000")
 }
 
 // A container resolves the names its /etc/hosts lists, its own hostname to
-// its member address, as Docker writes them.
+// its address on the default bridge network, as Docker writes them.
 func TestHostsResolve(t *testing.T) {
 	out := mustDocker(t, "run", "--rm", "--hostname", "e2e-hosted", "--add-host", "extra.local:10.1.2.3", "--add-host", "host.docker.internal:host-gateway",
 		"fws/python:3.14", "python3", "-c", `import os, socket
-print(socket.gethostbyname("extra.local"), socket.gethostbyname("host.docker.internal"), socket.gethostbyname("e2e-hosted").startswith("127.88."), os.environ["HOSTNAME"])`)
+print(socket.gethostbyname("extra.local"), socket.gethostbyname("host.docker.internal"), socket.gethostbyname("e2e-hosted").startswith("172.17."), os.environ["HOSTNAME"])`)
 	if out != "10.1.2.3 127.0.0.1 True e2e-hosted\n" {
 		t.Errorf("the container resolved %q", out)
 	}

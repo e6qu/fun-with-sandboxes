@@ -241,7 +241,11 @@ machine — and from what macOS offers an unprivileged process under them.
   has an address in `127.88.0.0/16`, and on a network created with a
   subnet (Compose's `ipam`, `docker network create --subnet`) an address
   of that subnet, the one `ipv4_address` or `--ip` names or the lowest
-  free one. On a network with IPv6 (`enable_ipv6`, `--ipv6`) it holds an
+  free one. The default bridge network holds docker0's subnet,
+  `172.17.0.0/16`, as Docker's does: its containers hold the lowest free
+  address of it, which their stack's members resolve them to, and
+  `--ip` there is refused, as Docker refuses it; containers of other
+  stacks reach one another there only through links, as before. On a network with IPv6 (`enable_ipv6`, `--ipv6`) it holds an
   IPv6 address too, of the network's IPv6 subnet, or of a `/64` the
   engine takes from a unique local `/48` of its own, as dockerd does,
   where the network names none; `ipv6_address` or `--ip6` names one in a
@@ -470,9 +474,24 @@ machine — and from what macOS offers an unprivileged process under them.
   read Services as the node; its storage class uses the controller
   manager's host-path provisioner. The control plane's images are the
   catalog's under the names kubeadm writes (`/kind/images.txt`): etcd is
-  nixpkgs' 3.6 release under the tag kubeadm pins. `kind load`,
-  `kind export logs`, `--config` patches of containerd and IPv6 or
-  dual-stack clusters are not supported yet.
+  nixpkgs' 3.6 release under the tag kubeadm pins. A node runs no
+  containerd or systemd: its `ctr` loads and names images in the node's
+  engine, as `kind load docker-image` and `kind load image-archive` ask
+  (`images import`, `tag` and `ls` alone), `containerd config dump`
+  reports a configuration, and `journalctl` reads the node's, the
+  kubelet's and `fws-kube-proxy`'s logs, which the node keeps under
+  `/var/log` for `kind export logs`; `crictl` is upstream's, against the
+  engine's CRI. `containerdConfigPatches` and IPv6 or dual-stack clusters
+  are not supported.
+- **`fws/k3s` is kubeadm's cluster under k3s's names.** Its `k3s server`
+  brings up one node from `fws/kind-node`'s parts with kubeadm, on k3s's
+  pod and service subnets (`10.42.0.0/16`, `10.43.0.0/16`), and writes
+  k3s's kubeconfig; it takes the flags Testcontainers' k3s module passes
+  and ignores the others, saying so. `k3s agent`, joining servers,
+  Traefik, ServiceLB, the Helm controller, the embedded registry and
+  etcd snapshots are not there. The node needs an address outside
+  loopback, which the kubelet and the API server require: the default
+  bridge network gives it one, as do networks with a subnet.
 - **Podman's pods share no namespaces.** A pod's infra container, which
   holds the namespaces its containers share, runs Podman's pause image,
   which the engine does not have, so a pod is created with
@@ -514,7 +533,10 @@ machine — and from what macOS offers an unprivileged process under them.
   - The bytes are payload bytes; Docker's count adds packet headers.
   - The kernel counts a socket against the process that last used it, and
     the shim tells a new socket's process apart as the kernel announces the
-    socket. A process that ends before that leaves its socket out.
+    socket. A process that ends before that, as a health check's often
+    does, leaves its socket out, and a socket of the container's whose
+    peer it was counts as the container's own connection: a host process
+    that connected to the container and ended that fast goes uncounted.
   - A UDP datagram between two of the container's own sockets counts, as
     UDP sockets have no peer the kernel names.
 - **`docker cp` copies the container's view**, mounts included, but refuses

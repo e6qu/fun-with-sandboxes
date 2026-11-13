@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -224,6 +225,36 @@ func (s *Service) ImageFsInfo(ctx context.Context, req *runtimeapi.ImageFsInfoRe
 	stacks := filepath.Join(s.e.Root(), "stacks")
 	return &runtimeapi.ImageFsInfoResponse{
 		ImageFilesystems:     []*runtimeapi.FilesystemUsage{fsUsage(filepath.Join(s.e.Root(), "images"), s.imageUsage())},
-		ContainerFilesystems: []*runtimeapi.FilesystemUsage{fsUsage(stacks, image.DiskUsage(stacks))},
+		ContainerFilesystems: []*runtimeapi.FilesystemUsage{fsUsage(stacks, s.stacks.get(stacks, image.DiskUsage))},
 	}, nil
+}
+
+// stacksUsageAge is how old a measure of the containers' files may grow
+// before a request starts the next.
+const stacksUsageAge = 30 * time.Second
+
+// usageCache holds the latest measure of a directory, which a request
+// that finds it old has measured again in the background.
+type usageCache struct {
+	mu        sync.Mutex
+	usage     image.Usage
+	at        time.Time
+	measuring bool
+}
+
+// get returns the latest measure of dir, none before the first ends, and
+// starts the next measure, with measure, once the latest is old.
+func (c *usageCache) get(dir string, measure func(string) image.Usage) image.Usage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.measuring && time.Since(c.at) >= stacksUsageAge {
+		c.measuring = true
+		go func() {
+			u := measure(dir)
+			c.mu.Lock()
+			c.usage, c.at, c.measuring = u, time.Now(), false
+			c.mu.Unlock()
+		}()
+	}
+	return c.usage
 }

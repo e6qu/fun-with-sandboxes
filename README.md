@@ -69,6 +69,7 @@ builds for Linux alone:
 | `fws/etcd:3.6` | arguments to `etcd`, with `etcdctl` and `etcdutl`; clients on 2379, peers on 2380 |
 | `fws/kube-apiserver:1.35`, `fws/kube-controller-manager:1.35`, `fws/kube-scheduler:1.35`, `fws/kubectl:1.35` | Kubernetes 1.35.0, the release kind's node image ships, laid out as its release images are: the command and its flags, run through `/go-runner` (its `--log-file` and `--also-stdout`), with the binary in `/usr/local/bin`; the API server on 6443, the controller manager on 10257, the scheduler on 10259 |
 | `fws/kubelet:1.35` | Kubernetes 1.35.0's kubelet with its darwin parts (`images/kubernetes/kubelet-darwin.patch`): the node's capacity and use from macOS's kernel, and no cgroups; run privileged, it runs its pods on the engine nested in its container, through the CRI that engine serves at `$FWS_ENGINE` |
+| `fws/k3s:1.35` | k3s's image, as Testcontainers' k3s module runs it, from `fws/kind-node`'s parts: `k3s server` brings up a single-node cluster with kubeadm on the node's address on the default bridge network and writes `/etc/rancher/k3s/k3s.yaml`; `k3s kubectl`, `ctr` and `crictl` run against it. `k3s.Run(ctx, "fws/k3s:1.35")` |
 | `fws/kind-node:1.35` | kind's node image from the parts above: `kind create cluster --image fws/kind-node:1.35` runs kubeadm, the kubelet and `fws-kube-proxy` in each node, with the control plane's images loaded into the node's engine under the names kubeadm gives them (see [kind](#kind)) |
 | `fws/pause:3.10.1` | Kubernetes' pause program, the infra container of a CRI pod sandbox |
 | `fws/consul:2.1` | `CONSUL_LOCAL_CONFIG`, `CONSUL_BIND_INTERFACE`, `CONSUL_CLIENT_INTERFACE`; arguments to `consul` (default `agent -dev -client 0.0.0.0`); HTTP on 8500, DNS on 8600 |
@@ -265,9 +266,14 @@ node. kubeadm skips its
 kube-proxy and CoreDNS addons, whose Linux images a node has no use for;
 kind's CNI manifest is a binding that lets `fws-kube-proxy` read
 Services, and its storage class uses the controller manager's host-path
-provisioner. Multi-node clusters (`kind create cluster --config`) and the
-API server on the host's loopback port kind publishes work as with
-kindest/node; [LIMITATIONS.md](LIMITATIONS.md) lists what differs.
+provisioner. Multi-node clusters (`kind create cluster --config`), the
+API server on the host's loopback port kind publishes, node ports a node
+publishes through `extraPortMappings`, `kind load docker-image`,
+`kind export logs` and `kind delete cluster` work as with kindest/node:
+the node's `ctr`, `containerd` and `journalctl` stand in for those kind
+runs against containerd and systemd, and its `crictl` is upstream's,
+against the node's engine. [LIMITATIONS.md](LIMITATIONS.md) lists what
+differs.
 
 ## Develop
 

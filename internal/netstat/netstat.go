@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"syscall"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 )
@@ -163,6 +164,10 @@ type tracked struct {
 	// internal marks a connection between two of the container's own
 	// sockets, whose peer closed first.
 	internal bool
+	// provisional marks a socket whose process ended before it could be
+	// told apart, as a health check's often does: it counts for nothing,
+	// and the container's socket it is the peer of counts as internal.
+	provisional bool
 }
 
 type endpoint struct {
@@ -226,16 +231,24 @@ func (a *Account) AddEndpoint(pid int, port uint16) {
 	a.mu.Unlock()
 }
 
-func (a *Account) ownsLocked(s *source) bool {
+// ownsLocked reports whether the socket is the container's, and whether
+// that is known: a process that ended before its environment was read
+// cannot be told apart.
+func (a *Account) ownsLocked(s *source) (own, known bool) {
 	if a.members[s.pid] || a.endpoints[endpoint{s.pid, s.local.Port()}] {
-		return true
+		return true, true
 	}
 	if a.tag == "" || s.pid <= 0 {
-		return false
+		return false, true
 	}
 	t, ok := a.tagged[s.pid]
 	if !ok {
-		env, _ := procs.Environ(s.pid)
+		env, err := procs.Environ(s.pid)
+		if err != nil {
+			// Another user's process, which exists, is not the
+			// container's; one that ended may have been.
+			return false, syscall.Kill(s.pid, 0) == syscall.EPERM
+		}
 		for _, kv := range env {
 			if kv == a.tag {
 				t = true
@@ -244,7 +257,7 @@ func (a *Account) ownsLocked(s *source) bool {
 		}
 		a.tagged[s.pid] = t
 	}
-	return t
+	return t, true
 }
 
 func (a *Account) peerLocked(t *tracked) *tracked {
@@ -256,17 +269,18 @@ func (a *Account) peerLocked(t *tracked) *tracked {
 
 // update records a socket's latest report, a closing one's counts final,
 // and says whether the socket is the container's: one is once one of its
-// processes used it. It forgets any other socket, which the caller stops
-// watching.
+// processes used it. It keeps a socket whose process ended unknown, as a
+// provisional one, and forgets any other, which the caller stops watching.
 func (a *Account) update(s source, closing bool) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	t := a.live[s.ref]
 	if t == nil {
-		if !a.ownsLocked(&s) {
+		own, known := a.ownsLocked(&s)
+		if !own && known {
 			return false
 		}
-		t = &tracked{}
+		t = &tracked{provisional: !own}
 		a.live[s.ref] = t
 	} else if a.byPair[pair{t.local, t.remote}] == t {
 		delete(a.byPair, pair{t.local, t.remote})
@@ -304,7 +318,7 @@ func (a *Account) closeLocked(t *tracked) {
 		delete(a.closing, pair{t.remote, t.local})
 		return
 	}
-	if t.internal {
+	if t.internal || t.provisional {
 		return
 	}
 	if !t.remote.IsValid() || t.remote.Port() == 0 {
@@ -340,7 +354,7 @@ func (a *Account) total() Counts {
 	a.settleLocked()
 	c := a.gone
 	for _, t := range a.live {
-		if !t.internal && a.peerLocked(t) == nil {
+		if !t.internal && !t.provisional && a.peerLocked(t) == nil {
 			c.add(t.counts)
 		}
 	}
