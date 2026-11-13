@@ -70,7 +70,9 @@ int main(int argc, char **argv) {
         fwrite(&p->type, sizeof p->type, 1, f);
         fwrite(p->bytecode, 1, p->bytecode_length, f);
         fclose(f);
-        fprintf(stderr, "type %u, %zu bytes\n", p->type, p->bytecode_length);
+        fprintf(stderr, "type %u, %zu bytes; the struct's first 64 bytes:", p->type, p->bytecode_length);
+        for (int i = 0; i < 64; i++) fprintf(stderr, "%s%02x", i % 8 ? "" : " ", ((unsigned char *)p)[i]);
+        fprintf(stderr, "; bytecode at %p\n", p->bytecode);
         return 0;
     }
     if (strcmp(argv[1], "bytecode") == 0) {
@@ -81,8 +83,9 @@ int main(int argc, char **argv) {
         p.bytecode = blob + sizeof p.type;
         p.bytecode_length = len - sizeof p.type;
         long a = now();
-        if (sandbox_apply(&p) != 0) {
-            fprintf(stderr, "sandbox_apply: %s\n", strerror(errno));
+        int r = sandbox_apply(&p);
+        if (r != 0) {
+            printf("sandbox_apply returned %d: %s\n", r, strerror(errno));
             return 1;
         }
         printf("%ld\n", now() - a);

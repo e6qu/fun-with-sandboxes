@@ -95,9 +95,9 @@ func BenchmarkApply(b *testing.B) {
 		b.Run(c.name, func(b *testing.B) {
 			var inside float64
 			for i := 0; i < b.N; i++ {
-				out, err := exec.Command(bin, c.mode, c.arg, secret).Output()
+				out, err := exec.Command(bin, c.mode, c.arg, secret).CombinedOutput()
 				if err != nil {
-					b.Fatalf("%s: %v (exit 3: the file outside the profile was opened)", c.name, err)
+					b.Fatalf("%s: %v (exit 3: the file outside the profile was opened)\n%s", c.name, err, out)
 				}
 				ns, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
 				if err != nil {
