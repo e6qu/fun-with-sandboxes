@@ -92,3 +92,19 @@ var libc_proc_pidinfo_trampoline_addr uintptr
 var libc_proc_pidpath_trampoline_addr uintptr
 
 //go:cgo_import_dynamic libc_proc_pidpath proc_pidpath "/usr/lib/libSystem.B.dylib"
+
+var libsandbox_sandbox_create_params_trampoline_addr uintptr
+
+//go:cgo_import_dynamic libsandbox_sandbox_create_params sandbox_create_params "/usr/lib/libsandbox.1.dylib"
+
+var libsandbox_sandbox_compile_string_trampoline_addr uintptr
+
+//go:cgo_import_dynamic libsandbox_sandbox_compile_string sandbox_compile_string "/usr/lib/libsandbox.1.dylib"
+
+var libsandbox_sandbox_free_profile_trampoline_addr uintptr
+
+//go:cgo_import_dynamic libsandbox_sandbox_free_profile sandbox_free_profile "/usr/lib/libsandbox.1.dylib"
+
+var libsandbox_sandbox_apply_trampoline_addr uintptr
+
+//go:cgo_import_dynamic libsandbox_sandbox_apply sandbox_apply "/usr/lib/libsandbox.1.dylib"

@@ -29,6 +29,24 @@ func TestMain(m *testing.M) {
 		fmt.Println(p, err)
 	case "limits":
 		json.NewEncoder(os.Stdout).Encode(probeLimits())
+	case "apply":
+		// Apply the compiled profile in FWS_COMPILED, then report whether
+		// the file in FWS_PROBE opens.
+		b, err := os.ReadFile(os.Getenv("FWS_COMPILED"))
+		if err == nil {
+			err = SandboxApply(b)
+		}
+		if err != nil {
+			fmt.Println("apply:", err)
+			break
+		}
+		f, err := os.Open(os.Getenv("FWS_PROBE"))
+		if err == nil {
+			f.Close()
+			fmt.Println("opened")
+		} else {
+			fmt.Println("denied:", err)
+		}
 	case "shm":
 		for _, name := range strings.Split(os.Getenv("FWS_SHM_NAMES"), ",") {
 			fd, err := ShmOpen(name, os.O_CREATE|os.O_RDWR, 0o600)
@@ -299,5 +317,38 @@ func TestSeatbeltFiltersSharedMemoryNames(t *testing.T) {
 	}
 	if got[outside] == "<nil>" {
 		t.Errorf("a name outside the prefix was allowed")
+	}
+}
+
+// A profile compiled in one process confines another that applies it: the
+// file the profile denies does not open there.
+func TestSandboxCompileThenApplyElsewhere(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(dir, "secret")
+	if err := os.WriteFile(probe, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := SandboxCompile(fmt.Sprintf("(version 1)\n(allow default)\n(deny file-read* (literal %q))\n", probe))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := filepath.Join(dir, "profile.bin")
+	if err := os.WriteFile(blob, compiled, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pid, out := spawnHelper(t, "apply", false, "FWS_COMPILED="+blob, "FWS_PROBE="+probe)
+	line, _ := bufio.NewReader(out).ReadString('\n')
+	wait(t, pid)
+	out.Close()
+	if !strings.HasPrefix(line, "denied:") {
+		t.Fatalf("the child that applied the compiled profile: %q", line)
+	}
+	if f, err := os.Open(probe); err != nil {
+		t.Fatalf("this process was confined too: %v", err)
+	} else {
+		f.Close()
 	}
 }
