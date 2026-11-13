@@ -45,16 +45,17 @@ type anchorReply struct {
 }
 
 func init() {
-	if os.Getenv(RoleVar) == anchorRole {
+	switch os.Getenv(RoleVar) {
+	case anchorLaunchRole:
+		os.Exit(launchAnchor())
+	case anchorRole:
 		os.Exit(serveAnchor())
 	}
 }
 
-// startAnchor starts the anchor from the sandboxed spawn helper, through
-// the system shell, which starts it in the background and exits, so the
-// anchor is no child of the main process the helper becomes: a shell's
-// wait would wait for it. The shell starts in about a millisecond, where a
-// Go launcher took several.
+// startAnchor starts the anchor from the sandboxed spawn helper, through a
+// launcher that exits at once, so the anchor is no child of the main
+// process the helper becomes: a shell's wait would wait for it.
 func startAnchor() error {
 	self, err := os.Executable()
 	if err != nil {
@@ -65,8 +66,8 @@ func startAnchor() error {
 		return err
 	}
 	defer null.Close()
-	pid, err := syscall.ForkExec(anchorShell, []string{"sh", "-c", `"$0" "$1" &`, self, strconv.Itoa(os.Getpid())}, &syscall.ProcAttr{
-		Env:   []string{RoleVar + "=" + anchorRole},
+	pid, err := syscall.ForkExec(self, []string{"fws-anchor", strconv.Itoa(os.Getpid())}, &syscall.ProcAttr{
+		Env:   []string{RoleVar + "=" + anchorLaunchRole},
 		Files: []uintptr{null.Fd(), null.Fd(), null.Fd(), anchorFD},
 		Sys:   &syscall.SysProcAttr{Setsid: true},
 	})
@@ -83,9 +84,20 @@ func startAnchor() error {
 	return syscall.Close(anchorFD)
 }
 
-// anchorShell starts the anchor; the profile lets a container execute it,
-// as popen and system do.
-const anchorShell = "/bin/sh"
+func launchAnchor() int {
+	self, err := os.Executable()
+	if err != nil || len(os.Args) < 2 {
+		return 1
+	}
+	_, err = syscall.ForkExec(self, []string{"fws-anchor", os.Args[1]}, &syscall.ProcAttr{
+		Env:   []string{RoleVar + "=" + anchorRole},
+		Files: []uintptr{0, 1, 2, 3},
+	})
+	if err != nil {
+		return 1
+	}
+	return 0
+}
 
 // serveAnchor starts the execs the engine asks for until the container's
 // main process, whose pid it was started with, exits.
