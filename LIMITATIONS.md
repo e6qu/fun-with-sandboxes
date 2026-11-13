@@ -533,7 +533,10 @@ machine — and from what macOS offers an unprivileged process under them.
   - The bytes are payload bytes; Docker's count adds packet headers.
   - The kernel counts a socket against the process that last used it, and
     the shim tells a new socket's process apart as the kernel announces the
-    socket. A process that ends before that leaves its socket out.
+    socket. A process that ends before that, as a health check's often
+    does, leaves its socket out, and a socket of the container's whose
+    peer it was counts as the container's own connection: a host process
+    that connected to the container and ended that fast goes uncounted.
   - A UDP datagram between two of the container's own sockets counts, as
     UDP sockets have no peer the kernel names.
 - **`docker cp` copies the container's view**, mounts included, but refuses
