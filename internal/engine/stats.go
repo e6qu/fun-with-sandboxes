@@ -10,6 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
+	fwsruntime "github.com/e6qu/fun-with-sandboxes/internal/runtime"
 )
 
 // statsInterval is dockerd's collection cadence.
@@ -35,8 +36,9 @@ func (e *Engine) groups(c *Container) map[int]bool {
 }
 
 // members are the container's processes: those of its main process's and
-// its execs' process groups, and those that left them, which still name its
-// root in their environment.
+// its execs' process groups, and those that left them, which macOS holds
+// its main process responsible for or which still name its root in their
+// environment. The exec anchor, the engine's, is none of them.
 func (e *Engine) members(c *Container) ([]procs.Proc, error) {
 	g := e.groups(c)
 	if len(g) == 0 {
@@ -45,6 +47,23 @@ func (e *Engine) members(c *Container) ([]procs.Proc, error) {
 	tagged, err := procs.Tagged(c.tag())
 	if err != nil {
 		return nil, err
+	}
+	c.mu.Lock()
+	main := 0
+	if c.task != nil {
+		main = c.task.Pid()
+	}
+	c.mu.Unlock()
+	if m, ok := procs.Find(main); main != 0 && ok {
+		answering, err := procs.Responsible(m)
+		if err != nil {
+			return nil, err
+		}
+		for _, pid := range answering {
+			if env, err := procs.Environ(pid); err != nil || !fwsruntime.IsAnchor(env) {
+				tagged = append(tagged, pid)
+			}
+		}
 	}
 	escaped := map[int]bool{}
 	for _, pid := range tagged {

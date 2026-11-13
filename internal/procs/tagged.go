@@ -53,9 +53,47 @@ func TaggedAny(tags []string) ([]int, error) {
 // KillTagged kills every process Tagged finds and returns once none is
 // left, killing what they started meanwhile too.
 func KillTagged(tag string) error {
+	return killFound(func() ([]int, error) { return Tagged(tag) }, "holding "+tag)
+}
+
+// KillEntries kills the live processes of entries, a process that reuses
+// one's pid aside, and the children they start meanwhile, and returns once
+// none is left.
+func KillEntries(entries []Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	set := map[int]int64{}
+	for _, e := range entries {
+		set[e.PID] = e.Start
+	}
+	return killFound(func() ([]int, error) {
+		live, err := Own()
+		if err != nil {
+			return nil, err
+		}
+		var out []int
+		for _, p := range live {
+			start, ok := set[p.PID]
+			if ok && start == p.Start {
+				out = append(out, p.PID)
+				continue
+			}
+			if _, parent := set[p.PPID]; parent && !ok {
+				set[p.PID] = p.Start
+				out = append(out, p.PID)
+			}
+		}
+		return out, nil
+	}, "the container left")
+}
+
+// killFound kills the processes find lists until it lists none, or until
+// killTimeout passes; what names them in the error.
+func killFound(find func() ([]int, error), what string) error {
 	deadline := time.Now().Add(killTimeout)
 	for {
-		pids, err := Tagged(tag)
+		pids, err := find()
 		if err != nil {
 			return err
 		}
@@ -63,7 +101,7 @@ func KillTagged(tag string) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("procs: processes %v holding %s outlived SIGKILL", pids, tag)
+			return fmt.Errorf("procs: processes %v %s outlived SIGKILL", pids, what)
 		}
 		for _, pid := range pids {
 			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
@@ -74,6 +112,20 @@ func KillTagged(tag string) error {
 			return err
 		}
 	}
+}
+
+// Find is pid's entry in the process table, if it lives.
+func Find(pid int) (Entry, bool) {
+	live, err := Own()
+	if err != nil {
+		return Entry{}, false
+	}
+	for _, p := range live {
+		if p.PID == pid {
+			return p, true
+		}
+	}
+	return Entry{}, false
 }
 
 const killTimeout = 10 * time.Second

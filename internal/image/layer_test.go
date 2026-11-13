@@ -273,3 +273,30 @@ func TestWriteTarWithEmptiesMountPoints(t *testing.T) {
 		}
 	}
 }
+
+// A copy of an image the store handed out keeps its tags when the store
+// moves one of them to another image: a load reads its images' tags while
+// another load may take one of them.
+func TestHandedOutImagesKeepTheirTags(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg v1.ConfigFile
+	d, _ := os.MkdirTemp(s.dir, "root-")
+	img, err := extendRoot(t, s, "", d, cfg, []string{"first:1", "second:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Config.Env = []string{"OTHER=1"}
+	d2, _ := os.MkdirTemp(s.dir, "root-")
+	if _, err := extendRoot(t, s, "", d2, cfg, []string{"first:1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(img.RepoTags) != 2 || img.RepoTags[0] != "first:1" || img.RepoTags[1] != "second:1" {
+		t.Fatalf("the handed-out copy's tags changed to %v", img.RepoTags)
+	}
+	if got, err := s.Get("second:1"); err != nil || len(got.RepoTags) != 1 {
+		t.Fatalf("the store's record: %+v, %v", got.RepoTags, err)
+	}
+}

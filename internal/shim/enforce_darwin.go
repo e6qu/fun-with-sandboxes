@@ -15,6 +15,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
 	"github.com/e6qu/fun-with-sandboxes/internal/netstat"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
+	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 )
 
 // The enforcer's cadence: the CPU period, as the kernel's default CFS
@@ -33,6 +34,9 @@ const (
 type enforcer struct {
 	tag  string
 	main int
+	// mainEntry is the main process as the first scan found it, which the
+	// container's other processes answer to.
+	mainEntry procs.Entry
 
 	mu       sync.Mutex
 	res      Resources
@@ -81,9 +85,12 @@ func newEnforcer(tag string, main int, r Resources, net *netstat.Watcher) *enfor
 	return e
 }
 
-// startLocked starts the enforcing loop once there is a limit to enforce.
+// startLocked starts the loop that follows the members, and enforces the
+// limits when there are any. The members must be known while the main
+// process lives: once it ends, macOS holds each process it answered for
+// responsible for itself.
 func (e *enforcer) startLocked() {
-	if e.running || !e.res.any() {
+	if e.running {
 		return
 	}
 	kq, err := unix.Kqueue()
@@ -133,7 +140,13 @@ func (e *enforcer) loop() {
 	lastScan := time.Now()
 	last := time.Now()
 	for {
-		timeout := unix.NsecToTimespec(int64(cpuPeriod))
+		e.mu.Lock()
+		period := rescanPeriod
+		if e.res.any() {
+			period = cpuPeriod
+		}
+		e.mu.Unlock()
+		timeout := unix.NsecToTimespec(int64(period))
 		n, _ := unix.Kevent(e.kq, nil, events, &timeout)
 		select {
 		case <-e.quit:
@@ -158,7 +171,9 @@ func (e *enforcer) loop() {
 			lastScan = now
 		}
 		if now.Sub(last) >= cpuPeriod {
-			e.tickLocked(now, now.Sub(last))
+			if e.res.any() {
+				e.tickLocked(now, now.Sub(last))
+			}
 			last = now
 		}
 		e.mu.Unlock()
@@ -190,6 +205,17 @@ func (e *enforcer) scanLocked() {
 			delete(e.others, pid)
 		}
 	}
+	if e.mainEntry.PID == 0 {
+		if p, ok := live[e.main]; ok {
+			e.mainEntry = p
+		} else {
+			e.mainEntry = procs.Entry{PID: e.main}
+		}
+	}
+	var reused int64
+	if p, ok := live[e.main]; ok && p.Start != e.mainEntry.Start {
+		reused = p.Start
+	}
 	var added []int
 	for _, p := range es {
 		if _, ok := e.members[p.PID]; ok {
@@ -199,7 +225,7 @@ func (e *enforcer) scanLocked() {
 			continue
 		}
 		_, parent := e.members[p.PPID]
-		if p.PGID == e.main || parent || e.tagged(p.PID) {
+		if p.PGID == e.main || parent || e.answers(p, reused) || e.tagged(p.PID) {
 			e.members[p.PID] = &member{start: p.Start}
 			added = append(added, p.PID)
 			e.watchLocked(p.PID)
@@ -218,6 +244,16 @@ func (e *enforcer) scanLocked() {
 		pids = append(pids, pid)
 	}
 	e.net.SetMembers(pids)
+}
+
+// answers reports whether macOS holds the main process responsible for p,
+// as it does each of the container's processes, the exec anchor aside.
+func (e *enforcer) answers(p procs.Entry, reused int64) bool {
+	if !procs.Answers(p, e.mainEntry, reused) {
+		return false
+	}
+	env, err := procs.Environ(p.PID)
+	return err != nil || !runtime.IsAnchor(env)
 }
 
 func (e *enforcer) tagged(pid int) bool {
@@ -416,4 +452,18 @@ func (e *enforcer) oomKilled() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.oom
+}
+
+// remaining are the members but the main process, as the enforcer last
+// found them.
+func (e *enforcer) remaining() []procs.Entry {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []procs.Entry
+	for pid, m := range e.members {
+		if pid != e.main {
+			out = append(out, procs.Entry{PID: pid, Start: m.start})
+		}
+	}
+	return out
 }

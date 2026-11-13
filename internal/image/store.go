@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -297,8 +298,13 @@ func (s *Store) untagLocked(n string) {
 	}
 }
 
+// without is list without v. It builds a new slice, as the records' slices
+// are shared with the copies the store has handed out.
 func without(list []string, v string) []string {
-	kept := list[:0]
+	if !slices.Contains(list, v) {
+		return list
+	}
+	kept := make([]string, 0, len(list)-1)
 	for _, t := range list {
 		if t != v {
 			kept = append(kept, t)

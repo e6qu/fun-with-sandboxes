@@ -273,10 +273,15 @@ func (s *server) run(report func(Ready)) (int, error) {
 
 	<-proc.Done()
 	// The container ends with its main process: whatever it left running
-	// goes with it, in its process group or, having left the group, found
-	// by the tag its environment carries.
+	// goes with it, in its process group or, having left the group, among
+	// the members the enforcer followed while the main process answered
+	// for them, or found by the tag its environment carries.
+	left := s.enf.remaining()
 	s.enf.close()
 	proc.KillAll()
+	if err := procs.KillEntries(left); err != nil {
+		log.Printf("container %s: %v", cfg.ID, err)
+	}
 	if err := procs.KillTagged(cfg.Tag); err != nil {
 		log.Printf("container %s: %v", cfg.ID, err)
 	}
