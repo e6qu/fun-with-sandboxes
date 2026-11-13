@@ -4,8 +4,14 @@ A Docker-API-compatible container engine for macOS that runs Compose stacks
 side by side on one Mac, each isolated from the host and from the others,
 built only on primitives macOS gives an unprivileged user.
 
+Its purpose is local: a Mac runs a project's tests, Compose stacks,
+Testcontainers and kind clusters in containers that start in milliseconds
+and cost a process tree each, where Docker on a Mac needs a Linux VM with
+its own memory, CPU and disk set aside. It is not for multi-tenant hosting
+or untrusted code.
+
 Detailed design: [`docs/DESIGN.md`](docs/DESIGN.md). This file is the
-top-level plan and milestone; the design doc is the full mechanism.
+top-level plan and roadmap; the design doc is the full mechanism.
 
 ## Constraints
 
@@ -14,23 +20,41 @@ top-level plan and milestone; the design doc is the full mechanism.
 - **No root.** The engine, its install, and every container run as the
   invoking user. No `sudo`, no `launchd` daemon running as root, no kernel or
   system extensions, no changes to System Integrity Protection.
-- **Go.** Every component is Go and cross-compiles with `CGO_ENABLED=0`
-  (`GOOS=darwin`, `GOARCH=arm64|amd64`) from any host.
+- **Go, and small C where a process start is at stake.** The engine and its
+  helpers are Go and cross-compile with `CGO_ENABLED=0` (`GOOS=darwin`,
+  `GOARCH=arm64|amd64`) from any host. What runs inside every container
+  process start is C, compiled by clang on the Mac at first use: the
+  container library and the exec anchor's launcher.
+- **Performance close to native.** A container costs what its processes
+  cost. An abstraction layer is taken only where its cost per call is
+  nanoseconds to microseconds, and a process start's overhead is measured
+  in CI (`BenchmarkStart`) against a native spawn.
+- **macOS's own interfaces, private ones included.** Seatbelt, its
+  compiled profiles, process responsibility and `DYLD_INSERT_LIBRARIES`
+  are what coding agents' sandboxes on the Mac build on too. Each has a
+  fallback where one exists, such as compiling a profile's text when its
+  compiled bytecode does not apply, and a test that fails if macOS changes
+  it.
 - **Real behaviour.** Every isolation property claimed below is enforced by
   the kernel through Seatbelt and is proven by a test that tries to break it.
 
 ## Non-goals
 
-- Running Linux images. Without a VM nothing on macOS executes Linux ELF
-  binaries, so images are macOS-native (`darwin/arm64`, `darwin/amd64`).
+- Running Linux images unchanged. Without a VM nothing on macOS executes
+  Linux ELF binaries, so images are macOS-native (`darwin/arm64`,
+  `darwin/amd64`). The roadmap below generalizes how such images are made
+  from Linux images and Dockerfiles.
 - A security boundary against hostile code. Containers run as the same user as
   the engine; Seatbelt confines them, but it is defence for development and
   test workloads, not multi-tenant isolation.
 - Full Docker API coverage. The engine serves the subset Docker Compose, the
   Docker CLI, and Testcontainers use (listed in the design doc).
-- Multi-platform builds. BuildKit builds darwin images on one worker; images
-  also come from the Nix image pipeline through `docker load` or a registry
-  pull.
+- Linux platforms in builds. BuildKit builds darwin images on one worker;
+  images also come from the Nix image pipeline through `docker load` or a
+  registry pull.
+- Shipping: signed and notarized releases, an installer, updates, a
+  `launchd` service, state migrations and metrics. Deferred until asked
+  for; see the roadmap's last track.
 
 ## Core idea
 
@@ -183,11 +207,91 @@ dependency order:
    cluster with kubeadm on the node's address on the default bridge
    network, which holds docker0's subnet for it (`TestK3sModule`).
 
+## Roadmap — light, steady, general
+
+The project's next aim: a Mac runs its tests in containers lighter than a
+VM's, whose limits keep the machine standing, with what Docker users write
+working more often. Every track keeps the constraints above: no root, no
+VM, and no cost per call beyond microseconds. Tracks run side by side;
+each lands in pull requests with tests on the macOS runner.
+
+1. **A faster test loop.** The suite takes about three hours a round:
+   `images` builds the catalog for 90 minutes, then `e2e` runs for 50.
+   - Unit tests and benchmarks gate first, in minutes.
+   - Image builds are cached by their inputs' hash, so a change that
+     touches no image builds none.
+   - The end-to-end suite is sharded across runners by test, each shard
+     loading only the images its tests use, aiming at 15 minutes a round.
+2. **The open bugs below are fixed**, each with a test that reproduced it:
+   MongoDB's replica set's `ECONNREFUSED 127.0.0.1:65535`, the reaper's
+   3.8 s `profile` step (the lock timing `-debug` now logs shows where),
+   and the pids limit's listing of every process on each `fork`.
+3. **Limits that keep the machine standing**, enforced by the kernel where
+   an unprivileged process can ask it to, and costing nothing on the hot
+   path:
+   - A QoS clamp on every container process
+     (`posix_spawnattr_set_qos_clamp_np`), so containers yield the CPU to
+     the user's interactive work; on by default, its class configurable.
+   - A fork ceiling: each container process's `RLIMIT_NPROC`, which macOS
+     counts per user, is set to the user's processes at start plus a
+     margin, so a fork bomb fails in the kernel.
+   - A machine guard in the engine: it watches the kernel's memory
+     pressure notifications, as `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE`
+     delivers them, and the disk's free space, and pauses then
+     stops the largest containers before the Mac swaps itself to a halt
+     or fills its disk.
+   - Per-container memory limits move from a 100 ms poll to the kernel
+     where macOS lets an unprivileged process set one on its children
+     (`posix_spawnattr_setjetsam_ext`, a footprint limit), and stay polled
+     where it does not.
+4. **Scale without cliffs.**
+   - Event-driven process tracking: members are followed by the kernel's
+     fork and exit events, with one process-table reader in the engine
+     for all containers in place of each supervisor's scan each second.
+   - Finer locking: per-container and per-network locks, so a slow
+     request no longer holds every other behind the engine's lock.
+   - Port blocks that grow with a stack, beside the configurable size.
+   - Process starts nearer native: a C spawn helper in place of the Go
+     one (about 3 ms), and the loader's cost for the inserted library
+     (about 4 ms) measured and cut.
+5. **Fewer correctness gaps**, each at no cost on the hot path:
+   - UDP Services, and UDP between pods of different nodes, through the
+     routers' flow ports.
+   - ICMP echo: `ping` of a stack member answered by the library, and of
+     an outside host through the unprivileged ICMP datagram socket macOS
+     offers.
+   - `# syntax=docker/dockerfile:*` served by the built-in Dockerfile
+     frontend, which covers what those lines ask for.
+   - Darwin multi-platform builds: `darwin/amd64` steps run under Rosetta
+     beside `darwin/arm64` ones.
+6. **More images, made rather than hand-built.** In order of reach:
+   - Dockerfile builds take Linux idioms: a base image Docker users name,
+     such as `python:3.12`, resolves to its catalog equivalent, and
+     `apt-get install`, `apk add` and `yum install` install the same
+     packages' darwin builds from Nix.
+   - An image converter: from a Linux image, keep its files and
+     configuration, replace its ELF executables and libraries with the
+     darwin builds of the packages its package database names, and keep
+     interpreted applications (Python, Node, Ruby, Java) as they are,
+     rebuilding native extensions. An image whose packages Nix builds for
+     darwin converts without hand work.
+   - Research: running `linux/arm64` ELF binaries in a process, by a
+     loader that maps them and rewrites their system calls into calls to
+     a Linux-to-Darwin translation, as WSL 1 did on Windows, without a VM.
+     Its obstacles are known: macOS's 16 KiB pages against binaries
+     aligned to 4 KiB, the thread pointer register, and Linux's `futex`,
+     `epoll`, `clone` and `/proc`. `linux/amd64` stays out of reach:
+     Rosetta translates Linux binaries only inside a VM.
+7. **Shipping and operating** (deferred: not started until asked for):
+   signed and notarized releases, prebuilt C parts so a Mac needs no
+   Xcode tools, an installer and updates, a `launchd` service, state
+   migrations, metrics, and CI on macOS betas.
+
 ## Remaining work
 
-Out of reach without root or a VM: Linux images, ICMP, PID and user
-namespaces, `# syntax=` frontends and multi-platform builds, and identity or
-memory limits the kernel enforces. Swarm is out of scope.
+Out of reach without root or a VM: running Linux images unchanged (the
+roadmap's sixth track makes darwin images from them), PID and user
+namespaces, and identity the kernel enforces. Swarm is out of scope.
 
 Also out of reach: a server seeing its stack's clients connect from their
 member addresses rather than `127.0.0.1`. The kernel never sees member

@@ -5,12 +5,17 @@ one Mac — without root and without a virtual machine. It serves the Docker
 Engine API, so the stock `docker` CLI, `docker compose` and the Docker Go
 client drive it unchanged.
 
+It is for running a project's tests and services locally: a container
+starts in milliseconds and costs only its processes, where Docker on a Mac
+runs everything in a Linux VM. It is not a boundary for untrusted or
+multi-tenant code.
+
 Each container is a process tree on the host, confined by a generated
 **[Seatbelt](docs/SEATBELT.md)** profile (the macOS sandbox) and rooted in an **APFS copy-on-write clone** of its
 image. Each Compose project — a *stack* — gets its own block of host ports and
 its own directory tree, so two stacks never clash and never see each other.
 
-- [`PLAN.md`](PLAN.md) — constraints, isolation model, milestone
+- [`PLAN.md`](PLAN.md) — purpose, constraints, isolation model, roadmap
 - [`docs/DESIGN.md`](docs/DESIGN.md) — the full mechanism
 - [`docs/SEATBELT.md`](docs/SEATBELT.md) — the macOS sandbox, a tutorial, and how each container's profile confines it
 - [`LIMITATIONS.md`](LIMITATIONS.md) — what it cannot do, and why
@@ -44,7 +49,8 @@ stops, for an upgrade say, and the next `fwsd` takes them back.
 ## Images
 
 Images are macOS-native (`darwin/arm64` or `darwin/amd64`). Linux images
-cannot run without a VM. `scripts/build-images.sh` builds the catalog from
+cannot run without a VM; the roadmap in `PLAN.md` makes darwin images from
+them and from Dockerfiles written for Linux. `scripts/build-images.sh` builds the catalog from
 Nix packages into archives for `docker load`, and `scripts/publish-images.sh`
 pushes them to a registry the engine can pull from. CI publishes the
 images each push to `main` passes its tests with to GitHub's container
