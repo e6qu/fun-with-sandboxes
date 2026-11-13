@@ -241,7 +241,11 @@ machine — and from what macOS offers an unprivileged process under them.
   has an address in `127.88.0.0/16`, and on a network created with a
   subnet (Compose's `ipam`, `docker network create --subnet`) an address
   of that subnet, the one `ipv4_address` or `--ip` names or the lowest
-  free one. On a network with IPv6 (`enable_ipv6`, `--ipv6`) it holds an
+  free one. The default bridge network holds docker0's subnet,
+  `172.17.0.0/16`, as Docker's does: its containers hold the lowest free
+  address of it, which their stack's members resolve them to, and
+  `--ip` there is refused, as Docker refuses it; containers of other
+  stacks reach one another there only through links, as before. On a network with IPv6 (`enable_ipv6`, `--ipv6`) it holds an
   IPv6 address too, of the network's IPv6 subnet, or of a `/64` the
   engine takes from a unique local `/48` of its own, as dockerd does,
   where the network names none; `ipv6_address` or `--ip6` names one in a
@@ -479,6 +483,15 @@ machine — and from what macOS offers an unprivileged process under them.
   `/var/log` for `kind export logs`; `crictl` is upstream's, against the
   engine's CRI. `containerdConfigPatches` and IPv6 or dual-stack clusters
   are not supported.
+- **`fws/k3s` is kubeadm's cluster under k3s's names.** Its `k3s server`
+  brings up one node from `fws/kind-node`'s parts with kubeadm, on k3s's
+  pod and service subnets (`10.42.0.0/16`, `10.43.0.0/16`), and writes
+  k3s's kubeconfig; it takes the flags Testcontainers' k3s module passes
+  and ignores the others, saying so. `k3s agent`, joining servers,
+  Traefik, ServiceLB, the Helm controller, the embedded registry and
+  etcd snapshots are not there. The node needs an address outside
+  loopback, which the kubelet and the API server require: the default
+  bridge network gives it one, as do networks with a subnet.
 - **Podman's pods share no namespaces.** A pod's infra container, which
   holds the namespaces its containers share, runs Podman's pause image,
   which the engine does not have, so a pod is created with

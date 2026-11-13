@@ -594,16 +594,23 @@ images=()
 for c in kube-apiserver kube-controller-manager kube-scheduler etcd pause; do
   images+=(-file "/kind/images/$c.tar=$out/$c.tar")
 done
-mkimage $(accounts kind-node) -spec images/kind-node/image.json -closure "$build/kind-node.closure" -pkg "$coreutils" -pkg "$gnutar" \
-  -file "/usr/local/bin/entrypoint=$build/kind-node-entry" -file "/usr/local/bin/kubeadm=$build/kind-node-entry" \
-  -file "/usr/local/bin/cp=$build/kind-node-entry" -file "/usr/local/bin/ctr=$build/kind-node-entry" \
-  -file "/usr/local/bin/containerd=$build/kind-node-entry" -file "/usr/local/bin/journalctl=$build/kind-node-entry" \
-  -file "/usr/local/bin/crictl=$build/kind-node-entry" -file "/usr/local/libexec/fws/crictl=$build/crictl" \
-  -file "/usr/local/libexec/fws/kubeadm=$k8s/bin/kubeadm" -file "/usr/local/bin/kubectl=$k8s/bin/kubectl" \
-  -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" -file "/usr/local/bin/fws-kube-proxy=$build/fws-kube-proxy" \
-  -file "/kind/version=$build/kind-version" -file "/kind/images.txt=$build/kind-images.txt" "${images[@]}" \
-  -file "/kind/manifests/default-cni.yaml=$here/images/kind-node/manifests/default-cni.yaml" \
-  -file "/kind/manifests/default-storage.yaml=$here/images/kind-node/manifests/default-storage.yaml" \
-  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/kind-node.tar"
+node_files=(-pkg "$coreutils" -pkg "$gnutar"
+  -file "/usr/local/bin/entrypoint=$build/kind-node-entry" -file "/usr/local/bin/kubeadm=$build/kind-node-entry"
+  -file "/usr/local/bin/cp=$build/kind-node-entry" -file "/usr/local/bin/ctr=$build/kind-node-entry"
+  -file "/usr/local/bin/containerd=$build/kind-node-entry" -file "/usr/local/bin/journalctl=$build/kind-node-entry"
+  -file "/usr/local/bin/crictl=$build/kind-node-entry" -file "/usr/local/libexec/fws/crictl=$build/crictl"
+  -file "/usr/local/libexec/fws/kubeadm=$k8s/bin/kubeadm" -file "/usr/local/bin/kubectl=$k8s/bin/kubectl"
+  -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" -file "/usr/local/bin/fws-kube-proxy=$build/fws-kube-proxy"
+  -file "/kind/version=$build/kind-version" -file "/kind/images.txt=$build/kind-images.txt" "${images[@]}"
+  -file "/kind/manifests/default-cni.yaml=$here/images/kind-node/manifests/default-cni.yaml"
+  -file "/kind/manifests/default-storage.yaml=$here/images/kind-node/manifests/default-storage.yaml"
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt")
+mkimage $(accounts kind-node) -spec images/kind-node/image.json -closure "$build/kind-node.closure" "${node_files[@]}" -out "$out/kind-node.tar"
+
+# k3s as its image runs it, from the same parts: /bin/k3s is the
+# entrypoint, whose k3s server brings up a single-node cluster with kubeadm
+# and writes k3s's kubeconfig, as Testcontainers' k3s module reads it.
+mkimage $(accounts k3s) -spec images/k3s/image.json -closure "$build/kind-node.closure" "${node_files[@]}" \
+  -file "/bin/k3s=$build/kind-node-entry" -out "$out/k3s.tar"
 
 ls -l "$out"

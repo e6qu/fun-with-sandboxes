@@ -1,5 +1,6 @@
-// Command entry is fws/kind-node's init, its kubeadm and cp, and its
-// ctr, containerd and journalctl (tools.go), by the name it runs as.
+// Command entry is fws/kind-node's init, its kubeadm and cp, its ctr,
+// containerd and journalctl (tools.go), and fws/k3s's k3s (k3s.go), by
+// the name it runs as.
 //
 // As the entrypoint it does what systemd and its units do in kind's
 // kindest/node: it tells kind the node is up, gives the engine fwsd nests
@@ -74,6 +75,8 @@ func main() {
 		os.Exit(containerd(os.Args[1:], os.Stdout))
 	case "crictl":
 		crictl(os.Args[1:])
+	case "k3s":
+		k3s(os.Args[1:])
 	case "ctr":
 		engine := os.Getenv("FWS_ENGINE")
 		if engine == "" {
@@ -81,7 +84,26 @@ func main() {
 		}
 		os.Exit(ctr(engineClient(engine), os.Args[1:], os.Stdin, os.Stdout))
 	}
-	log.SetPrefix("fws-kind-node: ")
+	n := boot("fws-kind-node")
+	defer n.stop()
+	// kind waits for systemd's word before it runs commands in the node,
+	// which boot gave.
+	n.run()
+}
+
+// node is a booted node: its engine's socket, the output its journal
+// keeps, and the context its signals end.
+type node struct {
+	engine string
+	stdout io.Writer
+	ctx    context.Context
+	stop   context.CancelFunc
+}
+
+// boot readies the node: its engine at containerd's socket, its journal,
+// the word kind waits for, and the control plane's images in its engine.
+func boot(prefix string) *node {
+	log.SetPrefix(prefix + ": ")
 	engine := os.Getenv("FWS_ENGINE")
 	if engine == "" {
 		log.Fatal("the node needs its own engine: run it --privileged, as kind does")
@@ -102,22 +124,25 @@ func main() {
 		log.Fatal(err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
-	// kind waits for systemd's word before it runs commands in the node.
 	fmt.Fprintln(stdout, "Reached target Multi-User System.")
 	if err := loadImages(engineClient(engine)); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Fprintln(stdout, "Loaded the control plane's images.")
+	return &node{engine: engine, stdout: stdout, ctx: ctx, stop: stop}
+}
+
+// run keeps the kubelet and fws-kube-proxy running until the node stops.
+func (n *node) run() {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		supervise(ctx, "kubelet", stdout, kubeletReady, func() []string { return kubeletArgs(engine) })
+		supervise(n.ctx, "kubelet", n.stdout, kubeletReady, func() []string { return kubeletArgs(n.engine) })
 	}()
 	go func() {
 		defer wg.Done()
-		supervise(ctx, "fws-kube-proxy", stdout, func() bool { return exists(kubeletKubeconfig) }, func() []string {
+		supervise(n.ctx, "fws-kube-proxy", n.stdout, func() bool { return exists(kubeletKubeconfig) }, func() []string {
 			return []string{"fws-kube-proxy", "--kubeconfig=" + kubeletKubeconfig}
 		})
 	}()
@@ -334,16 +359,31 @@ func loadImages(api engineAPI) error {
 	if err != nil {
 		return err
 	}
+	// The archives load at once, as a load spends its time unpacking one
+	// layer at a time: a node is ready in the time of its largest.
+	errs := make(chan error, len(archives))
 	for _, p := range archives {
-		f, err := os.Open(p)
-		if err != nil {
-			return err
+		go func() {
+			f, err := os.Open(p)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer f.Close()
+			if err := api.post("/images/load?quiet=1", f); err != nil {
+				errs <- fmt.Errorf("loading %s: %w", p, err)
+				return
+			}
+			errs <- nil
+		}()
+	}
+	for range archives {
+		if e := <-errs; e != nil && err == nil {
+			err = e
 		}
-		err = api.post("/images/load?quiet=1", f)
-		f.Close()
-		if err != nil {
-			return fmt.Errorf("loading %s: %w", p, err)
-		}
+	}
+	if err != nil {
+		return err
 	}
 	b, err := os.ReadFile(imagesList)
 	if err != nil {
