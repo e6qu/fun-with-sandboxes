@@ -21,6 +21,9 @@ import (
 //go:embed src/fwsroot.c
 var source []byte
 
+//go:embed src/launch.c
+var launchSource []byte
+
 // HostnameVar names the hostname the library presents; package identity
 // names the user and group.
 const HostnameVar = "FWS_HOSTNAME"
@@ -128,11 +131,14 @@ func archs() []string {
 	return []string{"-arch", "x86_64"}
 }
 
-// Build compiles the library into dir unless a build of this source is
-// there already, and returns its path.
+// Build compiles the library into dir, and the anchor launcher beside it
+// as Launcher names it, unless a build of these sources is there already,
+// and returns the library's path.
 func Build(dir string) (string, error) {
-	sum := sha256.Sum256(source)
-	out := filepath.Join(dir, "fwsroot-"+hex.EncodeToString(sum[:8])+".dylib")
+	h := sha256.New()
+	h.Write(source)
+	h.Write(launchSource)
+	out := filepath.Join(dir, "fwsroot-"+hex.EncodeToString(h.Sum(nil)[:8])+".dylib")
 	if _, err := os.Stat(out); err == nil {
 		return out, nil
 	}
@@ -157,13 +163,39 @@ func Build(dir string) (string, error) {
 		"-Wl,-U,_IORegisterForSystemPower", "-Wl,-U,_IONotificationPortCreate",
 		"-Wl,-U,_connect$NOCANCEL", "-Wl,-U,_sendto$NOCANCEL", "-Wl,-U,_sendmsg$NOCANCEL",
 		"-Wl,-U,_recvfrom$NOCANCEL", "-Wl,-U,_recvmsg$NOCANCEL", "-Wl,-U,_accept$NOCANCEL"}, archs()...)
-	cmd := exec.Command("/usr/bin/xcrun", append(args, "-o", lib, src)...)
-	if b, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("build the container library with clang, which the Xcode Command Line Tools provide (xcode-select --install): %v\n%s", err, b)
+	if err := clang(append(args, "-o", lib, src)); err != nil {
+		return "", err
 	}
-	// Another engine may have built it meanwhile; either build is the same.
+	launchSrc := filepath.Join(work, "launch.c")
+	if err := os.WriteFile(launchSrc, launchSource, 0o644); err != nil {
+		return "", err
+	}
+	// The launcher is the host's own architecture alone: macOS runs no
+	// arm64e program but Apple's.
+	launch := filepath.Join(work, "launch")
+	if err := clang([]string{"clang", "-O2", "-Wall", "-Werror", "-o", launch, launchSrc}); err != nil {
+		return "", err
+	}
+	// Another engine may have built them meanwhile; either build is the
+	// same. The launcher goes first: the library's presence says both are.
+	if err := os.Rename(launch, Launcher(out)); err != nil {
+		return "", err
+	}
 	if err := os.Rename(lib, out); err != nil {
 		return "", err
 	}
 	return out, nil
+}
+
+// Launcher is the anchor launcher Build compiled beside the library lib.
+func Launcher(lib string) string {
+	return strings.TrimSuffix(lib, ".dylib") + "-launch"
+}
+
+func clang(args []string) error {
+	cmd := exec.Command("/usr/bin/xcrun", args...)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("build the container library with clang, which the Xcode Command Line Tools provide (xcode-select --install): %v\n%s", err, b)
+	}
+	return nil
 }

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
+	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
@@ -38,8 +39,10 @@ type helperSpec struct {
 	Argv    []string
 	Profile string
 	Library string
-	Limits  Limits
-	TTY     bool
+	// Launcher starts the anchor where set, in the Go launcher's place.
+	Launcher string
+	Limits   Limits
+	TTY      bool
 	// Anchor starts the container's exec anchor from the sandbox, on the
 	// listening socket at descriptor 4.
 	Anchor bool
@@ -82,7 +85,7 @@ func runHelper() {
 		// The anchor must not hold the status pipe, which the engine reads
 		// to its end.
 		syscall.CloseOnExec(anchorFD)
-		if err := startAnchor(); err != nil {
+		if err := startAnchor(h.Launcher); err != nil {
 			fail(err)
 		}
 	}
@@ -148,6 +151,13 @@ func Start(s Spec) (*Process, error) {
 	if s.Profile.Helper, err = filepath.EvalSymlinks(self); err != nil {
 		return nil, err
 	}
+	// The anchor starts through the C launcher built beside the library,
+	// where there is one.
+	if s.AnchorListener != nil && s.Library != "" {
+		if l, err := filepath.EvalSymlinks(pathmap.Launcher(s.Library)); err == nil {
+			s.Profile.Launcher = l
+		}
+	}
 	text, err := seatbelt.Render(s.Profile)
 	if err != nil {
 		return nil, err
@@ -161,7 +171,7 @@ func Start(s Spec) (*Process, error) {
 	}
 	exe, argv := scriptCommand(s.Root, exe, s.Argv, s.Env)
 	hs, err := json.Marshal(helperSpec{
-		Path: exe, Argv: argv, Profile: text, Library: s.Library,
+		Path: exe, Argv: argv, Profile: text, Library: s.Library, Launcher: s.Profile.Launcher,
 		Limits: s.Limits, TTY: s.TTY != nil, Anchor: s.AnchorListener != nil,
 	})
 	if err != nil {
