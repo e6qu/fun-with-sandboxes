@@ -453,7 +453,16 @@ the anchor and exits: in one run, 21.1 ms for a container with the library
 and the anchor against 18.4 ms with the library alone, where the Go
 launcher, still used without the library, took the anchor-only start from
 17.9 ms to 23.4 ms. The anchor's share of a start fell from about 9 ms to
-about 3.
+about 3. Compiling the profile took 15 ms of a process's entry into its
+sandbox, where applying the bytecode libsandbox compiles took the kernel
+35 µs, from another process's compile as well, with the profile
+enforced the same. A container's compiled profile is now kept beside its
+text, under the text's hash; the engine compiles it as it launches the
+container's supervisor, which waits for that compile rather than doing it
+again, and the spawn helper applies the bytecode. In one run a container
+start took 9.2 ms with its profile compiled and 22.0 ms without, the
+sandbox alone 7.7 ms, and a native spawn 2.4 ms. What remains is the Go
+spawn helper's start-up and the loader's for the inserted library.
 
 Open bug: one start in an end-to-end run, of Testcontainers' reaper, took
 3.8 s in its `profile` step, which takes about 80 µs in every other
