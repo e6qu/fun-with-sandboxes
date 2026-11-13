@@ -522,8 +522,9 @@ machine — and from what macOS offers an unprivileged process under them.
 - **Live restore keeps containers running across an engine restart** with
   `fwsd -live-restore`. Without it the engine stops its containers when it
   stops, and ends any a crashed engine left running when it starts.
-- **`docker top` and `docker stats` see the container's process groups**: its
-  main process's and its running execs'. They read the host's `ps`, as dockerd
+- **`docker top` and `docker stats` see the container's processes**: its
+  main process's and its running execs' process groups, and the processes
+  macOS holds its main process responsible for, daemons included. They read the host's `ps`, as dockerd
   does, so commands show their host paths. Stats report CPU time, CPU
   throttling, the memory footprint the limit holds, the limits, process
   count, and the bytes the container's processes read from and wrote to

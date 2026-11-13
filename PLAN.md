@@ -438,6 +438,16 @@ Open bug: a container's process starts in about 20 ms, where the same
 `posix_spawn` natively takes 2 ms. The helper and the anchor's launcher
 are Go processes, started one after the other, each with the runtime's
 start-up; the library adds the loader's 4 ms for an inserted library.
+On a macOS runner `BenchmarkStart` took 19.2 ms with the sandbox alone and
+27.8 ms with the exec anchor: the helper waits for the anchor's launcher,
+which forks the anchor and exits so that the anchor is no child of the
+main process. Starting the anchor through `/bin/sh -c '... &'` instead
+took 36.7 ms, the sandbox alone 20.5 ms in the same run: the system
+shell hands off to the shell `/private/var/select/sh` names, and both
+start under the container's profile, slower than the Go launcher. Of the
+sandbox's own 19 ms, `BenchmarkCompile` puts 17 ms in compiling the
+profile, 10 ms of it in `system.sb`, which a profile of the container's
+own paths cannot share between containers.
 
 Open bug: one start in an end-to-end run, of Testcontainers' reaper, took
 3.8 s in its `profile` step, which takes about 80 µs in every other
