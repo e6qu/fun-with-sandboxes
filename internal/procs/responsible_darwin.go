@@ -1,7 +1,6 @@
 package procs
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
@@ -9,11 +8,13 @@ import (
 
 // A container's main process is spawned with responsibility disclaimed, so
 // macOS holds it responsible for itself, and holds it responsible for every
-// process it and its descendants start: the kernel keeps the mark for a
-// process's life, through a new session, a cleared environment and
-// overwritten arguments, and no process can drop it but by being spawned
-// with it disclaimed. The container's execs start from its anchor, which
-// the main process's spawn helper forked, so they carry it too.
+// process it and its descendants start: the mark holds through a new
+// session, a cleared environment and overwritten arguments, and no process
+// can drop it but by being spawned with it disclaimed. The container's
+// execs start from its anchor, which the main process's spawn helper
+// forked, so they carry it too. Once the main process ends, macOS reports
+// each of them responsible for itself, so they must be found while it
+// lives.
 
 // Answers reports whether macOS holds main, a process that disclaimed its
 // responsibility, responsible for p. A pid is reused once its process
@@ -47,10 +48,4 @@ func Responsible(main Entry) ([]int, error) {
 		}
 	}
 	return out, nil
-}
-
-// KillResponsible kills every process Responsible finds and returns once
-// none is left, killing what they started meanwhile too.
-func KillResponsible(main Entry) error {
-	return killFound(func() ([]int, error) { return Responsible(main) }, fmt.Sprintf("answering to %d", main.PID))
 }

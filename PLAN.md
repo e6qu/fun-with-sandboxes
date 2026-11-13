@@ -208,10 +208,13 @@ container, with launchd as their parent. The mark the kernel keeps for a
 process's life is its responsible process: the main process is spawned
 with its responsibility disclaimed, so macOS holds it responsible for
 every process started under it, its execs too, which the anchor it forked
-starts, and none of them can drop that. The shim now kills, after the group, every
-process the main process answers for, started no earlier than it and
-before any later process took its pid, and counts them against the
-container's limits; `top` and `stats` list them.
+starts, and none of them can drop that while it lives; once it ends,
+macOS reports each responsible for itself. The shim now follows, while the
+main process lives, every process it answers for, started no earlier than
+it and before any later process took its pid, through the forks of the
+members it knows and a rescan each second, and kills those, with what they
+started, after the group. They count against the container's limits, and
+`top` and `stats` list them.
 
 ClickHouse's temporary init server took the SIGTERM its image's
 entrypoint sends once the init scripts ran, and its shutdown waited on its

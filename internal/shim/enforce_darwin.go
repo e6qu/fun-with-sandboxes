@@ -85,9 +85,12 @@ func newEnforcer(tag string, main int, r Resources, net *netstat.Watcher) *enfor
 	return e
 }
 
-// startLocked starts the enforcing loop once there is a limit to enforce.
+// startLocked starts the loop that follows the members, and enforces the
+// limits when there are any. The members must be known while the main
+// process lives: once it ends, macOS holds each process it answered for
+// responsible for itself.
 func (e *enforcer) startLocked() {
-	if e.running || !e.res.any() {
+	if e.running {
 		return
 	}
 	kq, err := unix.Kqueue()
@@ -137,7 +140,13 @@ func (e *enforcer) loop() {
 	lastScan := time.Now()
 	last := time.Now()
 	for {
-		timeout := unix.NsecToTimespec(int64(cpuPeriod))
+		e.mu.Lock()
+		period := rescanPeriod
+		if e.res.any() {
+			period = cpuPeriod
+		}
+		e.mu.Unlock()
+		timeout := unix.NsecToTimespec(int64(period))
 		n, _ := unix.Kevent(e.kq, nil, events, &timeout)
 		select {
 		case <-e.quit:
@@ -162,7 +171,9 @@ func (e *enforcer) loop() {
 			lastScan = now
 		}
 		if now.Sub(last) >= cpuPeriod {
-			e.tickLocked(now, now.Sub(last))
+			if e.res.any() {
+				e.tickLocked(now, now.Sub(last))
+			}
 			last = now
 		}
 		e.mu.Unlock()
@@ -443,9 +454,16 @@ func (e *enforcer) oomKilled() bool {
 	return e.oom
 }
 
-// mainProcess is the main process as the enforcer first found it.
-func (e *enforcer) mainProcess() procs.Entry {
+// remaining are the members but the main process, as the enforcer last
+// found them.
+func (e *enforcer) remaining() []procs.Entry {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.mainEntry
+	var out []procs.Entry
+	for pid, m := range e.members {
+		if pid != e.main {
+			out = append(out, procs.Entry{PID: pid, Start: m.start})
+		}
+	}
+	return out
 }

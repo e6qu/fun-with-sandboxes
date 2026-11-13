@@ -17,9 +17,10 @@ import (
 // A process that disclaimed its responsibility, as a container's main
 // process does, answers for what its descendants start even once one has
 // started a session of its own and executed a program with a cleared
-// environment, as a daemon does: Responsible finds it, KillResponsible
-// ends it, and a process that answers to another is left alone.
-func TestKillResponsibleEndsADaemonizedDescendant(t *testing.T) {
+// environment, as a daemon does: Responsible finds it while the main
+// process lives, KillEntries ends it once the main process has ended, and a
+// process that answers to another is left alone.
+func TestKillEntriesEndsADaemonizedDescendant(t *testing.T) {
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +53,6 @@ func TestKillResponsibleEndsADaemonizedDescendant(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer syscall.Kill(daemon, syscall.SIGKILL)
-	t.Logf("main %d answers to %d; daemon %d answers to %d", pid, libsystem.ResponsiblePID(pid), daemon, libsystem.ResponsiblePID(daemon))
 
 	other := exec.Command("sleep", "60")
 	other.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -61,26 +61,30 @@ func TestKillResponsibleEndsADaemonizedDescendant(t *testing.T) {
 	}
 	defer other.Process.Kill()
 
+	// While the main process lives, the daemon answers to it.
+	pids, err := Responsible(main)
+	if err != nil || len(pids) != 1 || pids[0] != daemon {
+		t.Fatalf("Responsible = %v, %v; want [%d] (the daemon answers to %d)", pids, err, daemon, libsystem.ResponsiblePID(daemon))
+	}
+	d, ok := Find(daemon)
+	if !ok {
+		t.Fatalf("the daemon %d is not listed", daemon)
+	}
 	// The main process ends, as a container's does before the shim cleans
-	// up after it.
+	// up after it; the shim kills what it found answering to it.
 	stdinW.Close()
 	var ws syscall.WaitStatus
 	if _, err := syscall.Wait4(pid, &ws, 0, nil); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("once main ended, daemon %d answers to %d", daemon, libsystem.ResponsiblePID(daemon))
-	pids, err := Responsible(main)
-	if err != nil || len(pids) != 1 || pids[0] != daemon {
-		t.Fatalf("Responsible = %v, %v; want [%d]", pids, err, daemon)
-	}
-	if err := KillResponsible(main); err != nil {
+	if err := KillEntries([]Entry{d}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := Find(daemon); ok {
-		t.Fatal("the daemon outlived KillResponsible")
+		t.Fatal("the daemon outlived KillEntries")
 	}
 	if err := other.Process.Signal(syscall.Signal(0)); err != nil {
-		t.Fatalf("KillResponsible ended a process answering to another: %v", err)
+		t.Fatalf("KillEntries ended a process answering to another: %v", err)
 	}
 }
 
