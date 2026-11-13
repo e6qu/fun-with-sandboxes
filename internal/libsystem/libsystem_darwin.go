@@ -6,7 +6,9 @@
 package libsystem
 
 import (
+	"encoding/binary"
 	"fmt"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -273,6 +275,64 @@ func SandboxInit(profile string) error {
 		syscall_syscall(libsandbox_sandbox_free_error_trampoline_addr, uintptr(unsafe.Pointer(errbuf)), 0, 0)
 	}
 	return fmt.Errorf("sandbox_init: %s", msg)
+}
+
+// sandboxProfile is libsandbox's compiled profile: its kind and its
+// bytecode, then fields sandbox_apply reads too, which a profile applied
+// from bytecode alone leaves zero.
+type sandboxProfile struct {
+	kind     uint32
+	bytecode unsafe.Pointer
+	length   uintptr
+	zero     [5]uint64
+}
+
+// SandboxCompile compiles the Seatbelt profile text into the bytecode the
+// kernel enforces, prefixed with its kind, for SandboxApply to apply in
+// another process: compiling a container's profile takes milliseconds,
+// which a start that applies a compiled one does not pay.
+func SandboxCompile(profile string) ([]byte, error) {
+	cprofile, err := syscall.BytePtrFromString(profile)
+	if err != nil {
+		return nil, err
+	}
+	params, _, _ := syscall_syscall(libsandbox_sandbox_create_params_trampoline_addr, 0, 0, 0)
+	var errbuf *byte
+	r, _, _ := syscall_syscall(libsandbox_sandbox_compile_string_trampoline_addr,
+		uintptr(unsafe.Pointer(cprofile)), params, uintptr(unsafe.Pointer(&errbuf)))
+	if r == 0 {
+		msg := "unknown error"
+		if errbuf != nil {
+			msg = goString(errbuf)
+			syscall_syscall(libsandbox_sandbox_free_error_trampoline_addr, uintptr(unsafe.Pointer(errbuf)), 0, 0)
+		}
+		return nil, fmt.Errorf("sandbox_compile_string: %s", msg)
+	}
+	defer syscall_syscall(libsandbox_sandbox_free_profile_trampoline_addr, r, 0, 0)
+	// r is libsandbox's allocation, outside Go's heap; only its kind and
+	// bytecode are read.
+	p := *(**sandboxProfile)(unsafe.Pointer(&r))
+	out := binary.LittleEndian.AppendUint32(nil, p.kind)
+	return append(out, unsafe.Slice((*byte)(p.bytecode), p.length)...), nil
+}
+
+// SandboxApply confines the calling process, and every program it
+// executes, to a profile SandboxCompile compiled.
+func SandboxApply(compiled []byte) error {
+	if len(compiled) <= 4 {
+		return fmt.Errorf("sandbox_apply: a compiled profile of %d bytes", len(compiled))
+	}
+	p := sandboxProfile{
+		kind:     binary.LittleEndian.Uint32(compiled),
+		bytecode: unsafe.Pointer(&compiled[4]),
+		length:   uintptr(len(compiled) - 4),
+	}
+	r, _, errno := syscall_syscall(libsandbox_sandbox_apply_trampoline_addr, uintptr(unsafe.Pointer(&p)), 0, 0)
+	runtime.KeepAlive(compiled)
+	if int32(r) != 0 {
+		return fmt.Errorf("sandbox_apply: %w", errno)
+	}
+	return nil
 }
 
 func goString(p *byte) string {

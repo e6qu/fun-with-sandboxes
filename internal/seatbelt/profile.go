@@ -102,6 +102,10 @@ type Spec struct {
 	// Helper is the engine's helper binary, which the container's sandbox
 	// executes once, to start the anchor that runs its execs.
 	Helper string
+	// Launcher is the engine's anchor launcher, a small C program the
+	// container's sandbox executes once, in the helper's place, to start
+	// the anchor sooner.
+	Launcher string
 	// PortDir is where the container listens, with Unix sockets, on its TCP
 	// ports that have no host port.
 	PortDir string
@@ -163,6 +167,9 @@ func Render(s Spec) (string, error) {
 	extra := append(append(append([]string{}, s.Libraries...), s.ReadFiles...), s.WriteFiles...)
 	if s.Helper != "" {
 		extra = append(extra, s.Helper)
+	}
+	if s.Launcher != "" {
+		extra = append(extra, s.Launcher)
 	}
 	extra = append(extra, s.Sockets...)
 	if s.ProcsSocket != "" {
@@ -257,6 +264,9 @@ func Render(s Spec) (string, error) {
 	if s.Helper != "" {
 		w("  (literal %q)", s.Helper)
 	}
+	if s.Launcher != "" {
+		w("  (literal %q)", s.Launcher)
+	}
 	w(")")
 	if len(s.Libraries) > 0 {
 		w("(allow file-map-executable")
@@ -293,6 +303,9 @@ func Render(s Spec) (string, error) {
 	}
 	if s.Helper != "" {
 		w("  (literal %q)", s.Helper)
+	}
+	if s.Launcher != "" {
+		w("  (literal %q)", s.Launcher)
 	}
 	w(")")
 

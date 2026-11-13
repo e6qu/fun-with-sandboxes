@@ -16,3 +16,6 @@ const RoleVar = roles.Var
 func Start(s Spec) (*Process, error) {
 	return nil, errors.New("containers run on macOS only")
 }
+
+// Precompile has no profile to compile off macOS.
+func Precompile(s Spec) error { return nil }

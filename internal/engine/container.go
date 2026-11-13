@@ -1558,6 +1558,12 @@ func (c *Container) start(e *Engine) error {
 		cfg.Publish = append(cfg.Publish, p.binding)
 	}
 	st.mark("prepare")
+	// The profile compiles while the supervisor starts; its start waits for
+	// the compile rather than doing it again.
+	if err := runtime.Precompile(cfg.Spec); err != nil {
+		log.Printf("container %s: compile its profile ahead: %v", c.rec.ID[:12], err)
+	}
+	st.mark("precompile")
 	task, ready, err := shim.Launch(c.dir, cfg)
 	st.mark("launch")
 	if err != nil {

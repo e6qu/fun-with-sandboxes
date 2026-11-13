@@ -28,10 +28,15 @@ copy-on-write clones**, and **per-stack resource assignment**.
 
 ### What it is not
 
+- **Not a multi-tenant or untrusted-code sandbox.** It is a local runtime for
+  a developer's tests and services, lighter than a Linux VM; Seatbelt keeps
+  stacks apart and the user's data out of reach, against mistakes rather
+  than attackers.
+
 - **Not a Linux container runtime.** It runs macOS-native (Mach-O,
   `darwin/<arch>`) images only. Linux ELF images cannot run on macOS without a
-  VM or emulation, both excluded. This is the hard boundary of the whole
-  project.
+  VM or emulation, both excluded; the roadmap (`PLAN.md`) makes darwin images
+  from Linux images and Dockerfiles instead.
 - **Not root-requiring.** No step uses `sudo`, installs a kext, disables SIP,
   adds `lo0` aliases, or writes `pf` rules. If a design choice needs root, it is
   rejected and replaced with an unprivileged equivalent.

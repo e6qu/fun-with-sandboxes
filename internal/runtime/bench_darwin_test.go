@@ -46,11 +46,15 @@ func BenchmarkStart(b *testing.B) {
 		name    string
 		library bool
 		anchor  bool
+		// cold starts each time without the compiled profile, as a
+		// container's first start the engine did not compile ahead.
+		cold bool
 	}{
-		{"sandbox", false, false},
-		{"library", true, false},
-		{"anchor", false, true},
-		{"container", true, true},
+		{"sandbox", false, false, false},
+		{"library", true, false, false},
+		{"anchor", false, true, false},
+		{"container", true, true, false},
+		{"container-cold", true, true, true},
 	} {
 		b.Run(mode.name, func(b *testing.B) {
 			var total time.Duration
@@ -75,6 +79,9 @@ func BenchmarkStart(b *testing.B) {
 					}
 					ul.Close()
 					s.AnchorListener = lf
+				}
+				if mode.cold {
+					os.Remove(compiledPath(s))
 				}
 				start := time.Now()
 				p, err := Start(s)

@@ -118,3 +118,23 @@ TEXT libc_proc_pidpath_trampoline<>(SB),NOSPLIT,$0-0
 	JMP	libc_proc_pidpath(SB)
 GLOBL	·libc_proc_pidpath_trampoline_addr(SB), RODATA, $8
 DATA	·libc_proc_pidpath_trampoline_addr(SB)/8, $libc_proc_pidpath_trampoline<>(SB)
+
+TEXT libsandbox_sandbox_create_params_trampoline<>(SB),NOSPLIT,$0-0
+	JMP	libsandbox_sandbox_create_params(SB)
+GLOBL	·libsandbox_sandbox_create_params_trampoline_addr(SB), RODATA, $8
+DATA	·libsandbox_sandbox_create_params_trampoline_addr(SB)/8, $libsandbox_sandbox_create_params_trampoline<>(SB)
+
+TEXT libsandbox_sandbox_compile_string_trampoline<>(SB),NOSPLIT,$0-0
+	JMP	libsandbox_sandbox_compile_string(SB)
+GLOBL	·libsandbox_sandbox_compile_string_trampoline_addr(SB), RODATA, $8
+DATA	·libsandbox_sandbox_compile_string_trampoline_addr(SB)/8, $libsandbox_sandbox_compile_string_trampoline<>(SB)
+
+TEXT libsandbox_sandbox_free_profile_trampoline<>(SB),NOSPLIT,$0-0
+	JMP	libsandbox_sandbox_free_profile(SB)
+GLOBL	·libsandbox_sandbox_free_profile_trampoline_addr(SB), RODATA, $8
+DATA	·libsandbox_sandbox_free_profile_trampoline_addr(SB)/8, $libsandbox_sandbox_free_profile_trampoline<>(SB)
+
+TEXT libsandbox_sandbox_apply_trampoline<>(SB),NOSPLIT,$0-0
+	JMP	libsandbox_sandbox_apply(SB)
+GLOBL	·libsandbox_sandbox_apply_trampoline_addr(SB), RODATA, $8
+DATA	·libsandbox_sandbox_apply_trampoline_addr(SB)/8, $libsandbox_sandbox_apply_trampoline<>(SB)

@@ -16,7 +16,6 @@ import (
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
 	"github.com/e6qu/fun-with-sandboxes/internal/roles"
-	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
 
 // The engine starts every container process through a helper: itself,
@@ -38,8 +37,13 @@ type helperSpec struct {
 	Argv    []string
 	Profile string
 	Library string
-	Limits  Limits
-	TTY     bool
+	// Launcher starts the anchor where set, in the Go launcher's place.
+	Launcher string
+	// Compiled is the compiled profile of Profile, which the helper applies
+	// rather than compiling the text.
+	Compiled string
+	Limits   Limits
+	TTY      bool
 	// Anchor starts the container's exec anchor from the sandbox, on the
 	// listening socket at descriptor 4.
 	Anchor bool
@@ -74,15 +78,17 @@ func runHelper() {
 		// The main process is the container's pid 1 (package pathmap).
 		env = append(env, initVar+"="+strconv.Itoa(os.Getpid()))
 	}
-	if err := libsystem.SandboxInit(h.Profile); err != nil {
-		fail(err)
+	if !applyCompiled(h.Compiled, h.Profile) {
+		if err := libsystem.SandboxInit(h.Profile); err != nil {
+			fail(err)
+		}
 	}
 	syscall.CloseOnExec(statusFD)
 	if h.Anchor {
 		// The anchor must not hold the status pipe, which the engine reads
 		// to its end.
 		syscall.CloseOnExec(anchorFD)
-		if err := startAnchor(); err != nil {
+		if err := startAnchor(h.Launcher); err != nil {
 			fail(err)
 		}
 	}
@@ -140,18 +146,11 @@ func Start(s Spec) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	self, err := roles.Binary()
+	profile, text, err := profileText(s)
 	if err != nil {
 		return nil, err
 	}
-	// Seatbelt matches resolved paths.
-	if s.Profile.Helper, err = filepath.EvalSymlinks(self); err != nil {
-		return nil, err
-	}
-	text, err := seatbelt.Render(s.Profile)
-	if err != nil {
-		return nil, err
-	}
+	s.Profile = profile
 	if err := os.WriteFile(s.ProfilePath, []byte(text), 0o600); err != nil {
 		return nil, err
 	}
@@ -160,10 +159,20 @@ func Start(s Spec) (*Process, error) {
 		return nil, err
 	}
 	exe, argv := scriptCommand(s.Root, exe, s.Argv, s.Env)
-	hs, err := json.Marshal(helperSpec{
+	h := helperSpec{
 		Path: exe, Argv: argv, Profile: text, Library: s.Library,
 		Limits: s.Limits, TTY: s.TTY != nil, Anchor: s.AnchorListener != nil,
-	})
+	}
+	if h.Anchor {
+		h.Launcher = s.Profile.Launcher
+	}
+	// An exec runs in the container's sandbox already, through its anchor;
+	// a process the helper starts applies the compiled profile, or, where
+	// it cannot be had, compiles the text itself.
+	if s.Anchor == "" {
+		h.Compiled, _ = compiled(s, text)
+	}
+	hs, err := json.Marshal(h)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +254,7 @@ func Start(s Spec) (*Process, error) {
 	if s.AnchorListener != nil {
 		files = append(files, s.AnchorListener.Fd())
 	}
-	pid, err := libsystem.Spawn(self, []string{helperArgv}, env, libsystem.SpawnAttr{
+	pid, err := libsystem.Spawn(s.Profile.Helper, []string{helperArgv}, env, libsystem.SpawnAttr{
 		Dir:   wd,
 		Files: files,
 		// A session leader also leads its process group, so KillAll still

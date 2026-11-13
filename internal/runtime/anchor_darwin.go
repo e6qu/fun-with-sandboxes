@@ -55,8 +55,10 @@ func init() {
 
 // startAnchor starts the anchor from the sandboxed spawn helper, through a
 // launcher that exits at once, so the anchor is no child of the main
-// process the helper becomes: a shell's wait would wait for it.
-func startAnchor() error {
+// process the helper becomes: a shell's wait would wait for it. The
+// launcher is the engine's C program where it built one, which starts in
+// a millisecond, or else this binary, whose Go runtime takes several.
+func startAnchor(launcher string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
@@ -66,8 +68,14 @@ func startAnchor() error {
 		return err
 	}
 	defer null.Close()
-	pid, err := syscall.ForkExec(self, []string{"fws-anchor", strconv.Itoa(os.Getpid())}, &syscall.ProcAttr{
-		Env:   []string{RoleVar + "=" + anchorLaunchRole},
+	// The C launcher, where the engine built one, starts the anchor itself;
+	// otherwise this binary does, in the launcher's role.
+	path, argv, role := self, []string{"fws-anchor", strconv.Itoa(os.Getpid())}, anchorLaunchRole
+	if launcher != "" {
+		path, argv, role = launcher, []string{"fws-launch", self, strconv.Itoa(os.Getpid())}, anchorRole
+	}
+	pid, err := syscall.ForkExec(path, argv, &syscall.ProcAttr{
+		Env:   []string{RoleVar + "=" + role},
 		Files: []uintptr{null.Fd(), null.Fd(), null.Fd(), anchorFD},
 		Sys:   &syscall.SysProcAttr{Setsid: true},
 	})
