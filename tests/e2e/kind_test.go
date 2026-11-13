@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/kind/pkg/cluster"
 	"sigs.k8s.io/kind/pkg/cmd"
 	dockerimage "sigs.k8s.io/kind/pkg/cmd/kind/load/docker-image"
+	imagearchive "sigs.k8s.io/kind/pkg/cmd/kind/load/image-archive"
 	kindexec "sigs.k8s.io/kind/pkg/exec"
 	"sigs.k8s.io/yaml"
 )
@@ -30,10 +31,10 @@ import (
 // init brings up with the control plane as static pods on the node's
 // network, and a worker, which kubeadm join adds. The API server answers
 // on the host's loopback port kind publishes, with the kubeconfig kind
-// writes. kind load docker-image puts images in the nodes' engines; a
-// Deployment's pods run on the worker, a pod reaches them through their
-// Service by name, and the host through its node port, which the worker
-// publishes as kind's extraPortMappings do. kind export logs collects the
+// writes. kind load docker-image and image-archive put images in the
+// nodes' engines; a Deployment's pods run on the worker, a pod reaches
+// them through their Service by name, and the host through its node port,
+// which the worker publishes as kind's extraPortMappings do. kind export logs collects the
 // nodes' logs, and kind deletes the cluster.
 func TestKindCluster(t *testing.T) {
 	const name = "fws-e2e"
@@ -149,9 +150,20 @@ func TestKindCluster(t *testing.T) {
 			t.Fatalf("kind load docker-image: %v", err)
 		}
 	}
+	// kind load image-archive does the same from an archive docker save
+	// wrote.
+	archive := filepath.Join(t.TempDir(), "busybox.tar")
+	mustDocker(t, "save", "-o", archive, "fws/busybox:1")
+	loadArchive := imagearchive.NewCommand(cmd.NewLogger(), cmd.StandardIOStreams())
+	loadArchive.SetArgs([]string{"--name", name, archive})
+	if err := loadArchive.Execute(); err != nil {
+		t.Fatalf("kind load image-archive: %v", err)
+	}
 	for _, n := range nodes {
-		if out, err := docker(t, "exec", n, "crictl", "inspecti", "fws/nginx:1"); err != nil || !strings.Contains(out, `"repoTags"`) {
-			t.Errorf("crictl inspecti fws/nginx:1 in %s: %v\n%s", n, err, tail(out, 10))
+		for _, img := range []string{"fws/nginx:1", "fws/busybox:1"} {
+			if out, err := docker(t, "exec", n, "crictl", "inspecti", img); err != nil || !strings.Contains(out, `"repoTags"`) {
+				t.Errorf("crictl inspecti %s in %s: %v\n%s", img, n, err, tail(out, 10))
+			}
 		}
 	}
 	mustKubectl("create", "deployment", "web", "--image=fws/nginx:1", "--replicas=2")
