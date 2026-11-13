@@ -2,6 +2,8 @@ package procs
 
 import (
 	"bufio"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -26,9 +28,10 @@ func TestKillResponsibleEndsADaemonizedDescendant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	daemonize := `exit if fork; POSIX::setsid(); exit if fork; print "$$\n"; close STDOUT; exec "/bin/sleep", "60"`
-	script := "/usr/bin/env -i /usr/bin/perl -MPOSIX -e '" + daemonize + "'; read x"
-	pid, err := libsystem.Spawn("/bin/sh", []string{"sh", "-c", script}, os.Environ(), libsystem.SpawnAttr{
+	// The main process is this test's binary, as a container's is the
+	// engine's spawn helper until it executes the command.
+	env := append(os.Environ(), daemonHelperVar+"=main")
+	pid, err := libsystem.Spawn(os.Args[0], []string{os.Args[0]}, env, libsystem.SpawnAttr{
 		Files: []uintptr{stdinR.Fd(), outW.Fd(), 2}, Disclaim: true,
 	})
 	stdinR.Close()
@@ -49,6 +52,7 @@ func TestKillResponsibleEndsADaemonizedDescendant(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer syscall.Kill(daemon, syscall.SIGKILL)
+	t.Logf("main %d answers to %d; daemon %d answers to %d", pid, libsystem.ResponsiblePID(pid), daemon, libsystem.ResponsiblePID(daemon))
 
 	other := exec.Command("sleep", "60")
 	other.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -64,9 +68,7 @@ func TestKillResponsibleEndsADaemonizedDescendant(t *testing.T) {
 	if _, err := syscall.Wait4(pid, &ws, 0, nil); err != nil {
 		t.Fatal(err)
 	}
-	if env, err := Environ(daemon); err != nil || len(env) != 0 {
-		t.Logf("the daemon's environment: %v %v", env, err)
-	}
+	t.Logf("once main ended, daemon %d answers to %d", daemon, libsystem.ResponsiblePID(daemon))
 	pids, err := Responsible(main)
 	if err != nil || len(pids) != 1 || pids[0] != daemon {
 		t.Fatalf("Responsible = %v, %v; want [%d]", pids, err, daemon)
@@ -97,5 +99,42 @@ func TestAnswersGuardsAgainstReusedPIDs(t *testing.T) {
 		if Answers(c.p, main, c.reused) {
 			t.Errorf("Answers(%+v, reused %d) = true", c.p, c.reused)
 		}
+	}
+}
+
+const daemonHelperVar = "FWS_PROCS_TEST_DAEMON"
+
+// The test's binary, run with daemonHelperVar set, plays a container's
+// processes: main starts a launcher in a session of its own with a cleared
+// environment, which starts a daemon and exits, so launchd becomes the
+// daemon's parent; main then waits for its standard input to close.
+func init() {
+	switch os.Getenv(daemonHelperVar) {
+	case "main":
+		self, err := os.Executable()
+		if err != nil {
+			os.Exit(1)
+		}
+		launcher, err := os.StartProcess(self, []string{self}, &os.ProcAttr{
+			Env: []string{daemonHelperVar + "=launch"}, Files: []*os.File{nil, os.Stdout, os.Stderr},
+			Sys: &syscall.SysProcAttr{Setsid: true},
+		})
+		if err != nil {
+			os.Exit(1)
+		}
+		if st, err := launcher.Wait(); err != nil || !st.Success() {
+			os.Exit(1)
+		}
+		io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	case "launch":
+		p, err := os.StartProcess("/bin/sleep", []string{"sleep", "60"}, &os.ProcAttr{
+			Env: []string{}, Files: []*os.File{nil, nil, nil},
+		})
+		if err != nil {
+			os.Exit(1)
+		}
+		fmt.Println(p.Pid)
+		os.Exit(0)
 	}
 }
