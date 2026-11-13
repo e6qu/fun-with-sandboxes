@@ -215,13 +215,19 @@ working more often. Every track keeps the constraints above: no root, no
 VM, and no cost per call beyond microseconds. Tracks run side by side;
 each lands in pull requests with tests on the macOS runner.
 
-1. **A faster test loop.** The suite takes about three hours a round:
-   `images` builds the catalog for 90 minutes, then `e2e` runs for 50.
-   - Unit tests and benchmarks gate first, in minutes.
-   - Image builds are cached by their inputs' hash, so a change that
-     touches no image builds none.
-   - The end-to-end suite is sharded across runners by test, each shard
-     loading only the images its tests use, aiming at 15 minutes a round.
+1. **A faster test loop.** The suite took about three hours a round:
+   `images` built the catalog for 60 to 90 minutes, then `e2e` ran for 50.
+   - Done: `images` waits for the unit tests, so a change they fail costs
+     minutes.
+   - Done: image builds were cached by their inputs' hash already, but the
+     Playwright image's entry imported the runtime, so every runtime
+     change rebuilt the catalog; it now takes `internal/execpath` alone.
+   - Done: the end-to-end suite runs in four shards balanced by the
+     tests' recorded durations, about 9 minutes of tests each.
+   - Next: each shard spends about 15 minutes before its first test, on
+     the Docker tools, the race-built engine and loading every image; it
+     should load only the images its tests use. Archives cached per image,
+     so a change to one image rebuilds that one.
 2. **The open bugs below are fixed**, each with a test that reproduced it:
    MongoDB's replica set's `ECONNREFUSED 127.0.0.1:65535`, the reaper's
    3.8 s `profile` step (the lock timing `-debug` now logs shows where),

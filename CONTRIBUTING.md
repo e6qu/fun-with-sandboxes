@@ -108,6 +108,12 @@ The checks CI runs, in the order to run them locally:
    cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e -v -count=1 -timeout 90m ./...
    ```
 
+   One shard of it, as CI runs it:
+
+   ```bash
+   cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e -v -count=1 -run "$(../../scripts/e2e-shard.sh 4 1)" ./...
+   ```
+
    The suite starts an engine of its own, under a state directory of its
    own, so it leaves `~/.fws` alone. It runs the engine with `-debug` and
    ends with the time the engine took to serve each endpoint.
@@ -122,8 +128,19 @@ CI runs these jobs on every push:
 - `images`: the catalog's archives and a local registry that takes them,
   cached under a hash of the files the build reads
   (`scripts/build-images.sh --inputs`), so a push that changes none of
-  them skips the build;
-- `e2e`: the end-to-end suite.
+  them skips the build. It waits for `linux` and `macos`, so a change the
+  unit tests fail spends no image build or end-to-end run;
+- `e2e`: the end-to-end suite, in four shards on runners of their own.
+  `scripts/e2e-shard.sh` spreads the tests by their durations in
+  `tests/e2e/durations.txt`, seconds per test from an earlier run; a test
+  the file does not list counts as 30 seconds. Refresh the file from a
+  run's `--- PASS` lines when a test's time changes much. `linux` checks
+  that the shards hold every test once.
+
+An image's entry program that imports the engine's packages is rebuilt,
+with every image, whenever those packages change; keep what entries need
+in small packages of their own, such as `internal/execpath` and
+`internal/sandboxenv`.
 
 When `e2e` fails, its last step prints the crash reports and every distinct
 Seatbelt denial. [SEATBELT](docs/SEATBELT.md) shows how to read the same
