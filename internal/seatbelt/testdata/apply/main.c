@@ -16,10 +16,16 @@
 #include <time.h>
 #include <unistd.h>
 
+// libsandbox's compiled profile, as far as a dump of one shows it: its
+// kind, its bytecode, a word that was zero, and a second, smaller blob.
 struct sandbox_profile {
     uint32_t type;
     const void *bytecode;
     size_t bytecode_length;
+    uint64_t reserved;
+    const void *extra;
+    size_t extra_length;
+    uint64_t pad[2];
 };
 
 void *sandbox_create_params(void);
@@ -67,21 +73,39 @@ int main(int argc, char **argv) {
         }
         FILE *f = fopen(argv[3], "wb");
         if (!f) return 2;
+        uint64_t n1 = p->bytecode_length, n2 = p->extra ? p->extra_length : 0;
         fwrite(&p->type, sizeof p->type, 1, f);
-        fwrite(p->bytecode, 1, p->bytecode_length, f);
+        fwrite(&n1, sizeof n1, 1, f);
+        fwrite(p->bytecode, 1, n1, f);
+        fwrite(&n2, sizeof n2, 1, f);
+        if (n2) fwrite(p->extra, 1, n2, f);
         fclose(f);
+        fprintf(stderr, "reserved %llu; extra: ", (unsigned long long)p->reserved);
+        for (size_t i = 0; i < n2; i++) {
+            unsigned char c = ((unsigned char *)p->extra)[i];
+            fprintf(stderr, c >= 32 && c < 127 ? "%c" : "\\x%02x", c);
+        }
+        fprintf(stderr, "\n");
         fprintf(stderr, "type %u, %zu bytes; the struct's first 64 bytes:", p->type, p->bytecode_length);
         for (int i = 0; i < 64; i++) fprintf(stderr, "%s%02x", i % 8 ? "" : " ", ((unsigned char *)p)[i]);
         fprintf(stderr, "; bytecode at %p\n", p->bytecode);
         return 0;
     }
-    if (strcmp(argv[1], "bytecode") == 0) {
+    if (strcmp(argv[1], "bytecode") == 0 || strcmp(argv[1], "bytecode-only") == 0) {
         char *blob = slurp(argv[2], &len);
-        if (!blob || len < sizeof(uint32_t)) return 2;
+        uint64_t n1, n2;
         struct sandbox_profile p;
-        memcpy(&p.type, blob, sizeof p.type);
-        p.bytecode = blob + sizeof p.type;
-        p.bytecode_length = len - sizeof p.type;
+        memset(&p, 0, sizeof p);
+        if (!blob || len < 4 + 8) return 2;
+        memcpy(&p.type, blob, 4);
+        memcpy(&n1, blob + 4, 8);
+        p.bytecode = blob + 12;
+        p.bytecode_length = n1;
+        memcpy(&n2, blob + 12 + n1, 8);
+        if (n2 && strcmp(argv[1], "bytecode") == 0) {
+            p.extra = blob + 20 + n1;
+            p.extra_length = n2;
+        }
         long a = now();
         int r = sandbox_apply(&p);
         if (r != 0) {

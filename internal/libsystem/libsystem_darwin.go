@@ -277,18 +277,24 @@ func SandboxInit(profile string) error {
 	return fmt.Errorf("sandbox_init: %s", msg)
 }
 
-// sandboxProfile is libsandbox's compiled profile: its kind and its
-// bytecode, as the kernel takes it.
+// sandboxProfile is libsandbox's compiled profile, as a dump of one shows
+// it: its kind, its bytecode, a word that was zero, and a second, smaller
+// blob, which sandbox_apply reads too.
 type sandboxProfile struct {
-	kind     uint32
-	bytecode unsafe.Pointer
-	length   uintptr
+	kind        uint32
+	bytecode    unsafe.Pointer
+	length      uintptr
+	reserved    uint64
+	extra       unsafe.Pointer
+	extraLength uintptr
+	pad         [2]uint64
 }
 
-// SandboxCompile compiles the Seatbelt profile text into the bytecode the
-// kernel enforces, prefixed with its kind, for SandboxApply to apply in
-// another process: compiling a container's profile takes milliseconds,
-// which a start that applies a compiled one does not pay.
+// SandboxCompile compiles the Seatbelt profile text into what the kernel
+// enforces, for SandboxApply to apply in another process: compiling a
+// container's profile takes milliseconds, which a start that applies a
+// compiled one does not pay. The result is the profile's kind, then each
+// blob with its length before it.
 func SandboxCompile(profile string) ([]byte, error) {
 	cprofile, err := syscall.BytePtrFromString(profile)
 	if err != nil {
@@ -309,22 +315,49 @@ func SandboxCompile(profile string) ([]byte, error) {
 	defer syscall_syscall(libsandbox_sandbox_free_profile_trampoline_addr, r, 0, 0)
 	// r is libsandbox's allocation, outside Go's heap.
 	p := *(**sandboxProfile)(unsafe.Pointer(&r))
-	out := make([]byte, 4+p.length)
-	binary.LittleEndian.PutUint32(out, p.kind)
-	copy(out[4:], unsafe.Slice((*byte)(p.bytecode), p.length))
+	out := binary.LittleEndian.AppendUint32(nil, p.kind)
+	for _, b := range []struct {
+		data unsafe.Pointer
+		n    uintptr
+	}{{p.bytecode, p.length}, {p.extra, p.extraLength}} {
+		if b.data == nil {
+			b.n = 0
+		}
+		out = binary.LittleEndian.AppendUint64(out, uint64(b.n))
+		if b.n > 0 {
+			out = append(out, unsafe.Slice((*byte)(b.data), b.n)...)
+		}
+	}
 	return out, nil
 }
 
 // SandboxApply confines the calling process, and every program it
 // executes, to a profile SandboxCompile compiled.
 func SandboxApply(compiled []byte) error {
-	if len(compiled) <= 4 {
-		return fmt.Errorf("sandbox_apply: a compiled profile of %d bytes", len(compiled))
+	bad := fmt.Errorf("sandbox_apply: a malformed compiled profile of %d bytes", len(compiled))
+	if len(compiled) < 4+8 {
+		return bad
 	}
-	p := sandboxProfile{
-		kind:     binary.LittleEndian.Uint32(compiled),
-		bytecode: unsafe.Pointer(&compiled[4]),
-		length:   uintptr(len(compiled) - 4),
+	p := sandboxProfile{kind: binary.LittleEndian.Uint32(compiled)}
+	rest := compiled[4:]
+	var blobs [2][]byte
+	for i := range blobs {
+		if len(rest) < 8 {
+			return bad
+		}
+		n := binary.LittleEndian.Uint64(rest)
+		rest = rest[8:]
+		if uint64(len(rest)) < n {
+			return bad
+		}
+		blobs[i], rest = rest[:n], rest[n:]
+	}
+	if len(blobs[0]) == 0 {
+		return bad
+	}
+	p.bytecode, p.length = unsafe.Pointer(&blobs[0][0]), uintptr(len(blobs[0]))
+	if len(blobs[1]) > 0 {
+		p.extra, p.extraLength = unsafe.Pointer(&blobs[1][0]), uintptr(len(blobs[1]))
 	}
 	r, _, errno := syscall_syscall(libsandbox_sandbox_apply_trampoline_addr, uintptr(unsafe.Pointer(&p)), 0, 0)
 	runtime.KeepAlive(compiled)

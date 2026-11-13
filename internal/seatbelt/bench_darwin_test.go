@@ -91,6 +91,7 @@ func BenchmarkApply(b *testing.B) {
 	for _, c := range []struct{ name, mode, arg string }{
 		{"text", "text", profile},
 		{"bytecode", "bytecode", blob},
+		{"bytecode-only", "bytecode-only", blob},
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			var inside float64
