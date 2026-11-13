@@ -9,7 +9,7 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
+	"github.com/e6qu/fun-with-sandboxes/internal/execpath"
 	"github.com/e6qu/fun-with-sandboxes/internal/sandboxenv"
 )
 
@@ -24,7 +24,7 @@ func main() {
 		"PLAYWRIGHT_BROWSERS_PATH="+sandboxenv.Path("/ms-playwright"),
 		"NODE_PATH="+sandboxenv.Path("/usr/lib/node_modules"),
 	)
-	prog, err := runtime.Resolve(sandboxenv.Root(), args[0], env)
+	prog, err := execpath.Resolve(sandboxenv.Root(), args[0], env)
 	if err != nil {
 		log.Fatal(err)
 	}

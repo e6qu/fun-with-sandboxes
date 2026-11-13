@@ -37,6 +37,11 @@ jobs:
           (cd tests/e2e && GOOS=darwin GOARCH=arm64 go vet -tags e2e ./...)
       - name: portable unit tests
         run: go test -race -count=3 ./...
+      - name: the end-to-end shards hold every test once
+        run: |
+          for k in 1 2 3 4; do scripts/e2e-shard.sh 4 $k; done | sed 's/^\^(//; s/)\$$//' | tr '|' '\n' | sort > "$RUNNER_TEMP/sharded"
+          grep -h '^func Test' tests/e2e/*_test.go | grep -v '^func TestMain(' | sed 's/^func \(Test[A-Za-z0-9_]*\).*/\1/' | sort > "$RUNNER_TEMP/tests"
+          diff "$RUNNER_TEMP/tests" "$RUNNER_TEMP/sharded"
       - name: third_party/buildkit matches its sync script
         run: |
           scripts/sync-buildkit.sh
@@ -114,8 +119,11 @@ jobs:
   # every file their build reads (scripts/build-images.sh --inputs). A
   # macOS runner takes from twenty minutes to an hour to build them, so a
   # run builds them only when one of those files changes.
+  #
+  # It waits for the unit tests: a change they fail spends no hour of
+  # image building and end-to-end testing.
   images:
-    needs: servers
+    needs: [servers, macos, linux]
     runs-on: macos-15
     timeout-minutes: 120
     outputs:
@@ -242,10 +250,17 @@ jobs:
           path: ~/fws-images
           key: ${{ steps.key.outputs.key }}
 
+  # The end-to-end suite in four shards, each on a runner of its own,
+  # balanced by the tests' durations in an earlier run
+  # (scripts/e2e-shard.sh, tests/e2e/durations.txt).
   e2e:
     needs: images
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -272,7 +287,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/e2e"
           export FWS_E2E_IMAGES=~/fws-images
-          nohup sh -c 'go test -tags e2e -v -count=1 -timeout 90m ./...; echo $? > "$RUNNER_TEMP/e2e/exit"' \
+          export FWS_E2E_RUN=$(../../scripts/e2e-shard.sh 4 ${{ matrix.shard }})
+          nohup sh -c 'go test -tags e2e -v -count=1 -timeout 75m -run "$FWS_E2E_RUN" ./...; echo $? > "$RUNNER_TEMP/e2e/exit"' \
             > "$RUNNER_TEMP/e2e/test.log" 2>&1 < /dev/null &
           nohup sh -c 'while [ ! -e "$RUNNER_TEMP/e2e/exit" ]; do
               date; df -h /; sysctl vm.swapusage kern.memorystatus_level; vm_stat
@@ -281,79 +297,40 @@ jobs:
             done' > "$RUNNER_TEMP/e2e/samples.log" 2>&1 < /dev/null &
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-01
+          name: e2e-${{ matrix.shard }}-01
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-02
+          name: e2e-${{ matrix.shard }}-02
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-03
+          name: e2e-${{ matrix.shard }}-03
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-04
+          name: e2e-${{ matrix.shard }}-04
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-05
+          name: e2e-${{ matrix.shard }}-05
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-06
+          name: e2e-${{ matrix.shard }}-06
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-07
+          name: e2e-${{ matrix.shard }}-07
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-08
+          name: e2e-${{ matrix.shard }}-08
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-09
+          name: e2e-${{ matrix.shard }}-09
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-10
+          name: e2e-${{ matrix.shard }}-10
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-11
+          name: e2e-${{ matrix.shard }}-11
       - uses: ./.github/actions/e2e-snapshot
         with:
-          name: e2e-12
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-13
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-14
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-15
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-16
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-17
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-18
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-19
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-20
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-21
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-22
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-23
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-24
-      - uses: ./.github/actions/e2e-snapshot
-        with:
-          name: e2e-25
+          name: e2e-${{ matrix.shard }}-12
       - name: end-to-end tests
         run: |
           cat "$RUNNER_TEMP/e2e/test.log"
