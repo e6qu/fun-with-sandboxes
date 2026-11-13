@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net"
@@ -248,4 +249,50 @@ func TestExecsRunInTheMainProcesssSandbox(t *testing.T) {
 	if code, out := run(spec("/signal", "signal", pid)); code == 0 {
 		t.Errorf("a process sandboxed apart signalled the main process: %q", out)
 	}
+}
+
+// A start applies the profile compiled ahead of it, compiling nothing
+// itself, and a later start of the same profile applies the same compiled
+// one; a start whose profile changed compiles it anew.
+func TestStartsApplyTheCompiledProfile(t *testing.T) {
+	s, out := limitsSpec(t)
+	if err := Precompile(s); err != nil {
+		t.Fatal(err)
+	}
+	if p := runToEnd(t, s); p.ExitCode() != 0 {
+		t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
+	}
+	path := compiledPath(s)
+	first, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("no compiled profile: %v", err)
+	}
+	if p := runToEnd(t, s); p.ExitCode() != 0 {
+		t.Fatalf("second start: exit %d: %s", p.ExitCode(), out.String())
+	}
+	if again, err := os.Stat(path); err != nil || !os.SameFile(first, again) {
+		t.Fatalf("the second start compiled the profile again: %v", err)
+	}
+	s.Profile.ReadFiles = append(s.Profile.ReadFiles, "/private/etc/hosts")
+	if p := runToEnd(t, s); p.ExitCode() != 0 {
+		t.Fatalf("start with a changed profile: exit %d: %s", p.ExitCode(), out.String())
+	}
+	if changed, err := os.Stat(path); err != nil || os.SameFile(first, changed) {
+		t.Fatalf("a changed profile kept the old compiled one: %v", err)
+	}
+	_, text, err := profileText(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applyCompiledFor(t, path, text) {
+		t.Fatal("the compiled profile is not of the changed profile's text")
+	}
+}
+
+// applyCompiledFor reports whether the compiled profile at path is of text,
+// without applying it to the test.
+func applyCompiledFor(t *testing.T, path, text string) bool {
+	t.Helper()
+	sum := sha256.Sum256([]byte(text))
+	return kept(path, sum)
 }
