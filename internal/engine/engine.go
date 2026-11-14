@@ -44,6 +44,9 @@ type Config struct {
 	// Debug logs how long each step of a container's create, start and
 	// removal takes.
 	Debug bool
+	// ImageArchives, where set, is a directory of image archives the image
+	// store loads from as their images are first asked for.
+	ImageArchives string
 	// Serve serves an engine's API on a Unix socket: the API of the engine
 	// nested in each privileged container, which it serves until closed.
 	Serve func(e *Engine, socket string) (io.Closer, error)
@@ -131,6 +134,11 @@ func Open(cfg Config) (*Engine, error) {
 	imgs, err := image.Open(filepath.Join(root, "images"))
 	if err != nil {
 		return nil, err
+	}
+	if cfg.ImageArchives != "" {
+		if err := imgs.UseArchives(cfg.ImageArchives); err != nil {
+			return nil, err
+		}
 	}
 	u, err := user.Current()
 	if err != nil {

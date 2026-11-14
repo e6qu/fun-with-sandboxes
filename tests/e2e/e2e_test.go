@@ -17,7 +17,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -32,7 +31,7 @@ var (
 	dockerHost string
 	stateRoot  string
 	// fwsdBin is the engine binary under test, and imagesDir the image
-	// archives the suite loads.
+	// archives it loads from.
 	fwsdBin   string
 	imagesDir string
 )
@@ -93,7 +92,9 @@ func run(m *testing.M) int {
 	}
 	sock := filepath.Join(home, ".e2e.sock")
 	defer os.Remove(sock)
-	daemon := exec.Command(bin, "-root", root, "-socket", sock, "-port-base", "30000", "-port-limit", "31000", "-block-size", "50", "-debug")
+	// The engine loads each archive the first time a test asks for one of
+	// its images, so a run, or a shard of one, loads only what it uses.
+	daemon := exec.Command(bin, "-root", root, "-socket", sock, "-port-base", "30000", "-port-limit", "31000", "-block-size", "50", "-debug", "-image-archives", images)
 	// The engine runs in a session of its own, as a daemon does, so a
 	// signal it sends its own process group ends it, and the suite reports
 	// that, rather than reaching the suite and the CI runner's agent.
@@ -151,32 +152,6 @@ func run(m *testing.M) int {
 	tars, _ := filepath.Glob(filepath.Join(images, "*.tar"))
 	if len(tars) == 0 {
 		fmt.Fprintf(os.Stderr, "no image archives in %s\n", images)
-		return 1
-	}
-	// Load the archives as many at a time as the host has processors: a
-	// load spends its time decompressing and writing one layer at a time.
-	loads := make(chan string)
-	failed := make(chan string, len(tars))
-	var loaders sync.WaitGroup
-	for range runtime.NumCPU() {
-		loaders.Go(func() {
-			for t := range loads {
-				if out, err := exec.Command("docker", "load", "-i", t).CombinedOutput(); err != nil {
-					failed <- fmt.Sprintf("docker load %s: %v\n%s", t, err, out)
-				}
-			}
-		})
-	}
-	for _, t := range tars {
-		loads <- t
-	}
-	close(loads)
-	loaders.Wait()
-	close(failed)
-	if len(failed) > 0 {
-		for f := range failed {
-			fmt.Fprint(os.Stderr, f)
-		}
 		return 1
 	}
 	// Testcontainers runs its reaper from the image it names; the catalog's

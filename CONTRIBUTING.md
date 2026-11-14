@@ -115,7 +115,9 @@ The checks CI runs, in the order to run them locally:
    ```
 
    The suite starts an engine of its own, under a state directory of its
-   own, so it leaves `~/.fws` alone. It runs the engine with `-debug` and
+   own, so it leaves `~/.fws` alone. The engine loads each archive the
+   first time a test asks for one of its images (`-image-archives`), so a
+   single test or a shard loads only what it uses. It runs the engine with `-debug` and
    ends with the time the engine took to serve each endpoint.
 
 CI runs these jobs on every push:

@@ -4,11 +4,13 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -374,4 +376,54 @@ func validateImage(img v1.Image) error {
 		return fmt.Errorf("manifest names config %s (%d bytes), the config is %s (%d bytes)", m.Config.Digest, m.Config.Size, h, size)
 	}
 	return nil
+}
+
+// A store on a directory of archives loads one the first time a name it
+// holds is asked for, and only then; an image removed after its archive
+// loaded stays removed, as a store without archives would keep it.
+func TestArchivesLoadWhenAskedFor(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"first:1", "second:1"} {
+		f, err := os.Create(filepath.Join(dir, strings.TrimSuffix(n, ":1")+".tar"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, _ := name.NewTag(n)
+		if err := tarball.Write(ref, darwinImage(t, 1), f); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+	names, err := ArchiveNames(filepath.Join(dir, "first.tar"))
+	if err != nil || len(names) != 1 || names[0] != "first:1" {
+		t.Fatalf("ArchiveNames = %v, %v", names, err)
+	}
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UseArchives(dir); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(s.List()); n != 0 {
+		t.Fatalf("the store holds %d images before any is asked for", n)
+	}
+	if _, err := s.Get("first:1"); err != nil {
+		t.Fatalf("an archived image: %v", err)
+	}
+	if l := s.List(); len(l) != 1 || l[0].RepoTags[0] != "first:1" {
+		t.Fatalf("after asking for first:1 the store holds %+v", l)
+	}
+	if _, err := s.Get("third:1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a name no archive holds: %v", err)
+	}
+	if _, err := s.Remove("first:1", false, func(string) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get("first:1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a removed image came back from its archive: %v", err)
+	}
+	if err := s.Tag("second:1", "renamed:1"); err != nil {
+		t.Fatalf("tagging an archived image: %v", err)
+	}
 }
