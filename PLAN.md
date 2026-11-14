@@ -591,8 +591,12 @@ again, and the spawn helper applies the bytecode. In one run a container
 start took 9.2 ms with its profile compiled and 22.0 ms without, the
 sandbox alone 7.7 ms, and a native spawn 2.4 ms. The spawn helper is now
 the C program `internal/pathmap/src/spawn.c`, which forks the anchor
-itself, so neither a Go helper nor a launcher starts on the way; what
-remains is the loader's time for the inserted library.
+itself, so neither a Go helper nor a launcher starts on the way. In one
+run a container start took 5.6 ms with its profile compiled and 18.8 ms
+without, a process without the anchor 5.3 ms, and a native spawn 1.7 ms.
+What remains is the loader's: in the same run a program reached `main`
+in 4.4 ms natively, 8.2 ms with an empty library inserted and 10.9 ms
+with `fwsroot`, whose interposing the loader binds into every image.
 
 A start in an end-to-end run, of Testcontainers' reaper, took 3.8 s in
 its `profile` step, which takes about 80 µs in every other start. The
