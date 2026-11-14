@@ -246,9 +246,10 @@ each lands in pull requests with tests on the macOS runner.
    - A QoS clamp on every container process
      (`posix_spawnattr_set_qos_clamp_np`), so containers yield the CPU to
      the user's interactive work; on by default, its class configurable.
-   - A fork ceiling: each container process's `RLIMIT_NPROC`, which macOS
-     counts per user, is set to the user's processes at start plus a
-     margin, so a fork bomb fails in the kernel.
+   - Done: a fork ceiling. Each container process's `RLIMIT_NPROC`, which
+     macOS counts across the user's processes, is set an eighth below
+     `kern.maxprocperuid`, so a fork bomb fails in the kernel and the user
+     keeps processes for their own programs.
    - A machine guard in the engine: it watches the kernel's memory
      pressure notifications, as `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE`
      delivers them, and the disk's free space, and pauses then
@@ -267,7 +268,9 @@ each lands in pull requests with tests on the macOS runner.
      sharded run's `-debug` log shows the holds to cut first: a create's
      `prepare` held the lock 1.8 s copying an image's data into a fresh
      volume, a network create 0.8 s, and every create rewrites every
-     stack's network file.
+     stack's network file. Done: a fresh volume's copy-up clones the
+     image's tree with APFS, which shares its blocks, where it copied
+     every byte.
    - Port blocks that grow with a stack, beside the configurable size.
    - Process starts nearer native: a C spawn helper in place of the Go
      one (about 3 ms), and the loader's cost for the inserted library

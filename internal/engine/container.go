@@ -1049,7 +1049,7 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 				if err != nil {
 					return nil, err
 				}
-				if err := copyTree(from, src); err != nil {
+				if err := copyUp(from, src); err != nil {
 					return nil, err
 				}
 				v.Fresh = false
@@ -1155,6 +1155,25 @@ func containsBind(binds []string, src string) bool {
 		}
 	}
 	return false
+}
+
+// copyUp fills a new volume's empty directory dst with the image's content
+// at src: an APFS clone where the two share a volume, which takes
+// milliseconds under the engine's lock where a copy took seconds, or else
+// a copy.
+func copyUp(src, dst string) error {
+	if fi, err := os.Lstat(src); err != nil || !fi.IsDir() {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := cloneInto(src, dst); err == nil {
+		return nil
+	} else if !emptyDir(dst) {
+		return err
+	}
+	return copyTree(src, dst)
 }
 
 func copyTree(src, dst string) error {
