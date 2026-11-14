@@ -182,12 +182,14 @@ func probePriority(t *testing.T, clamp QoSClamp) int {
 
 // A QoS clamp holds every thread of the process at most at the class's
 // priority, whatever QoS the thread asks for: utility's base priority is
-// 20, background's 4, where a default thread's is 31.
+// 20, background's 4, where a default thread's is 31. A CI runner may run
+// the tests themselves at utility, so the unclamped probe is held to no
+// less than the utility one.
 func TestQoSClamp(t *testing.T) {
 	free := probePriority(t, QoSNone)
 	utility := probePriority(t, QoSUtility)
 	background := probePriority(t, QoSBackground)
-	if !(background < utility && utility < free) || utility > 20 {
+	if !(background < utility && utility <= free) || utility > 20 {
 		t.Fatalf("thread priorities: %d unclamped, %d under utility, %d under background", free, utility, background)
 	}
 }

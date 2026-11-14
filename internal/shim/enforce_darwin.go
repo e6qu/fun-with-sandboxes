@@ -108,9 +108,9 @@ func (e *enforcer) startLocked() {
 		return
 	}
 	e.kq = kq
-	pids := make([]int, 0, len(e.members))
-	for pid := range e.members {
-		pids = append(pids, pid)
+	pids := e.pidsLocked()
+	for _, pid := range pids {
+		e.watchLocked(pid)
 	}
 	// A member may have forked between the scan and its watch.
 	e.followLocked(pids)
