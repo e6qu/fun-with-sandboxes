@@ -262,9 +262,11 @@ each lands in pull requests with tests on the macOS runner.
      (`posix_spawnattr_setjetsam_ext`, a footprint limit), and stay polled
      where it does not.
 4. **Scale without cliffs.**
-   - Event-driven process tracking: members are followed by the kernel's
-     fork and exit events, with one process-table reader in the engine
-     for all containers in place of each supervisor's scan each second.
+   - Done: event-driven process tracking. A supervisor follows its
+     container's processes by the kernel's fork, exec and exit events on
+     each, and by the engine's word as an exec or health check starts; it
+     reads the process table on those events alone, where it read it each
+     second, so an idle container costs nothing.
    - Finer locking: per-container and per-network locks, so a slow
      request no longer holds every other behind the engine's lock. A
      sharded run's `-debug` log shows the holds to cut first: a create's
@@ -337,8 +339,8 @@ every process started under it, its execs too, which the anchor it forked
 starts, and none of them can drop that while it lives; once it ends,
 macOS reports each responsible for itself. The shim now follows, while the
 main process lives, every process it answers for, started no earlier than
-it and before any later process took its pid, through the forks of the
-members it knows and a rescan each second, and kills those, with what they
+it and before any later process took its pid, through the forks, execs
+and exits of the members it knows, and kills those, with what they
 started, after the group. They count against the container's limits, and
 `top` and `stats` list them.
 

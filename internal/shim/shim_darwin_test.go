@@ -267,7 +267,7 @@ func TestPidsLimit(t *testing.T) {
 		if len(st.Members) < limit || time.Now().After(deadline) {
 			t.Fatalf("the container runs %d processes, want the limit, %d", len(st.Members), limit)
 		}
-		time.Sleep(rescanPeriod)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

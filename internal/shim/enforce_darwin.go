@@ -18,12 +18,11 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 )
 
-// The enforcer's cadence: the CPU period, as the kernel's default CFS
-// period, at which it also samples memory, and the rescan interval that
-// finds processes nothing told it about, such as an exec's.
+// The enforcer's cadence with limits: the CPU period, as the kernel's
+// default CFS period, at which it also samples memory. The members it
+// follows by their events alone; the engine tells it of an exec's start.
 const (
-	cpuPeriod    = 100 * time.Millisecond
-	rescanPeriod = time.Second
+	cpuPeriod = 100 * time.Millisecond
 )
 
 // enforcer knows the container's processes and holds them to its limits
@@ -60,7 +59,6 @@ type enforcer struct {
 
 	kq      int
 	running bool
-	wake    chan struct{}
 	quit    chan struct{}
 	done    chan struct{}
 }
@@ -76,7 +74,7 @@ func newEnforcer(tag string, main int, r Resources, net *netstat.Watcher) *enfor
 	e := &enforcer{
 		tag: tag, main: main, res: r, kq: -1, net: net,
 		members: map[int]*member{}, others: map[int]int64{},
-		wake: make(chan struct{}, 1), quit: make(chan struct{}), done: make(chan struct{}),
+		quit: make(chan struct{}), done: make(chan struct{}),
 	}
 	e.mu.Lock()
 	e.scanLocked()
@@ -97,6 +95,13 @@ func (e *enforcer) startLocked() {
 	if err != nil {
 		return
 	}
+	// The user event wakes the loop for a scan the engine asks for and for
+	// its end.
+	wake := unix.Kevent_t{Ident: wakeIdent, Filter: unix.EVFILT_USER, Flags: unix.EV_ADD | unix.EV_CLEAR}
+	if _, err := unix.Kevent(kq, []unix.Kevent_t{wake}, nil, nil); err != nil {
+		unix.Close(kq)
+		return
+	}
 	e.kq = kq
 	for pid := range e.members {
 		e.watchLocked(pid)
@@ -105,13 +110,26 @@ func (e *enforcer) startLocked() {
 	go e.loop()
 }
 
-// watchLocked asks the kernel to report the process's forks, so a fork
-// bomb is seen at once and not at the next rescan.
+// wakeIdent is the identifier of the loop's user event.
+const wakeIdent = 0
+
+// wakeLocked wakes the loop.
+func (e *enforcer) wakeLocked() {
+	ev := unix.Kevent_t{Ident: wakeIdent, Filter: unix.EVFILT_USER, Fflags: unix.NOTE_TRIGGER}
+	unix.Kevent(e.kq, []unix.Kevent_t{ev}, nil, nil)
+}
+
+// watchLocked asks the kernel to report the process's forks, its execs and
+// its exit, on each of which the loop scans the process table: the members
+// are followed by these events alone, so an idle container costs nothing.
+// A member's exit matters as a fork does: a launcher that forks a daemon
+// and exits leaves the daemon to launchd, where the scan finds it by its
+// responsible process.
 func (e *enforcer) watchLocked(pid int) {
 	if e.kq < 0 {
 		return
 	}
-	ev := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_ONESHOT, Fflags: unix.NOTE_FORK | unix.NOTE_EXEC}
+	ev := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_ONESHOT, Fflags: unix.NOTE_FORK | unix.NOTE_EXEC | unix.NOTE_EXIT}
 	unix.Kevent(e.kq, []unix.Kevent_t{ev}, nil, nil)
 }
 
@@ -121,6 +139,9 @@ func (e *enforcer) close() {
 	e.mu.Unlock()
 	if running {
 		close(e.quit)
+		e.mu.Lock()
+		e.wakeLocked()
+		e.mu.Unlock()
 		<-e.done
 	}
 	e.mu.Lock()
@@ -137,17 +158,18 @@ func (e *enforcer) close() {
 func (e *enforcer) loop() {
 	defer close(e.done)
 	events := make([]unix.Kevent_t, 16)
-	lastScan := time.Now()
 	last := time.Now()
 	for {
+		// With limits the loop samples the members each CPU period; without,
+		// it waits for the members' events alone.
 		e.mu.Lock()
-		period := rescanPeriod
+		var timeout *unix.Timespec
 		if e.res.any() {
-			period = cpuPeriod
+			t := unix.NsecToTimespec(int64(cpuPeriod))
+			timeout = &t
 		}
 		e.mu.Unlock()
-		timeout := unix.NsecToTimespec(int64(period))
-		n, _ := unix.Kevent(e.kq, nil, events, &timeout)
+		n, _ := unix.Kevent(e.kq, nil, events, timeout)
 		select {
 		case <-e.quit:
 			return
@@ -155,20 +177,13 @@ func (e *enforcer) loop() {
 		}
 		e.mu.Lock()
 		now := time.Now()
-		forked := n > 0
-		select {
-		case <-e.wake:
-			forked = true
-		default:
-		}
 		for _, ev := range events[:max(n, 0)] {
-			if _, ok := e.members[int(ev.Ident)]; ok {
+			if _, ok := e.members[int(ev.Ident)]; ok && ev.Filter == unix.EVFILT_PROC && ev.Fflags&unix.NOTE_EXIT == 0 {
 				e.watchLocked(int(ev.Ident))
 			}
 		}
-		if forked || now.Sub(lastScan) >= rescanPeriod {
+		if n > 0 {
 			e.scanLocked()
-			lastScan = now
 		}
 		if now.Sub(last) >= cpuPeriod {
 			if e.res.any() {
@@ -405,10 +420,7 @@ func (e *enforcer) track() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.running {
-		select {
-		case e.wake <- struct{}{}:
-		default:
-		}
+		e.wakeLocked()
 		return
 	}
 	e.scanLocked()

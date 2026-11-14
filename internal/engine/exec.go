@@ -302,6 +302,14 @@ func (e *Engine) probe(c *Container, argv []string, timeout time.Duration) (int,
 	if err != nil {
 		return -1, err.Error()
 	}
+	// The check counts against the container's limits from its start, as
+	// an exec does.
+	c.mu.Lock()
+	task := c.task
+	c.mu.Unlock()
+	if task != nil {
+		task.Track()
+	}
 	select {
 	case <-proc.Done():
 		proc.KillAll()
