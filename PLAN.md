@@ -233,9 +233,13 @@ each lands in pull requests with tests on the macOS runner.
    - Next: archives cached per image, so a change to one image rebuilds
      that one.
 2. **The open bugs below are fixed**, each with a test that reproduced it:
-   MongoDB's replica set's `ECONNREFUSED 127.0.0.1:65535`, the reaper's
-   3.8 s `profile` step (the lock timing `-debug` now logs shows where),
-   and the pids limit's listing of every process on each `fork`.
+   MongoDB's replica set's `ECONNREFUSED 127.0.0.1:65535`, and the pids
+   limit's listing of every process on each `fork`.
+   - Done: the reaper's slow `profile` step (3.7 s again in a sharded
+     run) was no wait on the engine's lock, which `-debug` showed free:
+     the reaper is a run's first container, and its start built the
+     container library and launcher with clang. `fwsd` builds them as it
+     starts.
 3. **Limits that keep the machine standing**, enforced by the kernel where
    an unprivileged process can ask it to, and costing nothing on the hot
    path:
@@ -259,7 +263,11 @@ each lands in pull requests with tests on the macOS runner.
      fork and exit events, with one process-table reader in the engine
      for all containers in place of each supervisor's scan each second.
    - Finer locking: per-container and per-network locks, so a slow
-     request no longer holds every other behind the engine's lock.
+     request no longer holds every other behind the engine's lock. A
+     sharded run's `-debug` log shows the holds to cut first: a create's
+     `prepare` held the lock 1.8 s copying an image's data into a fresh
+     volume, a network create 0.8 s, and every create rewrites every
+     stack's network file.
    - Port blocks that grow with a stack, beside the configurable size.
    - Process starts nearer native: a C spawn helper in place of the Go
      one (about 3 ms), and the loader's cost for the inserted library
@@ -573,13 +581,12 @@ start took 9.2 ms with its profile compiled and 22.0 ms without, the
 sandbox alone 7.7 ms, and a native spawn 2.4 ms. What remains is the Go
 spawn helper's start-up and the loader's for the inserted library.
 
-Open bug: one start in an end-to-end run, of Testcontainers' reaper, took
-3.8 s in its `profile` step, which takes about 80 µs in every other
-start. The step reads the stack, IPC, shared-memory, PID-namespace and
-network records, most under the engine's lock, so another request may
-have held the lock that long. With `-debug` the engine now logs a wait
-for its lock, or a hold of it, past 100 ms, with the function that waited
-or held it.
+A start in an end-to-end run, of Testcontainers' reaper, took 3.8 s in
+its `profile` step, which takes about 80 µs in every other start. The
+engine's lock timing showed no wait for the lock then: the reaper is a
+run's first container, and its start built the container library, and
+later the anchor launcher, with clang. `fwsd` now builds them as it
+starts.
 
 Open bug: in one run, MongoDB's replica set with a root user failed as
 the image's `entry` created the root user: `mongosh`, started with
