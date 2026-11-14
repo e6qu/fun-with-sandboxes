@@ -134,8 +134,10 @@ machine — and from what macOS offers an unprivileged process under them.
 - **BuildKit builds darwin images on one worker.** `docker build`,
   `docker buildx build` (docker driver) and `docker compose build` run the
   real BuildKit solver with its cache, secret and SSH mounts included. Not
-  supported: multi-platform builds and `# syntax=` directives (gateway
-  frontends ship as Linux images). A step runs as the Dockerfile's `USER`
+  supported: multi-platform builds and `# syntax=` directives naming
+  frontends other than Docker's own (gateway frontends ship as Linux
+  images); `# syntax=docker/dockerfile:<version>` builds with the built-in
+  Dockerfile frontend, BuildKit's own, as of the vendored BuildKit. A step runs as the Dockerfile's `USER`
   through the container library, but an SSH mount's socket belongs to the
   engine's user whatever `uid` it names.
 - **The classic builder (`DOCKER_BUILDKIT=0`) takes no heredocs**, as
@@ -443,6 +445,12 @@ machine — and from what macOS offers an unprivileged process under them.
     unlimited; nproc, which macOS counts across every process of the user,
     and data, as and a finite memlock, which it does not enforce, are
     refused.
+  - While macOS reports critical memory pressure, the engine pauses the
+    running container whose processes hold the most memory, one every two
+    seconds while it stays critical, as `docker pause` does, and resumes
+    them once the pressure is normal: their memory pages out rather than
+    the Mac swapping to a halt. `docker ps` shows them paused meanwhile,
+    and the engine's log says why. `fwsd -memory-guard=false` turns it off.
   - Every container's processes run under a process limit an eighth below
     the user's (`kern.maxprocperuid`), which macOS counts across all of the
     user's processes: a fork bomb in a container fails in the kernel while

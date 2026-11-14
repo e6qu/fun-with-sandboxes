@@ -250,11 +250,11 @@ each lands in pull requests with tests on the macOS runner.
      macOS counts across the user's processes, is set an eighth below
      `kern.maxprocperuid`, so a fork bomb fails in the kernel and the user
      keeps processes for their own programs.
-   - A machine guard in the engine: it watches the kernel's memory
-     pressure notifications, as `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE`
-     delivers them, and the disk's free space, and pauses then
-     stops the largest containers before the Mac swaps itself to a halt
-     or fills its disk.
+   - Done: a memory guard in the engine. It reads macOS's memory
+     pressure level every two seconds, and while it is critical pauses
+     the container holding the most memory, one at a time, resuming them
+     once it is normal (`-memory-guard`, on by default).
+   - Next: a disk guard, which pauses writers before the disk fills.
    - Per-container memory limits move from a 100 ms poll to the kernel
      where macOS lets an unprivileged process set one on its children
      (`posix_spawnattr_setjetsam_ext`, a footprint limit), and stay polled
@@ -281,8 +281,8 @@ each lands in pull requests with tests on the macOS runner.
    - ICMP echo: `ping` of a stack member answered by the library, and of
      an outside host through the unprivileged ICMP datagram socket macOS
      offers.
-   - `# syntax=docker/dockerfile:*` served by the built-in Dockerfile
-     frontend, which covers what those lines ask for.
+   - Done: `# syntax=docker/dockerfile:*` served by the built-in
+     Dockerfile frontend (`third_party/buildkit-patches/syntax_builtin.patch`).
    - Darwin multi-platform builds: `darwin/amd64` steps run under Rosetta
      beside `darwin/arm64` ones.
 6. **More images, made rather than hand-built.** In order of reach:
