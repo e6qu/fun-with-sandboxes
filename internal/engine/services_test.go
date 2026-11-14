@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
@@ -138,9 +139,11 @@ func TestServices(t *testing.T) {
 	}
 
 	for name, bad := range map[string]Service{
-		"no namespace":  {Name: "web", ClusterIP: netip.MustParseAddr("10.96.0.11")},
-		"an IPv6 IP":    {Name: "web", Namespace: "default", ClusterIP: netip.MustParseAddr("fd00::1")},
-		"a UDP port":    {Name: "dns", Namespace: "default", ClusterIP: netip.MustParseAddr("10.96.0.12"), Ports: []ServicePort{{Port: 53, Protocol: "UDP"}}},
+		"no namespace": {Name: "web", ClusterIP: netip.MustParseAddr("10.96.0.11")},
+		"an IPv6 IP":   {Name: "web", Namespace: "default", ClusterIP: netip.MustParseAddr("fd00::1")},
+		"an SCTP port": {Name: "dns", Namespace: "default", ClusterIP: netip.MustParseAddr("10.96.0.12"), Ports: []ServicePort{{Port: 53, Protocol: "SCTP"}}},
+		"a UDP node port": {Name: "dns", Namespace: "default", ClusterIP: netip.MustParseAddr("10.96.0.14"),
+			Ports: []ServicePort{{Port: 53, Protocol: "UDP", NodePort: 30053}}},
 		"a dotted name": {Name: "a.b", Namespace: "default", ClusterIP: netip.MustParseAddr("10.96.0.13")},
 	} {
 		if err := e.SetServices("pods", []Service{bad}); err == nil {
@@ -188,5 +191,87 @@ func TestServiceEndpointsBeyondTheNetwork(t *testing.T) {
 	res.Body.Close()
 	if got := <-asked; string(b) != "api" || got != api {
 		t.Errorf("got %q through %v, want the endpoint %v", b, got, api)
+	}
+}
+
+// A UDP service port carries each client's datagrams to the next of its
+// endpoints and the replies back, from a port of the endpoint's stack's
+// block, as cluster DNS answers on port 53 beside its TCP port.
+func TestUDPService(t *testing.T) {
+	root := t.TempDir()
+	a, err := alloc.Open(alloc.Config{Root: root, PortBase: 30000, PortLimit: 31000, BlockSize: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{cfg: Config{Root: root}, alloc: a, containers: map[string]*Container{}, networks: map[string]*Network{
+		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: "10.244.0.0/24", Gateway: "10.244.0.1"}},
+	}}
+	defer e.closeServices()
+	pod := func(stack, ip string) {
+		if _, err := a.Stack(stack); err != nil {
+			t.Fatal(err)
+		}
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { pc.Close() })
+		go func() {
+			b := make([]byte, 512)
+			for {
+				n, from, err := pc.ReadFrom(b)
+				if err != nil {
+					return
+				}
+				pc.WriteTo([]byte(stack+":"+string(b[:n])), from)
+			}
+		}()
+		addr, err := e.assignAddressLocked(stack)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.containers[stack] = &Container{rec: record{ID: stack, Name: stack, Stack: stack, Address: addr,
+			Ports:    map[string]int{"5353/udp": pc.LocalAddr().(*net.UDPAddr).Port},
+			State:    stateRec{Status: container.StateRunning},
+			Networks: map[string]*network.EndpointSettings{"pods": {IPAddress: netip.MustParseAddr(ip), IPPrefixLen: 24}}}}
+	}
+	pod("dns-a", "10.244.0.5")
+	pod("dns-b", "10.244.0.6")
+	eps := []netip.AddrPort{netip.MustParseAddrPort("10.244.0.5:5353"), netip.MustParseAddrPort("10.244.0.6:5353")}
+	svc := Service{Name: "kube-dns", Namespace: "kube-system", ClusterIP: netip.MustParseAddr("10.96.0.10"), Ports: []ServicePort{
+		{Port: 53, Protocol: "UDP", Endpoints: eps}, {Port: 53, Protocol: "TCP", Endpoints: eps}}}
+	if err := e.SetServices("pods", []Service{svc}); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := e.networkFile("dns-a")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := stackmembers.Find(stackmembers.Parse(b), "kube-dns.kube-system")
+	if !ok || m.Ports["53/udp"] == 0 || m.Ports["53/tcp"] == 0 {
+		t.Fatalf("the service's line: %+v, %v", m, ok)
+	}
+	if m.Stack != stackmembers.ServicesStack {
+		t.Errorf("the service's stack is %q", m.Stack)
+	}
+	ask := func() string {
+		c, err := net.Dial("udp", "127.0.0.1:"+strconv.Itoa(m.Ports["53/udp"]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.Write([]byte("q"))
+		c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, 64)
+		n, err := c.Read(buf)
+		if err != nil {
+			return err.Error()
+		}
+		return string(buf[:n])
+	}
+	// A flow apiece, as the service balances clients.
+	if got := ask() + " " + ask(); got != "dns-a:q dns-b:q" && got != "dns-b:q dns-a:q" {
+		t.Errorf("the endpoints answered %q, want them by turns", got)
 	}
 }

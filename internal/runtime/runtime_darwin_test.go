@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
+	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
@@ -52,11 +54,11 @@ func TestExitWithLingeringChild(t *testing.T) {
 		t.Fatalf("build forker: %v\n%s", err, out)
 	}
 	var out syncBuffer
-	p, err := Start(Spec{
+	p, err := Start(withTestLibrary(t, Spec{
 		Root: root, Argv: []string{"/forker"}, Env: []string{"PATH=" + root},
 		Profile: seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)}, ProfilePath: filepath.Join(state, "profile.sb"),
 		Stdout: &out, Stderr: &out,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,11 +110,11 @@ func limitsSpec(t *testing.T) (Spec, *syncBuffer) {
 		t.Fatalf("build limits: %v\n%s", err, out)
 	}
 	out := &syncBuffer{}
-	return Spec{
+	return withTestLibrary(t, Spec{
 		Root: root, Argv: []string{"/limits"}, Env: []string{"PATH=/"},
 		Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)},
 		ProfilePath: filepath.Join(state, "profile.sb"), Stdout: out, Stderr: out,
-	}, out
+	}), out
 }
 
 func runToEnd(t *testing.T, s Spec) *Process {
@@ -131,8 +133,8 @@ func runToEnd(t *testing.T, s Spec) *Process {
 	return p
 }
 
-// The spawn helper applies resource limits, the scheduling priority and the
-// disk I/O policy before the command runs.
+// The spawn helper applies resource limits, the scheduling priority, the
+// disk I/O policy and the fork ceiling before the command runs.
 func TestLimitsApply(t *testing.T) {
 	s, out := limitsSpec(t)
 	s.Limits = Limits{
@@ -156,9 +158,68 @@ func TestLimitsApply(t *testing.T) {
 	}
 	ceiling := min(nproc.Cur, ForkCeiling(uint64(maxproc)))
 	want := fmt.Sprintf("nofile=64/64 nice=7 iopolicy=%d tty=false nproc=%d", libsystem.IOPolicyThrottle, ceiling)
-	if got := strings.TrimSpace(out.String()); got != want {
+	if got, _, _ := strings.Cut(strings.TrimSpace(out.String()), " priority="); got != want {
 		t.Fatalf("limits %q, want %q", got, want)
 	}
+}
+
+// probePriority runs the limits probe under the clamp and returns its
+// threads' highest base priority.
+func probePriority(t *testing.T, clamp QoSClamp) int {
+	t.Helper()
+	s, out := limitsSpec(t)
+	s.Limits = Limits{QoSClamp: clamp}
+	if p := runToEnd(t, s); p.ExitCode() != 0 {
+		t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
+	}
+	_, v, ok := strings.Cut(strings.TrimSpace(out.String()), " priority=")
+	pri, err := strconv.Atoi(v)
+	if !ok || err != nil || pri < 0 {
+		t.Fatalf("the probe printed %q", out.String())
+	}
+	return pri
+}
+
+// A QoS clamp holds every thread of the process at most at the class's
+// priority, whatever QoS the thread asks for: utility's base priority is
+// 20, background's 4, where a default thread's is 31.
+func TestQoSClamp(t *testing.T) {
+	free := probePriority(t, QoSNone)
+	utility := probePriority(t, QoSUtility)
+	background := probePriority(t, QoSBackground)
+	if !(background < utility && utility < free) || utility > 20 {
+		t.Fatalf("thread priorities: %d unclamped, %d under utility, %d under background", free, utility, background)
+	}
+}
+
+var (
+	testLibOnce sync.Once
+	testLib     string
+	testLibErr  error
+)
+
+// testLibrary is the container library, with the spawn helper beside it,
+// built once for the package's tests.
+func testLibrary(t testing.TB) string {
+	t.Helper()
+	testLibOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "fws-runtime-lib")
+		if err != nil {
+			testLibErr = err
+			return
+		}
+		// Seatbelt matches resolved paths, and the temporary directory is
+		// under /var, a link to /private/var.
+		if dir, err = filepath.EvalSymlinks(dir); err != nil {
+			testLibErr = err
+			return
+		}
+		testLib, testLibErr = pathmap.Build(dir)
+	})
+	if testLibErr != nil {
+		t.Fatal(testLibErr)
+	}
+	return testLib
 }
 
 // A limit the engine's user cannot set fails the start, as a runtime fails
@@ -232,11 +293,11 @@ func TestExecsRunInTheMainProcesssSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := func(argv ...string) Spec {
-		return Spec{
+		return withTestLibrary(t, Spec{
 			Root: root, Argv: argv, Env: []string{"PATH=/"},
 			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)},
 			ProfilePath: filepath.Join(state, "profile-"+argv[0][1:]+".sb"),
-		}
+		})
 	}
 	ms := spec("/signal")
 	ms.AnchorListener = lf
@@ -306,4 +367,13 @@ func applyCompiledFor(t *testing.T, path, text string) bool {
 	t.Helper()
 	sum := sha256.Sum256([]byte(text))
 	return kept(path, sum)
+}
+
+// withTestLibrary gives the spec the container library, which every
+// container process loads.
+func withTestLibrary(t testing.TB, s Spec) Spec {
+	lib := testLibrary(t)
+	s.Library = lib
+	s.Profile.Libraries = append(s.Profile.Libraries, lib)
+	return s
 }

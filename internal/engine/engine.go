@@ -23,6 +23,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
+	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 )
 
 const (
@@ -52,6 +53,9 @@ type Config struct {
 	// while the engine's disk is nearly full, and resumes them once the
 	// measure is back to normal (guard.go).
 	MachineGuard bool
+	// QoSClamp caps the quality of service of every container process, so
+	// containers yield the CPU and the disk to the user's interactive work.
+	QoSClamp runtime.QoSClamp
 	// Serve serves an engine's API on a Unix socket: the API of the engine
 	// nested in each privileged container, which it serves until closed.
 	Serve func(e *Engine, socket string) (io.Closer, error)
@@ -170,7 +174,13 @@ func Open(cfg Config) (*Engine, error) {
 	// An engine nested in a container leaves the guard to the engine on the
 	// host, whose container it runs in.
 	if cfg.MachineGuard && cfg.Nested == nil {
-		go e.guardMachine(machineGuards(root), e.closing)
+		guards := machineGuards(root)
+		for _, g := range guards {
+			if _, err := g.level(); err != nil {
+				return nil, fmt.Errorf("the machine guard reads %s: %w", g.name, err)
+			}
+		}
+		go e.guardMachine(guards, e.closing)
 	}
 	if err := os.MkdirAll(e.runDir(), 0o700); err != nil {
 		return nil, err

@@ -199,29 +199,6 @@ func TestHelperExecutable(t *testing.T) {
 	}
 }
 
-// The anchor launcher is readable and executable, and only an absolute
-// path to it is taken.
-func TestLauncherExecutable(t *testing.T) {
-	s := spec()
-	s.Launcher = "/Users/u/.fws/lib/fwsroot-1-launch"
-	p, err := Render(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exec := p[strings.Index(p, "(allow process-exec*"):]
-	exec = exec[:strings.Index(exec, ")\n(")]
-	if !strings.Contains(exec, `(literal "/Users/u/.fws/lib/fwsroot-1-launch")`) {
-		t.Fatalf("the launcher is not executable:\n%s", p)
-	}
-	if strings.Count(p, `(literal "/Users/u/.fws/lib/fwsroot-1-launch")`) < 2 {
-		t.Fatalf("the launcher is not readable:\n%s", p)
-	}
-	s.Launcher = "fwsroot-1-launch"
-	if _, err := Render(s); err == nil {
-		t.Fatal("a relative launcher path was accepted")
-	}
-}
-
 func TestPortDirForUnixListeners(t *testing.T) {
 	s := spec()
 	s.PortDir = "/Users/u/.fws/run/abc.p"

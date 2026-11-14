@@ -15,8 +15,9 @@ import (
 )
 
 // BenchmarkStart measures how long Start takes to have a container's main
-// process running: the spawn helper, its limits, its sandbox, the exec
-// anchor it starts and the container library the command loads.
+// process running: the spawn helper, its limits, its sandbox, the
+// container library the command loads, and in a container the exec anchor
+// the helper starts.
 func BenchmarkStart(b *testing.B) {
 	state, err := filepath.EvalSymlinks(b.TempDir())
 	if err != nil {
@@ -38,32 +39,25 @@ func BenchmarkStart(b *testing.B) {
 	spec := func() Spec {
 		return Spec{
 			Root: root, Argv: []string{"/signal"}, Env: []string{"PATH=/"},
-			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)},
-			ProfilePath: filepath.Join(state, "profile.sb"),
+			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root), Libraries: []string{lib}},
+			ProfilePath: filepath.Join(state, "profile.sb"), Library: lib,
 		}
 	}
 	for _, mode := range []struct {
-		name    string
-		library bool
-		anchor  bool
+		name   string
+		anchor bool
 		// cold starts each time without the compiled profile, as a
 		// container's first start the engine did not compile ahead.
 		cold bool
 	}{
-		{"sandbox", false, false, false},
-		{"library", true, false, false},
-		{"anchor", false, true, false},
-		{"container", true, true, false},
-		{"container-cold", true, true, true},
+		{"process", false, false},
+		{"container", true, false},
+		{"container-cold", true, true},
 	} {
 		b.Run(mode.name, func(b *testing.B) {
 			var total time.Duration
 			for i := 0; i < b.N; i++ {
 				s := spec()
-				if mode.library {
-					s.Library = lib
-					s.Profile.Libraries = []string{lib}
-				}
 				var lf *os.File
 				if mode.anchor {
 					sock := filepath.Join(dir, "anchor")
@@ -152,10 +146,10 @@ func BenchmarkSpawn(b *testing.B) {
 	})
 	b.Run("helper", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			p, err := Start(Spec{
+			p, err := Start(withTestLibrary(b, Spec{
 				Root: root, Argv: []string{"/true"}, Env: []string{"PATH=/"},
 				Profile: profile, ProfilePath: profilePath,
-			})
+			}))
 			if err != nil {
 				b.Fatal(err)
 			}

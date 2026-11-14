@@ -55,24 +55,32 @@ func Own() ([]Entry, error) {
 	}
 	out := make([]Entry, 0, len(pids))
 	for _, pid := range pids {
-		b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-		if err != nil {
-			continue
+		if e, ok := Find(pid); ok {
+			out = append(out, e)
 		}
-		// The command, in parentheses, may hold spaces; the fields after
-		// it are state, ppid, pgrp and, nineteenth, the start time.
-		i := bytes.LastIndexByte(b, ')')
-		if i < 0 {
-			continue
-		}
-		f := bytes.Fields(b[i+1:])
-		if len(f) < 20 || string(f[0]) == "Z" {
-			continue
-		}
-		ppid, _ := strconv.Atoi(string(f[1]))
-		pgid, _ := strconv.Atoi(string(f[2]))
-		start, _ := strconv.ParseInt(string(f[19]), 10, 64)
-		out = append(out, Entry{PID: pid, PPID: ppid, PGID: pgid, Start: start})
 	}
 	return out, nil
+}
+
+// Find is pid's entry in the process table, if it lives, from its
+// /proc/<pid>/stat.
+func Find(pid int) (Entry, bool) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return Entry{}, false
+	}
+	// The command, in parentheses, may hold spaces; the fields after it
+	// are state, ppid, pgrp and, nineteenth, the start time.
+	i := bytes.LastIndexByte(b, ')')
+	if i < 0 {
+		return Entry{}, false
+	}
+	f := bytes.Fields(b[i+1:])
+	if len(f) < 20 || string(f[0]) == "Z" {
+		return Entry{}, false
+	}
+	ppid, _ := strconv.Atoi(string(f[1]))
+	pgid, _ := strconv.Atoi(string(f[2]))
+	start, _ := strconv.ParseInt(string(f[19]), 10, 64)
+	return Entry{PID: pid, PPID: ppid, PGID: pgid, Start: start}, true
 }

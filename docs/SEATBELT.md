@@ -230,9 +230,12 @@ operation family and then allows what the container owns:
 The engine applies the profile without `sandbox-exec`.
 
 - `fws-shim`, the container's supervisor, spawns each process through a
-  small helper.
-- The helper calls `sandbox_init_with_parameters` and then executes the
-  container's program, so no Apple-signed binary sits in between.
+  small C helper.
+- The engine compiles the profile once, with libsandbox's
+  `sandbox_compile_string`, and keeps the bytecode beside the profile's
+  text; the helper applies it with `sandbox_apply`, in microseconds, and
+  then executes the container's program, so no Apple-signed binary sits in
+  between.
 - That matters because macOS strips `DYLD_INSERT_LIBRARIES` from programs
   Apple signs. With nothing in between, the container library (see
   [DESIGN](DESIGN.md)) reaches every container process.

@@ -103,10 +103,8 @@ static char domainname[256];
 // The host pid of the container's main process (FWS_INIT), its pid 1.
 static pid_t init_pid;
 // On the host's PID namespace (FWS_PIDNS=host) there is no pid 1 to
-// present and every process is listed; root_tag, the variable the engine
-// tags the container's processes with, tells the container's apart.
+// present and every process is listed.
 static int host_pids;
-static char root_tag[PATH_MAX + 16];
 // A PID namespace's file (FWS_PIDNSFILE), which lists the containers that
 // share it, and the socket of the container's shim (FWS_PROCS), which
 // lists, signals and reads the processes of the others' sandboxes, which
@@ -121,6 +119,9 @@ static char helper_comm[MAXCOMLEN + 1];
 // pids.max holds it: a number, or "max" for none. The engine rewrites it
 // as the limit changes.
 static char pids_path[PATH_MAX];
+// The socket the container's supervisor answers on with how many processes
+// the container runs (FWS_PIDS_SOCKET), as pids.current holds it.
+static char pids_socket[sizeof(((struct sockaddr_un *)0)->sun_path)];
 
 struct mount {
     char *dest, *src;
@@ -303,7 +304,7 @@ static void parse_network(const char *path, const char *address) {
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_DOMAINNAME", "FWS_SHM", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", "FWS_PIDNS", "FWS_PIDNSFILE", "FWS_PROCS", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_DOMAINNAME", "FWS_SHM", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", "FWS_PIDS_SOCKET", "FWS_PIDNS", "FWS_PIDNSFILE", "FWS_PROCS", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
 static void set_groups_var(void) {
@@ -362,6 +363,10 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     if (pm && pm[0] == '/') {
         strlcpy(pids_path, pm, sizeof pids_path);
     }
+    const char *ps = getenv("FWS_PIDS_SOCKET");
+    if (ps && ps[0] == '/' && strlen(ps) < sizeof pids_socket) {
+        strcpy(pids_socket, ps);
+    }
     const char *hc = getenv("FWS_HELPER");
     if (hc) {
         strlcpy(helper_comm, hc, sizeof helper_comm);
@@ -381,7 +386,6 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     parse_routing(getenv("FWS_PORTDIR"), getenv("FWS_ROUTER"));
     const char *r = getenv("SANDBOX_ROOT");
     if (r && r[0] == '/' && strlen(r) < sizeof root) {
-        snprintf(root_tag, sizeof root_tag, "SANDBOX_ROOT=%s", r);
         strcpy(root, r);
         rootlen = strlen(root);
         while (rootlen > 1 && root[rootlen - 1] == '/') {
@@ -2280,51 +2284,24 @@ static int listed(pid_t pid, const char *comm, const pid_t *ns, int n) {
     return ns && ns_has(ns, n, pid);
 }
 
-// tagged reports whether pid started with the container's root in its
-// environment, as the engine tells a container's processes apart.
-static int tagged(pid_t pid) {
-    int mib[3] = {CTL_KERN, KERN_PROCARGS2, pid};
-    size_t len = 0;
-    if (!root_tag[0] || sysctl(mib, 3, NULL, &len, NULL, 0) != 0 || len <= sizeof(int)) {
-        return 0;
-    }
-    char *b = malloc(len);
-    if (!b) {
-        return 0;
-    }
-    int found = 0;
-    if (sysctl(mib, 3, b, &len, NULL, 0) == 0 && len > sizeof(int)) {
-        int argc;
-        memcpy(&argc, b, sizeof argc);
-        char *p = b + sizeof argc, *end = b + len;
-        // The executable's path, the padding after it, then the arguments.
-        p += strnlen(p, (size_t)(end - p));
-        while (p < end && !*p) p++;
-        for (int i = 0; i < argc && p < end; i++) p += strnlen(p, (size_t)(end - p)) + 1;
-        size_t tl = strlen(root_tag);
-        while (p < end && *p) {
-            size_t n = strnlen(p, (size_t)(end - p));
-            if (n == tl && memcmp(p, root_tag, tl) == 0) {
-                found = 1;
-                break;
-            }
-            p += n + 1;
-        }
-    }
-    free(b);
-    return found;
-}
-
-// counted reports whether pid is one of the container's processes: one of its
-// sandbox's, or on the host's PID namespace, one the engine tagged.
-static int counted(pid_t pid, const char *comm) {
-    if (!host_pids) {
-        return visible(pid, comm);
-    }
-    if (helper_comm[0] && strncmp(comm, helper_comm, MAXCOMLEN) == 0) {
-        return 0;
-    }
-    return pid == getpid() || tagged(pid);
+// pids_count asks the container's supervisor how many processes the
+// container runs: it follows them by their forks and exits, and reads the
+// members' children as it answers, so the count holds a fork the kernel
+// made a moment before. It returns -1 where the supervisor does not answer.
+static long pids_count(void) {
+    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s < 0) return -1;
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    struct sockaddr_un u;
+    memset(&u, 0, sizeof u);
+    u.sun_family = AF_UNIX;
+    strlcpy(u.sun_path, pids_socket, sizeof u.sun_path);
+    u.sun_len = (unsigned char)SUN_LEN(&u);
+    int32_t n = -1;
+    if (connect(s, (struct sockaddr *)&u, u.sun_len) != 0 || !io_all(s, &n, sizeof n, 0)) n = -1;
+    close(s);
+    return n;
 }
 
 // pids_full reports whether the container runs as many processes as its
@@ -2332,7 +2309,7 @@ static int counted(pid_t pid, const char *comm) {
 // cgroup's limit does. The container's supervisor kills any process that
 // a race between two forks lets past it.
 static int pids_full(void) {
-    if (!pids_path[0]) return 0;
+    if (!pids_path[0] || !pids_socket[0]) return 0;
     char b[32];
     int fd = open(pids_path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return 0;
@@ -2342,20 +2319,10 @@ static int pids_full(void) {
     b[n] = 0;
     unsigned long max;
     if (!num(b, &max) || max == 0) return 0;
-    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_RUID, (int)getuid()};
-    size_t len = 0;
-    if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0) return 0;
-    len += 32 * sizeof(struct kinfo_proc);
-    struct kinfo_proc *kp = malloc(len);
-    if (!kp) return 0;
-    unsigned long count = 0;
-    if (sysctl(mib, 4, kp, &len, NULL, 0) == 0) {
-        for (size_t i = 0; i < len / sizeof *kp; i++) {
-            if (kp[i].kp_proc.p_stat != SZOMB && counted(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm)) count++;
-        }
-    }
-    free(kp);
-    return count >= max;
+    int e = errno;
+    long count = pids_count();
+    errno = e;
+    return count >= 0 && (unsigned long)count >= max;
 }
 
 static pid_t fws_fork(void) {
@@ -3584,6 +3551,14 @@ static struct flow {
 } flows[MAX_FLOWS];
 static int nflows;
 
+// A request to a router starts with its kind (router.Stream and the rest),
+// so every port, 65535 too, is a port.
+#define ROUTER_STREAM 1
+#define ROUTER_STREAM_RELAY 2
+#define ROUTER_FLOW 3
+#define ROUTER_FLOW_RELAY 4
+#define ROUTER_ECHO 5
+
 // relay_key reads the relay key a request for a relay carries, which the
 // container's router keeps in the port directory for the container's life.
 #define RELAY_KEY 16
@@ -3622,19 +3597,19 @@ static unsigned short ask_router(unsigned short router, unsigned short port, in_
         return 0;
     }
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
-    unsigned char req[4 + RELAY_KEY + 6] = {0, 0, (unsigned char)(port >> 8), (unsigned char)port}, ans[3] = {1, 0, 0};
-    ssize_t n = 4;
+    unsigned char req[1 + RELAY_KEY + 6] = {ROUTER_FLOW, (unsigned char)(port >> 8), (unsigned char)port}, ans[3] = {1, 0, 0};
+    ssize_t n = 3;
     if (foreign) {
         const unsigned char *key = relay_key();
         if (!key) {
             close(s);
             return 0;
         }
-        req[2] = req[3] = 0xff;
-        memcpy(req + 4, key, RELAY_KEY);
-        memcpy(req + 4 + RELAY_KEY, &addr, 4);
-        req[8 + RELAY_KEY] = (unsigned char)(port >> 8);
-        req[9 + RELAY_KEY] = (unsigned char)port;
+        req[0] = ROUTER_FLOW_RELAY;
+        memcpy(req + 1, key, RELAY_KEY);
+        memcpy(req + 1 + RELAY_KEY, &addr, 4);
+        req[5 + RELAY_KEY] = (unsigned char)(port >> 8);
+        req[6 + RELAY_KEY] = (unsigned char)port;
         n = (ssize_t)sizeof req;
     }
     int ok = connect(s, (struct sockaddr *)&r, sizeof r) == 0 && write(s, req, (size_t)n) == n && read(s, ans, 1) == 1 && ans[0] == 0 &&
@@ -3930,7 +3905,300 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
     *outlen = vn;
 }
 
+// ICMP. A container's traffic is held to its stack's TCP and UDP ports, and
+// ICMP has none: a datagram ICMP socket, as an unprivileged ping makes, is
+// a Unix datagram socket pair in the library, and an echo request to
+// loopback, the container's own address or a member it sees is answered at
+// once, as that member's kernel would answer it. One to a host outside
+// the machine, over IPv4, goes through the container's router, outside the
+// sandbox, which pings it for a container with internet access; one to any
+// other address fails with ENETUNREACH. A reply, as macOS
+// hands it to a datagram ICMP socket (IPv4's with its IP header, IPv6's
+// without), is written to the pair's other end after the address it comes
+// from, which a receive takes off and reports as the source.
+#define ICMP_FROM ((size_t)sizeof(struct sockaddr_in6))
+static unsigned char net_icmp[NET_FDS];
+static int icmp_peer[NET_FDS];
+// A connected ICMP socket's peer, as connect gave it.
+static struct sockaddr_in6 icmp_dest[NET_FDS];
+
+static int icmp_fd(int fd) { return fd >= 0 && fd < NET_FDS && net_icmp[fd]; }
+
+static int icmp_socket(int domain) {
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) return -1;
+    if (sv[0] >= NET_FDS) {
+        close(sv[0]);
+        close(sv[1]);
+        errno = EMFILE;
+        return -1;
+    }
+    fcntl(sv[1], F_SETFD, FD_CLOEXEC);
+    set_state(sv[0], 0);
+    net_icmp[sv[0]] = domain == AF_INET6 ? 6 : 4;
+    icmp_peer[sv[0]] = sv[1];
+    memset(&icmp_dest[sv[0]], 0, sizeof icmp_dest[0]);
+    return sv[0];
+}
+
+// icmp_answered reports whether an echo request to sa is answered: sa is
+// loopback, the container's own address, or a member's it sees.
+static int icmp_answered(const struct sockaddr *sa, socklen_t len) {
+    in_addr_t a;
+    if (sa->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
+        a = ((const struct sockaddr_in *)sa)->sin_addr.s_addr;
+    } else if (sa->sa_family == AF_INET6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct in6_addr *a6 = &((const struct sockaddr_in6 *)sa)->sin6_addr;
+        if (IN6_IS_ADDR_LOOPBACK(a6) || own_addr6(a6)) return 1;
+        if (IN6_IS_ADDR_V4MAPPED(a6)) {
+            a = mapped_v4(a6);
+        } else {
+            return member6(a6) && v6_target(a6, &a) == 1;
+        }
+    } else {
+        return 0;
+    }
+    if (v4_local(a) || own_addr(a)) return 1;
+    int member = 0;
+    if (member_block(a)) member_route(a, SOCK_STREAM, 0, &member, NULL);
+    return member != 0;
+}
+
+// icmp_sum is the Internet checksum of n bytes at p, added to s.
+static uint16_t icmp_sum(const unsigned char *p, size_t n, uint32_t s) {
+    for (; n > 1; p += 2, n -= 2) s += (uint32_t)(p[0] << 8 | p[1]);
+    if (n) s += (uint32_t)(p[0] << 8);
+    while (s >> 16) s = (s & 0xffff) + (s >> 16);
+    return (uint16_t)~s;
+}
+
+// icmp_reply writes the echo reply ic, n bytes at b + ICMP_FROM and, for
+// IPv4, after room for the IP header, to peer: the address it comes from,
+// then the reply, its checksum set.
+static ssize_t icmp_reply(int peer, int v4, struct sockaddr_in6 *to, unsigned char *b, size_t n) {
+    size_t hl = v4 ? 20 : 0;
+    unsigned char *ic = b + ICMP_FROM + hl;
+    to->sin6_len = v4 ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+    to->sin6_port = 0;
+    memcpy(b, to, ICMP_FROM);
+    ic[2] = ic[3] = 0;
+    uint16_t sum;
+    if (v4) {
+        sum = icmp_sum(ic, n, 0);
+        in_addr_t from = ((struct sockaddr_in *)to)->sin_addr.s_addr;
+        in_addr_t self = v4_local(from) ? from : own_address ? own_address : htonl(INADDR_LOOPBACK);
+        unsigned char *ip = b + ICMP_FROM;
+        memset(ip, 0, hl);
+        ip[0] = 0x45;
+        ip[2] = (unsigned char)((hl + n) >> 8);
+        ip[3] = (unsigned char)(hl + n);
+        ip[8] = 64;
+        ip[9] = IPPROTO_ICMP;
+        memcpy(ip + 12, &from, 4);
+        memcpy(ip + 16, &self, 4);
+        uint16_t hs = icmp_sum(ip, hl, 0);
+        ip[10] = (unsigned char)(hs >> 8);
+        ip[11] = (unsigned char)hs;
+    } else {
+        // The pseudo-header's addresses: the reply's source, and its
+        // destination, the address the request went to as the container
+        // sees itself there.
+        uint32_t ps = 0;
+        const unsigned char *a6 = to->sin6_addr.s6_addr;
+        for (int i = 0; i < 16; i += 2) ps += 2 * (uint32_t)(a6[i] << 8 | a6[i + 1]);
+        ps += (uint32_t)(n >> 16) + (uint32_t)(n & 0xffff) + IPPROTO_ICMPV6;
+        sum = icmp_sum(ic, n, ps);
+    }
+    ic[2] = (unsigned char)(sum >> 8);
+    ic[3] = (unsigned char)sum;
+    return send(peer, b, ICMP_FROM + hl + n, 0);
+}
+
+// An echo request to a host outside the machine, which the container's
+// router relays for a container with internet access: a thread of its own
+// waits for the reply, as the network would take its time, and writes it
+// to a copy of the socket's other end.
+struct icmp_job {
+    int peer;
+    struct sockaddr_in6 to;
+    size_t n;
+    unsigned char msg[];
+};
+
+static void *icmp_relay(void *arg) {
+    struct icmp_job *j = arg;
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s >= 0) {
+        int one = 1;
+        setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+        struct timeval tv = {5, 0};
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router_port);
+        unsigned char h[7] = {ROUTER_ECHO, 0, 0, 0, 0, (unsigned char)(j->n >> 8), (unsigned char)j->n};
+        memcpy(h + 1, &((struct sockaddr_in *)&j->to)->sin_addr, 4);
+        unsigned char a[3];
+        if (connect(s, (struct sockaddr *)&r, sizeof r) == 0 && io_all(s, h, sizeof h, 1) && io_all(s, j->msg, j->n, 1) &&
+            io_all(s, a, 1, 0) && a[0] == 0 && io_all(s, a + 1, 2, 0)) {
+            size_t rn = (size_t)(a[1] << 8 | a[2]);
+            unsigned char *b = malloc(ICMP_FROM + 20 + rn);
+            if (b && rn >= 8 && io_all(s, b + ICMP_FROM + 20, rn, 0)) {
+                icmp_reply(j->peer, 1, &j->to, b, rn);
+            }
+            free(b);
+        }
+        close(s);
+    }
+    close(j->peer);
+    free(j);
+    return NULL;
+}
+
+static ssize_t icmp_send(int fd, const struct iovec *iov, int iovlen, const struct sockaddr *sa, socklen_t len) {
+    struct sockaddr_in6 to;
+    memset(&to, 0, sizeof to);
+    if (sa) {
+        if (len > (socklen_t)sizeof to) len = sizeof to;
+        memcpy(&to, sa, (size_t)len);
+    } else if (icmp_dest[fd].sin6_family) {
+        to = icmp_dest[fd];
+        len = to.sin6_len;
+    } else {
+        errno = EDESTADDRREQ;
+        return -1;
+    }
+    int v4 = net_icmp[fd] == 4;
+    if (to.sin6_family != (v4 ? AF_INET : AF_INET6)) {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    if (iovlen < 0 || iovlen > DGRAM_IOV) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    size_t n = 0;
+    for (int i = 0; i < iovlen; i++) n += iov[i].iov_len;
+    if (n > 65507) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    int local = icmp_answered((const struct sockaddr *)&to, len);
+    if (!local && !(v4 && router_port)) {
+        errno = ENETUNREACH;
+        return -1;
+    }
+    size_t hl = v4 ? 20 : 0;
+    unsigned char *b = malloc(ICMP_FROM + hl + n);
+    if (!b) return -1;
+    unsigned char *ic = b + ICMP_FROM + hl;
+    size_t o = 0;
+    for (int i = 0; i < iovlen; i++) {
+        memcpy(ic + o, iov[i].iov_base, iov[i].iov_len);
+        o += iov[i].iov_len;
+    }
+    // Only an echo request is answered; any other message goes nowhere.
+    if (n < 8 || ic[0] != (v4 ? 8 : 128) || ic[1] != 0) {
+        free(b);
+        return (ssize_t)n;
+    }
+    if (!local) {
+        struct icmp_job *j = malloc(sizeof *j + n);
+        int peer = j ? dup(icmp_peer[fd]) : -1;
+        pthread_t t;
+        pthread_attr_t at;
+        if (peer < 0 || pthread_attr_init(&at) != 0) {
+            if (peer >= 0) close(peer);
+            free(j);
+            free(b);
+            return -1;
+        }
+        pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+        j->peer = peer;
+        j->to = to;
+        j->n = n;
+        memcpy(j->msg, ic, n);
+        if (pthread_create(&t, &at, icmp_relay, j) != 0) {
+            close(peer);
+            free(j);
+        }
+        pthread_attr_destroy(&at);
+        free(b);
+        return (ssize_t)n;
+    }
+    ic[0] = v4 ? 0 : 129;
+    ssize_t w = icmp_reply(icmp_peer[fd], v4, &to, b, n);
+    int e = errno;
+    free(b);
+    errno = e;
+    return w < 0 ? -1 : (ssize_t)n;
+}
+
+// icmp_recv receives a reply into iov and reports its source in sa.
+static ssize_t icmp_recv(int fd, const struct iovec *iov, int iovlen, int flags, struct sockaddr *sa, socklen_t *len, int *mflags) {
+    if (iovlen < 0 || iovlen > DGRAM_IOV) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    struct sockaddr_in6 from;
+    struct iovec v[DGRAM_IOV + 1];
+    v[0].iov_base = &from;
+    v[0].iov_len = ICMP_FROM;
+    if (iovlen) memcpy(v + 1, iov, (size_t)iovlen * sizeof *iov);
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    m.msg_iov = v;
+    m.msg_iovlen = iovlen + 1;
+    ssize_t r = recvmsg(fd, &m, flags);
+    if (r < 0) return -1;
+    if ((size_t)r < ICMP_FROM) {
+        errno = EIO;
+        return -1;
+    }
+    if (mflags) *mflags = m.msg_flags;
+    if (sa && len) {
+        socklen_t fl = from.sin6_len;
+        memcpy(sa, &from, *len < fl ? *len : fl);
+        *len = fl;
+    }
+    return r - (ssize_t)ICMP_FROM;
+}
+
+static ssize_t icmp_recvmsg(int fd, struct msghdr *m, int flags) {
+    int mf = 0;
+    socklen_t nl = m->msg_namelen;
+    ssize_t r = icmp_recv(fd, m->msg_iov, m->msg_iovlen, flags, m->msg_name, m->msg_name ? &nl : NULL, &mf);
+    if (r >= 0) {
+        m->msg_namelen = m->msg_name ? nl : 0;
+        m->msg_controllen = 0;
+        m->msg_flags = mf;
+    }
+    return r;
+}
+
+static int icmp_connect(int fd, const struct sockaddr *sa, socklen_t len) {
+    if (!sa) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(&icmp_dest[fd], 0, sizeof icmp_dest[fd]);
+    if (sa->sa_family == AF_UNSPEC) return 0;
+    if (len > (socklen_t)sizeof icmp_dest[fd]) len = sizeof icmp_dest[fd];
+    memcpy(&icmp_dest[fd], sa, (size_t)len);
+    icmp_dest[fd].sin6_len = (unsigned char)len;
+    return 0;
+}
+
+// icmp_forget closes a closed ICMP socket's other end.
+static void icmp_forget(int fd) {
+    if (icmp_fd(fd)) {
+        close(icmp_peer[fd]);
+        net_icmp[fd] = 0;
+    }
+}
+
 static int fws_socket(int domain, int type, int protocol) {
+    if (type == SOCK_DGRAM && ((domain == AF_INET && protocol == IPPROTO_ICMP) || (domain == AF_INET6 && protocol == IPPROTO_ICMPV6))) {
+        return icmp_socket(domain);
+    }
     int fd = socket(domain, type, protocol);
     set_state(fd, 0);
     return fd;
@@ -4193,6 +4461,10 @@ static int listen_ephemeral(int fd, int any, int v6) {
 }
 
 static int fws_bind(int fd, const struct sockaddr *sa, socklen_t len) {
+    // An ICMP socket has no port; its address is the container's.
+    if (icmp_fd(fd)) {
+        return 0;
+    }
     int uany, uv6, zero, lo, uown;
     unsigned short uport = unbacked(fd, sa, len, &uany, &uv6, &zero, &lo, &uown);
     if (lo && host_held(sa, host_port(SOCK_STREAM, uport))) {
@@ -4249,8 +4521,8 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
     int fl = fcntl(fd, F_GETFL);
     if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
-    unsigned char req[2 + RELAY_KEY + 6] = {(unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
-    size_t n = 2;
+    unsigned char req[1 + RELAY_KEY + 6] = {ROUTER_STREAM, (unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
+    size_t n = 3;
     if (foreign) {
         const unsigned char *key = relay_key();
         if (!key) {
@@ -4258,11 +4530,11 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
             errno = ECONNREFUSED;
             return -1;
         }
-        req[0] = req[1] = 0xff;
-        memcpy(req + 2, key, RELAY_KEY);
-        memcpy(req + 2 + RELAY_KEY, &addr, 4);
-        req[6 + RELAY_KEY] = (unsigned char)(port >> 8);
-        req[7 + RELAY_KEY] = (unsigned char)port;
+        req[0] = ROUTER_STREAM_RELAY;
+        memcpy(req + 1, key, RELAY_KEY);
+        memcpy(req + 1 + RELAY_KEY, &addr, 4);
+        req[5 + RELAY_KEY] = (unsigned char)(port >> 8);
+        req[6 + RELAY_KEY] = (unsigned char)port;
         n = sizeof req;
     }
     int ok = connect(fd, (struct sockaddr *)&r, sizeof r) == 0 && write(fd, req, n) == (ssize_t)n && read(fd, &ans, 1) == 1;
@@ -4390,6 +4662,9 @@ static int relay_bind(int fd, const struct sockaddr *sa, socklen_t len) {
 }
 
 static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
+    if (icmp_fd(fd)) {
+        return icmp_connect(fd, sa, len);
+    }
     if (relay_bind(fd, sa, len) != 0) {
         return -1;
     }
@@ -4413,6 +4688,9 @@ INTERPOSE(fws_connect, connect);
 
 extern int connect_nocancel(int, const struct sockaddr *, socklen_t) __asm("_connect$NOCANCEL") __attribute__((weak_import));
 static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len) {
+    if (icmp_fd(fd)) {
+        return icmp_connect(fd, sa, len);
+    }
     if (relay_bind(fd, sa, len) != 0) {
         return -1;
     }
@@ -4715,6 +4993,10 @@ static ssize_t plain_sendmsg(int fd, const struct msghdr *m, int flags) { return
 static ssize_t plain_recvmsg(int fd, struct msghdr *m, int flags) { return recvmsg(fd, m, flags); }
 
 static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
+    if (icmp_fd(fd)) {
+        struct iovec v = {(void *)buf, n};
+        return icmp_send(fd, &v, 1, sa, len);
+    }
     if (relay_bind(fd, sa, len) != 0) {
         return -1;
     }
@@ -4737,6 +5019,9 @@ static ssize_t fws_sendto(int fd, const void *buf, size_t n, int flags, const st
 INTERPOSE(fws_sendto, sendto);
 
 static ssize_t fws_sendmsg(int fd, const struct msghdr *m, int flags) {
+    if (m && icmp_fd(fd)) {
+        return icmp_send(fd, m->msg_iov, m->msg_iovlen, m->msg_name, m->msg_namelen);
+    }
     if (m && relay_bind(fd, m->msg_name, m->msg_namelen) != 0) {
         return -1;
     }
@@ -4751,6 +5036,10 @@ static ssize_t fws_sendmsg(int fd, const struct msghdr *m, int flags) {
 INTERPOSE(fws_sendmsg, sendmsg);
 
 static ssize_t fws_recvfrom(int fd, void *buf, size_t n, int flags, struct sockaddr *sa, socklen_t *len) {
+    if (icmp_fd(fd)) {
+        struct iovec v = {buf, n};
+        return icmp_recv(fd, &v, 1, flags, sa, len, NULL);
+    }
     if (dgram_unix(fd)) {
         struct iovec v = {buf, n};
         return dgram_recv(fd, &v, 1, flags, sa, len, NULL, plain_recvmsg);
@@ -4773,6 +5062,9 @@ static ssize_t fws_recvfrom(int fd, void *buf, size_t n, int flags, struct socka
 INTERPOSE(fws_recvfrom, recvfrom);
 
 static ssize_t fws_recvmsg(int fd, struct msghdr *m, int flags) {
+    if (m && icmp_fd(fd)) {
+        return icmp_recvmsg(fd, m, flags);
+    }
     if (m && dgram_unix(fd)) {
         return dgram_recvmsg(fd, m, flags, plain_recvmsg);
     }
@@ -4800,6 +5092,10 @@ static ssize_t fws_recvmsg(int fd, struct msghdr *m, int flags) {
 INTERPOSE(fws_recvmsg, recvmsg);
 
 static ssize_t fws_send(int fd, const void *buf, size_t n, int flags) {
+    if (icmp_fd(fd)) {
+        struct iovec v = {(void *)buf, n};
+        return icmp_send(fd, &v, 1, NULL, 0);
+    }
     if (dgram_unix(fd)) {
         struct iovec v = {(void *)buf, n};
         return dgram_send(fd, &v, 1, flags, NULL, 0, plain_sendmsg);
@@ -4809,6 +5105,10 @@ static ssize_t fws_send(int fd, const void *buf, size_t n, int flags) {
 INTERPOSE(fws_send, send);
 
 static ssize_t fws_write(int fd, const void *buf, size_t n) {
+    if (icmp_fd(fd)) {
+        struct iovec v = {(void *)buf, n};
+        return icmp_send(fd, &v, 1, NULL, 0);
+    }
     if (dgram_unix(fd)) {
         struct iovec v = {(void *)buf, n};
         return dgram_send(fd, &v, 1, 0, NULL, 0, plain_sendmsg);
@@ -4818,6 +5118,9 @@ static ssize_t fws_write(int fd, const void *buf, size_t n) {
 INTERPOSE(fws_write, write);
 
 static ssize_t fws_writev(int fd, const struct iovec *iov, int iovcnt) {
+    if (icmp_fd(fd)) {
+        return icmp_send(fd, iov, iovcnt, NULL, 0);
+    }
     if (dgram_unix(fd)) {
         return dgram_send(fd, iov, iovcnt, 0, NULL, 0, plain_sendmsg);
     }
@@ -4826,6 +5129,9 @@ static ssize_t fws_writev(int fd, const struct iovec *iov, int iovcnt) {
 INTERPOSE(fws_writev, writev);
 
 static ssize_t fws_readv(int fd, const struct iovec *iov, int iovcnt) {
+    if (icmp_fd(fd)) {
+        return icmp_recv(fd, iov, iovcnt, 0, NULL, NULL, NULL);
+    }
     if (dgram_unix(fd)) {
         return dgram_recv(fd, iov, iovcnt, 0, NULL, NULL, NULL, plain_recvmsg);
     }
@@ -4834,6 +5140,10 @@ static ssize_t fws_readv(int fd, const struct iovec *iov, int iovcnt) {
 INTERPOSE(fws_readv, readv);
 
 static ssize_t fws_recv(int fd, void *buf, size_t n, int flags) {
+    if (icmp_fd(fd)) {
+        struct iovec v = {buf, n};
+        return icmp_recv(fd, &v, 1, flags, NULL, NULL, NULL);
+    }
     if (dgram_unix(fd)) {
         struct iovec v = {buf, n};
         return dgram_recv(fd, &v, 1, flags, NULL, NULL, NULL, plain_recvmsg);
@@ -4843,6 +5153,10 @@ static ssize_t fws_recv(int fd, void *buf, size_t n, int flags) {
 INTERPOSE(fws_recv, recv);
 
 static ssize_t fws_read(int fd, void *buf, size_t n) {
+    if (icmp_fd(fd)) {
+        struct iovec v = {buf, n};
+        return icmp_recv(fd, &v, 1, 0, NULL, NULL, NULL);
+    }
     if (dgram_unix(fd)) {
         struct iovec v = {buf, n};
         return dgram_recv(fd, &v, 1, 0, NULL, NULL, NULL, plain_recvmsg);
@@ -5042,6 +5356,10 @@ static int v4_option(int name) {
 }
 
 static int fws_setsockopt(int fd, int level, int name, const void *v, socklen_t n) {
+    // An ICMP socket's IP options shape packets that never leave.
+    if (icmp_fd(fd) && level != SOL_SOCKET) {
+        return 0;
+    }
     int cf = fd >= 0 && fd < NET_FDS && dgram_unix(fd) ? cmsg_flag(level, name) : 0;
     if (cf) {
         if (!v || n < (socklen_t)sizeof(int)) {
@@ -5077,6 +5395,11 @@ static int fws_setsockopt(int fd, int level, int name, const void *v, socklen_t 
 INTERPOSE(fws_setsockopt, setsockopt);
 
 static int fws_getsockopt(int fd, int level, int name, void *v, socklen_t *n) {
+    if (icmp_fd(fd) && level != SOL_SOCKET && v && n && *n >= (socklen_t)sizeof(int)) {
+        *(int *)v = level == IPPROTO_IP && name == IP_TTL ? 64 : 0;
+        *n = sizeof(int);
+        return 0;
+    }
     int cf = fd >= 0 && fd < NET_FDS && dgram_unix(fd) ? cmsg_flag(level, name) : 0;
     if (cf && v && n && *n >= (socklen_t)sizeof(int)) {
         *(int *)v = (net_cmsg[fd] & cf) != 0;
@@ -5119,6 +5442,7 @@ static void copy_state(int from, int to) {
 // A descriptor's number outlives it, and the next socketpair, pipe or file
 // to take it is none of the library's.
 static void forget(int fd) {
+    icmp_forget(fd);
     set_state(fd, 0);
     if (fd >= 0 && fd < NET_FDS) {
         net_cmsg[fd] = 0;
@@ -5162,6 +5486,10 @@ static ssize_t nocancel_sendmsg(int fd, const struct msghdr *m, int flags);
 static ssize_t nocancel_recvmsg(int fd, struct msghdr *m, int flags);
 
 static ssize_t fws_sendto_nocancel(int fd, const void *buf, size_t n, int flags, const struct sockaddr *sa, socklen_t len) {
+    if (icmp_fd(fd)) {
+        struct iovec v = {(void *)buf, n};
+        return icmp_send(fd, &v, 1, sa, len);
+    }
     if (relay_bind(fd, sa, len) != 0) {
         return -1;
     }
@@ -5187,6 +5515,9 @@ extern ssize_t sendmsg_nocancel(int, const struct msghdr *, int) __asm("_sendmsg
 static ssize_t nocancel_sendmsg(int fd, const struct msghdr *m, int flags) { return sendmsg_nocancel(fd, m, flags); }
 
 static ssize_t fws_sendmsg_nocancel(int fd, const struct msghdr *m, int flags) {
+    if (m && icmp_fd(fd)) {
+        return icmp_send(fd, m->msg_iov, m->msg_iovlen, m->msg_name, m->msg_namelen);
+    }
     if (m && relay_bind(fd, m->msg_name, m->msg_namelen) != 0) {
         return -1;
     }
@@ -5202,6 +5533,10 @@ INTERPOSE(fws_sendmsg_nocancel, sendmsg_nocancel);
 
 extern ssize_t recvfrom_nocancel(int, void *, size_t, int, struct sockaddr *, socklen_t *) __asm("_recvfrom$NOCANCEL") __attribute__((weak_import));
 static ssize_t fws_recvfrom_nocancel(int fd, void *buf, size_t n, int flags, struct sockaddr *sa, socklen_t *len) {
+    if (icmp_fd(fd)) {
+        struct iovec v = {buf, n};
+        return icmp_recv(fd, &v, 1, flags, sa, len, NULL);
+    }
     if (dgram_unix(fd)) {
         struct iovec v = {buf, n};
         return dgram_recv(fd, &v, 1, flags, sa, len, NULL, nocancel_recvmsg);
@@ -5227,6 +5562,9 @@ extern ssize_t recvmsg_nocancel(int, struct msghdr *, int) __asm("_recvmsg$NOCAN
 static ssize_t nocancel_recvmsg(int fd, struct msghdr *m, int flags) { return recvmsg_nocancel(fd, m, flags); }
 
 static ssize_t fws_recvmsg_nocancel(int fd, struct msghdr *m, int flags) {
+    if (m && icmp_fd(fd)) {
+        return icmp_recvmsg(fd, m, flags);
+    }
     if (m && dgram_unix(fd)) {
         return dgram_recvmsg(fd, m, flags, nocancel_recvmsg);
     }

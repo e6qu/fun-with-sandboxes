@@ -144,3 +144,34 @@ func init() {
 		os.Exit(0)
 	}
 }
+
+func TestChildrenListsAChild(t *testing.T) {
+	cmd := exec.Command("sleep", "5")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	kids, err := Children(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range kids {
+		if k.PID == cmd.Process.Pid {
+			if k.PPID != os.Getpid() || k.Start == 0 {
+				t.Fatalf("child entry %+v", k)
+			}
+			return
+		}
+	}
+	t.Fatalf("children %+v miss %d", kids, cmd.Process.Pid)
+}
+
+func TestFindSeesThisProcess(t *testing.T) {
+	e, ok := Find(os.Getpid())
+	if !ok || e.PID != os.Getpid() || e.PPID != os.Getppid() || e.Start == 0 {
+		t.Fatalf("Find(self) = %+v, %v", e, ok)
+	}
+	if _, ok := Find(1 << 30); ok {
+		t.Fatal("Find found a pid no process has")
+	}
+}

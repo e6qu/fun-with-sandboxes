@@ -116,23 +116,24 @@ capability sets. What it does give — `posix_spawn` attributes, `setrlimit`,
 same knobs, each enforced by a real mechanism or refused:
 
 - **Spawn helper.** Every container's main process and every build step
-  starts as `fws-shim`, a small binary beside `fwsd` that holds
-  only the engine's helper roles, in its spawn-helper role, through
-  `posix_spawn` with responsibility disclaimed, so the process inherits no
-  privacy (TCC) grant of whatever launched the engine. The helper applies
-  `--ulimit` (nofile, fsize, cpu, core, stack), the nice value `--cpu-shares`
-  maps to, the disk I/O policy tier `--blkio-weight` maps to, and the
-  controlling terminal, applies the Seatbelt profile, and executes the
-  command with the container library loaded. A limit the user cannot
-  set fails the start, reported on a close-on-exec status pipe.
+  starts as the spawn helper, a C program the engine builds beside the
+  container library (`internal/pathmap/src/spawn.c`), through `posix_spawn`
+  with responsibility disclaimed, so the process inherits no privacy (TCC)
+  grant of whatever launched the engine. The helper applies `--ulimit`
+  (nofile, fsize, cpu, core, stack), the nice value `--cpu-shares` maps to,
+  the disk I/O policy tier `--blkio-weight` maps to, the controlling
+  terminal and the fork ceiling, applies the container's compiled Seatbelt
+  profile (`sandbox_apply`, from the bytecode the engine compiled ahead),
+  and executes the command with the container library loaded. A limit the
+  user cannot set fails the start, reported on a close-on-exec status pipe.
 - **Exec anchor.** Seatbelt lets a process signal and inspect only the
   processes of its own sandbox, the ones that inherited it, and a process
   that enters the container's profile by itself is a sandbox of its own. So
   a main process's spawn helper, once sandboxed, starts the container's
   anchor before it executes the command:
-  - The anchor is a process of `fws-shim` that a launcher starts and leaves
-    at once, so it is no child of the main process, whose `wait` would
-    otherwise wait for it.
+  - The anchor is a process of `fws-shim` that the helper starts through a
+    child that leaves at once, so it is no child of the main process, whose
+    `wait` would otherwise wait for it.
   - It accepts on a socket the shim binds in the engine's state, which no
     container can reach.
   - It starts each `docker exec` and health check the engine asks for,
@@ -171,9 +172,12 @@ same knobs, each enforced by a real mechanism or refused:
   output and json-file log, its pty, its published-port proxies, and its exit
   status, and answers the engine over a Unix socket in `<root>/run`. It
   tracks the container's processes — the main process group, descendants
-  found through kqueue `NOTE_FORK` events and the process table's parent
-  links, and anything that started with the container's `SANDBOX_ROOT` tag —
-  and enforces, every 100 ms:
+  found through kqueue `NOTE_FORK` events and the kernel's list of the
+  forking process's children, the processes macOS holds the main process
+  responsible for, and anything that started with the container's
+  `SANDBOX_ROOT` tag — reading the whole process table only when a member
+  forked and ended before its children were read, and enforces, every
+  100 ms:
   - `--memory`: the sum of the processes' physical footprints, which counts
     compressed and swapped-out memory, so `--memory-swap` may only equal it;
     past the limit the largest process is killed, as the kernel OOM killer
@@ -184,8 +188,13 @@ same knobs, each enforced by a real mechanism or refused:
   - `--pids-limit`: the engine writes the limit to the container's
     `pids.max`, as a pids cgroup holds it, and rewrites it on
     `docker update`; the container library reads it before a `fork` or a
-    `posix_spawn` that starts a process, and fails it with `EAGAIN` when
-    the container already runs that many. Processes past the limit, which
+    `posix_spawn` that starts a process, asks the shim on a socket of its
+    own how many processes the container runs, as `pids.current` holds
+    it, and fails the call with `EAGAIN` when the container already runs
+    that many. The shim answers from the members it follows, dropping
+    those that ended and reading each one's children, so the count holds
+    a fork made a moment before; the library listed every process of the
+    user on each call. Processes past the limit, which
     two racing forks or a program without the library start, are killed
     as they appear.
   `docker update` changes these live; `docker pause` stops the processes
@@ -231,8 +240,8 @@ same knobs, each enforced by a real mechanism or refused:
 - **Container library.** Every container process loads `fwsroot`
   (`internal/pathmap`), a library the engine builds from embedded C source
   and the spawn helper injects with `DYLD_INSERT_LIBRARIES`, having applied
-  the Seatbelt profile itself through `sandbox_init_with_parameters` so no
-  Apple binary sits between them to drop the variable. It interposes
+  the Seatbelt profile itself through `sandbox_apply` so no Apple binary
+  sits between them to drop the variable. It interposes
   libSystem's path, identity, user database and hostname calls to present
   the container's root at `/`, its user, its `/etc/passwd` and `/etc/group`,
   and its hostname: fakechroot and fakeroot in one, presented and not
@@ -346,8 +355,8 @@ same knobs, each enforced by a real mechanism or refused:
   host port backs and no socket file in the port directory holds, the
   same way. Each
   container's shim runs its router, on a port of the stack's block that
-  the network file names: a client sends the container port it wants, two
-  bytes, and the router joins the connection to that port's socket or
+  the network file names: a client sends a byte naming its request's kind
+  and the container port it wants, two bytes, and the router joins the connection to that port's socket or
   refuses it, writing the client's loopback address and port there first,
   which the library takes on `accept` and reports as the peer, as a TCP
   server sees its client; a connection that carries none, as the library's
@@ -814,7 +823,7 @@ cmd/fws-mkimage/      # Nix closure -> darwin image archive
 internal/alloc/       # per-stack port blocks and directories
 internal/seatbelt/    # profile rendering
 internal/image/       # image store, layer extraction, clonefile
-internal/runtime/     # the spawn helper: limits, Seatbelt, the container library
+internal/runtime/     # starting container processes through the spawn helper
 internal/pathmap/     # the container library: paths, identity, users, hostname
 internal/identity/    # resolve --user and USER against the container's files
 internal/egress/      # the per-stack HTTP proxy to the internet

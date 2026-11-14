@@ -75,6 +75,77 @@ func TestJoinsToTheListener(t *testing.T) {
 	}
 }
 
+// A ping of an outside host is relayed for a container with internet
+// access alone, and never to loopback.
+func TestEchoRefusedWithoutInternet(t *testing.T) {
+	r, err := Listen("127.0.0.1:0", portDir(t), listenFlow, Network{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	ask := func(r *Router, dst [4]byte) byte {
+		c, err := net.Dial("tcp", r.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		msg := []byte{8, 0, 0, 0, 0x12, 0x34, 0, 1}
+		req := append(append([]byte{Echo}, dst[:]...), 0, byte(len(msg)))
+		c.Write(append(req, msg...))
+		var ans [1]byte
+		if _, err := io.ReadFull(c, ans[:]); err != nil {
+			t.Fatal(err)
+		}
+		return ans[0]
+	}
+	if got := ask(r, [4]byte{192, 0, 2, 1}); got != Refused {
+		t.Errorf("a container without internet access had its ping relayed: %d", got)
+	}
+	open, err := Listen("127.0.0.1:0", portDir(t), listenFlow, Network{Internet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer open.Close()
+	if got := ask(open, [4]byte{127, 0, 0, 1}); got != Refused {
+		t.Errorf("a ping of loopback was relayed: %d", got)
+	}
+}
+
+// Every port is one: 65535, which the kernel hands out as an ephemeral
+// port, and which the container library draws for a bind to port 0 as
+// mongosh's local proxy makes, reaches its listener, where it once read as
+// the marker of a relay to another stack and was refused.
+func TestJoinsToTheHighestPort(t *testing.T) {
+	dir := portDir(t)
+	l, err := net.Listen("unix", SocketPath(dir, 65535))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		ReadClient(c)
+		c.Write([]byte("here\n"))
+	}()
+	r, err := Listen("127.0.0.1:0", dir, listenFlow, Network{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	c, err := Dial(r.Addr().String(), 65535)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if got, _ := bufio.NewReader(c).ReadString('\n'); got != "here\n" {
+		t.Errorf("got %q", got)
+	}
+}
+
 // A process outside the container library listening on a port's socket
 // reads the client's stream without the router's header, and sees the
 // client as its peer.
@@ -182,11 +253,11 @@ func readKey(t *testing.T, dir string) []byte {
 	return key
 }
 
-// foreignRequest is a Foreign request with key for port of the member at
-// addr.
-func foreignRequest(key []byte, addr netip.Addr, port int) []byte {
+// foreignRequest is a request of kind, StreamRelay or FlowRelay, with key
+// for port of the member at addr.
+func foreignRequest(kind byte, key []byte, addr netip.Addr, port int) []byte {
 	v4 := addr.As4()
-	req := binary.BigEndian.AppendUint16(nil, Foreign)
+	req := []byte{kind}
 	req = append(append(req, key...), v4[:]...)
 	return binary.BigEndian.AppendUint16(req, uint16(port))
 }
@@ -198,7 +269,7 @@ func dialForeign(router string, key []byte, addr netip.Addr, port int) (net.Conn
 	if err != nil {
 		return nil, err
 	}
-	req := foreignRequest(key, addr, port)
+	req := foreignRequest(StreamRelay, key, addr, port)
 	var ans [1]byte
 	if _, err := c.Write(req); err == nil {
 		_, err = io.ReadFull(c, ans[:])
@@ -334,7 +405,7 @@ func lookupForeign(router string, key []byte, addr netip.Addr, port int) (int, e
 		return 0, err
 	}
 	defer c.Close()
-	req := append([]byte{0, 0}, foreignRequest(key, addr, port)...)
+	req := foreignRequest(FlowRelay, key, addr, port)
 	if _, err := c.Write(req); err != nil {
 		return 0, err
 	}
@@ -411,6 +482,7 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 		{Address: "127.88.0.2", Names: []string{"app"}, Ports: map[string]int{"9000/udp": client.LocalAddr().(*net.UDPAddr).Port}, Networks: []string{"shared"}},
 		{Address: "127.88.0.3", Names: []string{"dns"}, Ports: map[string]int{"53/udp": hosted.LocalAddr().(*net.UDPAddr).Port}, Router: theirs.Addr().Port, Networks: []string{"shared"}, Foreign: true, Stack: "theirs"},
 		{Address: "127.88.0.4", Names: []string{"db"}, Ports: map[string]int{"53/udp": hosted.LocalAddr().(*net.UDPAddr).Port}, Networks: []string{"theirs"}, Foreign: true, Stack: "theirs"},
+		{Address: "10.96.0.10", Names: []string{"kube-dns"}, Ports: map[string]int{"53/udp": hosted.LocalAddr().(*net.UDPAddr).Port}, Networks: []string{"shared"}, Foreign: true, Stack: members.ServicesStack},
 	}
 	if err := os.WriteFile(file, members.Format(ms), 0o644); err != nil {
 		t.Fatal(err)
@@ -513,6 +585,25 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 	if _, err := lookupForeign(mine.Addr().String(), key, netip.MustParseAddr("127.88.0.4"), 53); err == nil {
 		t.Error("a member on no shared network was relayed to")
 	}
+
+	// A Service, which the engine serves outside any sandbox, is sent to
+	// from any port, not from a stack's block.
+	sf, err := lookupForeign(mine.Addr().String(), key, netip.MustParseAddr("10.96.0.10"), 53)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.WriteToUDP([]byte("svc"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: sf}); err != nil {
+		t.Fatal(err)
+	}
+	client.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if n, _, err := client.ReadFromUDP(buf); err != nil || string(buf[:n]) != "hosted svc" {
+		t.Errorf("the Service answered %q, %v", buf[:max(n, 0)], err)
+	}
+	smu.Lock()
+	if len(stacks) != 3 {
+		t.Errorf("the relay to a Service sent from a stack's block: %q", stacks)
+	}
+	smu.Unlock()
 	if _, err := lookupForeign(mine.Addr().String(), make([]byte, KeySize), netip.MustParseAddr("127.88.0.3"), 53); err == nil {
 		t.Error("a lookup without the relay key was answered")
 	}

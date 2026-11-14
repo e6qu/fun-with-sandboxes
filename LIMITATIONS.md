@@ -82,11 +82,13 @@ machine — and from what macOS offers an unprivileged process under them.
   pod CIDR alone, and keeps its subnet while any sandbox is on it, so a
   pod CIDR the kubelet sends after its first pod starts applies once its
   pods are gone.
-- **Services carry TCP.** `fws-kube-proxy` serves a Service's IPv4
-  cluster IP, its TCP ports and their node ports, which answer at the
-  node container's port, where the members of its networks reach them;
-  a node port reaches the host where the node container publishes it,
-  as kind's `extraPortMappings` do. UDP and SCTP ports, IPv6 cluster IPs,
+- **Services carry TCP and UDP.** `fws-kube-proxy` serves a Service's
+  IPv4 cluster IP, its TCP and UDP ports, and the TCP ports' node ports,
+  which answer at the node container's port, where the members of its
+  networks reach them; a node port reaches the host where the node
+  container publishes it, as kind's `extraPortMappings` do. A UDP port
+  carries each client's datagrams to one endpoint, the next by turns,
+  for 90 seconds without traffic. SCTP ports, UDP node ports, IPv6 cluster IPs,
   external IPs, load balancers' external addresses, session affinity and
   `ExternalName` Services are not served. An endpoint off the pod
   network, such as the API server behind the `kubernetes` Service, is
@@ -243,8 +245,15 @@ machine — and from what macOS offers an unprivileged process under them.
 
 ## Networking
 
-- **ICMP reaches nothing.** A container's traffic is held to its stack's TCP
-  and UDP ports; `ping` opens its socket but sends nowhere.
+- **ICMP reaches the virtual network alone.** An unprivileged `ping`, which
+  sends through a datagram ICMP socket, is answered for loopback, the
+  container's own address and every member it sees, by the container
+  library, as their kernels would answer it. A ping of an outside host
+  over IPv4 goes through the container's router, which pings it from
+  outside the sandbox, for a container with internet access; without
+  it, the request goes unanswered. A ping of an outside host over IPv6
+  fails with `ENETUNREACH`. A raw socket, which needs root, stays
+  refused.
 - **Container addresses are presented, not routed.** Each member of a stack
   has an address in `127.88.0.0/16`, and on a network created with a
   subnet (Compose's `ipam`, `docker network create --subnet`) an address
@@ -458,6 +467,10 @@ machine — and from what macOS offers an unprivileged process under them.
     the user's (`kern.maxprocperuid`), which macOS counts across all of the
     user's processes: a fork bomb in a container fails in the kernel while
     the user keeps processes to spare for their own programs.
+  - Every container process runs under a QoS clamp, `utility` unless
+    `fwsd -qos-clamp` names `background`, `maintenance` or `none`: macOS
+    schedules its threads, and throttles its disk I/O, below the user's
+    interactive work, whatever QoS a thread asks for.
 - **`--init` runs the engine's own init**, at `/sbin/docker-init` as
   Docker places tini: the engine's helper binary, which by that name
   passes signals on to the command, reaps orphans and exits as the command

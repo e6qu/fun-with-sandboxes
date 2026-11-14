@@ -50,7 +50,9 @@ stops, for an upgrade say, and the next `fwsd` takes them back. With
 the image is asked for, so a catalog on disk costs only the images in use. While macOS reports critical memory pressure, or the disk
 holding its state has under 2 GiB free, it pauses the container using the
 most of it, one at a time, and resumes them once it is normal
-(`-machine-guard=false` turns that off).
+(`-machine-guard=false` turns that off). Container processes run under a
+`utility` QoS clamp, so they yield the CPU and the disk to your own work
+(`-qos-clamp` picks `background`, `maintenance` or `none`).
 
 ## Images
 

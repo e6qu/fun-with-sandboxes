@@ -21,8 +21,8 @@ import (
 //go:embed src/fwsroot.c
 var source []byte
 
-//go:embed src/launch.c
-var launchSource []byte
+//go:embed src/spawn.c
+var spawnSource []byte
 
 // HostnameVar names the hostname the library presents; package identity
 // names the user and group.
@@ -45,6 +45,11 @@ const (
 // rewrites as the limit changes: the library fails a fork with EAGAIN once
 // the container runs as many processes.
 const PidsVar = "FWS_PIDS"
+
+// PidsSocketVar names the socket the container's supervisor answers on with
+// how many processes the container runs, which the library compares with
+// the limit before a fork.
+const PidsSocketVar = "FWS_PIDS_SOCKET"
 
 // PidNSVar is "host" for a container on the host's PID namespace: the
 // library presents no pid 1 and lists every process the host does. For a
@@ -131,13 +136,13 @@ func archs() []string {
 	return []string{"-arch", "x86_64"}
 }
 
-// Build compiles the library into dir, and the anchor launcher beside it
-// as Launcher names it, unless a build of these sources is there already,
-// and returns the library's path.
+// Build compiles the library into dir, and the spawn helper beside it as
+// Spawner names it, unless a build of these sources is there already, and
+// returns the library's path.
 func Build(dir string) (string, error) {
 	h := sha256.New()
 	h.Write(source)
-	h.Write(launchSource)
+	h.Write(spawnSource)
 	out := filepath.Join(dir, "fwsroot-"+hex.EncodeToString(h.Sum(nil)[:8])+".dylib")
 	if _, err := os.Stat(out); err == nil {
 		return out, nil
@@ -166,19 +171,17 @@ func Build(dir string) (string, error) {
 	if err := clang(append(args, "-o", lib, src)); err != nil {
 		return "", err
 	}
-	launchSrc := filepath.Join(work, "launch.c")
-	if err := os.WriteFile(launchSrc, launchSource, 0o644); err != nil {
+	spawnSrc := filepath.Join(work, "spawn.c")
+	if err := os.WriteFile(spawnSrc, spawnSource, 0o644); err != nil {
 		return "", err
 	}
-	// The launcher is the host's own architecture alone: macOS runs no
-	// arm64e program but Apple's.
-	launch := filepath.Join(work, "launch")
-	if err := clang([]string{"clang", "-O2", "-Wall", "-Werror", "-o", launch, launchSrc}); err != nil {
+	spawn := filepath.Join(work, "spawn")
+	if err := clang([]string{"clang", "-O2", "-Wall", "-Werror", "-o", spawn, spawnSrc, "-lsandbox"}); err != nil {
 		return "", err
 	}
 	// Another engine may have built them meanwhile; either build is the
-	// same. The launcher goes first: the library's presence says both are.
-	if err := os.Rename(launch, Launcher(out)); err != nil {
+	// same. The library goes last: its presence says the helper is there.
+	if err := os.Rename(spawn, Spawner(out)); err != nil {
 		return "", err
 	}
 	if err := os.Rename(lib, out); err != nil {
@@ -187,9 +190,9 @@ func Build(dir string) (string, error) {
 	return out, nil
 }
 
-// Launcher is the anchor launcher Build compiled beside the library lib.
-func Launcher(lib string) string {
-	return strings.TrimSuffix(lib, ".dylib") + "-launch"
+// Spawner is the spawn helper Build compiled beside the library lib.
+func Spawner(lib string) string {
+	return strings.TrimSuffix(lib, ".dylib") + "-spawn"
 }
 
 func clang(args []string) error {

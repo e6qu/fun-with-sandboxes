@@ -121,6 +121,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	if err != nil {
 		return err
 	}
+	limits.QoSClamp = e.cfg.QoSClamp
 	user := x.cfg.User
 	if user == "" {
 		user = c.rec.Config.User
@@ -129,10 +130,14 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	if err != nil {
 		return invalid("%v", err)
 	}
+	anchor, err := e.anchor(c)
+	if err != nil {
+		return err
+	}
 	rs := runtime.Spec{
 		Root: c.root(), Argv: x.cfg.Cmd, Env: env, WorkDir: wd,
 		Profile: spec, ProfilePath: c.dir + "/exec-" + id[:12] + ".sb", Limits: limits, Library: spec.Libraries[0],
-		Anchor: e.anchor(c),
+		Anchor: anchor,
 	}
 	defer os.Remove(rs.ProfilePath)
 	var master, slave *os.File
@@ -279,7 +284,12 @@ func (e *Engine) probe(c *Container, argv []string, timeout time.Duration) (int,
 	if err != nil {
 		return -1, err.Error()
 	}
+	limits.QoSClamp = e.cfg.QoSClamp
 	env, err := e.processEnv(c, nil, c.rec.Config.User, false)
+	if err != nil {
+		return -1, err.Error()
+	}
+	anchor, err := e.anchor(c)
 	if err != nil {
 		return -1, err.Error()
 	}
@@ -287,12 +297,20 @@ func (e *Engine) probe(c *Container, argv []string, timeout time.Duration) (int,
 	rs := runtime.Spec{
 		Root: c.root(), Argv: argv, Env: env, WorkDir: c.rec.Config.WorkingDir,
 		Profile: spec, ProfilePath: c.dir + "/health-" + newID()[:12] + ".sb", Stdout: &out, Stderr: &out,
-		Limits: limits, Library: spec.Libraries[0], Anchor: e.anchor(c),
+		Limits: limits, Library: spec.Libraries[0], Anchor: anchor,
 	}
 	defer os.Remove(rs.ProfilePath)
 	proc, err := runtime.Start(rs)
 	if err != nil {
 		return -1, err.Error()
+	}
+	// The check counts against the container's limits from its start, as
+	// an exec does.
+	c.mu.Lock()
+	task := c.task
+	c.mu.Unlock()
+	if task != nil {
+		task.Track()
 	}
 	select {
 	case <-proc.Done():

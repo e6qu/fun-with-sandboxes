@@ -18,12 +18,15 @@ import (
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
+	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
 
-var workBinary string
+// workBinary is the test program the shim runs, and library the container
+// library every container process loads.
+var workBinary, library string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "shimwork")
@@ -33,6 +36,15 @@ func TestMain(m *testing.M) {
 	workBinary = filepath.Join(dir, "work")
 	if out, err := exec.Command("go", "build", "-o", workBinary, "./testdata/work").CombinedOutput(); err != nil {
 		panic(fmt.Sprintf("build work: %v\n%s", err, out))
+	}
+	// Seatbelt matches resolved paths, and the temporary directory is
+	// under /var, a link to /private/var.
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		panic(err)
+	}
+	if library, err = pathmap.Build(filepath.Join(resolved, "lib")); err != nil {
+		panic(fmt.Sprintf("build the container library: %v", err))
 	}
 	code := m.Run()
 	os.RemoveAll(dir)
@@ -77,8 +89,8 @@ func launch(t *testing.T, args []string, mod func(*Config)) *harness {
 		ID: "test",
 		Spec: runtime.Spec{
 			Root: root, Argv: append([]string{"/work"}, args...), Env: []string{"PATH=/", tag},
-			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)},
-			ProfilePath: filepath.Join(state, "profile.sb"),
+			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root), Libraries: []string{library}},
+			ProfilePath: filepath.Join(state, "profile.sb"), Library: library,
 		},
 		LogPath: filepath.Join(state, "log.jsonl"), Socket: filepath.Join(sockDir, "s.sock"),
 		ExitPath: filepath.Join(state, "exit.json"), Tag: tag,
@@ -256,12 +268,18 @@ func TestPidsLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(st.Members) == limit {
+			// The supervisor followed twelve forks by the kernel's list of
+			// the forking process's children, without reading the whole
+			// process table for each.
+			if st.Scans > 3 {
+				t.Fatalf("the supervisor read the process table %d times for 12 forks", st.Scans)
+			}
 			break
 		}
 		if len(st.Members) < limit || time.Now().After(deadline) {
 			t.Fatalf("the container runs %d processes, want the limit, %d", len(st.Members), limit)
 		}
-		time.Sleep(rescanPeriod)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

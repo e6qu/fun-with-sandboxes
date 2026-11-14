@@ -86,7 +86,7 @@ bug. `LIMITATIONS.md` lists every one.
 
 ```
 cmd/fwsd/             # the daemon: Docker Engine API over a unix socket
-cmd/fws-shim/         # the helper binary: spawn helper, supervisors, egress proxies
+cmd/fws-shim/         # the helper binary: supervisors, exec anchors, egress proxies
 cmd/fws-mkimage/      # Nix closure -> darwin image archive
 internal/alloc/       # per-stack port blocks and directories
 internal/seatbelt/    # Seatbelt profile rendering
@@ -232,9 +232,15 @@ each lands in pull requests with tests on the macOS runner.
      use.
    - Next: archives cached per image, so a change to one image rebuilds
      that one.
-2. **The open bugs below are fixed**, each with a test that reproduced it:
-   MongoDB's replica set's `ECONNREFUSED 127.0.0.1:65535`, and the pids
-   limit's listing of every process on each `fork`.
+2. **The open bugs below are fixed**, each with a test that reproduced it.
+   - Done: MongoDB's replica set's `ECONNREFUSED 127.0.0.1:65535`. A
+     router request began with the port, and `0xffff` marked a relay to
+     another stack: port 65535 was refused. Requests now lead with their
+     kind.
+   - Done: the pids limit's listing of every process on each `fork`. The
+     library asks the supervisor for the count, and the supervisor reads a
+     fork's children from the kernel's list of the forking process's
+     children.
    - Done: the reaper's slow `profile` step (3.7 s again in a sharded
      run) was no wait on the engine's lock, which `-debug` showed free:
      the reaper is a run's first container, and its start built the
@@ -243,9 +249,13 @@ each lands in pull requests with tests on the macOS runner.
 3. **Limits that keep the machine standing**, enforced by the kernel where
    an unprivileged process can ask it to, and costing nothing on the hot
    path:
-   - A QoS clamp on every container process
-     (`posix_spawnattr_set_qos_clamp_np`), so containers yield the CPU to
-     the user's interactive work; on by default, its class configurable.
+   - Done: a QoS clamp on every container process
+     (`posix_spawnattr_set_qos_clamp_np`), so containers yield the CPU and
+     the disk to the user's interactive work: `fwsd -qos-clamp`, `utility`
+     by default, or `background`, `maintenance` or `none`. The spawn helper
+     executes the command with `posix_spawn`'s `POSIX_SPAWN_SETEXEC`, the
+     one exec that takes the clamp, and every process the command starts
+     inherits it.
    - Done: a fork ceiling. Each container process's `RLIMIT_NPROC`, which
      macOS counts across the user's processes, is set an eighth below
      `kern.maxprocperuid`, so a fork bomb fails in the kernel and the user
@@ -262,9 +272,16 @@ each lands in pull requests with tests on the macOS runner.
      (`posix_spawnattr_setjetsam_ext`, a footprint limit), and stay polled
      where it does not.
 4. **Scale without cliffs.**
-   - Event-driven process tracking: members are followed by the kernel's
-     fork and exit events, with one process-table reader in the engine
-     for all containers in place of each supervisor's scan each second.
+   - Done: event-driven process tracking. A supervisor follows its
+     container's processes by the kernel's fork, exec and exit events on
+     each, and by the engine's word as an exec or health check starts; it
+     reads the process table on those events alone, where it read it each
+     second, so an idle container costs nothing. A fork's children are
+     read from the kernel's list of the forking process's children
+     (`proc_listpids` with `PROC_PPID_ONLY`) and an exit removes the
+     member; the whole table is read only when a member forked and ended
+     before its children were read, as a launcher that leaves a daemon to
+     launchd does.
    - Finer locking: per-container and per-network locks, so a slow
      request no longer holds every other behind the engine's lock. A
      sharded run's `-debug` log shows the holds to cut first: a create's
@@ -275,16 +292,33 @@ each lands in pull requests with tests on the macOS runner.
      every byte; and a stack's network file is written only when what it
      holds changes, as most stay the same as another stack's container
      comes or goes.
-   - Port blocks that grow with a stack, beside the configurable size.
-   - Process starts nearer native: a C spawn helper in place of the Go
-     one (about 3 ms), and the loader's cost for the inserted library
-     (about 4 ms) measured and cut.
+   - Port blocks that grow with a stack: not pursued. A container's
+     Seatbelt profile names each port of its stack's block it may connect
+     to, and a profile cannot change once applied, so a container that
+     started before a block was added could not reach the members whose
+     ports lie in it; a profile granting the adjacent blocks ahead would
+     grant another stack's. The block's size stays configurable
+     (`-block-size`).
+   - Process starts nearer native. Done: the spawn helper is a C program
+     the engine builds beside the container library, where a Go one took
+     its runtime's start-up, and it starts the exec anchor itself. Next:
+     the loader's cost for the inserted library (about 4 ms) measured and
+     cut.
 5. **Fewer correctness gaps**, each at no cost on the hot path:
-   - UDP Services, and UDP between pods of different nodes, through the
-     routers' flow ports.
-   - ICMP echo: `ping` of a stack member answered by the library, and of
-     an outside host through the unprivileged ICMP datagram socket macOS
-     offers.
+   - Done: UDP Services. The engine serves a Service's UDP port on
+     loopback and opens each client's flow to the next endpoint, from a
+     port of the endpoint's stack's block, which its sandbox lets it
+     answer; a container's router relays to it as to another stack's
+     member, from any port, as the engine's socket is in no sandbox.
+     `fws-kube-proxy` passes a Service's UDP ports, so cluster DNS answers
+     on 53/udp. Next: UDP between pods of different nodes.
+   - Done: ICMP echo on the virtual network. A datagram ICMP socket is a
+     Unix datagram pair in the library, and an echo request to loopback,
+     the container's own address or a member it sees is answered at once,
+     with the IP header macOS gives an IPv4 reply. A ping of an outside
+     host over IPv4 goes to the container's router, outside the sandbox,
+     which sends it through the unprivileged ICMP datagram socket for a
+     container with internet access (`router.Echo`).
    - Done: `# syntax=docker/dockerfile:*` served by the built-in
      Dockerfile frontend (`third_party/buildkit-patches/syntax_builtin.patch`).
    - Darwin multi-platform builds: `darwin/amd64` steps run under Rosetta
@@ -335,8 +369,8 @@ every process started under it, its execs too, which the anchor it forked
 starts, and none of them can drop that while it lives; once it ends,
 macOS reports each responsible for itself. The shim now follows, while the
 main process lives, every process it answers for, started no earlier than
-it and before any later process took its pid, through the forks of the
-members it knows and a rescan each second, and kills those, with what they
+it and before any later process took its pid, through the forks, execs
+and exits of the members it knows, and kills those, with what they
 started, after the group. They count against the container's limits, and
 `top` and `stats` list them.
 
@@ -543,8 +577,9 @@ CRI's `ImageFsInfo` took 66 s on its first call and 4.1 s on average: it
 walked every image's root once, and every container's root on each call.
 The image store now measures a root once, as it unpacks it, and keeps the
 measure in the image's record; CRI walks only a root an earlier store
-unpacked, once. The walk of the containers' roots on each call remains:
-each root is a clone of its image's, with as many files.
+unpacked, once. The containers' roots, each a clone of its image's with
+as many files, are measured in the background, at most every 30 s, and a
+call answers with the latest measure.
 
 Every container start took about 1.15 s, nearly all of it in the shim's
 step from starting the spawn helper to the helper's `exec` of the
@@ -585,27 +620,46 @@ text, under the text's hash; the engine compiles it as it launches the
 container's supervisor, which waits for that compile rather than doing it
 again, and the spawn helper applies the bytecode. In one run a container
 start took 9.2 ms with its profile compiled and 22.0 ms without, the
-sandbox alone 7.7 ms, and a native spawn 2.4 ms. What remains is the Go
-spawn helper's start-up and the loader's for the inserted library.
+sandbox alone 7.7 ms, and a native spawn 2.4 ms. The spawn helper is now
+the C program `internal/pathmap/src/spawn.c`, which forks the anchor
+itself, so neither a Go helper nor a launcher starts on the way. In one
+run a container start took 5.6 ms with its profile compiled and 18.8 ms
+without, a process without the anchor 5.3 ms, and a native spawn 1.7 ms.
+What remains is the loader's: in the same run a program reached `main`
+in 4.4 ms natively, 8.2 ms with an empty library inserted and 10.9 ms
+with `fwsroot`, whose interposing the loader binds into every image.
 
 A start in an end-to-end run, of Testcontainers' reaper, took 3.8 s in
 its `profile` step, which takes about 80 µs in every other start. The
 engine's lock timing showed no wait for the lock then: the reaper is a
 run's first container, and its start built the container library, and
-later the anchor launcher, with clang. `fwsd` now builds them as it
-starts.
+later the spawn helper, with clang. `fwsd` now builds them as it starts.
 
-Open bug: in one run, MongoDB's replica set with a root user failed as
-the image's `entry` created the root user: `mongosh`, started with
-`--host 127.0.0.1 --port 27017` against the temporary server that listened
-there and had accepted its connections, ended with `MongoNetworkError:
-connect ECONNREFUSED 127.0.0.1:65535`. Nothing else in the run names port
-65535, and the subtest passed in the runs before.
+In one run, MongoDB's replica set with a root user failed as the image's
+`entry` created the root user: `mongosh`, started with `--host 127.0.0.1
+--port 27017` against the temporary server that listened there and had
+accepted its connections, ended with `MongoNetworkError: connect
+ECONNREFUSED 127.0.0.1:65535`. The container's environment names the
+stack's egress proxy, and `mongosh` honours it: it starts a SOCKS5 tunnel
+on loopback, bound to port 0, and connects the driver through it. The
+container library binds port 0 to a port from macOS's ephemeral range,
+49152 to 65535, with a Unix socket, and a connection to it goes through
+the container's router. A request to the router began with the port, two
+bytes, and `0xffff` marked a relay to another stack's member, so the
+router read the request for port 65535 as a relay and refused it: one run
+in 16384 drew that port. Each request now starts with a byte naming its
+kind, and every port is one.
 
-Open bug: with a pids limit, every `fork` and `posix_spawn` lists every
-process of the engine's user and checks each, to count the container's
-against the limit, where a pids cgroup keeps a count. Docker sets no
-limit by default, and no test of the suite sets one.
+With a pids limit, every `fork` and `posix_spawn` listed every process of
+the engine's user and checked each, to count the container's against the
+limit, where a pids cgroup keeps a count; the supervisor listed them too
+on each fork it saw. The supervisor now reads a fork's children from the
+kernel's list of the forking process's children, and a member's exit
+removes it; `State.Scans` counts its reads of the whole table, which a
+test of twelve forks holds to three. The library asks the supervisor for
+the count, as `pids.current` holds it, on a socket of the container's:
+the supervisor drops the members that ended and reads each one's
+children as it answers, so a fork made a moment before counts.
 
 Left as they are, each with its reason in `LIMITATIONS.md`:
 

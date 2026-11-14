@@ -22,6 +22,7 @@
 package router
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
@@ -37,26 +38,44 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/icmp"
+
 	"github.com/e6qu/fun-with-sandboxes/internal/members"
 	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
 )
 
-// A request is the container port, two bytes big-endian; the answer is one
-// byte, Connected or Refused, after which the connection carries the
-// stream. A request for port 0, which no TCP port is, is a UDP lookup: two
-// more bytes name the UDP port, and Connected is followed by its flow port,
-// two bytes big-endian. A request for port Foreign is a relay to another
-// stack's member: the relay key, then four bytes that name the member's
-// IPv4 address and two its container port. A UDP lookup for port Foreign
-// names a member's UDP port the same way, and is answered with the port of
-// the router's relay to it.
+// A request is its kind, one byte, then what the kind names; the answer is
+// one byte, Connected or Refused. Every port, 0 to 65535, is a port: no
+// value of one marks another kind of request.
+//
+//   - Stream, then the container port, two bytes big-endian: after
+//     Connected the connection carries the stream.
+//   - StreamRelay, a relay to another stack's member: the relay key, four
+//     bytes that name the member's IPv4 address and two its container port.
+//   - Flow, a UDP lookup: the UDP port, two bytes; Connected is followed by
+//     its flow port, two bytes big-endian.
+//   - FlowRelay: a member's UDP port named as StreamRelay names a TCP one,
+//     answered with the port of the router's relay to it as Flow is.
+//   - Echo: an ICMP echo request to a host outside the machine, for a
+//     container with internet access: four bytes that name its IPv4
+//     address, two the message's length, then the message. Connected is
+//     followed by the reply's length, two bytes, and the reply; a request
+//     without an answer within EchoTimeout is Refused.
+const (
+	Stream      = 1
+	StreamRelay = 2
+	Flow        = 3
+	FlowRelay   = 4
+	Echo        = 5
+)
+
+// EchoTimeout is how long the router waits for an echo reply.
+const EchoTimeout = 2 * time.Second
+
 const (
 	Connected = 0
 	Refused   = 1
 )
-
-// Foreign is the request for a relay to another stack's member.
-const Foreign = 0xffff
 
 // KeySize is the size of the relay key.
 const KeySize = 16
@@ -142,6 +161,10 @@ type Router struct {
 type Network struct {
 	File, Address string
 	DialFlow      func(stack string, raddr *net.UDPAddr) (net.Conn, error)
+	// Internet is whether the container reaches hosts outside the
+	// machine, as its egress proxy carries it: the router then relays its
+	// pings of them.
+	Internet bool
 }
 
 // Listen starts a router on addr for the port directory dir; flow opens a
@@ -188,7 +211,7 @@ func loadKey(dir string) ([]byte, error) {
 	return key, os.Rename(tmp, KeyPath(dir))
 }
 
-// foreignTarget reads the rest of a Foreign request: the member's address
+// foreignTarget reads the rest of a relay request: the member's address
 // and port, and whether the request carried the router's relay key.
 func (r *Router) foreignTarget(c net.Conn) (netip.Addr, int, error) {
 	var b [KeySize + 6]byte
@@ -199,6 +222,66 @@ func (r *Router) foreignTarget(c net.Conn) (netip.Addr, int, error) {
 		return netip.Addr{}, 0, errRefused
 	}
 	return netip.AddrFrom4([4]byte(b[KeySize : KeySize+4])), int(binary.BigEndian.Uint16(b[KeySize+4:])), nil
+}
+
+// echo relays an echo request to a host outside the machine through the
+// unprivileged ICMP datagram socket macOS offers, and answers with the
+// reply, without its IP header.
+func (r *Router) echo(c net.Conn) {
+	var h [6]byte
+	if _, err := io.ReadFull(c, h[:]); err != nil {
+		return
+	}
+	msg := make([]byte, binary.BigEndian.Uint16(h[4:]))
+	if _, err := io.ReadFull(c, msg); err != nil {
+		return
+	}
+	dst := netip.AddrFrom4([4]byte(h[:4]))
+	reply, err := r.ping(dst, msg)
+	if err != nil {
+		c.Write([]byte{Refused})
+		return
+	}
+	out := binary.BigEndian.AppendUint16([]byte{Connected}, uint16(len(reply)))
+	c.Write(append(out, reply...))
+}
+
+// ping sends echo request msg to dst and returns the echo reply that
+// matches it, its identifier and sequence number.
+func (r *Router) ping(dst netip.Addr, msg []byte) ([]byte, error) {
+	if !r.net.Internet || len(msg) < 8 || msg[0] != 8 || !dst.Is4() || dst.IsLoopback() || dst.IsUnspecified() || dst.IsMulticast() {
+		return nil, errRefused
+	}
+	pc, err := icmp.ListenPacket("udp4", "0.0.0.0")
+	if err != nil {
+		return nil, err
+	}
+	defer pc.Close()
+	if _, err := pc.WriteTo(msg, &net.UDPAddr{IP: dst.AsSlice()}); err != nil {
+		return nil, err
+	}
+	pc.SetReadDeadline(time.Now().Add(EchoTimeout))
+	buf := make([]byte, 65535)
+	for {
+		n, from, err := pc.ReadFrom(buf)
+		if err != nil {
+			return nil, err
+		}
+		ua, ok := from.(*net.UDPAddr)
+		if !ok || !ua.IP.Equal(dst.AsSlice()) || n < 8 || buf[0] != 0 || !bytes.Equal(buf[4:8], msg[4:8]) {
+			continue
+		}
+		return append([]byte(nil), buf[:n]...), nil
+	}
+}
+
+// readPort reads a request's port, two bytes big-endian.
+func readPort(c io.Reader) (int, error) {
+	var b [2]byte
+	if _, err := io.ReadFull(c, b[:]); err != nil {
+		return 0, err
+	}
+	return int(binary.BigEndian.Uint16(b[:])), nil
 }
 
 func (r *Router) Addr() *net.TCPAddr { return r.l.Addr().(*net.TCPAddr) }
@@ -312,27 +395,36 @@ func (r *Router) join(c net.Conn) {
 	defer r.track(c, false)
 	defer c.Close()
 	c.SetReadDeadline(time.Now().Add(10 * time.Second))
-	var req [2]byte
-	if _, err := io.ReadFull(c, req[:]); err != nil {
-		return
-	}
-	port := int(binary.BigEndian.Uint16(req[:]))
-	if port == 0 {
-		r.lookup(c)
+	var kind [1]byte
+	if _, err := io.ReadFull(c, kind[:]); err != nil {
 		return
 	}
 	var up net.Conn
 	var err error
-	if port == Foreign {
+	switch kind[0] {
+	case Flow, FlowRelay:
+		r.lookup(c, kind[0] == FlowRelay)
+		return
+	case Echo:
+		r.echo(c)
+		return
+	case StreamRelay:
 		var addr netip.Addr
 		var p int
 		if addr, p, err = r.foreignTarget(c); err == nil {
 			up, err = r.foreign(addr, p)
 		}
-	} else if up, err = net.Dial("unix", SocketPath(r.dir, port)); err == nil {
-		if _, err = up.Write(clientHeader(c.RemoteAddr())); err != nil {
-			up.Close()
+	case Stream:
+		var port int
+		if port, err = readPort(c); err == nil {
+			if up, err = net.Dial("unix", SocketPath(r.dir, port)); err == nil {
+				if _, err = up.Write(clientHeader(c.RemoteAddr())); err != nil {
+					up.Close()
+				}
+			}
 		}
+	default:
+		err = fmt.Errorf("router: request kind %d", kind[0])
 	}
 	c.SetReadDeadline(time.Time{})
 	if err != nil {
@@ -437,6 +529,11 @@ func (r *Router) relay(addr netip.Addr, port int) (int, error) {
 		if _, err := r.peer(addr); err != nil {
 			return nil, err
 		}
+		// A Service is served outside any sandbox, which answers a
+		// datagram from any port; a member's sandbox answers its stack's.
+		if stack == members.ServicesStack {
+			return net.DialUDP("udp", nil, raddr)
+		}
 		return r.net.DialFlow(stack, raddr)
 	}, r.sends)
 	r.relays[key] = pc
@@ -480,18 +577,9 @@ func (r *Router) sends(from *net.UDPAddr) bool {
 }
 
 // lookup answers a UDP lookup with the port's flow port.
-func (r *Router) lookup(c net.Conn) {
-	var req [2]byte
-	if _, err := io.ReadFull(c, req[:]); err != nil {
-		return
-	}
-	port := int(binary.BigEndian.Uint16(req[:]))
-	if port == 0 {
-		c.Write([]byte{Refused})
-		return
-	}
+func (r *Router) lookup(c net.Conn, relay bool) {
 	var f int
-	if port == Foreign {
+	if relay {
 		addr, p, err := r.foreignTarget(c)
 		if err == nil {
 			f, err = r.relay(addr, p)
@@ -501,6 +589,11 @@ func (r *Router) lookup(c net.Conn) {
 			return
 		}
 	} else {
+		port, err := readPort(c)
+		if err != nil {
+			c.Write([]byte{Refused})
+			return
+		}
 		fc, err := r.flowPort(port)
 		if err != nil {
 			c.Write([]byte{Refused})
@@ -521,8 +614,7 @@ func LookupUDP(addr string, port int) (int, error) {
 		return 0, err
 	}
 	defer c.Close()
-	req := []byte{0, 0, 0, 0}
-	binary.BigEndian.PutUint16(req[2:], uint16(port))
+	req := binary.BigEndian.AppendUint16([]byte{Flow}, uint16(port))
 	if _, err := c.Write(req); err != nil {
 		return 0, err
 	}
@@ -553,10 +645,9 @@ func Dial(addr string, port int) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	var req [2]byte
-	binary.BigEndian.PutUint16(req[:], uint16(port))
+	req := binary.BigEndian.AppendUint16([]byte{Stream}, uint16(port))
 	var ans [1]byte
-	if _, err := c.Write(req[:]); err == nil {
+	if _, err := c.Write(req); err == nil {
 		_, err = io.ReadFull(c, ans[:])
 	}
 	if err != nil {
