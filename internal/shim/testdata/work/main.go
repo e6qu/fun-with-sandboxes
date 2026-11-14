@@ -82,8 +82,6 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Println("daemonized", child.Pid)
-	case "hold":
-		hold()
 	case "forkmany":
 		// Start the given number of children, reaping those that end.
 		n, _ := strconv.Atoi(args[1])
