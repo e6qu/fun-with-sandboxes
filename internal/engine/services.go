@@ -10,7 +10,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
 	stackmembers "github.com/e6qu/fun-with-sandboxes/internal/members"
+	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
 
@@ -27,10 +29,11 @@ type Service struct {
 	Ports     []ServicePort `json:"ports"`
 }
 
-// ServicePort is a TCP port of a service and the endpoints behind it: the
+// ServicePort is a TCP or UDP port of a service and the endpoints behind it: the
 // addresses of members on the service's network, and their ports.
 type ServicePort struct {
-	Port     int    `json:"port"`
+	Port int `json:"port"`
+	// Protocol is TCP or UDP; empty is TCP.
 	Protocol string `json:"protocol"`
 	// NodePort, when set, is the port of the engine's node where the
 	// service port answers too, as a NodePort Service's does: for an
@@ -43,19 +46,20 @@ type ServicePort struct {
 // ClusterDomain is the domain of the services' names.
 const ClusterDomain = "cluster.local"
 
-// servicesStack names the services in the network files' stack column.
-const servicesStack = "services"
-
 type serviceKey struct {
 	network, namespace, name string
 	port                     int
+	udp                      bool
 }
 
 // serviceListener serves one port of a service on loopback, carrying each
-// connection to the next of its endpoints.
+// connection, or each client's UDP flow, to the next of its endpoints.
 type serviceListener struct {
-	l   net.Listener
-	svc Service
+	l net.Listener
+	// pc and flows serve a UDP port.
+	pc    net.PacketConn
+	flows io.Closer
+	svc   Service
 	mu  sync.Mutex
 	eps []netip.AddrPort
 	n   int
@@ -64,7 +68,20 @@ type serviceListener struct {
 	nodePort int
 }
 
+// port is the loopback port the service port is served on.
+func (sl *serviceListener) port() int {
+	if sl.pc != nil {
+		return sl.pc.LocalAddr().(*net.UDPAddr).Port
+	}
+	return sl.l.Addr().(*net.TCPAddr).Port
+}
+
 func (sl *serviceListener) close() {
+	if sl.pc != nil {
+		sl.flows.Close()
+		sl.pc.Close()
+		return
+	}
 	sl.l.Close()
 	if sl.node != nil {
 		sl.node.Close()
@@ -90,8 +107,11 @@ func checkService(s Service) error {
 		if p.Port < 1 || p.Port > 65535 || p.NodePort < 0 || p.NodePort > 65535 {
 			return invalid("service %s/%s: port %d (node port %d) is out of range", s.Namespace, s.Name, p.Port, p.NodePort)
 		}
-		if p.Protocol != "" && !strings.EqualFold(p.Protocol, "tcp") {
-			return unsupported("service %s/%s: port %d/%s: only TCP ports are supported", s.Namespace, s.Name, p.Port, p.Protocol)
+		if p.Protocol != "" && !strings.EqualFold(p.Protocol, "tcp") && !strings.EqualFold(p.Protocol, "udp") {
+			return unsupported("service %s/%s: port %d/%s: only TCP and UDP ports are supported", s.Namespace, s.Name, p.Port, p.Protocol)
+		}
+		if p.udp() && p.NodePort != 0 {
+			return unsupported("service %s/%s: port %d/udp: a UDP port has no node port", s.Namespace, s.Name, p.Port)
 		}
 		for _, ep := range p.Endpoints {
 			if !ep.IsValid() || ep.Port() == 0 {
@@ -130,10 +150,19 @@ func (e *Engine) SetServices(network string, svcs []Service) error {
 	want := map[serviceKey]bool{}
 	for _, s := range svcs {
 		for _, p := range s.Ports {
-			k := serviceKey{network, s.Namespace, s.Name, p.Port}
+			k := serviceKey{network, s.Namespace, s.Name, p.Port, p.udp()}
 			want[k] = true
 			sl := sv.listeners[k]
-			if sl == nil {
+			if sl == nil && p.udp() {
+				pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+				if err != nil {
+					sv.mu.Unlock()
+					return err
+				}
+				sl = &serviceListener{pc: pc}
+				sl.flows = portproxy.ServeUDPFlows(pc, func(*net.UDPAddr) (net.Conn, error) { return e.dialEndpointUDP(network, sl) }, nil)
+				sv.listeners[k] = sl
+			} else if sl == nil {
 				l, err := net.Listen("tcp", "127.0.0.1:0")
 				if err != nil {
 					sv.mu.Unlock()
@@ -246,6 +275,62 @@ func (e *Engine) dialEndpoint(network string, sl *serviceListener) (net.Conn, er
 	return nil, last
 }
 
+// udp reports whether the port is a UDP one.
+func (p ServicePort) udp() bool { return strings.EqualFold(p.Protocol, "udp") }
+
+// dialEndpointUDP opens a client's flow to the service port's endpoints by
+// turns, from a port of the endpoint's stack's block, which the endpoint's
+// sandbox lets it answer: to its UDP host port, or its router's flow port
+// for one without.
+func (e *Engine) dialEndpointUDP(network string, sl *serviceListener) (net.Conn, error) {
+	sl.mu.Lock()
+	eps := sl.eps
+	start := sl.n
+	sl.n++
+	sl.mu.Unlock()
+	last := fmt.Errorf("no endpoints")
+	for i := range eps {
+		ep := eps[(start+i)%len(eps)]
+		c, err := e.dialMemberUDP(network, ep)
+		if err == nil {
+			return c, nil
+		}
+		last = err
+	}
+	return nil, last
+}
+
+func (e *Engine) dialMemberUDP(network string, ep netip.AddrPort) (net.Conn, error) {
+	e.mu.Lock()
+	var hp, rp int
+	var stack string
+	found := false
+	for _, c := range e.containers {
+		es := c.rec.Networks[network]
+		if es == nil || es.IPAddress != ep.Addr() || !c.isRunning() {
+			continue
+		}
+		found = true
+		hp, rp, stack = c.rec.Ports[fmt.Sprintf("%d/udp", ep.Port())], c.rec.RouterPort, c.rec.Stack
+		break
+	}
+	e.mu.Unlock()
+	if !found {
+		return nil, fmt.Errorf("no running member of %s is at %s", network, ep.Addr())
+	}
+	up := hp
+	if up == 0 && rp != 0 {
+		var err error
+		if up, err = router.LookupUDP(net.JoinHostPort("127.0.0.1", strconv.Itoa(rp)), int(ep.Port())); err != nil {
+			return nil, err
+		}
+	}
+	if up == 0 {
+		return nil, fmt.Errorf("%s does not listen on UDP port %d", ep.Addr(), ep.Port())
+	}
+	return alloc.DialFlow(e.cfg.Root, stack, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: up})
+}
+
 // dialMember connects to port ep.Port of the member at address ep.Addr on
 // network: at its host port, or through its router. An engine nested in
 // a privileged container reaches an address none of its members holds on
@@ -296,15 +381,19 @@ func (e *Engine) serviceMembers(nets map[string]bool) []stackmembers.Member {
 		for _, s := range sv.byNetwork[n] {
 			ports := map[string]int{}
 			for _, p := range s.Ports {
-				if sl := sv.listeners[serviceKey{n, s.Namespace, s.Name, p.Port}]; sl != nil {
-					ports[fmt.Sprintf("%d/tcp", p.Port)] = sl.l.Addr().(*net.TCPAddr).Port
+				if sl := sv.listeners[serviceKey{n, s.Namespace, s.Name, p.Port, p.udp()}]; sl != nil {
+					proto := "tcp"
+					if p.udp() {
+						proto = "udp"
+					}
+					ports[fmt.Sprintf("%d/%s", p.Port, proto)] = sl.port()
 				}
 			}
 			out = append(out, stackmembers.Member{
 				Address: s.ClusterIP.String(),
 				Names: []string{s.Name + "." + s.Namespace + ".svc." + ClusterDomain, s.Name + "." + s.Namespace + ".svc",
 					s.Name + "." + s.Namespace, s.Name},
-				Ports: ports, Networks: []string{n}, Foreign: true, Stack: servicesStack,
+				Ports: ports, Networks: []string{n}, Foreign: true, Stack: stackmembers.ServicesStack,
 				Subnets: []stackmembers.NetAddress{{Network: n, Address: netip.PrefixFrom(s.ClusterIP, 32)}},
 			})
 		}

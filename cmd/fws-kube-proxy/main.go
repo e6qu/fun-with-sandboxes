@@ -123,8 +123,8 @@ type endpointSlice struct {
 }
 
 // build turns the cluster's Services and EndpointSlices into the engine's
-// services: each IPv4 cluster IP, with its TCP ports, their node ports
-// where the Service has them, and, behind each, the ready IPv4 endpoints
+// services: each IPv4 cluster IP, with its TCP and UDP ports, the TCP
+// ports' node ports where the Service has them, and, behind each, the ready IPv4 endpoints
 // of the slices that name it, at the slice port of the same name.
 // Headless Services have no cluster IP to serve.
 func build(svcs []k8sService, slices []endpointSlice) []Service {
@@ -156,13 +156,17 @@ func build(svcs []k8sService, slices []endpointSlice) []Service {
 		}
 		svc := Service{Name: k.Metadata.Name, Namespace: k.Metadata.Namespace, ClusterIP: ip}
 		for _, p := range k.Spec.Ports {
-			if p.Protocol != "" && p.Protocol != "TCP" {
+			proto := p.Protocol
+			if proto == "" {
+				proto = "TCP"
+			}
+			if proto != "TCP" && proto != "UDP" {
 				continue
 			}
-			sp := ServicePort{Port: p.Port, Protocol: "TCP", Endpoints: []string{}}
+			sp := ServicePort{Port: p.Port, Protocol: proto, Endpoints: []string{}}
 			// A NodePort Service, and a LoadBalancer one, which is one
-			// too, answers on the node's port as well.
-			if k.Spec.Type == "NodePort" || k.Spec.Type == "LoadBalancer" {
+			// too, answers on the node's port as well, for TCP.
+			if proto == "TCP" && (k.Spec.Type == "NodePort" || k.Spec.Type == "LoadBalancer") {
 				sp.NodePort = p.NodePort
 			}
 			for _, s := range byService[key{svc.Namespace, svc.Name}] {
@@ -172,7 +176,11 @@ func build(svcs []k8sService, slices []endpointSlice) []Service {
 					if q.Name != nil {
 						name = *q.Name
 					}
-					if name == p.Name && q.Port != nil && (q.Protocol == nil || *q.Protocol == "TCP") {
+					qp := "TCP"
+					if q.Protocol != nil {
+						qp = *q.Protocol
+					}
+					if name == p.Name && q.Port != nil && qp == proto {
 						target = *q.Port
 					}
 				}

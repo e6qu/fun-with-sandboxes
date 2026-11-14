@@ -459,6 +459,11 @@ func (r *Router) relay(addr netip.Addr, port int) (int, error) {
 		if _, err := r.peer(addr); err != nil {
 			return nil, err
 		}
+		// A Service is served outside any sandbox, which answers a
+		// datagram from any port; a member's sandbox answers its stack's.
+		if stack == members.ServicesStack {
+			return net.DialUDP("udp", nil, raddr)
+		}
 		return r.net.DialFlow(stack, raddr)
 	}, r.sends)
 	r.relays[key] = pc

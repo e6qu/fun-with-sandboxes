@@ -209,10 +209,9 @@ var errRefusedClient = errors.New("datagram from a refused client")
 // only to its stack's ports, so dial binds each upstream socket to a port of
 // the stack's block.
 type udpProxy struct {
-	pc       net.PacketConn
-	upstream string
-	dial     FlowDialer
-	accept   func(*net.UDPAddr) bool
+	pc     net.PacketConn
+	open   FlowOpener
+	accept func(*net.UDPAddr) bool
 	mu       sync.Mutex
 	flows    map[string]net.Conn
 	closed   bool
@@ -223,14 +222,26 @@ type udpProxy struct {
 // dial opens for each client, and the replies back to the client. With
 // accept, it drops a datagram from a client accept refuses.
 func ServeUDP(pc net.PacketConn, upstream string, dial FlowDialer, accept func(*net.UDPAddr) bool) io.Closer {
-	px := newUDPProxy(pc, upstream, dial)
-	px.accept = accept
-	go px.serve()
-	return px
+	return ServeUDPFlows(pc, func(*net.UDPAddr) (net.Conn, error) {
+		raddr, err := net.ResolveUDPAddr("udp", upstream)
+		if err != nil {
+			return nil, err
+		}
+		return dial(raddr)
+	}, accept)
 }
 
-func newUDPProxy(pc net.PacketConn, upstream string, dial FlowDialer) *udpProxy {
-	return &udpProxy{pc: pc, upstream: upstream, dial: dial, flows: map[string]net.Conn{}}
+// FlowOpener opens the upstream socket of a client's UDP flow, to an
+// upstream it picks for the client.
+type FlowOpener func(client *net.UDPAddr) (net.Conn, error)
+
+// ServeUDPFlows forwards the datagrams pc receives on the socket open
+// opens for each client, and the replies back to the client, as ServeUDP
+// does: a Service's port opens each flow to the next of its endpoints.
+func ServeUDPFlows(pc net.PacketConn, open FlowOpener, accept func(*net.UDPAddr) bool) io.Closer {
+	px := &udpProxy{pc: pc, open: open, accept: accept, flows: map[string]net.Conn{}}
+	go px.serve()
+	return px
 }
 
 func (p *udpProxy) serve() {
@@ -261,14 +272,11 @@ func (p *udpProxy) flow(client net.Addr) (net.Conn, error) {
 	if up, ok := p.flows[client.String()]; ok {
 		return up, nil
 	}
-	if ua, ok := client.(*net.UDPAddr); p.accept != nil && (!ok || !p.accept(ua)) {
+	ua, ok := client.(*net.UDPAddr)
+	if !ok || (p.accept != nil && !p.accept(ua)) {
 		return nil, errRefusedClient
 	}
-	raddr, err := net.ResolveUDPAddr("udp", p.upstream)
-	if err != nil {
-		return nil, err
-	}
-	up, err := p.dial(raddr)
+	up, err := p.open(ua)
 	if err != nil {
 		return nil, err
 	}

@@ -82,11 +82,13 @@ machine — and from what macOS offers an unprivileged process under them.
   pod CIDR alone, and keeps its subnet while any sandbox is on it, so a
   pod CIDR the kubelet sends after its first pod starts applies once its
   pods are gone.
-- **Services carry TCP.** `fws-kube-proxy` serves a Service's IPv4
-  cluster IP, its TCP ports and their node ports, which answer at the
-  node container's port, where the members of its networks reach them;
-  a node port reaches the host where the node container publishes it,
-  as kind's `extraPortMappings` do. UDP and SCTP ports, IPv6 cluster IPs,
+- **Services carry TCP and UDP.** `fws-kube-proxy` serves a Service's
+  IPv4 cluster IP, its TCP and UDP ports, and the TCP ports' node ports,
+  which answer at the node container's port, where the members of its
+  networks reach them; a node port reaches the host where the node
+  container publishes it, as kind's `extraPortMappings` do. A UDP port
+  carries each client's datagrams to one endpoint, the next by turns,
+  for 90 seconds without traffic. SCTP ports, UDP node ports, IPv6 cluster IPs,
   external IPs, load balancers' external addresses, session affinity and
   `ExternalName` Services are not served. An endpoint off the pod
   network, such as the API server behind the `kubernetes` Service, is

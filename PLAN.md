@@ -305,8 +305,13 @@ each lands in pull requests with tests on the macOS runner.
      the loader's cost for the inserted library (about 4 ms) measured and
      cut.
 5. **Fewer correctness gaps**, each at no cost on the hot path:
-   - UDP Services, and UDP between pods of different nodes, through the
-     routers' flow ports.
+   - Done: UDP Services. The engine serves a Service's UDP port on
+     loopback and opens each client's flow to the next endpoint, from a
+     port of the endpoint's stack's block, which its sandbox lets it
+     answer; a container's router relays to it as to another stack's
+     member, from any port, as the engine's socket is in no sandbox.
+     `fws-kube-proxy` passes a Service's UDP ports, so cluster DNS answers
+     on 53/udp. Next: UDP between pods of different nodes.
    - Done: ICMP echo on the virtual network. A datagram ICMP socket is a
      Unix datagram pair in the library, and an echo request to loopback,
      the container's own address or a member it sees is answered at once,

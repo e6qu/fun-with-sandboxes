@@ -446,6 +446,7 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 		{Address: "127.88.0.2", Names: []string{"app"}, Ports: map[string]int{"9000/udp": client.LocalAddr().(*net.UDPAddr).Port}, Networks: []string{"shared"}},
 		{Address: "127.88.0.3", Names: []string{"dns"}, Ports: map[string]int{"53/udp": hosted.LocalAddr().(*net.UDPAddr).Port}, Router: theirs.Addr().Port, Networks: []string{"shared"}, Foreign: true, Stack: "theirs"},
 		{Address: "127.88.0.4", Names: []string{"db"}, Ports: map[string]int{"53/udp": hosted.LocalAddr().(*net.UDPAddr).Port}, Networks: []string{"theirs"}, Foreign: true, Stack: "theirs"},
+		{Address: "10.96.0.10", Names: []string{"kube-dns"}, Ports: map[string]int{"53/udp": hosted.LocalAddr().(*net.UDPAddr).Port}, Networks: []string{"shared"}, Foreign: true, Stack: members.ServicesStack},
 	}
 	if err := os.WriteFile(file, members.Format(ms), 0o644); err != nil {
 		t.Fatal(err)
@@ -548,6 +549,25 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 	if _, err := lookupForeign(mine.Addr().String(), key, netip.MustParseAddr("127.88.0.4"), 53); err == nil {
 		t.Error("a member on no shared network was relayed to")
 	}
+
+	// A Service, which the engine serves outside any sandbox, is sent to
+	// from any port, not from a stack's block.
+	sf, err := lookupForeign(mine.Addr().String(), key, netip.MustParseAddr("10.96.0.10"), 53)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.WriteToUDP([]byte("svc"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: sf}); err != nil {
+		t.Fatal(err)
+	}
+	client.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if n, _, err := client.ReadFromUDP(buf); err != nil || string(buf[:n]) != "hosted svc" {
+		t.Errorf("the Service answered %q, %v", buf[:max(n, 0)], err)
+	}
+	smu.Lock()
+	if len(stacks) != 3 {
+		t.Errorf("the relay to a Service sent from a stack's block: %q", stacks)
+	}
+	smu.Unlock()
 	if _, err := lookupForeign(mine.Addr().String(), make([]byte, KeySize), netip.MustParseAddr("127.88.0.3"), 53); err == nil {
 		t.Error("a lookup without the relay key was answered")
 	}
