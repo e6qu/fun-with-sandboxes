@@ -117,6 +117,28 @@ func applyLimits(h helperSpec) error {
 			return fmt.Errorf("setrlimit %s soft %d hard %d: %w", RlimitName(r.Resource), r.Cur, r.Max, err)
 		}
 	}
+	return forkCeiling()
+}
+
+// forkCeiling keeps a fork bomb in a container from taking the user's last
+// processes. macOS counts a process limit across all of a user's processes,
+// up to kern.maxprocperuid; a container's processes get a soft limit below
+// it by a reserve, so their forks fail in the kernel, at no cost to any
+// fork short of it, while the user's own programs can still start.
+func forkCeiling() error {
+	max, err := unix.SysctlUint32("kern.maxprocperuid")
+	if err != nil {
+		return nil
+	}
+	ceiling := ForkCeiling(uint64(max))
+	var cur syscall.Rlimit
+	if err := syscall.Getrlimit(rlimitNproc, &cur); err != nil || cur.Cur <= ceiling {
+		return nil
+	}
+	cur.Cur = ceiling
+	if err := syscall.Setrlimit(rlimitNproc, &cur); err != nil {
+		return fmt.Errorf("setrlimit nproc soft %d: %w", ceiling, err)
+	}
 	return nil
 }
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
@@ -144,7 +145,17 @@ func TestLimitsApply(t *testing.T) {
 	if p := runToEnd(t, s); p.ExitCode() != 0 {
 		t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
 	}
-	want := fmt.Sprintf("nofile=64/64 nice=7 iopolicy=%d tty=false", libsystem.IOPolicyThrottle)
+	maxproc, err := unix.SysctlUint32("kern.maxprocperuid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fork ceiling lowers the process limit, never raises it.
+	var nproc syscall.Rlimit
+	if err := syscall.Getrlimit(rlimitNproc, &nproc); err != nil {
+		t.Fatal(err)
+	}
+	ceiling := min(nproc.Cur, ForkCeiling(uint64(maxproc)))
+	want := fmt.Sprintf("nofile=64/64 nice=7 iopolicy=%d tty=false nproc=%d", libsystem.IOPolicyThrottle, ceiling)
 	if got := strings.TrimSpace(out.String()); got != want {
 		t.Fatalf("limits %q, want %q", got, want)
 	}

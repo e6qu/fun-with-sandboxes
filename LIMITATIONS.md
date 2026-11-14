@@ -443,6 +443,10 @@ machine — and from what macOS offers an unprivileged process under them.
     unlimited; nproc, which macOS counts across every process of the user,
     and data, as and a finite memlock, which it does not enforce, are
     refused.
+  - Every container's processes run under a process limit an eighth below
+    the user's (`kern.maxprocperuid`), which macOS counts across all of the
+    user's processes: a fork bomb in a container fails in the kernel while
+    the user keeps processes to spare for their own programs.
 - **`--init` runs the engine's own init**, at `/sbin/docker-init` as
   Docker places tini: the engine's helper binary, which by that name
   passes signals on to the command, reaps orphans and exits as the command
