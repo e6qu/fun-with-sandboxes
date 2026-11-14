@@ -1,0 +1,240 @@
+// fws-spawn starts a container's process, in the Go spawn helper's place:
+// it applies the process's limits and Seatbelt profile to itself, starts
+// the container's exec anchor where asked, and executes the command. A C
+// program reaches its exec in a millisecond, where the Go helper's runtime
+// took several, and every container start waits for it.
+//
+//   fws-spawn [-t] [-n nice] [-i iopolicy] [-r resource:soft:hard]...
+//             -p profile [-c compiled] [-L library] [-a anchor]
+//             -- path argv0 [arg]...
+//
+// -t makes standard input the controlling terminal; -p names the profile's
+// text and -c its compiled bytecode, the text's SHA-256 before it, which
+// the helper applies rather than compiling the text; -a starts the anchor,
+// that binary run with this process's pid, on the listener at descriptor
+// 4. The environment is the command's, which gets the container library
+// -L names in DYLD_INSERT_LIBRARIES, which the helper itself does not load,
+// and with -a FWS_INIT, its own pid. A failure is written to descriptor 3, which closes on a
+// successful exec, and ends the helper with status 127.
+#include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/sysctl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char **environ;
+
+int setiopolicy_np(int iotype, int scope, int policy);
+int sandbox_init(const char *profile, uint64_t flags, char **errorbuf);
+void sandbox_free_error(char *errorbuf);
+
+struct sandbox_profile {
+    uint32_t type;
+    const void *bytecode;
+    size_t bytecode_length;
+    uint64_t zero[5];
+};
+int sandbox_apply(struct sandbox_profile *profile);
+
+enum { statusFD = 3, anchorFD = 4, hashLen = 32, rlimitNproc = 7 };
+
+static void fail(const char *what, const char *detail) {
+    char msg[1024];
+    int n = snprintf(msg, sizeof msg, "%s: %s", what, detail);
+    // As Go spells system errors: lower case.
+    for (char *p = strstr(msg, ": "); p && p[2]; p = NULL) p[2] = (char)tolower((unsigned char)p[2]);
+    if (n > 0) write(statusFD, msg, strlen(msg));
+    _exit(127);
+}
+
+static void failErrno(const char *what) { fail(what, strerror(errno)); }
+
+static char *slurp(const char *path, size_t *len) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        close(fd);
+        return NULL;
+    }
+    char *buf = malloc((size_t)st.st_size + 1);
+    size_t got = 0;
+    while (buf && got < (size_t)st.st_size) {
+        ssize_t n = read(fd, buf + got, (size_t)st.st_size - got);
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    close(fd);
+    if (!buf) return NULL;
+    buf[got] = 0;
+    *len = got;
+    return buf;
+}
+
+// applyCompiled applies the bytecode after the hash in the file at path.
+static int applyCompiled(const char *path) {
+    size_t len;
+    char *b = slurp(path, &len);
+    if (!b || len <= hashLen + 4) return -1;
+    struct sandbox_profile p;
+    memset(&p, 0, sizeof p);
+    memcpy(&p.type, b + hashLen, 4);
+    p.bytecode = b + hashLen + 4;
+    p.bytecode_length = len - hashLen - 4;
+    return sandbox_apply(&p);
+}
+
+// forkCeiling keeps the container's processes an eighth below the user's
+// process limit (runtime.ForkCeiling).
+static void forkCeiling(void) {
+    uint32_t max;
+    size_t len = sizeof max;
+    if (sysctlbyname("kern.maxprocperuid", &max, &len, NULL, 0) != 0) return;
+    uint64_t reserve = max / 8 < 64 ? 64 : max / 8;
+    uint64_t ceiling = max <= reserve ? max : max - reserve;
+    struct rlimit rl;
+    if (getrlimit(rlimitNproc, &rl) != 0 || rl.rlim_cur <= ceiling) return;
+    rl.rlim_cur = ceiling;
+    if (setrlimit(rlimitNproc, &rl) != 0) failErrno("setrlimit nproc");
+}
+
+// startAnchor starts the anchor through a child that exits at once, so the
+// anchor is no child of the main process this one becomes.
+static void startAnchor(const char *anchor) {
+    char mainpid[32];
+    snprintf(mainpid, sizeof mainpid, "%d", (int)getpid());
+    if (fcntl(anchorFD, F_SETFD, FD_CLOEXEC) != 0) failErrno("start the exec anchor");
+    pid_t pid = fork();
+    if (pid < 0) failErrno("start the exec anchor");
+    if (pid == 0) {
+        setsid();
+        pid_t anchorPid = fork();
+        if (anchorPid != 0) _exit(anchorPid < 0 ? 1 : 0);
+        int null = open("/dev/null", O_RDWR);
+        if (null < 0 || dup2(null, 0) < 0 || dup2(null, 1) < 0 || dup2(null, 2) < 0 || dup2(anchorFD, 3) < 0) _exit(1);
+        char *argv[] = {"fws-anchor", mainpid, NULL};
+        char *envp[] = {"FWS_ROLE=anchor", NULL};
+        execve(anchor, argv, envp);
+        _exit(127);
+    }
+    int ws;
+    while (waitpid(pid, &ws, 0) < 0) {
+        if (errno != EINTR) failErrno("start the exec anchor");
+    }
+    if (!WIFEXITED(ws) || WEXITSTATUS(ws) != 0) fail("start the exec anchor", "its launcher failed");
+    close(anchorFD);
+}
+
+int main(int argc, char **argv) {
+    int tty = 0, i = 1;
+    const char *profile = NULL, *compiled = NULL, *anchor = NULL, *library = NULL;
+    int nice = 0, haveNice = 0, iopolicy = 0, haveIO = 0;
+    struct { int res; struct rlimit rl; } limits[16];
+    int nlimits = 0;
+    for (; i < argc; i++) {
+        const char *a = argv[i];
+        if (strcmp(a, "--") == 0) {
+            i++;
+            break;
+        }
+        if (strcmp(a, "-t") == 0) {
+            tty = 1;
+            continue;
+        }
+        if (i + 1 >= argc) fail("fws-spawn", "an option without its value");
+        const char *v = argv[++i];
+        if (strcmp(a, "-n") == 0) {
+            nice = atoi(v), haveNice = 1;
+        } else if (strcmp(a, "-i") == 0) {
+            iopolicy = atoi(v), haveIO = 1;
+        } else if (strcmp(a, "-p") == 0) {
+            profile = v;
+        } else if (strcmp(a, "-c") == 0) {
+            compiled = v;
+        } else if (strcmp(a, "-a") == 0) {
+            anchor = v;
+        } else if (strcmp(a, "-L") == 0) {
+            library = v;
+        } else if (strcmp(a, "-r") == 0 && nlimits < 16) {
+            char *end;
+            limits[nlimits].res = (int)strtol(v, &end, 10);
+            limits[nlimits].rl.rlim_cur = strtoull(end + 1, &end, 10);
+            limits[nlimits].rl.rlim_max = strtoull(end + 1, &end, 10);
+            nlimits++;
+        } else {
+            fail("fws-spawn", "an unknown option");
+        }
+    }
+    if (i + 1 >= argc || !profile) fail("spawn helper", "no command");
+    const char *path = argv[i];
+    char **cmd = argv + i + 1;
+
+    if (tty && ioctl(0, TIOCSCTTY, 0) != 0) failErrno("set the controlling terminal");
+    if (haveNice && setpriority(PRIO_PROCESS, 0, nice) != 0) {
+        char what[64];
+        snprintf(what, sizeof what, "setpriority %d", nice);
+        failErrno(what);
+    }
+    if (haveIO && setiopolicy_np(0, 0, iopolicy) != 0) {
+        char what[64];
+        snprintf(what, sizeof what, "setiopolicy_np %d", iopolicy);
+        failErrno(what);
+    }
+    for (int k = 0; k < nlimits; k++) {
+        if (setrlimit(limits[k].res, &limits[k].rl) != 0) {
+            // As runtime.RlimitName names them.
+            static const char *names[] = {"cpu", "fsize", "data", "stack", "core", "as", "memlock", "nproc", "nofile"};
+            char res[32], what[128];
+            if (limits[k].res >= 0 && limits[k].res < (int)(sizeof names / sizeof *names)) {
+                snprintf(res, sizeof res, "%s", names[limits[k].res]);
+            } else {
+                snprintf(res, sizeof res, "resource %d", limits[k].res);
+            }
+            snprintf(what, sizeof what, "setrlimit %s soft %llu hard %llu", res,
+                     (unsigned long long)limits[k].rl.rlim_cur, (unsigned long long)limits[k].rl.rlim_max);
+            failErrno(what);
+        }
+    }
+    forkCeiling();
+
+    if (!compiled || applyCompiled(compiled) != 0) {
+        size_t len;
+        char *text = slurp(profile, &len);
+        if (!text) failErrno("read the profile");
+        char *err = NULL;
+        if (sandbox_init(text, 0, &err) != 0) fail("sandbox_init", err ? err : "unknown error");
+    }
+
+    fcntl(statusFD, F_SETFD, FD_CLOEXEC);
+    if (anchor) startAnchor(anchor);
+    size_t n = 0;
+    while (environ[n]) n++;
+    char **envp = calloc(n + 3, sizeof *envp);
+    if (!envp) failErrno("environment");
+    memcpy(envp, environ, n * sizeof *envp);
+    if (library && *library) {
+        size_t len = strlen(library) + sizeof "DYLD_INSERT_LIBRARIES=";
+        char *v = malloc(len);
+        if (!v) failErrno("environment");
+        snprintf(v, len, "DYLD_INSERT_LIBRARIES=%s", library);
+        envp[n++] = v;
+    }
+    if (anchor) {
+        char *init = malloc(32);
+        if (!init) failErrno("environment");
+        snprintf(init, 32, "FWS_INIT=%d", (int)getpid());
+        envp[n++] = init;
+    }
+    execve(path, cmd, envp);
+    char what[1100];
+    snprintf(what, sizeof what, "exec %s", cmd[0]);
+    failErrno(what);
+}

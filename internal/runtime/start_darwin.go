@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
+	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 )
 
@@ -276,7 +277,13 @@ func Start(s Spec) (*Process, error) {
 	if s.AnchorListener != nil {
 		files = append(files, s.AnchorListener.Fd())
 	}
-	pid, err := libsystem.Spawn(s.Profile.Helper, []string{helperArgv}, env, libsystem.SpawnAttr{
+	helper, helperArgs, helperEnv := s.Profile.Helper, []string{helperArgv}, env
+	if c, ok := cSpawner(s); ok {
+		// The helper loads no container library itself, which would map
+		// its own paths into the container; the command gets it.
+		helper, helperArgs, helperEnv = c, cSpawnArgs(s, h), withLibrary(s.Env, "")
+	}
+	pid, err := libsystem.Spawn(helper, helperArgs, helperEnv, libsystem.SpawnAttr{
 		Dir:   wd,
 		Files: files,
 		// A session leader also leads its process group, so KillAll still
@@ -344,4 +351,43 @@ func withLibrary(env []string, library string) []string {
 		out = append(out, "DYLD_INSERT_LIBRARIES="+library)
 	}
 	return out
+}
+
+// cSpawner is the C spawn helper built beside the container library, which
+// starts a process in the Go helper's place in a fraction of the time.
+func cSpawner(s Spec) (string, bool) {
+	if s.Library == "" {
+		return "", false
+	}
+	p := pathmap.Spawner(s.Library)
+	if fi, err := os.Stat(p); err != nil || fi.Mode().Perm()&0o111 == 0 {
+		return "", false
+	}
+	return p, true
+}
+
+// cSpawnArgs are the C spawn helper's arguments for the helper spec h: its
+// options, then the command (pathmap/src/spawn.c).
+func cSpawnArgs(s Spec, h helperSpec) []string {
+	args := []string{"fws-spawn"}
+	if h.TTY {
+		args = append(args, "-t")
+	}
+	if h.Limits.Nice != 0 {
+		args = append(args, "-n", strconv.Itoa(h.Limits.Nice))
+	}
+	if h.Limits.IOPolicy != 0 {
+		args = append(args, "-i", strconv.Itoa(h.Limits.IOPolicy))
+	}
+	for _, r := range h.Limits.Rlimits {
+		args = append(args, "-r", fmt.Sprintf("%d:%d:%d", r.Resource, r.Cur, r.Max))
+	}
+	args = append(args, "-p", s.ProfilePath, "-L", s.Library)
+	if h.Compiled != "" {
+		args = append(args, "-c", h.Compiled)
+	}
+	if h.Anchor {
+		args = append(args, "-a", s.Profile.Helper)
+	}
+	return append(append(args, "--", h.Path), h.Argv...)
 }

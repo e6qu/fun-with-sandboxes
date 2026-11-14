@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
+	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
@@ -132,33 +133,70 @@ func runToEnd(t *testing.T, s Spec) *Process {
 }
 
 // The spawn helper applies resource limits, the scheduling priority and the
-// disk I/O policy before the command runs.
+// disk I/O policy before the command runs: the Go helper, and the C one
+// the engine builds beside the container library.
 func TestLimitsApply(t *testing.T) {
-	s, out := limitsSpec(t)
-	s.Limits = Limits{
-		// Go programs raise their soft descriptor limit to the hard one as
-		// they start, so the probe sees the soft limit only when both match.
-		Rlimits:  []Rlimit{{Resource: RlimitNofile, Cur: 64, Max: 64}},
-		Nice:     7,
-		IOPolicy: libsystem.IOPolicyThrottle,
+	for _, helper := range []string{"go", "c"} {
+		t.Run(helper, func(t *testing.T) {
+			s, out := limitsSpec(t)
+			if helper == "c" {
+				lib := testLibrary(t)
+				if _, ok := cSpawner(Spec{Library: lib}); !ok {
+					t.Fatal("no C spawn helper beside the library")
+				}
+				s.Library, s.Profile.Libraries = lib, []string{lib}
+			}
+			s.Limits = Limits{
+				// Go programs raise their soft descriptor limit to the hard
+				// one as they start, so the probe sees the soft limit only
+				// when both match.
+				Rlimits:  []Rlimit{{Resource: RlimitNofile, Cur: 64, Max: 64}},
+				Nice:     7,
+				IOPolicy: libsystem.IOPolicyThrottle,
+			}
+			if p := runToEnd(t, s); p.ExitCode() != 0 {
+				t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
+			}
+			maxproc, err := unix.SysctlUint32("kern.maxprocperuid")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The fork ceiling lowers the process limit, never raises it.
+			var nproc syscall.Rlimit
+			if err := syscall.Getrlimit(rlimitNproc, &nproc); err != nil {
+				t.Fatal(err)
+			}
+			ceiling := min(nproc.Cur, ForkCeiling(uint64(maxproc)))
+			want := fmt.Sprintf("nofile=64/64 nice=7 iopolicy=%d tty=false nproc=%d", libsystem.IOPolicyThrottle, ceiling)
+			if got := strings.TrimSpace(out.String()); got != want {
+				t.Fatalf("limits %q, want %q", got, want)
+			}
+		})
 	}
-	if p := runToEnd(t, s); p.ExitCode() != 0 {
-		t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
+}
+
+var (
+	testLibOnce sync.Once
+	testLib     string
+	testLibErr  error
+)
+
+// testLibrary is the container library, with the C helpers beside it,
+// built once for the package's tests.
+func testLibrary(t *testing.T) string {
+	t.Helper()
+	testLibOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "fws-runtime-lib")
+		if err != nil {
+			testLibErr = err
+			return
+		}
+		testLib, testLibErr = pathmap.Build(dir)
+	})
+	if testLibErr != nil {
+		t.Fatal(testLibErr)
 	}
-	maxproc, err := unix.SysctlUint32("kern.maxprocperuid")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The fork ceiling lowers the process limit, never raises it.
-	var nproc syscall.Rlimit
-	if err := syscall.Getrlimit(rlimitNproc, &nproc); err != nil {
-		t.Fatal(err)
-	}
-	ceiling := min(nproc.Cur, ForkCeiling(uint64(maxproc)))
-	want := fmt.Sprintf("nofile=64/64 nice=7 iopolicy=%d tty=false nproc=%d", libsystem.IOPolicyThrottle, ceiling)
-	if got := strings.TrimSpace(out.String()); got != want {
-		t.Fatalf("limits %q, want %q", got, want)
-	}
+	return testLib
 }
 
 // A limit the engine's user cannot set fails the start, as a runtime fails

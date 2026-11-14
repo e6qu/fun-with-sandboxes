@@ -24,6 +24,9 @@ var source []byte
 //go:embed src/launch.c
 var launchSource []byte
 
+//go:embed src/spawn.c
+var spawnSource []byte
+
 // HostnameVar names the hostname the library presents; package identity
 // names the user and group.
 const HostnameVar = "FWS_HOSTNAME"
@@ -131,13 +134,14 @@ func archs() []string {
 	return []string{"-arch", "x86_64"}
 }
 
-// Build compiles the library into dir, and the anchor launcher beside it
-// as Launcher names it, unless a build of these sources is there already,
-// and returns the library's path.
+// Build compiles the library into dir, and the anchor launcher and the
+// spawn helper beside it as Launcher and Spawner name them, unless a build
+// of these sources is there already, and returns the library's path.
 func Build(dir string) (string, error) {
 	h := sha256.New()
 	h.Write(source)
 	h.Write(launchSource)
+	h.Write(spawnSource)
 	out := filepath.Join(dir, "fwsroot-"+hex.EncodeToString(h.Sum(nil)[:8])+".dylib")
 	if _, err := os.Stat(out); err == nil {
 		return out, nil
@@ -176,15 +180,31 @@ func Build(dir string) (string, error) {
 	if err := clang([]string{"clang", "-O2", "-Wall", "-Werror", "-o", launch, launchSrc}); err != nil {
 		return "", err
 	}
+	spawnSrc := filepath.Join(work, "spawn.c")
+	if err := os.WriteFile(spawnSrc, spawnSource, 0o644); err != nil {
+		return "", err
+	}
+	spawn := filepath.Join(work, "spawn")
+	if err := clang([]string{"clang", "-O2", "-Wall", "-Werror", "-o", spawn, spawnSrc, "-lsandbox"}); err != nil {
+		return "", err
+	}
 	// Another engine may have built them meanwhile; either build is the
-	// same. The launcher goes first: the library's presence says both are.
+	// same. The library goes last: its presence says the others are there.
 	if err := os.Rename(launch, Launcher(out)); err != nil {
+		return "", err
+	}
+	if err := os.Rename(spawn, Spawner(out)); err != nil {
 		return "", err
 	}
 	if err := os.Rename(lib, out); err != nil {
 		return "", err
 	}
 	return out, nil
+}
+
+// Spawner is the spawn helper Build compiled beside the library lib.
+func Spawner(lib string) string {
+	return strings.TrimSuffix(lib, ".dylib") + "-spawn"
 }
 
 // Launcher is the anchor launcher Build compiled beside the library lib.
