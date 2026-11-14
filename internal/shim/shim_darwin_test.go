@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -280,6 +281,23 @@ func TestPidsLimit(t *testing.T) {
 			t.Fatalf("the container runs %d processes, want the limit, %d", len(st.Members), limit)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// A daemon started through a launcher that exits, as pg_ctl starts
+// PostgreSQL's server, leaves the main process running once it has waited
+// for the launcher, and the supervisor follows the daemon.
+func TestDaemonLauncher(t *testing.T) {
+	h := launch(t, []string{"daemon"}, nil)
+	h.waitLog("waited")
+	st, err := h.client.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	fmt.Sscanf(h.logs()[strings.Index(h.logs(), "daemonized"):], "daemonized %d", &pid)
+	if pid == 0 || !slices.Contains(st.Members, pid) {
+		t.Fatalf("the supervisor's members %v miss daemon %d; logged %q", st.Members, pid, h.logs())
 	}
 }
 

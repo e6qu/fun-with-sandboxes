@@ -52,6 +52,38 @@ func run(args []string) error {
 		}
 		fmt.Println("allocated", len(keep))
 		hold()
+	case "daemon":
+		// Start a daemon as pg_ctl does: through a launcher that exits,
+		// in a session of its own, with a cleared environment; wait for
+		// the launcher, then hold.
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		launcher, err := os.StartProcess(self, []string{self, "daemon-launch"}, &os.ProcAttr{
+			Env: []string{}, Files: []*os.File{nil, os.Stdout, os.Stderr}, Sys: &syscall.SysProcAttr{Setsid: true},
+		})
+		if err != nil {
+			return err
+		}
+		st, err := launcher.Wait()
+		if err != nil || !st.Success() {
+			return fmt.Errorf("the daemon's launcher: %v %v", st, err)
+		}
+		fmt.Println("waited")
+		hold()
+	case "daemon-launch":
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		child, err := os.StartProcess(self, []string{self, "hold"}, &os.ProcAttr{Env: []string{}, Files: []*os.File{nil, nil, nil}})
+		if err != nil {
+			return err
+		}
+		fmt.Println("daemonized", child.Pid)
+	case "hold":
+		hold()
 	case "forkmany":
 		// Start the given number of children, reaping those that end.
 		n, _ := strconv.Atoi(args[1])
