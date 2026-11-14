@@ -22,7 +22,7 @@ top-level plan and roadmap; the design doc is the full mechanism.
   system extensions, no changes to System Integrity Protection.
 - **Go, and small C where a process start is at stake.** The engine and its
   helpers are Go and cross-compile with `CGO_ENABLED=0` (`GOOS=darwin`,
-  `GOARCH=arm64|amd64`) from any host. What runs inside every container
+  `GOARCH=arm64`) from any host. What runs inside every container
   process start is C, compiled by clang on the Mac at first use: the
   container library and the exec anchor's launcher.
 - **Performance close to native.** A container costs what its processes
@@ -40,9 +40,11 @@ top-level plan and roadmap; the design doc is the full mechanism.
 
 ## Non-goals
 
+- Intel Macs and x86_64 images. The engine runs on Apple silicon alone,
+  and its images are `darwin/arm64`; it neither builds for `darwin/amd64`
+  nor runs x86_64 programs under Rosetta.
 - Running Linux images unchanged. Without a VM nothing on macOS executes
-  Linux ELF binaries, so images are macOS-native (`darwin/arm64`,
-  `darwin/amd64`). The roadmap below generalizes how such images are made
+  Linux ELF binaries, so images are macOS-native (`darwin/arm64`). The roadmap below generalizes how such images are made
   from Linux images and Dockerfiles.
 - A security boundary against hostile code. Containers run as the same user as
   the engine; Seatbelt confines them, but it is defence for development and
@@ -321,8 +323,6 @@ each lands in pull requests with tests on the macOS runner.
      container with internet access (`router.Echo`).
    - Done: `# syntax=docker/dockerfile:*` served by the built-in
      Dockerfile frontend (`third_party/buildkit-patches/syntax_builtin.patch`).
-   - Darwin multi-platform builds: `darwin/amd64` steps run under Rosetta
-     beside `darwin/arm64` ones.
 6. **More images, made rather than hand-built.** In order of reach:
    - Dockerfile builds take Linux idioms: a base image Docker users name,
      such as `python:3.12`, resolves to its catalog equivalent, and

@@ -5,8 +5,8 @@ Engine API, good enough to run `docker compose` stacks of macOS-native images
 side by side without clashing on ports, paths, or processes, and without
 reaching the host beyond what macOS strictly requires.
 
-The engine is written in Go and cross-compiles to `darwin/arm64` and
-`darwin/amd64`. It runs the workloads on the host directly — there is no virtual
+The engine is written in Go and cross-compiles to `darwin/arm64`: it runs
+on Apple silicon alone. It runs the workloads on the host directly — there is no virtual
 machine and no privileged helper — using the only isolation primitives macOS
 offers to an unprivileged process: **Seatbelt** sandbox profiles, **APFS
 copy-on-write clones**, and **per-stack resource assignment**.
@@ -812,8 +812,8 @@ or a pty (`creack/pty`).
 
 ## 10. Go implementation
 
-Pure Go; the engine cross-compiles with `CGO_ENABLED=0` for `darwin/arm64`
-and `darwin/amd64`. `clonefile` comes from `golang.org/x/sys/unix`, image
+Pure Go; the engine cross-compiles with `CGO_ENABLED=0` for `darwin/arm64`,
+Apple silicon, alone. `clonefile` comes from `golang.org/x/sys/unix`, image
 handling from `go-containerregistry`, and the API types from
 `github.com/moby/moby/api`, so the JSON matches what Docker clients decode.
 

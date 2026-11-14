@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -127,13 +126,10 @@ func PortsVar(ports map[string]int) (string, error) {
 	return "FWS_PORTS=" + strings.Join(entries, ","), nil
 }
 
-// archs are the architectures the library is built for: Apple's own
-// programs on Apple silicon are arm64e.
+// archs are the architectures the library is built for, on Apple silicon:
+// Apple's own programs are arm64e.
 func archs() []string {
-	if runtime.GOARCH == "arm64" {
-		return []string{"-arch", "arm64", "-arch", "arm64e"}
-	}
-	return []string{"-arch", "x86_64"}
+	return []string{"-arch", "arm64", "-arch", "arm64e"}
 }
 
 // Build compiles the library into dir, and the spawn helper beside it as
