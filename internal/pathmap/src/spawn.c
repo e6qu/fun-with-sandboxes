@@ -21,6 +21,7 @@
 // and with -a FWS_INIT, its own pid. A failure is written to descriptor 3, which closes on a
 // successful exec, and ends the helper with status 127.
 #include <ctype.h>
+#include <signal.h>
 #include <spawn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -238,9 +239,20 @@ int main(int argc, char **argv) {
     }
     char what[1100];
     snprintf(what, sizeof what, "exec %s", cmd[0]);
+    // The command starts with every signal at its default action and none
+    // blocked, as runc starts a container's process: an ignored SIGCHLD, as
+    // the helper may inherit, would have the kernel reap the command's
+    // children before it waits for them.
+    sigset_t all, none;
+    sigfillset(&all);
+    sigdelset(&all, SIGKILL);
+    sigdelset(&all, SIGSTOP);
+    sigemptyset(&none);
     posix_spawnattr_t attr;
     int err = posix_spawnattr_init(&attr);
-    if (err == 0) err = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETEXEC);
+    if (err == 0) err = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETEXEC | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+    if (err == 0) err = posix_spawnattr_setsigdefault(&attr, &all);
+    if (err == 0) err = posix_spawnattr_setsigmask(&attr, &none);
     if (err != 0) fail("posix_spawnattr", strerror(err));
     if (clamp != 0 && (err = posix_spawnattr_set_qos_clamp_np(&attr, (uint64_t)clamp)) != 0) {
         char q[64];
