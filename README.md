@@ -44,7 +44,10 @@ docker compose up -d --wait
 clang from the Xcode Command Line Tools (`xcode-select --install`). `fwsd` refuses to run as root. State lives in `~/.fws` (`-root`), stacks get
 host ports from 20000–29999 in blocks of 100 (`-port-base`, `-port-limit`,
 `-block-size`). With `-live-restore` containers keep running while `fwsd`
-stops, for an upgrade say, and the next `fwsd` takes them back.
+stops, for an upgrade say, and the next `fwsd` takes them back. With
+`-image-archives DIR` it loads an image from the archives in `DIR`, as
+`scripts/build-images.sh` or `docker save` writes them, the first time
+the image is asked for, so a catalog on disk costs only the images in use.
 
 ## Images
 

@@ -223,11 +223,15 @@ each lands in pull requests with tests on the macOS runner.
      Playwright image's entry imported the runtime, so every runtime
      change rebuilt the catalog; it now takes `internal/execpath` alone.
    - Done: the end-to-end suite runs in four shards balanced by the
-     tests' recorded durations, about 9 minutes of tests each.
-   - Next: each shard spends about 15 minutes before its first test, on
-     the Docker tools, the race-built engine and loading every image; it
-     should load only the images its tests use. Archives cached per image,
-     so a change to one image rebuilds that one.
+     tests' recorded durations, about 9 minutes of tests each. The first
+     run took 21, 24, 26 and 30 minutes a shard, against 51 for the whole
+     suite on one runner; a shard spent about 10 minutes loading all 47
+     archives into the race-built engine, 42 s each on average.
+   - Done: `fwsd -image-archives DIR` loads an archive the first time one
+     of its images is asked for, so each shard loads only what its tests
+     use.
+   - Next: archives cached per image, so a change to one image rebuilds
+     that one.
 2. **The open bugs below are fixed**, each with a test that reproduced it:
    MongoDB's replica set's `ECONNREFUSED 127.0.0.1:65535`, the reaper's
    3.8 s `profile` step (the lock timing `-debug` now logs shows where),

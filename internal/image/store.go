@@ -99,6 +99,9 @@ type Store struct {
 	// blobs is held shared while an image's blobs are written and
 	// exclusively while unreferenced blobs are collected.
 	blobs sync.RWMutex
+	// archives, where set, are loaded as their names are asked for
+	// (archives.go).
+	archives *archives
 }
 
 func Open(dir string) (*Store, error) {
@@ -193,8 +196,17 @@ func (img *Image) refs() []string {
 	return append(append([]string(nil), img.RepoTags...), img.RepoDigests...)
 }
 
-// Get resolves a reference, a full ID, or an unambiguous ID prefix.
+// Get resolves a reference, a full ID, or an unambiguous ID prefix, loading
+// the archive that holds a reference the store does not (UseArchives).
 func (s *Store) Get(ref string) (Image, error) {
+	img, err := s.get(ref)
+	if errors.Is(err, ErrNotFound) && s.fromArchive(ref) {
+		img, err = s.get(ref)
+	}
+	return img, err
+}
+
+func (s *Store) get(ref string) (Image, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	img, err := s.getLocked(ref)
@@ -254,6 +266,9 @@ func (s *Store) Tag(ref, tag string) error {
 	}
 	if isDigestRef(n) {
 		return fmt.Errorf("refusing to create a tag with a digest reference")
+	}
+	if _, err := s.Get(ref); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -556,17 +571,22 @@ func (s *Store) Load(r io.Reader) ([]Image, error) {
 	if _, err := io.Copy(tmp, r); err != nil {
 		return nil, err
 	}
-	names, err := archiveNames(tmp.Name())
+	return s.loadPath(tmp.Name())
+}
+
+// loadPath loads the archive at path, OCI layout or docker save's.
+func (s *Store) loadPath(path string) ([]Image, error) {
+	names, err := archiveNames(path)
 	if err != nil {
 		return nil, err
 	}
 	if names["index.json"] && names["oci-layout"] {
-		return s.loadLayout(tmp.Name())
+		return s.loadLayout(path)
 	}
 	if !names["manifest.json"] {
 		return nil, errors.New("archive has neither an OCI index.json nor a manifest.json")
 	}
-	return s.loadManifest(tmp.Name())
+	return s.loadManifest(path)
 }
 
 func archiveNames(path string) (map[string]bool, error) {
