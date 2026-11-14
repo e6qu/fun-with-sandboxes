@@ -3584,6 +3584,13 @@ static struct flow {
 } flows[MAX_FLOWS];
 static int nflows;
 
+// A request to a router starts with its kind (router.Stream and the rest),
+// so every port, 65535 too, is a port.
+#define ROUTER_STREAM 1
+#define ROUTER_STREAM_RELAY 2
+#define ROUTER_FLOW 3
+#define ROUTER_FLOW_RELAY 4
+
 // relay_key reads the relay key a request for a relay carries, which the
 // container's router keeps in the port directory for the container's life.
 #define RELAY_KEY 16
@@ -3622,19 +3629,19 @@ static unsigned short ask_router(unsigned short router, unsigned short port, in_
         return 0;
     }
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
-    unsigned char req[4 + RELAY_KEY + 6] = {0, 0, (unsigned char)(port >> 8), (unsigned char)port}, ans[3] = {1, 0, 0};
-    ssize_t n = 4;
+    unsigned char req[1 + RELAY_KEY + 6] = {ROUTER_FLOW, (unsigned char)(port >> 8), (unsigned char)port}, ans[3] = {1, 0, 0};
+    ssize_t n = 3;
     if (foreign) {
         const unsigned char *key = relay_key();
         if (!key) {
             close(s);
             return 0;
         }
-        req[2] = req[3] = 0xff;
-        memcpy(req + 4, key, RELAY_KEY);
-        memcpy(req + 4 + RELAY_KEY, &addr, 4);
-        req[8 + RELAY_KEY] = (unsigned char)(port >> 8);
-        req[9 + RELAY_KEY] = (unsigned char)port;
+        req[0] = ROUTER_FLOW_RELAY;
+        memcpy(req + 1, key, RELAY_KEY);
+        memcpy(req + 1 + RELAY_KEY, &addr, 4);
+        req[5 + RELAY_KEY] = (unsigned char)(port >> 8);
+        req[6 + RELAY_KEY] = (unsigned char)port;
         n = (ssize_t)sizeof req;
     }
     int ok = connect(s, (struct sockaddr *)&r, sizeof r) == 0 && write(s, req, (size_t)n) == n && read(s, ans, 1) == 1 && ans[0] == 0 &&
@@ -4249,8 +4256,8 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
     int fl = fcntl(fd, F_GETFL);
     if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
-    unsigned char req[2 + RELAY_KEY + 6] = {(unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
-    size_t n = 2;
+    unsigned char req[1 + RELAY_KEY + 6] = {ROUTER_STREAM, (unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
+    size_t n = 3;
     if (foreign) {
         const unsigned char *key = relay_key();
         if (!key) {
@@ -4258,11 +4265,11 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
             errno = ECONNREFUSED;
             return -1;
         }
-        req[0] = req[1] = 0xff;
-        memcpy(req + 2, key, RELAY_KEY);
-        memcpy(req + 2 + RELAY_KEY, &addr, 4);
-        req[6 + RELAY_KEY] = (unsigned char)(port >> 8);
-        req[7 + RELAY_KEY] = (unsigned char)port;
+        req[0] = ROUTER_STREAM_RELAY;
+        memcpy(req + 1, key, RELAY_KEY);
+        memcpy(req + 1 + RELAY_KEY, &addr, 4);
+        req[5 + RELAY_KEY] = (unsigned char)(port >> 8);
+        req[6 + RELAY_KEY] = (unsigned char)port;
         n = sizeof req;
     }
     int ok = connect(fd, (struct sockaddr *)&r, sizeof r) == 0 && write(fd, req, n) == (ssize_t)n && read(fd, &ans, 1) == 1;

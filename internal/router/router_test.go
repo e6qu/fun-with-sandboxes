@@ -75,6 +75,41 @@ func TestJoinsToTheListener(t *testing.T) {
 	}
 }
 
+// Every port is one: 65535, which the kernel hands out as an ephemeral
+// port, and which the container library draws for a bind to port 0 as
+// mongosh's local proxy makes, reaches its listener, where it once read as
+// the marker of a relay to another stack and was refused.
+func TestJoinsToTheHighestPort(t *testing.T) {
+	dir := portDir(t)
+	l, err := net.Listen("unix", SocketPath(dir, 65535))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		ReadClient(c)
+		c.Write([]byte("here\n"))
+	}()
+	r, err := Listen("127.0.0.1:0", dir, listenFlow, Network{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	c, err := Dial(r.Addr().String(), 65535)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if got, _ := bufio.NewReader(c).ReadString('\n'); got != "here\n" {
+		t.Errorf("got %q", got)
+	}
+}
+
 // A process outside the container library listening on a port's socket
 // reads the client's stream without the router's header, and sees the
 // client as its peer.
@@ -182,11 +217,11 @@ func readKey(t *testing.T, dir string) []byte {
 	return key
 }
 
-// foreignRequest is a Foreign request with key for port of the member at
-// addr.
-func foreignRequest(key []byte, addr netip.Addr, port int) []byte {
+// foreignRequest is a request of kind, StreamRelay or FlowRelay, with key
+// for port of the member at addr.
+func foreignRequest(kind byte, key []byte, addr netip.Addr, port int) []byte {
 	v4 := addr.As4()
-	req := binary.BigEndian.AppendUint16(nil, Foreign)
+	req := []byte{kind}
 	req = append(append(req, key...), v4[:]...)
 	return binary.BigEndian.AppendUint16(req, uint16(port))
 }
@@ -198,7 +233,7 @@ func dialForeign(router string, key []byte, addr netip.Addr, port int) (net.Conn
 	if err != nil {
 		return nil, err
 	}
-	req := foreignRequest(key, addr, port)
+	req := foreignRequest(StreamRelay, key, addr, port)
 	var ans [1]byte
 	if _, err := c.Write(req); err == nil {
 		_, err = io.ReadFull(c, ans[:])
@@ -334,7 +369,7 @@ func lookupForeign(router string, key []byte, addr netip.Addr, port int) (int, e
 		return 0, err
 	}
 	defer c.Close()
-	req := append([]byte{0, 0}, foreignRequest(key, addr, port)...)
+	req := foreignRequest(FlowRelay, key, addr, port)
 	if _, err := c.Write(req); err != nil {
 		return 0, err
 	}
