@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"fmt"
 	"net/netip"
 	"os"
@@ -234,11 +235,17 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 			}
 		}
 	}
+	b := stackmembers.Format(ms)
+	// Every change to the engine's members recomputes every stack's file;
+	// most stay as they were, and are not written again under the lock.
+	if was, err := os.ReadFile(path); err == nil && bytes.Equal(was, b) {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, stackmembers.Format(ms), 0o644); err != nil {
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
