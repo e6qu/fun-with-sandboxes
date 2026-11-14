@@ -37,7 +37,13 @@ func TestMain(m *testing.M) {
 	if out, err := exec.Command("go", "build", "-o", workBinary, "./testdata/work").CombinedOutput(); err != nil {
 		panic(fmt.Sprintf("build work: %v\n%s", err, out))
 	}
-	if library, err = pathmap.Build(filepath.Join(dir, "lib")); err != nil {
+	// Seatbelt matches resolved paths, and the temporary directory is
+	// under /var, a link to /private/var.
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		panic(err)
+	}
+	if library, err = pathmap.Build(filepath.Join(resolved, "lib")); err != nil {
 		panic(fmt.Sprintf("build the container library: %v", err))
 	}
 	code := m.Run()

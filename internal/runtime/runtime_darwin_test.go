@@ -178,6 +178,12 @@ func testLibrary(t testing.TB) string {
 			testLibErr = err
 			return
 		}
+		// Seatbelt matches resolved paths, and the temporary directory is
+		// under /var, a link to /private/var.
+		if dir, err = filepath.EvalSymlinks(dir); err != nil {
+			testLibErr = err
+			return
+		}
 		testLib, testLibErr = pathmap.Build(dir)
 	})
 	if testLibErr != nil {
