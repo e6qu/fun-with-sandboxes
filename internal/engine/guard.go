@@ -6,17 +6,28 @@ import (
 	"time"
 
 	"github.com/moby/moby/api/types/container"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/shim"
 )
 
-// The memory guard keeps the containers from swapping the Mac to a halt.
-// macOS reports its memory pressure as a level: normal, warning, or
-// critical, where it compresses and swaps what it can and the user's own
-// programs stall. While the level is critical the engine pauses, one at a
-// time, the running container whose processes hold the most memory, as
-// docker pause does; their memory then pages out without being touched
-// again, and the user's programs get it. Once the level is back to normal
-// it resumes them. It pauses rather than kills, so a container's work
+// The guards keep the containers from taking the Mac down. macOS reports
+// its memory pressure as a level: normal, warning, or critical, where it
+// compresses and swaps what it can and the user's own programs stall; and
+// a disk that fills stops every program that writes. While a guard's
+// measure is critical, the engine pauses, one at a time, the running
+// container that uses the most of it, as docker pause does: a paused
+// container's memory pages out without being touched again, and it writes
+// no more. Once the measure is back to normal, the guard resumes the
+// containers it paused. It pauses rather than kills, so a container's work
 // waits instead of being lost.
+
+type level int
+
+const (
+	levelNormal level = iota
+	levelWarning
+	levelCritical
+)
 
 // Memory pressure levels, as kern.memorystatus_vm_pressure_level gives
 // them.
@@ -26,47 +37,81 @@ const (
 	pressureCritical = 4
 )
 
-// guardPeriod is how often the guard reads the pressure level.
+// pressure maps a memory pressure level to a guard's.
+func pressure(l int) level {
+	switch l {
+	case pressureCritical:
+		return levelCritical
+	case pressureWarning:
+		return levelWarning
+	}
+	return levelNormal
+}
+
+// The disk guard's thresholds: critical below diskLow free, normal from
+// twice that.
+const diskLow = 2 << 30
+
+// diskLevel is the guard's level for a disk with free bytes available.
+func diskLevel(free uint64) level {
+	switch {
+	case free < diskLow:
+		return levelCritical
+	case free < 2*diskLow:
+		return levelWarning
+	}
+	return levelNormal
+}
+
+// guardPeriod is how often the guards read their measures.
 const guardPeriod = 2 * time.Second
 
 type guardCandidate struct {
-	id        string
-	footprint uint64
-	paused    bool
+	id     string
+	use    uint64
+	paused bool
 }
 
-// memoryGuard is the guard's state: the containers it paused, in order.
-type memoryGuard struct {
+// pauseGuard is one guard's state: the containers it paused, in order.
+type pauseGuard struct {
 	paused []string
 }
 
-// step decides, for the pressure level and the running containers, which
-// container to pause, at most one a step, and which to resume.
-func (g *memoryGuard) step(level int, running []guardCandidate) (pause string, resume []string) {
-	switch level {
-	case pressureCritical:
+// step decides, for the guard's level and the running containers, which
+// container to pause, at most one a step, and which to resume. It leaves
+// alone the containers in skip, which another guard paused.
+func (g *pauseGuard) step(l level, running []guardCandidate, skip map[string]bool) (pause string, resume []string) {
+	switch l {
+	case levelCritical:
 		ours := map[string]bool{}
 		for _, id := range g.paused {
 			ours[id] = true
 		}
 		cands := append([]guardCandidate(nil), running...)
-		sort.Slice(cands, func(i, j int) bool { return cands[i].footprint > cands[j].footprint })
+		sort.Slice(cands, func(i, j int) bool { return cands[i].use > cands[j].use })
 		for _, c := range cands {
-			if !c.paused && !ours[c.id] {
+			if !c.paused && !ours[c.id] && !skip[c.id] {
 				g.paused = append(g.paused, c.id)
 				return c.id, nil
 			}
 		}
-	case pressureNormal:
+	case levelNormal:
 		resume, g.paused = g.paused, nil
 	}
 	return "", resume
 }
 
-// guardMemory runs the guard until stop closes, reading the level with
-// level.
-func (e *Engine) guardMemory(level func() (int, error), stop <-chan struct{}) {
-	var g memoryGuard
+// guard is a measure the engine guards: its level, and a container's use
+// of it.
+type guard struct {
+	name  string
+	level func() (level, error)
+	use   func(shim.State) uint64
+	pauseGuard
+}
+
+// guardMachine runs the guards until stop closes.
+func (e *Engine) guardMachine(guards []*guard, stop <-chan struct{}) {
 	t := time.NewTicker(guardPeriod)
 	defer t.Stop()
 	for {
@@ -75,33 +120,42 @@ func (e *Engine) guardMemory(level func() (int, error), stop <-chan struct{}) {
 			return
 		case <-t.C:
 		}
-		l, err := level()
-		if err != nil || (l != pressureCritical && len(g.paused) == 0) {
-			continue
-		}
-		var running []guardCandidate
-		if l == pressureCritical {
-			running = e.guardCandidates()
-		}
-		pause, resume := g.step(l, running)
-		if pause != "" {
-			log.Printf("memory pressure is critical: pausing container %s, which holds the most memory, until it eases", pause[:12])
-			if err := e.Pause(pause); err != nil {
-				log.Printf("memory guard: pause %s: %v", pause[:12], err)
+		for _, g := range guards {
+			l, err := g.level()
+			if err != nil || (l != levelCritical && len(g.paused) == 0) {
+				continue
 			}
-		}
-		for _, id := range resume {
-			log.Printf("memory pressure is normal: resuming container %s", id[:12])
-			if err := e.Unpause(id); err != nil {
-				log.Printf("memory guard: unpause %s: %v", id[:12], err)
+			var running []guardCandidate
+			if l == levelCritical {
+				running = e.guardCandidates(g.use)
+			}
+			skip := map[string]bool{}
+			for _, o := range guards {
+				if o != g {
+					for _, id := range o.paused {
+						skip[id] = true
+					}
+				}
+			}
+			pause, resume := g.step(l, running, skip)
+			if pause != "" {
+				log.Printf("%s is critical: pausing container %s, which uses the most of it, until it eases", g.name, pause[:12])
+				if err := e.Pause(pause); err != nil {
+					log.Printf("%s guard: pause %s: %v", g.name, pause[:12], err)
+				}
+			}
+			for _, id := range resume {
+				log.Printf("%s is normal: resuming container %s", g.name, id[:12])
+				if err := e.Unpause(id); err != nil {
+					log.Printf("%s guard: unpause %s: %v", g.name, id[:12], err)
+				}
 			}
 		}
 	}
 }
 
-// guardCandidates are the running containers with the memory their
-// processes hold.
-func (e *Engine) guardCandidates() []guardCandidate {
+// guardCandidates are the running containers with their use of a measure.
+func (e *Engine) guardCandidates(use func(shim.State) uint64) []guardCandidate {
 	e.mu.Lock()
 	cs := make([]*Container, 0, len(e.containers))
 	for _, c := range e.containers {
@@ -120,7 +174,29 @@ func (e *Engine) guardCandidates() []guardCandidate {
 		if err != nil {
 			continue
 		}
-		out = append(out, guardCandidate{id: c.rec.ID, footprint: st.Footprint, paused: paused})
+		out = append(out, guardCandidate{id: c.rec.ID, use: use(st), paused: paused})
 	}
 	return out
+}
+
+// machineGuards are the guards of an engine whose state is under root.
+func machineGuards(root string) []*guard {
+	return []*guard{
+		{
+			name: "memory pressure",
+			level: func() (level, error) {
+				l, err := pressureLevel()
+				return pressure(l), err
+			},
+			use: func(st shim.State) uint64 { return st.Footprint },
+		},
+		{
+			name: "free disk space",
+			level: func() (level, error) {
+				free, err := diskFree(root)
+				return diskLevel(free), err
+			},
+			use: func(st shim.State) uint64 { return st.DiskWritten },
+		},
+	}
 }

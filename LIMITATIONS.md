@@ -449,8 +449,11 @@ machine — and from what macOS offers an unprivileged process under them.
     running container whose processes hold the most memory, one every two
     seconds while it stays critical, as `docker pause` does, and resumes
     them once the pressure is normal: their memory pages out rather than
-    the Mac swapping to a halt. `docker ps` shows them paused meanwhile,
-    and the engine's log says why. `fwsd -memory-guard=false` turns it off.
+    the Mac swapping to a halt. While the disk holding the engine's state
+    has under 2 GiB free, it pauses the container that has written the
+    most the same way, until 4 GiB are free. `docker ps` shows them paused
+    meanwhile, and the engine's log says why. `fwsd -machine-guard=false`
+    turns both off.
   - Every container's processes run under a process limit an eighth below
     the user's (`kern.maxprocperuid`), which macOS counts across all of the
     user's processes: a fork bomb in a container fails in the kernel while

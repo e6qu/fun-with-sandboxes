@@ -47,10 +47,11 @@ type Config struct {
 	// ImageArchives, where set, is a directory of image archives the image
 	// store loads from as their images are first asked for.
 	ImageArchives string
-	// MemoryGuard pauses the container holding the most memory while macOS
-	// reports critical memory pressure, and resumes it once the pressure
-	// is back to normal (guard.go).
-	MemoryGuard bool
+	// MachineGuard pauses the container using the most memory while macOS
+	// reports critical memory pressure, and the one that wrote the most
+	// while the engine's disk is nearly full, and resumes them once the
+	// measure is back to normal (guard.go).
+	MachineGuard bool
 	// Serve serves an engine's API on a Unix socket: the API of the engine
 	// nested in each privileged container, which it serves until closed.
 	Serve func(e *Engine, socket string) (io.Closer, error)
@@ -168,8 +169,8 @@ func Open(cfg Config) (*Engine, error) {
 	}
 	// An engine nested in a container leaves the guard to the engine on the
 	// host, whose container it runs in.
-	if cfg.MemoryGuard && cfg.Nested == nil {
-		go e.guardMemory(pressureLevel, e.closing)
+	if cfg.MachineGuard && cfg.Nested == nil {
+		go e.guardMachine(machineGuards(root), e.closing)
 	}
 	if err := os.MkdirAll(e.runDir(), 0o700); err != nil {
 		return nil, err

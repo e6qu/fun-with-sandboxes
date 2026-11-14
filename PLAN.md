@@ -250,11 +250,13 @@ each lands in pull requests with tests on the macOS runner.
      macOS counts across the user's processes, is set an eighth below
      `kern.maxprocperuid`, so a fork bomb fails in the kernel and the user
      keeps processes for their own programs.
-   - Done: a memory guard in the engine. It reads macOS's memory
-     pressure level every two seconds, and while it is critical pauses
-     the container holding the most memory, one at a time, resuming them
-     once it is normal (`-memory-guard`, on by default).
-   - Next: a disk guard, which pauses writers before the disk fills.
+   - Done: machine guards in the engine (`-machine-guard`, on by
+     default). Every two seconds they read macOS's memory pressure level
+     and the free space of the disk holding the engine's state; while one
+     is critical (critical pressure, under 2 GiB free), they pause the
+     container using the most of it, memory or bytes written, one at a
+     time, and resume them once it is normal (normal pressure, 4 GiB
+     free).
    - Per-container memory limits move from a 100 ms poll to the kernel
      where macOS lets an unprivileged process set one on its children
      (`posix_spawnattr_setjetsam_ext`, a footprint limit), and stay polled
@@ -270,7 +272,9 @@ each lands in pull requests with tests on the macOS runner.
      volume, a network create 0.8 s, and every create rewrites every
      stack's network file. Done: a fresh volume's copy-up clones the
      image's tree with APFS, which shares its blocks, where it copied
-     every byte.
+     every byte; and a stack's network file is written only when what it
+     holds changes, as most stay the same as another stack's container
+     comes or goes.
    - Port blocks that grow with a stack, beside the configurable size.
    - Process starts nearer native: a C spawn helper in place of the Go
      one (about 3 ms), and the loader's cost for the inserted library

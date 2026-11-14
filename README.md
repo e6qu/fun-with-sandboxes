@@ -47,9 +47,10 @@ host ports from 20000–29999 in blocks of 100 (`-port-base`, `-port-limit`,
 stops, for an upgrade say, and the next `fwsd` takes them back. With
 `-image-archives DIR` it loads an image from the archives in `DIR`, as
 `scripts/build-images.sh` or `docker save` writes them, the first time
-the image is asked for, so a catalog on disk costs only the images in use. While macOS reports critical memory pressure it pauses the
-container holding the most memory, one at a time, and resumes them once
-the pressure is normal (`-memory-guard=false` turns that off).
+the image is asked for, so a catalog on disk costs only the images in use. While macOS reports critical memory pressure, or the disk
+holding its state has under 2 GiB free, it pauses the container using the
+most of it, one at a time, and resumes them once it is normal
+(`-machine-guard=false` turns that off).
 
 ## Images
 
