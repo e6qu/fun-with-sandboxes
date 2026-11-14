@@ -237,9 +237,10 @@ each lands in pull requests with tests on the macOS runner.
      router request began with the port, and `0xffff` marked a relay to
      another stack: port 65535 was refused. Requests now lead with their
      kind.
-   - Done: the pids limit's listing of every process on each `fork`. A
-     fork's children are read from the kernel's list of the forking
-     process's children.
+   - Done: the pids limit's listing of every process on each `fork`. The
+     library asks the supervisor for the count, and the supervisor reads a
+     fork's children from the kernel's list of the forking process's
+     children.
    - Done: the reaper's slow `profile` step (3.7 s again in a sharded
      run) was no wait on the engine's lock, which `-debug` showed free:
      the reaper is a run's first container, and its start built the
@@ -641,10 +642,14 @@ kind, and every port is one.
 
 With a pids limit, every `fork` and `posix_spawn` listed every process of
 the engine's user and checked each, to count the container's against the
-limit, where a pids cgroup keeps a count. The supervisor now reads a
-fork's children from the kernel's list of the forking process's children,
-and a member's exit removes it; `State.Scans` counts the reads of the
-whole table, which a test of twelve forks holds to three.
+limit, where a pids cgroup keeps a count; the supervisor listed them too
+on each fork it saw. The supervisor now reads a fork's children from the
+kernel's list of the forking process's children, and a member's exit
+removes it; `State.Scans` counts its reads of the whole table, which a
+test of twelve forks holds to three. The library asks the supervisor for
+the count, as `pids.current` holds it, on a socket of the container's:
+the supervisor drops the members that ended and reads each one's
+children as it answers, so a fork made a moment before counts.
 
 Left as they are, each with its reason in `LIMITATIONS.md`:
 
