@@ -1580,6 +1580,7 @@ func (c *Container) start(e *Engine) error {
 			return err
 		}
 		cfg.Address = c.rec.Address
+		cfg.Internet = e.hasEgress(c)
 	}
 	for _, p := range plan {
 		cfg.Publish = append(cfg.Publish, p.binding)

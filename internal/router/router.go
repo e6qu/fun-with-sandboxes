@@ -22,6 +22,7 @@
 package router
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
@@ -36,6 +37,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/icmp"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/members"
 	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
@@ -53,12 +56,21 @@ import (
 //     its flow port, two bytes big-endian.
 //   - FlowRelay: a member's UDP port named as StreamRelay names a TCP one,
 //     answered with the port of the router's relay to it as Flow is.
+//   - Echo: an ICMP echo request to a host outside the machine, for a
+//     container with internet access: four bytes that name its IPv4
+//     address, two the message's length, then the message. Connected is
+//     followed by the reply's length, two bytes, and the reply; a request
+//     without an answer within EchoTimeout is Refused.
 const (
 	Stream      = 1
 	StreamRelay = 2
 	Flow        = 3
 	FlowRelay   = 4
+	Echo        = 5
 )
+
+// EchoTimeout is how long the router waits for an echo reply.
+const EchoTimeout = 2 * time.Second
 
 const (
 	Connected = 0
@@ -149,6 +161,10 @@ type Router struct {
 type Network struct {
 	File, Address string
 	DialFlow      func(stack string, raddr *net.UDPAddr) (net.Conn, error)
+	// Internet is whether the container reaches hosts outside the
+	// machine, as its egress proxy carries it: the router then relays its
+	// pings of them.
+	Internet bool
 }
 
 // Listen starts a router on addr for the port directory dir; flow opens a
@@ -206,6 +222,57 @@ func (r *Router) foreignTarget(c net.Conn) (netip.Addr, int, error) {
 		return netip.Addr{}, 0, errRefused
 	}
 	return netip.AddrFrom4([4]byte(b[KeySize : KeySize+4])), int(binary.BigEndian.Uint16(b[KeySize+4:])), nil
+}
+
+// echo relays an echo request to a host outside the machine through the
+// unprivileged ICMP datagram socket macOS offers, and answers with the
+// reply, without its IP header.
+func (r *Router) echo(c net.Conn) {
+	var h [6]byte
+	if _, err := io.ReadFull(c, h[:]); err != nil {
+		return
+	}
+	msg := make([]byte, binary.BigEndian.Uint16(h[4:]))
+	if _, err := io.ReadFull(c, msg); err != nil {
+		return
+	}
+	dst := netip.AddrFrom4([4]byte(h[:4]))
+	reply, err := r.ping(dst, msg)
+	if err != nil {
+		c.Write([]byte{Refused})
+		return
+	}
+	out := binary.BigEndian.AppendUint16([]byte{Connected}, uint16(len(reply)))
+	c.Write(append(out, reply...))
+}
+
+// ping sends echo request msg to dst and returns the echo reply that
+// matches it, its identifier and sequence number.
+func (r *Router) ping(dst netip.Addr, msg []byte) ([]byte, error) {
+	if !r.net.Internet || len(msg) < 8 || msg[0] != 8 || !dst.Is4() || dst.IsLoopback() || dst.IsUnspecified() || dst.IsMulticast() {
+		return nil, errRefused
+	}
+	pc, err := icmp.ListenPacket("udp4", "0.0.0.0")
+	if err != nil {
+		return nil, err
+	}
+	defer pc.Close()
+	if _, err := pc.WriteTo(msg, &net.UDPAddr{IP: dst.AsSlice()}); err != nil {
+		return nil, err
+	}
+	pc.SetReadDeadline(time.Now().Add(EchoTimeout))
+	buf := make([]byte, 65535)
+	for {
+		n, from, err := pc.ReadFrom(buf)
+		if err != nil {
+			return nil, err
+		}
+		ua, ok := from.(*net.UDPAddr)
+		if !ok || !ua.IP.Equal(dst.AsSlice()) || n < 8 || buf[0] != 0 || !bytes.Equal(buf[4:8], msg[4:8]) {
+			continue
+		}
+		return append([]byte(nil), buf[:n]...), nil
+	}
 }
 
 // readPort reads a request's port, two bytes big-endian.
@@ -337,6 +404,9 @@ func (r *Router) join(c net.Conn) {
 	switch kind[0] {
 	case Flow, FlowRelay:
 		r.lookup(c, kind[0] == FlowRelay)
+		return
+	case Echo:
+		r.echo(c)
 		return
 	case StreamRelay:
 		var addr netip.Addr

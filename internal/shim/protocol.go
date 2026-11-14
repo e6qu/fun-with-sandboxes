@@ -38,7 +38,10 @@ type Config struct {
 	// members, for its router's relays to other stacks' members.
 	NetworkFile string
 	Address     string
-	ExitPath    string
+	// Internet is whether the container reaches hosts outside the
+	// machine: its router then relays its pings of them.
+	Internet bool
+	ExitPath string
 	// Tag is the environment entry every process of the container starts
 	// with.
 	Tag string

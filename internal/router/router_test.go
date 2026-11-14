@@ -75,6 +75,42 @@ func TestJoinsToTheListener(t *testing.T) {
 	}
 }
 
+// A ping of an outside host is relayed for a container with internet
+// access alone, and never to loopback.
+func TestEchoRefusedWithoutInternet(t *testing.T) {
+	r, err := Listen("127.0.0.1:0", portDir(t), listenFlow, Network{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	ask := func(r *Router, dst [4]byte) byte {
+		c, err := net.Dial("tcp", r.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		msg := []byte{8, 0, 0, 0, 0x12, 0x34, 0, 1}
+		req := append(append([]byte{Echo}, dst[:]...), 0, byte(len(msg)))
+		c.Write(append(req, msg...))
+		var ans [1]byte
+		if _, err := io.ReadFull(c, ans[:]); err != nil {
+			t.Fatal(err)
+		}
+		return ans[0]
+	}
+	if got := ask(r, [4]byte{192, 0, 2, 1}); got != Refused {
+		t.Errorf("a container without internet access had its ping relayed: %d", got)
+	}
+	open, err := Listen("127.0.0.1:0", portDir(t), listenFlow, Network{Internet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer open.Close()
+	if got := ask(open, [4]byte{127, 0, 0, 1}); got != Refused {
+		t.Errorf("a ping of loopback was relayed: %d", got)
+	}
+}
+
 // Every port is one: 65535, which the kernel hands out as an ephemeral
 // port, and which the container library draws for a bind to port 0 as
 // mongosh's local proxy makes, reaches its listener, where it once read as

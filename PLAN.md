@@ -315,9 +315,10 @@ each lands in pull requests with tests on the macOS runner.
    - Done: ICMP echo on the virtual network. A datagram ICMP socket is a
      Unix datagram pair in the library, and an echo request to loopback,
      the container's own address or a member it sees is answered at once,
-     with the IP header macOS gives an IPv4 reply. Next: a ping of an
-     outside host relayed by the container's router, outside the sandbox,
-     for a container with internet access.
+     with the IP header macOS gives an IPv4 reply. A ping of an outside
+     host over IPv4 goes to the container's router, outside the sandbox,
+     which sends it through the unprivileged ICMP datagram socket for a
+     container with internet access (`router.Echo`).
    - Done: `# syntax=docker/dockerfile:*` served by the built-in
      Dockerfile frontend (`third_party/buildkit-patches/syntax_builtin.patch`).
    - Darwin multi-platform builds: `darwin/amd64` steps run under Rosetta

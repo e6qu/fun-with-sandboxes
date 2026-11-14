@@ -212,10 +212,10 @@ type udpProxy struct {
 	pc     net.PacketConn
 	open   FlowOpener
 	accept func(*net.UDPAddr) bool
-	mu       sync.Mutex
-	flows    map[string]net.Conn
-	closed   bool
-	wg       sync.WaitGroup
+	mu     sync.Mutex
+	flows  map[string]net.Conn
+	closed bool
+	wg     sync.WaitGroup
 }
 
 // ServeUDP forwards the datagrams pc receives to upstream, from a socket

@@ -60,9 +60,9 @@ type serviceListener struct {
 	pc    net.PacketConn
 	flows io.Closer
 	svc   Service
-	mu  sync.Mutex
-	eps []netip.AddrPort
-	n   int
+	mu    sync.Mutex
+	eps   []netip.AddrPort
+	n     int
 	// node listens on the node's port nodePort, where one is set.
 	node     net.Listener
 	nodePort int

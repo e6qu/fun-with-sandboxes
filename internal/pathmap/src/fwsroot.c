@@ -3557,6 +3557,7 @@ static int nflows;
 #define ROUTER_STREAM_RELAY 2
 #define ROUTER_FLOW 3
 #define ROUTER_FLOW_RELAY 4
+#define ROUTER_ECHO 5
 
 // relay_key reads the relay key a request for a relay carries, which the
 // container's router keeps in the port directory for the container's life.
@@ -3908,9 +3909,10 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
 // ICMP has none: a datagram ICMP socket, as an unprivileged ping makes, is
 // a Unix datagram socket pair in the library, and an echo request to
 // loopback, the container's own address or a member it sees is answered at
-// once, as that member's kernel would answer it. One to any other address
-// fails with ENETUNREACH: no packet of the container's leaves the machine
-// but through its egress proxy, which carries TCP alone. A reply, as macOS
+// once, as that member's kernel would answer it. One to a host outside
+// the machine, over IPv4, goes through the container's router, outside the
+// sandbox, which pings it for a container with internet access; one to any
+// other address fails with ENETUNREACH. A reply, as macOS
 // hands it to a datagram ICMP socket (IPv4's with its IP header, IPv6's
 // without), is written to the pair's other end after the address it comes
 // from, which a receive takes off and reports as the source.
@@ -3970,6 +3972,87 @@ static uint16_t icmp_sum(const unsigned char *p, size_t n, uint32_t s) {
     return (uint16_t)~s;
 }
 
+// icmp_reply writes the echo reply ic, n bytes at b + ICMP_FROM and, for
+// IPv4, after room for the IP header, to peer: the address it comes from,
+// then the reply, its checksum set.
+static ssize_t icmp_reply(int peer, int v4, struct sockaddr_in6 *to, unsigned char *b, size_t n) {
+    size_t hl = v4 ? 20 : 0;
+    unsigned char *ic = b + ICMP_FROM + hl;
+    to->sin6_len = v4 ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+    to->sin6_port = 0;
+    memcpy(b, to, ICMP_FROM);
+    ic[2] = ic[3] = 0;
+    uint16_t sum;
+    if (v4) {
+        sum = icmp_sum(ic, n, 0);
+        in_addr_t from = ((struct sockaddr_in *)to)->sin_addr.s_addr;
+        in_addr_t self = v4_local(from) ? from : own_address ? own_address : htonl(INADDR_LOOPBACK);
+        unsigned char *ip = b + ICMP_FROM;
+        memset(ip, 0, hl);
+        ip[0] = 0x45;
+        ip[2] = (unsigned char)((hl + n) >> 8);
+        ip[3] = (unsigned char)(hl + n);
+        ip[8] = 64;
+        ip[9] = IPPROTO_ICMP;
+        memcpy(ip + 12, &from, 4);
+        memcpy(ip + 16, &self, 4);
+        uint16_t hs = icmp_sum(ip, hl, 0);
+        ip[10] = (unsigned char)(hs >> 8);
+        ip[11] = (unsigned char)hs;
+    } else {
+        // The pseudo-header's addresses: the reply's source, and its
+        // destination, the address the request went to as the container
+        // sees itself there.
+        uint32_t ps = 0;
+        const unsigned char *a6 = to->sin6_addr.s6_addr;
+        for (int i = 0; i < 16; i += 2) ps += 2 * (uint32_t)(a6[i] << 8 | a6[i + 1]);
+        ps += (uint32_t)(n >> 16) + (uint32_t)(n & 0xffff) + IPPROTO_ICMPV6;
+        sum = icmp_sum(ic, n, ps);
+    }
+    ic[2] = (unsigned char)(sum >> 8);
+    ic[3] = (unsigned char)sum;
+    return send(peer, b, ICMP_FROM + hl + n, 0);
+}
+
+// An echo request to a host outside the machine, which the container's
+// router relays for a container with internet access: a thread of its own
+// waits for the reply, as the network would take its time, and writes it
+// to a copy of the socket's other end.
+struct icmp_job {
+    int peer;
+    struct sockaddr_in6 to;
+    size_t n;
+    unsigned char msg[];
+};
+
+static void *icmp_relay(void *arg) {
+    struct icmp_job *j = arg;
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s >= 0) {
+        int one = 1;
+        setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+        struct timeval tv = {5, 0};
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router_port);
+        unsigned char h[7] = {ROUTER_ECHO, 0, 0, 0, 0, (unsigned char)(j->n >> 8), (unsigned char)j->n};
+        memcpy(h + 1, &((struct sockaddr_in *)&j->to)->sin_addr, 4);
+        unsigned char a[3];
+        if (connect(s, (struct sockaddr *)&r, sizeof r) == 0 && io_all(s, h, sizeof h, 1) && io_all(s, j->msg, j->n, 1) &&
+            io_all(s, a, 1, 0) && a[0] == 0 && io_all(s, a + 1, 2, 0)) {
+            size_t rn = (size_t)(a[1] << 8 | a[2]);
+            unsigned char *b = malloc(ICMP_FROM + 20 + rn);
+            if (b && rn >= 8 && io_all(s, b + ICMP_FROM + 20, rn, 0)) {
+                icmp_reply(j->peer, 1, &j->to, b, rn);
+            }
+            free(b);
+        }
+        close(s);
+    }
+    close(j->peer);
+    free(j);
+    return NULL;
+}
+
 static ssize_t icmp_send(int fd, const struct iovec *iov, int iovlen, const struct sockaddr *sa, socklen_t len) {
     struct sockaddr_in6 to;
     memset(&to, 0, sizeof to);
@@ -3998,16 +4081,14 @@ static ssize_t icmp_send(int fd, const struct iovec *iov, int iovlen, const stru
         errno = EMSGSIZE;
         return -1;
     }
-    if (!icmp_answered((const struct sockaddr *)&to, len)) {
+    int local = icmp_answered((const struct sockaddr *)&to, len);
+    if (!local && !(v4 && router_port)) {
         errno = ENETUNREACH;
         return -1;
     }
     size_t hl = v4 ? 20 : 0;
     unsigned char *b = malloc(ICMP_FROM + hl + n);
     if (!b) return -1;
-    to.sin6_len = v4 ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
-    to.sin6_port = 0;
-    memcpy(b, &to, ICMP_FROM);
     unsigned char *ic = b + ICMP_FROM + hl;
     size_t o = 0;
     for (int i = 0; i < iovlen; i++) {
@@ -4019,38 +4100,32 @@ static ssize_t icmp_send(int fd, const struct iovec *iov, int iovlen, const stru
         free(b);
         return (ssize_t)n;
     }
-    ic[0] = v4 ? 0 : 129;
-    ic[2] = ic[3] = 0;
-    uint16_t sum;
-    if (v4) {
-        sum = icmp_sum(ic, n, 0);
-        in_addr_t from = ((struct sockaddr_in *)&to)->sin_addr.s_addr;
-        in_addr_t self = v4_local(from) ? from : own_address ? own_address : htonl(INADDR_LOOPBACK);
-        unsigned char *ip = b + ICMP_FROM;
-        memset(ip, 0, hl);
-        ip[0] = 0x45;
-        ip[2] = (unsigned char)((hl + n) >> 8);
-        ip[3] = (unsigned char)(hl + n);
-        ip[8] = 64;
-        ip[9] = IPPROTO_ICMP;
-        memcpy(ip + 12, &from, 4);
-        memcpy(ip + 16, &self, 4);
-        uint16_t hs = icmp_sum(ip, hl, 0);
-        ip[10] = (unsigned char)(hs >> 8);
-        ip[11] = (unsigned char)hs;
-    } else {
-        // The pseudo-header's addresses: the reply's source, and its
-        // destination, the address the request went to as the container
-        // sees itself there.
-        uint32_t ps = 0;
-        const unsigned char *a6 = to.sin6_addr.s6_addr;
-        for (int i = 0; i < 16; i += 2) ps += 2 * (uint32_t)(a6[i] << 8 | a6[i + 1]);
-        ps += (uint32_t)(n >> 16) + (uint32_t)(n & 0xffff) + IPPROTO_ICMPV6;
-        sum = icmp_sum(ic, n, ps);
+    if (!local) {
+        struct icmp_job *j = malloc(sizeof *j + n);
+        int peer = j ? dup(icmp_peer[fd]) : -1;
+        pthread_t t;
+        pthread_attr_t at;
+        if (peer < 0 || pthread_attr_init(&at) != 0) {
+            if (peer >= 0) close(peer);
+            free(j);
+            free(b);
+            return -1;
+        }
+        pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+        j->peer = peer;
+        j->to = to;
+        j->n = n;
+        memcpy(j->msg, ic, n);
+        if (pthread_create(&t, &at, icmp_relay, j) != 0) {
+            close(peer);
+            free(j);
+        }
+        pthread_attr_destroy(&at);
+        free(b);
+        return (ssize_t)n;
     }
-    ic[2] = (unsigned char)(sum >> 8);
-    ic[3] = (unsigned char)sum;
-    ssize_t w = send(icmp_peer[fd], b, ICMP_FROM + hl + n, 0);
+    ic[0] = v4 ? 0 : 129;
+    ssize_t w = icmp_reply(icmp_peer[fd], v4, &to, b, n);
     int e = errno;
     free(b);
     errno = e;
