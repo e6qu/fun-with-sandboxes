@@ -662,3 +662,43 @@ func TestLibraryVariableIsHiddenAndKept(t *testing.T) {
 		t.Errorf("got %q, want %q", out, want)
 	}
 }
+
+// A ping in a container is answered for the addresses of its virtual
+// network, loopback, its own and a member's, by the library, and fails for
+// an outside host, which no ICMP packet of the container's reaches.
+func TestPingAnsweredOnTheVirtualNetwork(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "icmp")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", bin, "testdata/icmp/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	network := filepath.Join(t.TempDir(), "network")
+	if err := os.WriteFile(network, []byte("127.88.0.2\tapp\t\t0\tproj_default\t0\n127.88.0.3\tdb\t\t0\tproj_default\t0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin)
+	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, NetworkVar + "=" + network, AddressVar + "=127.88.0.2"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("icmp: %v\n%s", err, out)
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		k, v, _ := strings.Cut(line, "=")
+		got[k] = v
+	}
+	for k, want := range map[string]string{
+		"loopback":  "127.0.0.1 type=0 seq=1 data=fws",
+		"own":       "127.88.0.2 type=0 seq=2 data=fws",
+		"member":    "127.88.0.3 type=0 seq=3 data=fws",
+		"outside":   "send Network is unreachable",
+		"loopback6": "::1 type=129 seq=5 data=fws",
+	} {
+		if got[k] != want {
+			t.Errorf("%s: %q, want %q (all: %v)", k, got[k], want, got)
+		}
+	}
+}

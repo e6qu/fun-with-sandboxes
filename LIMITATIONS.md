@@ -243,8 +243,13 @@ machine — and from what macOS offers an unprivileged process under them.
 
 ## Networking
 
-- **ICMP reaches nothing.** A container's traffic is held to its stack's TCP
-  and UDP ports; `ping` opens its socket but sends nowhere.
+- **ICMP reaches the virtual network alone.** An unprivileged `ping`, which
+  sends through a datagram ICMP socket, is answered for loopback, the
+  container's own address and every member it sees, by the container
+  library, as their kernels would answer it. A ping of an outside host
+  fails with `ENETUNREACH`: the container's traffic leaves the machine
+  through its egress proxy alone, which carries TCP. A raw socket, which
+  needs root, stays refused.
 - **Container addresses are presented, not routed.** Each member of a stack
   has an address in `127.88.0.0/16`, and on a network created with a
   subnet (Compose's `ipam`, `docker network create --subnet`) an address

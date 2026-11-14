@@ -307,9 +307,12 @@ each lands in pull requests with tests on the macOS runner.
 5. **Fewer correctness gaps**, each at no cost on the hot path:
    - UDP Services, and UDP between pods of different nodes, through the
      routers' flow ports.
-   - ICMP echo: `ping` of a stack member answered by the library, and of
-     an outside host through the unprivileged ICMP datagram socket macOS
-     offers.
+   - Done: ICMP echo on the virtual network. A datagram ICMP socket is a
+     Unix datagram pair in the library, and an echo request to loopback,
+     the container's own address or a member it sees is answered at once,
+     with the IP header macOS gives an IPv4 reply. Next: a ping of an
+     outside host relayed by the container's router, outside the sandbox,
+     for a container with internet access.
    - Done: `# syntax=docker/dockerfile:*` served by the built-in
      Dockerfile frontend (`third_party/buildkit-patches/syntax_builtin.patch`).
    - Darwin multi-platform builds: `darwin/amd64` steps run under Rosetta
@@ -568,8 +571,9 @@ CRI's `ImageFsInfo` took 66 s on its first call and 4.1 s on average: it
 walked every image's root once, and every container's root on each call.
 The image store now measures a root once, as it unpacks it, and keeps the
 measure in the image's record; CRI walks only a root an earlier store
-unpacked, once. The walk of the containers' roots on each call remains:
-each root is a clone of its image's, with as many files.
+unpacked, once. The containers' roots, each a clone of its image's with
+as many files, are measured in the background, at most every 30 s, and a
+call answers with the latest measure.
 
 Every container start took about 1.15 s, nearly all of it in the shim's
 step from starting the spawn helper to the helper's `exec` of the
