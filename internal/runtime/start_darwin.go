@@ -43,6 +43,9 @@ func spawnArgs(s Spec, path string, argv []string, compiled string, ceiling uint
 	if s.Limits.IOPolicy != 0 {
 		args = append(args, "-i", strconv.Itoa(s.Limits.IOPolicy))
 	}
+	if s.Limits.QoSClamp != QoSNone {
+		args = append(args, "-q", strconv.Itoa(int(s.Limits.QoSClamp)))
+	}
 	for _, r := range s.Limits.Rlimits {
 		args = append(args, "-r", fmt.Sprintf("%d:%d:%d", r.Resource, r.Cur, r.Max))
 	}

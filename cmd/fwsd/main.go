@@ -21,6 +21,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/buildkit"
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
 	"github.com/e6qu/fun-with-sandboxes/internal/roles"
+	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 )
 
 func main() {
@@ -38,6 +39,7 @@ func main() {
 	liveRestore := flag.Bool("live-restore", false, "keep containers running while the engine stops, and reconnect to them when it starts")
 	archives := flag.String("image-archives", "", "a directory of image archives (*.tar, as docker save writes them) whose images load the first time they are asked for")
 	guard := flag.Bool("machine-guard", true, "while macOS reports critical memory pressure, or the disk holding the engine's state has under 2 GiB free, pause the container using the most of it, one at a time, and resume them once it is normal")
+	qos := flag.String("qos-clamp", "utility", "the quality of service every container process runs at most at, so containers yield the CPU and the disk to your own work: none, utility, background or maintenance")
 	debug := flag.Bool("debug", false, "log each API request, with its status and how long the engine took to serve it, and the steps of each container's create and start")
 	flag.Parse()
 
@@ -52,7 +54,11 @@ func main() {
 		log.Fatal(err)
 	}
 	roles.Use(helper)
-	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress, LiveRestore: *liveRestore, Debug: *debug, ImageArchives: *archives, MachineGuard: *guard}
+	clamp, err := runtime.ParseQoSClamp(*qos)
+	if err != nil {
+		log.Fatal(err)
+	}
+	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress, LiveRestore: *liveRestore, Debug: *debug, ImageArchives: *archives, MachineGuard: *guard, QoSClamp: clamp}
 	if err := run(cfg, *socket, *withBuildKit, *debug); err != nil {
 		log.Fatal(err)
 	}

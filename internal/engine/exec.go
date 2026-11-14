@@ -121,6 +121,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	if err != nil {
 		return err
 	}
+	limits.QoSClamp = e.cfg.QoSClamp
 	user := x.cfg.User
 	if user == "" {
 		user = c.rec.Config.User
@@ -283,6 +284,7 @@ func (e *Engine) probe(c *Container, argv []string, timeout time.Duration) (int,
 	if err != nil {
 		return -1, err.Error()
 	}
+	limits.QoSClamp = e.cfg.QoSClamp
 	env, err := e.processEnv(c, nil, c.rec.Config.User, false)
 	if err != nil {
 		return -1, err.Error()

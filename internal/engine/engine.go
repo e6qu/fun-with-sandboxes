@@ -23,6 +23,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
+	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 )
 
 const (
@@ -52,6 +53,9 @@ type Config struct {
 	// while the engine's disk is nearly full, and resumes them once the
 	// measure is back to normal (guard.go).
 	MachineGuard bool
+	// QoSClamp caps the quality of service of every container process, so
+	// containers yield the CPU and the disk to the user's interactive work.
+	QoSClamp runtime.QoSClamp
 	// Serve serves an engine's API on a Unix socket: the API of the engine
 	// nested in each privileged container, which it serves until closed.
 	Serve func(e *Engine, socket string) (io.Closer, error)

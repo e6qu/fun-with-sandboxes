@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -157,8 +158,37 @@ func TestLimitsApply(t *testing.T) {
 	}
 	ceiling := min(nproc.Cur, ForkCeiling(uint64(maxproc)))
 	want := fmt.Sprintf("nofile=64/64 nice=7 iopolicy=%d tty=false nproc=%d", libsystem.IOPolicyThrottle, ceiling)
-	if got := strings.TrimSpace(out.String()); got != want {
+	if got, _, _ := strings.Cut(strings.TrimSpace(out.String()), " priority="); got != want {
 		t.Fatalf("limits %q, want %q", got, want)
+	}
+}
+
+// probePriority runs the limits probe under the clamp and returns its
+// threads' highest base priority.
+func probePriority(t *testing.T, clamp QoSClamp) int {
+	t.Helper()
+	s, out := limitsSpec(t)
+	s.Limits = Limits{QoSClamp: clamp}
+	if p := runToEnd(t, s); p.ExitCode() != 0 {
+		t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
+	}
+	_, v, ok := strings.Cut(strings.TrimSpace(out.String()), " priority=")
+	pri, err := strconv.Atoi(v)
+	if !ok || err != nil || pri < 0 {
+		t.Fatalf("the probe printed %q", out.String())
+	}
+	return pri
+}
+
+// A QoS clamp holds every thread of the process at most at the class's
+// priority, whatever QoS the thread asks for: utility's base priority is
+// 20, background's 4, where a default thread's is 31.
+func TestQoSClamp(t *testing.T) {
+	free := probePriority(t, QoSNone)
+	utility := probePriority(t, QoSUtility)
+	background := probePriority(t, QoSBackground)
+	if !(background < utility && utility < free) || utility > 20 {
+		t.Fatalf("thread priorities: %d unclamped, %d under utility, %d under background", free, utility, background)
 	}
 }
 

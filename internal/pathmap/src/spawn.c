@@ -4,11 +4,14 @@
 // program reaches its exec in a millisecond, where the Go helper's runtime
 // took several, and every container start waits for it.
 //
-//   fws-spawn [-t] [-n nice] [-i iopolicy] [-r resource:soft:hard]...
+//   fws-spawn [-t] [-n nice] [-i iopolicy] [-q clamp] [-r resource:soft:hard]...
 //             -N nproc -c compiled -L library [-a anchor]
 //             -- path argv0 [arg]...
 //
-// -t makes standard input the controlling terminal; -N is the fork
+// -t makes standard input the controlling terminal; -q is the QoS clamp
+// (POSIX_SPAWN_PROC_CLAMP_*) every thread of the command and of what it
+// starts runs under, which the helper sets by executing the command with
+// posix_spawn's POSIX_SPAWN_SETEXEC, the one exec that takes it; -N is the fork
 // ceiling, the soft process limit the container's processes get at most
 // (runtime.ForkCeiling); -c names the compiled profile, the bytecode of
 // the container's Seatbelt profile after its text's SHA-256; -a starts the
@@ -18,6 +21,7 @@
 // and with -a FWS_INIT, its own pid. A failure is written to descriptor 3, which closes on a
 // successful exec, and ends the helper with status 127.
 #include <ctype.h>
+#include <spawn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -33,6 +37,11 @@
 extern char **environ;
 
 int setiopolicy_np(int iotype, int scope, int policy);
+int posix_spawnattr_set_qos_clamp_np(posix_spawnattr_t *attr, uint64_t clamp);
+
+#ifndef POSIX_SPAWN_SETEXEC
+#define POSIX_SPAWN_SETEXEC 0x0040
+#endif
 
 struct sandbox_profile {
     uint32_t type;
@@ -134,7 +143,7 @@ int main(int argc, char **argv) {
     int tty = 0, i = 1;
     const char *compiled = NULL, *anchor = NULL, *library = NULL;
     unsigned long long ceiling = 0;
-    int nice = 0, haveNice = 0, iopolicy = 0, haveIO = 0;
+    int nice = 0, haveNice = 0, iopolicy = 0, haveIO = 0, clamp = 0;
     struct { int res; struct rlimit rl; } limits[16];
     int nlimits = 0;
     for (; i < argc; i++) {
@@ -153,6 +162,8 @@ int main(int argc, char **argv) {
             nice = atoi(v), haveNice = 1;
         } else if (strcmp(a, "-i") == 0) {
             iopolicy = atoi(v), haveIO = 1;
+        } else if (strcmp(a, "-q") == 0) {
+            clamp = atoi(v);
         } else if (strcmp(a, "-N") == 0) {
             ceiling = strtoull(v, NULL, 10);
         } else if (strcmp(a, "-c") == 0) {
@@ -225,8 +236,18 @@ int main(int argc, char **argv) {
         snprintf(init, 32, "FWS_INIT=%d", (int)getpid());
         envp[n++] = init;
     }
-    execve(path, cmd, envp);
     char what[1100];
     snprintf(what, sizeof what, "exec %s", cmd[0]);
-    failErrno(what);
+    posix_spawnattr_t attr;
+    int err = posix_spawnattr_init(&attr);
+    if (err == 0) err = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETEXEC);
+    if (err != 0) fail("posix_spawnattr", strerror(err));
+    if (clamp != 0 && (err = posix_spawnattr_set_qos_clamp_np(&attr, (uint64_t)clamp)) != 0) {
+        char q[64];
+        snprintf(q, sizeof q, "set the QoS clamp %d", clamp);
+        fail(q, strerror(err));
+    }
+    // With POSIX_SPAWN_SETEXEC, posix_spawn returns only on failure.
+    err = posix_spawn(NULL, path, NULL, &attr, cmd, envp);
+    fail(what, strerror(err));
 }

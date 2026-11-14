@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -53,6 +54,33 @@ type Limits struct {
 	// IOPolicy is a disk I/O policy (libsystem.IOPolicy*), or 0 to keep
 	// the default.
 	IOPolicy int `json:",omitempty"`
+	// QoSClamp caps the quality of service of every thread of the process
+	// and of what it starts, so the container yields the CPU, and the disk,
+	// to the user's interactive work.
+	QoSClamp QoSClamp `json:",omitempty"`
+}
+
+// QoSClamp is a process's quality-of-service clamp, as
+// posix_spawnattr_set_qos_clamp_np takes it (POSIX_SPAWN_PROC_CLAMP_*).
+type QoSClamp int
+
+const (
+	QoSNone        QoSClamp = 0
+	QoSUtility     QoSClamp = 1
+	QoSBackground  QoSClamp = 2
+	QoSMaintenance QoSClamp = 3
+)
+
+var qosClampNames = map[string]QoSClamp{"none": QoSNone, "utility": QoSUtility, "background": QoSBackground, "maintenance": QoSMaintenance}
+
+// ParseQoSClamp reads a clamp by its class's name: none, utility,
+// background or maintenance.
+func ParseQoSClamp(name string) (QoSClamp, error) {
+	c, ok := qosClampNames[name]
+	if !ok {
+		return 0, fmt.Errorf("QoS clamp %q: want none, utility, background or maintenance", name)
+	}
+	return c, nil
 }
 
 // Rlimit is a resource limit, as setrlimit takes it.
