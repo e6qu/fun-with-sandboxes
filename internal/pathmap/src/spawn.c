@@ -5,14 +5,15 @@
 // took several, and every container start waits for it.
 //
 //   fws-spawn [-t] [-n nice] [-i iopolicy] [-r resource:soft:hard]...
-//             -p profile [-c compiled] [-L library] [-a anchor]
+//             -N nproc -c compiled -L library [-a anchor]
 //             -- path argv0 [arg]...
 //
-// -t makes standard input the controlling terminal; -p names the profile's
-// text and -c its compiled bytecode, the text's SHA-256 before it, which
-// the helper applies rather than compiling the text; -a starts the anchor,
-// that binary run with this process's pid, on the listener at descriptor
-// 4. The environment is the command's, which gets the container library
+// -t makes standard input the controlling terminal; -N is the fork
+// ceiling, the soft process limit the container's processes get at most
+// (runtime.ForkCeiling); -c names the compiled profile, the bytecode of
+// the container's Seatbelt profile after its text's SHA-256; -a starts the
+// anchor, that binary run with this process's pid, on the listener at
+// descriptor 4. The environment is the command's, which gets the container library
 // -L names in DYLD_INSERT_LIBRARIES, which the helper itself does not load,
 // and with -a FWS_INIT, its own pid. A failure is written to descriptor 3, which closes on a
 // successful exec, and ends the helper with status 127.
@@ -26,15 +27,12 @@
 #include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
-#include <sys/sysctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 extern char **environ;
 
 int setiopolicy_np(int iotype, int scope, int policy);
-int sandbox_init(const char *profile, uint64_t flags, char **errorbuf);
-void sandbox_free_error(char *errorbuf);
 
 struct sandbox_profile {
     uint32_t type;
@@ -83,7 +81,11 @@ static char *slurp(const char *path, size_t *len) {
 static int applyCompiled(const char *path) {
     size_t len;
     char *b = slurp(path, &len);
-    if (!b || len <= hashLen + 4) return -1;
+    if (!b) return -1;
+    if (len <= hashLen + 4) {
+        errno = EINVAL;
+        return -1;
+    }
     struct sandbox_profile p;
     memset(&p, 0, sizeof p);
     memcpy(&p.type, b + hashLen, 4);
@@ -92,16 +94,11 @@ static int applyCompiled(const char *path) {
     return sandbox_apply(&p);
 }
 
-// forkCeiling keeps the container's processes an eighth below the user's
-// process limit (runtime.ForkCeiling).
-static void forkCeiling(void) {
-    uint32_t max;
-    size_t len = sizeof max;
-    if (sysctlbyname("kern.maxprocperuid", &max, &len, NULL, 0) != 0) return;
-    uint64_t reserve = max / 8 < 64 ? 64 : max / 8;
-    uint64_t ceiling = max <= reserve ? max : max - reserve;
+// forkCeiling lowers the soft process limit to ceiling, never raising it.
+static void forkCeiling(unsigned long long ceiling) {
     struct rlimit rl;
-    if (getrlimit(rlimitNproc, &rl) != 0 || rl.rlim_cur <= ceiling) return;
+    if (getrlimit(rlimitNproc, &rl) != 0) failErrno("getrlimit nproc");
+    if (rl.rlim_cur <= ceiling) return;
     rl.rlim_cur = ceiling;
     if (setrlimit(rlimitNproc, &rl) != 0) failErrno("setrlimit nproc");
 }
@@ -135,7 +132,8 @@ static void startAnchor(const char *anchor) {
 
 int main(int argc, char **argv) {
     int tty = 0, i = 1;
-    const char *profile = NULL, *compiled = NULL, *anchor = NULL, *library = NULL;
+    const char *compiled = NULL, *anchor = NULL, *library = NULL;
+    unsigned long long ceiling = 0;
     int nice = 0, haveNice = 0, iopolicy = 0, haveIO = 0;
     struct { int res; struct rlimit rl; } limits[16];
     int nlimits = 0;
@@ -155,8 +153,8 @@ int main(int argc, char **argv) {
             nice = atoi(v), haveNice = 1;
         } else if (strcmp(a, "-i") == 0) {
             iopolicy = atoi(v), haveIO = 1;
-        } else if (strcmp(a, "-p") == 0) {
-            profile = v;
+        } else if (strcmp(a, "-N") == 0) {
+            ceiling = strtoull(v, NULL, 10);
         } else if (strcmp(a, "-c") == 0) {
             compiled = v;
         } else if (strcmp(a, "-a") == 0) {
@@ -173,7 +171,8 @@ int main(int argc, char **argv) {
             fail("fws-spawn", "an unknown option");
         }
     }
-    if (i + 1 >= argc || !profile) fail("spawn helper", "no command");
+    if (i + 1 >= argc) fail("spawn helper", "no command");
+    if (!compiled || !library || ceiling == 0) fail("spawn helper", "-c, -L and -N are required");
     const char *path = argv[i];
     char **cmd = argv + i + 1;
 
@@ -203,15 +202,8 @@ int main(int argc, char **argv) {
             failErrno(what);
         }
     }
-    forkCeiling();
-
-    if (!compiled || applyCompiled(compiled) != 0) {
-        size_t len;
-        char *text = slurp(profile, &len);
-        if (!text) failErrno("read the profile");
-        char *err = NULL;
-        if (sandbox_init(text, 0, &err) != 0) fail("sandbox_init", err ? err : "unknown error");
-    }
+    forkCeiling(ceiling);
+    if (applyCompiled(compiled) != 0) failErrno("apply the compiled profile");
 
     fcntl(statusFD, F_SETFD, FD_CLOEXEC);
     if (anchor) startAnchor(anchor);
@@ -220,7 +212,7 @@ int main(int argc, char **argv) {
     char **envp = calloc(n + 3, sizeof *envp);
     if (!envp) failErrno("environment");
     memcpy(envp, environ, n * sizeof *envp);
-    if (library && *library) {
+    {
         size_t len = strlen(library) + sizeof "DYLD_INSERT_LIBRARIES=";
         char *v = malloc(len);
         if (!v) failErrno("environment");

@@ -19,8 +19,9 @@ import (
 // processes of its own sandbox, the ones that inherited it, and a process
 // that entered the container's profile by itself would be a sandbox of its
 // own. So the spawn helper of the container's main process, once in the
-// sandbox, starts an anchor: a process of the helper's binary, outside the
-// main process's tree, that starts each exec on the engine's request.
+// sandbox, starts an anchor: a process of the engine's helper binary,
+// outside the main process's tree, that starts each exec on the engine's
+// request.
 const (
 	// anchorFD is the listening socket the anchor accepts requests on, in
 	// the spawn helper and in the anchor.
@@ -45,66 +46,9 @@ type anchorReply struct {
 }
 
 func init() {
-	switch os.Getenv(RoleVar) {
-	case anchorLaunchRole:
-		os.Exit(launchAnchor())
-	case anchorRole:
+	if os.Getenv(RoleVar) == anchorRole {
 		os.Exit(serveAnchor())
 	}
-}
-
-// startAnchor starts the anchor from the sandboxed spawn helper, through a
-// launcher that exits at once, so the anchor is no child of the main
-// process the helper becomes: a shell's wait would wait for it. The
-// launcher is the engine's C program where it built one, which starts in
-// a millisecond, or else this binary, whose Go runtime takes several.
-func startAnchor(launcher string) error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	if err != nil {
-		return err
-	}
-	defer null.Close()
-	// The C launcher, where the engine built one, starts the anchor itself;
-	// otherwise this binary does, in the launcher's role.
-	path, argv, role := self, []string{"fws-anchor", strconv.Itoa(os.Getpid())}, anchorLaunchRole
-	if launcher != "" {
-		path, argv, role = launcher, []string{"fws-launch", self, strconv.Itoa(os.Getpid())}, anchorRole
-	}
-	pid, err := syscall.ForkExec(path, argv, &syscall.ProcAttr{
-		Env:   []string{RoleVar + "=" + role},
-		Files: []uintptr{null.Fd(), null.Fd(), null.Fd(), anchorFD},
-		Sys:   &syscall.SysProcAttr{Setsid: true},
-	})
-	if err != nil {
-		return fmt.Errorf("start the exec anchor: %w", err)
-	}
-	var ws syscall.WaitStatus
-	if _, err := syscall.Wait4(pid, &ws, 0, nil); err != nil {
-		return fmt.Errorf("start the exec anchor: %w", err)
-	}
-	if !ws.Exited() || ws.ExitStatus() != 0 {
-		return errors.New("start the exec anchor: its launcher failed")
-	}
-	return syscall.Close(anchorFD)
-}
-
-func launchAnchor() int {
-	self, err := os.Executable()
-	if err != nil || len(os.Args) < 2 {
-		return 1
-	}
-	_, err = syscall.ForkExec(self, []string{"fws-anchor", os.Args[1]}, &syscall.ProcAttr{
-		Env:   []string{RoleVar + "=" + anchorRole},
-		Files: []uintptr{0, 1, 2, 3},
-	})
-	if err != nil {
-		return 1
-	}
-	return 0
 }
 
 // serveAnchor starts the execs the engine asks for until the container's

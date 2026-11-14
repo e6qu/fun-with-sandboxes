@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,137 +9,60 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/execpath"
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
 	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 )
 
-// The engine starts every container process through a helper: itself,
-// spawned with these variables, which applies the process's limits and its
-// Seatbelt profile, and executes the command with the container library
-// loaded. posix_spawn cannot set resource limits or a controlling
-// terminal, Go cannot run code between fork and exec, and sandbox-exec, an
-// Apple binary, has the loader drop the variables that load the library.
+// The engine starts every container process through the spawn helper, a C
+// program built beside the container library (pathmap/src/spawn.c): it
+// applies the process's limits and its compiled Seatbelt profile to
+// itself, starts the container's exec anchor where asked, and executes the
+// command with the container library loaded. posix_spawn cannot set
+// resource limits or a controlling terminal, and sandbox-exec, an Apple
+// binary, has the loader drop the variables that load the library.
 const (
-	RoleVar    = roles.Var
-	spawnRole  = "spawn"
-	helperVar  = "FWS_SPAWN"
-	statusFD   = 3
-	helperArgv = "fws-spawn"
+	RoleVar  = roles.Var
+	statusFD = 3
 )
 
-type helperSpec struct {
-	Path    string
-	Argv    []string
-	Profile string
-	Library string
-	// Launcher starts the anchor where set, in the Go launcher's place.
-	Launcher string
-	// Compiled is the compiled profile of Profile, which the helper applies
-	// rather than compiling the text.
-	Compiled string
-	Limits   Limits
-	TTY      bool
-	// Anchor starts the container's exec anchor from the sandbox, on the
-	// listening socket at descriptor 4.
-	Anchor bool
+// spawnArgs are the spawn helper's arguments for starting the command at
+// path with argv: its options, then the command.
+func spawnArgs(s Spec, path string, argv []string, compiled string, ceiling uint64) []string {
+	args := []string{"fws-spawn"}
+	if s.TTY != nil {
+		args = append(args, "-t")
+	}
+	if s.Limits.Nice != 0 {
+		args = append(args, "-n", strconv.Itoa(s.Limits.Nice))
+	}
+	if s.Limits.IOPolicy != 0 {
+		args = append(args, "-i", strconv.Itoa(s.Limits.IOPolicy))
+	}
+	for _, r := range s.Limits.Rlimits {
+		args = append(args, "-r", fmt.Sprintf("%d:%d:%d", r.Resource, r.Cur, r.Max))
+	}
+	args = append(args, "-N", strconv.FormatUint(ceiling, 10), "-c", compiled, "-L", s.Library)
+	if s.AnchorListener != nil {
+		args = append(args, "-a", s.Profile.Helper)
+	}
+	return append(append(args, "--", path), argv...)
 }
 
-func init() {
-	if os.Getenv(RoleVar) == spawnRole {
-		runHelper()
-	}
-}
-
-// runHelper applies the limits to itself and executes the command. It
-// reports a failure on descriptor 3, which closes on a successful exec.
-func runHelper() {
-	status := os.NewFile(statusFD, "status")
-	fail := func(err error) {
-		status.WriteString(err.Error())
-		os.Exit(127)
-	}
-	var h helperSpec
-	if err := json.Unmarshal([]byte(os.Getenv(helperVar)), &h); err != nil {
-		fail(fmt.Errorf("spawn helper: %w", err))
-	}
-	if h.Path == "" || len(h.Argv) == 0 {
-		fail(errors.New("spawn helper: no command"))
-	}
-	if err := applyLimits(h); err != nil {
-		fail(err)
-	}
-	env := withLibrary(os.Environ(), h.Library)
-	if h.Anchor {
-		// The main process is the container's pid 1 (package pathmap).
-		env = append(env, initVar+"="+strconv.Itoa(os.Getpid()))
-	}
-	if !applyCompiled(h.Compiled, h.Profile) {
-		if err := libsystem.SandboxInit(h.Profile); err != nil {
-			fail(err)
-		}
-	}
-	syscall.CloseOnExec(statusFD)
-	if h.Anchor {
-		// The anchor must not hold the status pipe, which the engine reads
-		// to its end.
-		syscall.CloseOnExec(anchorFD)
-		if err := startAnchor(h.Launcher); err != nil {
-			fail(err)
-		}
-	}
-	err := syscall.Exec(h.Path, h.Argv, env)
-	fail(fmt.Errorf("exec %s: %w", h.Argv[0], err))
-}
-
-func applyLimits(h helperSpec) error {
-	if h.TTY {
-		if err := unix.IoctlSetInt(0, unix.TIOCSCTTY, 0); err != nil {
-			return fmt.Errorf("set the controlling terminal: %w", err)
-		}
-	}
-	if h.Limits.Nice != 0 {
-		if err := syscall.Setpriority(syscall.PRIO_PROCESS, 0, h.Limits.Nice); err != nil {
-			return fmt.Errorf("setpriority %d: %w", h.Limits.Nice, err)
-		}
-	}
-	if h.Limits.IOPolicy != 0 {
-		if err := libsystem.SetIOPolicy(h.Limits.IOPolicy); err != nil {
-			return fmt.Errorf("setiopolicy_np %d: %w", h.Limits.IOPolicy, err)
-		}
-	}
-	for _, r := range h.Limits.Rlimits {
-		if err := syscall.Setrlimit(r.Resource, &syscall.Rlimit{Cur: r.Cur, Max: r.Max}); err != nil {
-			return fmt.Errorf("setrlimit %s soft %d hard %d: %w", RlimitName(r.Resource), r.Cur, r.Max, err)
-		}
-	}
-	return forkCeiling()
-}
-
-// forkCeiling keeps a fork bomb in a container from taking the user's last
-// processes. macOS counts a process limit across all of a user's processes,
-// up to kern.maxprocperuid; a container's processes get a soft limit below
-// it by a reserve, so their forks fail in the kernel, at no cost to any
-// fork short of it, while the user's own programs can still start.
-func forkCeiling() error {
+// forkCeiling is the process limit a container's processes get: below the
+// user's own, kern.maxprocperuid, by ForkCeiling's reserve, so a fork bomb
+// fails in the kernel, at no cost to any fork short of it, while the
+// user's own programs can still start.
+func forkCeiling() (uint64, error) {
 	max, err := unix.SysctlUint32("kern.maxprocperuid")
 	if err != nil {
-		return nil
+		return 0, fmt.Errorf("read the user's process limit: %w", err)
 	}
-	ceiling := ForkCeiling(uint64(max))
-	var cur syscall.Rlimit
-	if err := syscall.Getrlimit(rlimitNproc, &cur); err != nil || cur.Cur <= ceiling {
-		return nil
-	}
-	cur.Cur = ceiling
-	if err := syscall.Setrlimit(rlimitNproc, &cur); err != nil {
-		return fmt.Errorf("setrlimit nproc soft %d: %w", ceiling, err)
-	}
-	return nil
+	return ForkCeiling(uint64(max)), nil
 }
 
 func withoutVars(env []string, names ...string) []string {
@@ -165,7 +87,10 @@ func Start(s Spec) (*Process, error) {
 	if len(s.Argv) == 0 {
 		return nil, errors.New("no command specified")
 	}
-	exe, err := Resolve(s.Root, FromWorkDir(s.WorkDir, s.Argv[0]), s.Env)
+	if s.Library == "" {
+		return nil, errors.New("runtime: a container's processes run with the container library, and the spec names none")
+	}
+	exe, err := execpath.Resolve(s.Root, execpath.FromWorkDir(s.WorkDir, s.Argv[0]), s.Env)
 	if err != nil {
 		return nil, err
 	}
@@ -182,29 +107,11 @@ func Start(s Spec) (*Process, error) {
 		return nil, err
 	}
 	exe, argv := scriptCommand(s.Root, exe, s.Argv, s.Env)
-	h := helperSpec{
-		Path: exe, Argv: argv, Profile: text, Library: s.Library,
-		Limits: s.Limits, TTY: s.TTY != nil, Anchor: s.AnchorListener != nil,
-	}
-	if h.Anchor {
-		h.Launcher = s.Profile.Launcher
-	}
-	// An exec runs in the container's sandbox already, through its anchor;
-	// a process the helper starts applies the compiled profile, or, where
-	// it cannot be had, compiles the text itself.
-	if s.Anchor == "" {
-		h.Compiled, _ = compiled(s, text)
-	}
-	hs, err := json.Marshal(h)
-	if err != nil {
-		return nil, err
-	}
 	for _, kv := range s.Env {
-		if strings.HasPrefix(kv, RoleVar+"=") || strings.HasPrefix(kv, helperVar+"=") {
-			return nil, fmt.Errorf("the engine reserves the variable %s", strings.SplitN(kv, "=", 2)[0])
+		if strings.HasPrefix(kv, RoleVar+"=") {
+			return nil, fmt.Errorf("the engine reserves the variable %s", RoleVar)
 		}
 	}
-	env := append(append([]string{}, s.Env...), RoleVar+"="+spawnRole, helperVar+"="+string(hs))
 
 	p := &Process{done: make(chan struct{})}
 	// The process gets real pipes: with plain writers the engine would wait
@@ -267,6 +174,19 @@ func Start(s Spec) (*Process, error) {
 		}()
 		return p, nil
 	}
+	// A process the helper starts applies the profile compiled for its
+	// text; an exec runs in the container's sandbox already, through its
+	// anchor, above.
+	compiledPath, err := compiled(s, text)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("compile the container's profile: %w", err)
+	}
+	ceiling, err := forkCeiling()
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
 	statusR, statusW, err := os.Pipe()
 	if err != nil {
 		cleanup()
@@ -277,13 +197,9 @@ func Start(s Spec) (*Process, error) {
 	if s.AnchorListener != nil {
 		files = append(files, s.AnchorListener.Fd())
 	}
-	helper, helperArgs, helperEnv := s.Profile.Helper, []string{helperArgv}, env
-	if c, ok := cSpawner(s); ok {
-		// The helper loads no container library itself, which would map
-		// its own paths into the container; the command gets it.
-		helper, helperArgs, helperEnv = c, cSpawnArgs(s, h), withLibrary(s.Env, "")
-	}
-	pid, err := libsystem.Spawn(helper, helperArgs, helperEnv, libsystem.SpawnAttr{
+	// The helper loads no container library itself, which would map its
+	// own paths into the container; the command gets it.
+	pid, err := libsystem.Spawn(pathmap.Spawner(s.Library), spawnArgs(s, exe, argv, compiledPath, ceiling), containerEnv(s.Env), libsystem.SpawnAttr{
 		Dir:   wd,
 		Files: files,
 		// A session leader also leads its process group, so KillAll still
@@ -343,51 +259,14 @@ func (p *Process) copyIO(s Spec, parentEnds []*os.File) {
 	}
 }
 
+// containerEnv is env without the variables the engine sets for its own
+// processes.
+func containerEnv(env []string) []string {
+	return withoutVars(env, RoleVar, initVar, "DYLD_INSERT_LIBRARIES")
+}
+
 // withLibrary is env with the container library loaded, as the spawn helper
-// sets it.
+// gives it a command, for an exec the anchor starts.
 func withLibrary(env []string, library string) []string {
-	out := withoutVars(env, RoleVar, helperVar, initVar, "DYLD_INSERT_LIBRARIES")
-	if library != "" {
-		out = append(out, "DYLD_INSERT_LIBRARIES="+library)
-	}
-	return out
-}
-
-// cSpawner is the C spawn helper built beside the container library, which
-// starts a process in the Go helper's place in a fraction of the time.
-func cSpawner(s Spec) (string, bool) {
-	if s.Library == "" {
-		return "", false
-	}
-	p := pathmap.Spawner(s.Library)
-	if fi, err := os.Stat(p); err != nil || fi.Mode().Perm()&0o111 == 0 {
-		return "", false
-	}
-	return p, true
-}
-
-// cSpawnArgs are the C spawn helper's arguments for the helper spec h: its
-// options, then the command (pathmap/src/spawn.c).
-func cSpawnArgs(s Spec, h helperSpec) []string {
-	args := []string{"fws-spawn"}
-	if h.TTY {
-		args = append(args, "-t")
-	}
-	if h.Limits.Nice != 0 {
-		args = append(args, "-n", strconv.Itoa(h.Limits.Nice))
-	}
-	if h.Limits.IOPolicy != 0 {
-		args = append(args, "-i", strconv.Itoa(h.Limits.IOPolicy))
-	}
-	for _, r := range h.Limits.Rlimits {
-		args = append(args, "-r", fmt.Sprintf("%d:%d:%d", r.Resource, r.Cur, r.Max))
-	}
-	args = append(args, "-p", s.ProfilePath, "-L", s.Library)
-	if h.Compiled != "" {
-		args = append(args, "-c", h.Compiled)
-	}
-	if h.Anchor {
-		args = append(args, "-a", s.Profile.Helper)
-	}
-	return append(append(args, "--", h.Path), h.Argv...)
+	return append(containerEnv(env), "DYLD_INSERT_LIBRARIES="+library)
 }

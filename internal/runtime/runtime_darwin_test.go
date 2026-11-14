@@ -53,11 +53,11 @@ func TestExitWithLingeringChild(t *testing.T) {
 		t.Fatalf("build forker: %v\n%s", err, out)
 	}
 	var out syncBuffer
-	p, err := Start(Spec{
+	p, err := Start(withTestLibrary(t, Spec{
 		Root: root, Argv: []string{"/forker"}, Env: []string{"PATH=" + root},
 		Profile: seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)}, ProfilePath: filepath.Join(state, "profile.sb"),
 		Stdout: &out, Stderr: &out,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,11 +109,11 @@ func limitsSpec(t *testing.T) (Spec, *syncBuffer) {
 		t.Fatalf("build limits: %v\n%s", err, out)
 	}
 	out := &syncBuffer{}
-	return Spec{
+	return withTestLibrary(t, Spec{
 		Root: root, Argv: []string{"/limits"}, Env: []string{"PATH=/"},
 		Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)},
 		ProfilePath: filepath.Join(state, "profile.sb"), Stdout: out, Stderr: out,
-	}, out
+	}), out
 }
 
 func runToEnd(t *testing.T, s Spec) *Process {
@@ -132,46 +132,33 @@ func runToEnd(t *testing.T, s Spec) *Process {
 	return p
 }
 
-// The spawn helper applies resource limits, the scheduling priority and the
-// disk I/O policy before the command runs: the Go helper, and the C one
-// the engine builds beside the container library.
+// The spawn helper applies resource limits, the scheduling priority, the
+// disk I/O policy and the fork ceiling before the command runs.
 func TestLimitsApply(t *testing.T) {
-	for _, helper := range []string{"go", "c"} {
-		t.Run(helper, func(t *testing.T) {
-			s, out := limitsSpec(t)
-			if helper == "c" {
-				lib := testLibrary(t)
-				if _, ok := cSpawner(Spec{Library: lib}); !ok {
-					t.Fatal("no C spawn helper beside the library")
-				}
-				s.Library, s.Profile.Libraries = lib, []string{lib}
-			}
-			s.Limits = Limits{
-				// Go programs raise their soft descriptor limit to the hard
-				// one as they start, so the probe sees the soft limit only
-				// when both match.
-				Rlimits:  []Rlimit{{Resource: RlimitNofile, Cur: 64, Max: 64}},
-				Nice:     7,
-				IOPolicy: libsystem.IOPolicyThrottle,
-			}
-			if p := runToEnd(t, s); p.ExitCode() != 0 {
-				t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
-			}
-			maxproc, err := unix.SysctlUint32("kern.maxprocperuid")
-			if err != nil {
-				t.Fatal(err)
-			}
-			// The fork ceiling lowers the process limit, never raises it.
-			var nproc syscall.Rlimit
-			if err := syscall.Getrlimit(rlimitNproc, &nproc); err != nil {
-				t.Fatal(err)
-			}
-			ceiling := min(nproc.Cur, ForkCeiling(uint64(maxproc)))
-			want := fmt.Sprintf("nofile=64/64 nice=7 iopolicy=%d tty=false nproc=%d", libsystem.IOPolicyThrottle, ceiling)
-			if got := strings.TrimSpace(out.String()); got != want {
-				t.Fatalf("limits %q, want %q", got, want)
-			}
-		})
+	s, out := limitsSpec(t)
+	s.Limits = Limits{
+		// Go programs raise their soft descriptor limit to the hard one as
+		// they start, so the probe sees the soft limit only when both match.
+		Rlimits:  []Rlimit{{Resource: RlimitNofile, Cur: 64, Max: 64}},
+		Nice:     7,
+		IOPolicy: libsystem.IOPolicyThrottle,
+	}
+	if p := runToEnd(t, s); p.ExitCode() != 0 {
+		t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
+	}
+	maxproc, err := unix.SysctlUint32("kern.maxprocperuid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fork ceiling lowers the process limit, never raises it.
+	var nproc syscall.Rlimit
+	if err := syscall.Getrlimit(rlimitNproc, &nproc); err != nil {
+		t.Fatal(err)
+	}
+	ceiling := min(nproc.Cur, ForkCeiling(uint64(maxproc)))
+	want := fmt.Sprintf("nofile=64/64 nice=7 iopolicy=%d tty=false nproc=%d", libsystem.IOPolicyThrottle, ceiling)
+	if got := strings.TrimSpace(out.String()); got != want {
+		t.Fatalf("limits %q, want %q", got, want)
 	}
 }
 
@@ -181,9 +168,9 @@ var (
 	testLibErr  error
 )
 
-// testLibrary is the container library, with the C helpers beside it,
+// testLibrary is the container library, with the spawn helper beside it,
 // built once for the package's tests.
-func testLibrary(t *testing.T) string {
+func testLibrary(t testing.TB) string {
 	t.Helper()
 	testLibOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "fws-runtime-lib")
@@ -270,11 +257,11 @@ func TestExecsRunInTheMainProcesssSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := func(argv ...string) Spec {
-		return Spec{
+		return withTestLibrary(t, Spec{
 			Root: root, Argv: argv, Env: []string{"PATH=/"},
 			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)},
 			ProfilePath: filepath.Join(state, "profile-"+argv[0][1:]+".sb"),
-		}
+		})
 	}
 	ms := spec("/signal")
 	ms.AnchorListener = lf
@@ -344,4 +331,13 @@ func applyCompiledFor(t *testing.T, path, text string) bool {
 	t.Helper()
 	sum := sha256.Sum256([]byte(text))
 	return kept(path, sum)
+}
+
+// withTestLibrary gives the spec the container library, which every
+// container process loads.
+func withTestLibrary(t testing.TB, s Spec) Spec {
+	lib := testLibrary(t)
+	s.Library = lib
+	s.Profile.Libraries = append(s.Profile.Libraries, lib)
+	return s
 }

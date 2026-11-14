@@ -254,29 +254,6 @@ func ShmUnlink(name string) error {
 	return nil
 }
 
-// SandboxInit confines the calling process, and every program it executes,
-// to the Seatbelt profile text, as sandbox-exec does before it executes its
-// command.
-func SandboxInit(profile string) error {
-	cprofile, err := syscall.BytePtrFromString(profile)
-	if err != nil {
-		return err
-	}
-	params := [1]uintptr{0}
-	var errbuf *byte
-	r, _, _ := syscall_syscall6(libsandbox_sandbox_init_with_parameters_trampoline_addr,
-		uintptr(unsafe.Pointer(cprofile)), 0, uintptr(unsafe.Pointer(&params[0])), uintptr(unsafe.Pointer(&errbuf)), 0, 0)
-	if int32(r) == 0 {
-		return nil
-	}
-	msg := "unknown error"
-	if errbuf != nil {
-		msg = goString(errbuf)
-		syscall_syscall(libsandbox_sandbox_free_error_trampoline_addr, uintptr(unsafe.Pointer(errbuf)), 0, 0)
-	}
-	return fmt.Errorf("sandbox_init: %s", msg)
-}
-
 // sandboxProfile is libsandbox's compiled profile: its kind and its
 // bytecode, then fields sandbox_apply reads too, which a profile applied
 // from bytecode alone leaves zero.

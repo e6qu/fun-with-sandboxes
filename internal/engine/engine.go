@@ -170,7 +170,13 @@ func Open(cfg Config) (*Engine, error) {
 	// An engine nested in a container leaves the guard to the engine on the
 	// host, whose container it runs in.
 	if cfg.MachineGuard && cfg.Nested == nil {
-		go e.guardMachine(machineGuards(root), e.closing)
+		guards := machineGuards(root)
+		for _, g := range guards {
+			if _, err := g.level(); err != nil {
+				return nil, fmt.Errorf("the machine guard reads %s: %w", g.name, err)
+			}
+		}
+		go e.guardMachine(guards, e.closing)
 	}
 	if err := os.MkdirAll(e.runDir(), 0o700); err != nil {
 		return nil, err

@@ -86,7 +86,7 @@ bug. `LIMITATIONS.md` lists every one.
 
 ```
 cmd/fwsd/             # the daemon: Docker Engine API over a unix socket
-cmd/fws-shim/         # the helper binary: spawn helper, supervisors, egress proxies
+cmd/fws-shim/         # the helper binary: supervisors, exec anchors, egress proxies
 cmd/fws-mkimage/      # Nix closure -> darwin image archive
 internal/alloc/       # per-stack port blocks and directories
 internal/seatbelt/    # Seatbelt profile rendering
@@ -276,9 +276,11 @@ each lands in pull requests with tests on the macOS runner.
      holds changes, as most stay the same as another stack's container
      comes or goes.
    - Port blocks that grow with a stack, beside the configurable size.
-   - Process starts nearer native: a C spawn helper in place of the Go
-     one (about 3 ms), and the loader's cost for the inserted library
-     (about 4 ms) measured and cut.
+   - Process starts nearer native. Done: the spawn helper is a C program
+     the engine builds beside the container library, where a Go one took
+     its runtime's start-up, and it starts the exec anchor itself. Next:
+     the loader's cost for the inserted library (about 4 ms) measured and
+     cut.
 5. **Fewer correctness gaps**, each at no cost on the hot path:
    - UDP Services, and UDP between pods of different nodes, through the
      routers' flow ports.
@@ -585,15 +587,16 @@ text, under the text's hash; the engine compiles it as it launches the
 container's supervisor, which waits for that compile rather than doing it
 again, and the spawn helper applies the bytecode. In one run a container
 start took 9.2 ms with its profile compiled and 22.0 ms without, the
-sandbox alone 7.7 ms, and a native spawn 2.4 ms. What remains is the Go
-spawn helper's start-up and the loader's for the inserted library.
+sandbox alone 7.7 ms, and a native spawn 2.4 ms. The spawn helper is now
+the C program `internal/pathmap/src/spawn.c`, which forks the anchor
+itself, so neither a Go helper nor a launcher starts on the way; what
+remains is the loader's time for the inserted library.
 
 A start in an end-to-end run, of Testcontainers' reaper, took 3.8 s in
 its `profile` step, which takes about 80 µs in every other start. The
 engine's lock timing showed no wait for the lock then: the reaper is a
 run's first container, and its start built the container library, and
-later the anchor launcher, with clang. `fwsd` now builds them as it
-starts.
+later the spawn helper, with clang. `fwsd` now builds them as it starts.
 
 Open bug: in one run, MongoDB's replica set with a root user failed as
 the image's `entry` created the root user: `mongosh`, started with

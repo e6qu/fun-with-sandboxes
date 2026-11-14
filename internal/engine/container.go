@@ -1158,20 +1158,26 @@ func containsBind(binds []string, src string) bool {
 }
 
 // copyUp fills a new volume's empty directory dst with the image's content
-// at src: an APFS clone where the two share a volume, which takes
-// milliseconds under the engine's lock where a copy took seconds, or else
-// a copy.
+// at src: an APFS clone where the two are on the same filesystem, which
+// shares the image's blocks and takes milliseconds under the engine's lock,
+// and a copy where the volume is on another, such as a local volume that
+// binds a directory of another disk.
 func copyUp(src, dst string) error {
-	if fi, err := os.Lstat(src); err != nil || !fi.IsDir() {
-		if os.IsNotExist(err) {
+	var srcSt, dstSt syscall.Stat_t
+	if err := syscall.Lstat(src, &srcSt); err != nil {
+		if errors.Is(err, syscall.ENOENT) {
 			return nil
 		}
 		return err
 	}
-	if err := cloneInto(src, dst); err == nil {
+	if srcSt.Mode&syscall.S_IFMT != syscall.S_IFDIR {
 		return nil
-	} else if !emptyDir(dst) {
+	}
+	if err := syscall.Stat(dst, &dstSt); err != nil {
 		return err
+	}
+	if srcSt.Dev == dstSt.Dev {
+		return cloneInto(src, dst)
 	}
 	return copyTree(src, dst)
 }
@@ -1580,7 +1586,7 @@ func (c *Container) start(e *Engine) error {
 	// The profile compiles while the supervisor starts; its start waits for
 	// the compile rather than doing it again.
 	if err := runtime.Precompile(cfg.Spec); err != nil {
-		log.Printf("container %s: compile its profile ahead: %v", c.rec.ID[:12], err)
+		return fmt.Errorf("compile the container's profile: %w", err)
 	}
 	st.mark("precompile")
 	task, ready, err := shim.Launch(c.dir, cfg)
@@ -1679,14 +1685,13 @@ func (e *Engine) anchorSocket(c *Container) string {
 }
 
 // anchor is the socket of the running container's exec anchor, which
-// starts execs in its sandbox, or "" for a run an engine without anchors
-// started, whose execs enter the profile by themselves.
-func (e *Engine) anchor(c *Container) string {
+// starts execs, and health checks, in its sandbox.
+func (e *Engine) anchor(c *Container) (string, error) {
 	p := e.anchorSocket(c)
 	if _, err := os.Stat(p); err != nil {
-		return ""
+		return "", conflict("container %s has no exec anchor to run a process in its sandbox: %v", c.rec.ID, err)
 	}
-	return p
+	return p, nil
 }
 
 // watch follows a run until its shim reports the main process's end, then

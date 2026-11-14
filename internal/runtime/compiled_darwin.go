@@ -10,7 +10,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
-	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
@@ -23,7 +22,7 @@ import (
 // profile while the container's supervisor starts.
 
 // profileText is the profile Start applies for s: s's own, which lets the
-// container execute the engine's helper binary and its anchor launcher.
+// container execute the engine's helper binary, which its exec anchor runs.
 func profileText(s Spec) (seatbelt.Spec, string, error) {
 	p := s.Profile
 	self, err := roles.Binary()
@@ -33,11 +32,6 @@ func profileText(s Spec) (seatbelt.Spec, string, error) {
 	// Seatbelt matches resolved paths.
 	if p.Helper, err = filepath.EvalSymlinks(self); err != nil {
 		return p, "", err
-	}
-	if s.Library != "" {
-		if l, err := filepath.EvalSymlinks(pathmap.Launcher(s.Library)); err == nil {
-			p.Launcher = l
-		}
 	}
 	text, err := seatbelt.Render(p)
 	return p, text, err
@@ -138,18 +132,4 @@ func kept(path string, sum [sha256.Size]byte) bool {
 		return false
 	}
 	return bytes.Equal(got[:], sum[:])
-}
-
-// applyCompiled confines the helper to the compiled profile at path, if it
-// is of text; it reports false, having applied nothing, if not.
-func applyCompiled(path, text string) bool {
-	if path == "" {
-		return false
-	}
-	b, err := os.ReadFile(path)
-	sum := sha256.Sum256([]byte(text))
-	if err != nil || len(b) <= sha256.Size || !bytes.Equal(b[:sha256.Size], sum[:]) {
-		return false
-	}
-	return libsystem.SandboxApply(b[sha256.Size:]) == nil
 }

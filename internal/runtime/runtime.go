@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/e6qu/fun-with-sandboxes/internal/execpath"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
@@ -85,16 +84,6 @@ func exitCode(ws syscall.WaitStatus) int {
 // Docker's docker-init: the engine's helper binary, which takes the init's
 // role when it runs by that name.
 const InitPath = "/sbin/docker-init"
-
-// FromWorkDir makes a relative argv[0] with a slash absolute in the
-// container (package execpath).
-func FromWorkDir(workDir, argv0 string) string { return execpath.FromWorkDir(workDir, argv0) }
-
-// Resolve maps argv[0] to the executable's host path inside root (package
-// execpath).
-func Resolve(root, argv0 string, env []string) (string, error) {
-	return execpath.Resolve(root, argv0, env)
-}
 
 // DrainIO waits for the output pipes to drain, which happens once every
 // process holding them has exited. A descendant that left the process group
@@ -182,19 +171,16 @@ func (p *Process) KillAll() {
 
 const groupExitTimeout = 10 * time.Second
 
-// The roles of a container's exec anchor and of the launcher that starts
-// it, which run in the container's sandbox.
-const (
-	anchorLaunchRole = "anchor-launch"
-	anchorRole       = "anchor"
-)
+// anchorRole is the role of a container's exec anchor, which runs in the
+// container's sandbox.
+const anchorRole = "anchor"
 
 // IsAnchor reports whether env is the environment of a container's exec
-// anchor or its launcher: processes of the engine's in the container's
-// sandbox, which are not the container's own.
+// anchor: a process of the engine's in the container's sandbox, which is
+// not the container's own.
 func IsAnchor(env []string) bool {
 	for _, kv := range env {
-		if kv == RoleVar+"="+anchorRole || kv == RoleVar+"="+anchorLaunchRole {
+		if kv == RoleVar+"="+anchorRole {
 			return true
 		}
 	}

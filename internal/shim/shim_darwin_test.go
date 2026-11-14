@@ -18,12 +18,15 @@ import (
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
+	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
 	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
 
-var workBinary string
+// workBinary is the test program the shim runs, and library the container
+// library every container process loads.
+var workBinary, library string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "shimwork")
@@ -33,6 +36,9 @@ func TestMain(m *testing.M) {
 	workBinary = filepath.Join(dir, "work")
 	if out, err := exec.Command("go", "build", "-o", workBinary, "./testdata/work").CombinedOutput(); err != nil {
 		panic(fmt.Sprintf("build work: %v\n%s", err, out))
+	}
+	if library, err = pathmap.Build(filepath.Join(dir, "lib")); err != nil {
+		panic(fmt.Sprintf("build the container library: %v", err))
 	}
 	code := m.Run()
 	os.RemoveAll(dir)
@@ -77,8 +83,8 @@ func launch(t *testing.T, args []string, mod func(*Config)) *harness {
 		ID: "test",
 		Spec: runtime.Spec{
 			Root: root, Argv: append([]string{"/work"}, args...), Env: []string{"PATH=/", tag},
-			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)},
-			ProfilePath: filepath.Join(state, "profile.sb"),
+			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root), Libraries: []string{library}},
+			ProfilePath: filepath.Join(state, "profile.sb"), Library: library,
 		},
 		LogPath: filepath.Join(state, "log.jsonl"), Socket: filepath.Join(sockDir, "s.sock"),
 		ExitPath: filepath.Join(state, "exit.json"), Tag: tag,

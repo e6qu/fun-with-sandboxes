@@ -155,7 +155,7 @@ func run(cfg engine.Config, socket string, withBuildKit, debug bool) error {
 	if err != nil {
 		return err
 	}
-	// The container library and the anchor launcher compile with clang the
+	// The container library and the spawn helper compile with clang the
 	// first time an engine needs them, which takes seconds; they compile
 	// now, as the engine starts, rather than in its first container's start.
 	go func() {
