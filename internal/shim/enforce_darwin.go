@@ -53,6 +53,9 @@ type enforcer struct {
 	// net counts the members' network traffic.
 	net *netstat.Watcher
 
+	// scans counts the reads of the whole process table.
+	scans uint64
+
 	periods, throttledPeriods, oomKills uint64
 	throttledTime                       time.Duration
 	oom                                 bool
@@ -103,9 +106,12 @@ func (e *enforcer) startLocked() {
 		return
 	}
 	e.kq = kq
+	pids := make([]int, 0, len(e.members))
 	for pid := range e.members {
-		e.watchLocked(pid)
+		pids = append(pids, pid)
 	}
+	// A member may have forked between the scan and its watch.
+	e.followLocked(pids)
 	e.running = true
 	go e.loop()
 }
@@ -120,17 +126,71 @@ func (e *enforcer) wakeLocked() {
 }
 
 // watchLocked asks the kernel to report the process's forks, its execs and
-// its exit, on each of which the loop scans the process table: the members
-// are followed by these events alone, so an idle container costs nothing.
-// A member's exit matters as a fork does: a launcher that forks a daemon
-// and exits leaves the daemon to launchd, where the scan finds it by its
-// responsible process.
-func (e *enforcer) watchLocked(pid int) {
+// its exit. The members are followed by these events alone, so an idle
+// container costs nothing: a fork's children are read from the kernel's
+// list of the forking process's children, and an exit removes the member.
+// The process table is read whole only when a member forked and ended
+// before its children were read, as a launcher that forks a daemon and
+// exits does, leaving the daemon to launchd, where its responsible process
+// finds it. The events stay registered until the exit, so a fork and an
+// exit between two reads come together.
+func (e *enforcer) watchLocked(pid int) error {
 	if e.kq < 0 {
+		return nil
+	}
+	ev := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_CLEAR, Fflags: unix.NOTE_FORK | unix.NOTE_EXEC | unix.NOTE_EXIT}
+	_, err := unix.Kevent(e.kq, []unix.Kevent_t{ev}, nil, nil)
+	return err
+}
+
+// followLocked admits the children of the given members, and theirs, as
+// members. It reports false when one ended before it was watched, as what
+// it started may then have gone to launchd.
+func (e *enforcer) followLocked(parents []int) bool {
+	whole := true
+	var added []int
+	for len(parents) > 0 {
+		ppid := parents[len(parents)-1]
+		parents = parents[:len(parents)-1]
+		kids, err := procs.Children(ppid)
+		if err != nil {
+			continue
+		}
+		for _, p := range kids {
+			if _, ok := e.members[p.PID]; ok {
+				continue
+			}
+			e.members[p.PID] = &member{start: p.Start}
+			added = append(added, p.PID)
+			if err := e.watchLocked(p.PID); err != nil {
+				whole = false
+				continue
+			}
+			parents = append(parents, p.PID)
+		}
+	}
+	e.admitLocked(added)
+	return whole
+}
+
+// removeLocked forgets a member that ended, keeping its disk I/O.
+func (e *enforcer) removeLocked(pid int) {
+	m, ok := e.members[pid]
+	if !ok {
 		return
 	}
-	ev := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_ONESHOT, Fflags: unix.NOTE_FORK | unix.NOTE_EXEC | unix.NOTE_EXIT}
-	unix.Kevent(e.kq, []unix.Kevent_t{ev}, nil, nil)
+	e.goneRead += m.read
+	e.goneWritten += m.written
+	delete(e.members, pid)
+	e.net.SetMembers(e.pidsLocked())
+}
+
+func (e *enforcer) pidsLocked() []int {
+	pids := make([]int, 0, len(e.members))
+	for pid := range e.members {
+		pids = append(pids, pid)
+	}
+	return pids
 }
 
 func (e *enforcer) close() {
@@ -177,12 +237,34 @@ func (e *enforcer) loop() {
 		}
 		e.mu.Lock()
 		now := time.Now()
+		whole := false
+		var forked []int
 		for _, ev := range events[:max(n, 0)] {
-			if _, ok := e.members[int(ev.Ident)]; ok && ev.Filter == unix.EVFILT_PROC && ev.Fflags&unix.NOTE_EXIT == 0 {
-				e.watchLocked(int(ev.Ident))
+			pid := int(ev.Ident)
+			if ev.Filter == unix.EVFILT_USER {
+				// The engine started an exec, which the anchor forks.
+				whole = true
+				continue
+			}
+			if _, ok := e.members[pid]; !ok {
+				continue
+			}
+			exited := ev.Fflags&unix.NOTE_EXIT != 0
+			if ev.Fflags&unix.NOTE_FORK != 0 {
+				if exited {
+					whole = true
+				} else {
+					forked = append(forked, pid)
+				}
+			}
+			if exited {
+				e.removeLocked(pid)
 			}
 		}
-		if n > 0 {
+		if len(forked) > 0 && !e.followLocked(forked) {
+			whole = true
+		}
+		if whole {
 			e.scanLocked()
 		}
 		if now.Sub(last) >= cpuPeriod {
@@ -203,6 +285,7 @@ func (e *enforcer) scanLocked() {
 	if err != nil {
 		return
 	}
+	e.scans++
 	sort.Slice(es, func(i, j int) bool { return es[i].Start < es[j].Start })
 	live := map[int]procs.Entry{}
 	for _, p := range es {
@@ -248,17 +331,20 @@ func (e *enforcer) scanLocked() {
 			e.others[p.PID] = p.Start
 		}
 	}
+	e.admitLocked(added)
+}
+
+// admitLocked holds new members to the container's state and limits: it
+// stops them while the container is stopped or paused, and kills those
+// past the pids limit.
+func (e *enforcer) admitLocked(added []int) {
 	if (e.stopped || e.paused) && len(added) > 0 {
 		for _, pid := range added {
 			syscall.Kill(pid, syscall.SIGSTOP)
 		}
 	}
 	e.limitPidsLocked()
-	pids := make([]int, 0, len(e.members))
-	for pid := range e.members {
-		pids = append(pids, pid)
-	}
-	e.net.SetMembers(pids)
+	e.net.SetMembers(e.pidsLocked())
 }
 
 // answers reports whether macOS holds the main process responsible for p,
@@ -444,7 +530,7 @@ func (e *enforcer) usage() State {
 	}
 	st := State{
 		Pid: e.main, Shim: os.Getpid(), Periods: e.periods, ThrottledPeriods: e.throttledPeriods,
-		ThrottledTime: e.throttledTime, OOMKills: e.oomKills, Resources: e.res,
+		ThrottledTime: e.throttledTime, OOMKills: e.oomKills, Resources: e.res, Scans: e.scans,
 	}
 	st.DiskRead, st.DiskWritten = e.goneRead, e.goneWritten
 	for pid, m := range e.members {

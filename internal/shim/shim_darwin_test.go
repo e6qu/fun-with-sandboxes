@@ -268,6 +268,12 @@ func TestPidsLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(st.Members) == limit {
+			// The supervisor followed twelve forks by the kernel's list of
+			// the forking process's children, without reading the whole
+			// process table for each.
+			if st.Scans > 3 {
+				t.Fatalf("the supervisor read the process table %d times for 12 forks", st.Scans)
+			}
 			break
 		}
 		if len(st.Members) < limit || time.Now().After(deadline) {

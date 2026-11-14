@@ -337,6 +337,35 @@ func ProcPidinfo(pid, flavor int, arg uint64, buf []byte) (int, error) {
 	return 0, errno
 }
 
+// procPPIDOnly is proc_listpids's PROC_PPID_ONLY: the processes whose
+// parent is the given one.
+const procPPIDOnly = 6
+
+// ChildPIDs lists ppid's children (proc_listpids with PROC_PPID_ONLY): the
+// kernel walks its process list, so the call costs a few microseconds where
+// reading every process's entry costs a listing of the whole table.
+func ChildPIDs(ppid int) ([]int, error) {
+	buf := make([]int32, 64)
+	for {
+		size := len(buf) * 4
+		r, _, errno := syscall_syscall6(libc_proc_listpids_trampoline_addr, procPPIDOnly, uintptr(ppid), uintptr(unsafe.Pointer(&buf[0])), uintptr(size), 0, 0)
+		n := int(int32(r))
+		if n < 0 {
+			return nil, errno
+		}
+		if n < size {
+			out := make([]int, 0, n/4)
+			for _, pid := range buf[:n/4] {
+				if pid != 0 {
+					out = append(out, int(pid))
+				}
+			}
+			return out, nil
+		}
+		buf = make([]int32, 2*len(buf))
+	}
+}
+
 // ProcPidpath is proc_pidpath: the path of pid's executable.
 func ProcPidpath(pid int) (string, error) {
 	buf := make([]byte, 4*1024)

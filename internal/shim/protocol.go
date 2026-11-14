@@ -143,4 +143,7 @@ type State struct {
 	ThrottledTime    time.Duration
 	OOMKills         uint64
 	Resources        Resources
+	// Scans counts the supervisor's reads of the whole process table; it
+	// follows the container's forks and exits without one.
+	Scans uint64
 }

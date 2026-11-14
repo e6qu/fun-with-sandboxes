@@ -85,6 +85,10 @@ var libc_proc_pidinfo_trampoline_addr uintptr
 
 //go:cgo_import_dynamic libc_proc_pidinfo proc_pidinfo "/usr/lib/libSystem.B.dylib"
 
+var libc_proc_listpids_trampoline_addr uintptr
+
+//go:cgo_import_dynamic libc_proc_listpids proc_listpids "/usr/lib/libSystem.B.dylib"
+
 var libc_proc_pidpath_trampoline_addr uintptr
 
 //go:cgo_import_dynamic libc_proc_pidpath proc_pidpath "/usr/lib/libSystem.B.dylib"
