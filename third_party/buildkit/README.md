@@ -12,3 +12,4 @@ Changes from upstream:
   - `localmounter_darwin.patch`
   - `resolvecache_race.patch`
   - `ssh_socket_owner.patch`
+  - `syntax_builtin.patch`

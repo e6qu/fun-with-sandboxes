@@ -47,6 +47,10 @@ type Config struct {
 	// ImageArchives, where set, is a directory of image archives the image
 	// store loads from as their images are first asked for.
 	ImageArchives string
+	// MemoryGuard pauses the container holding the most memory while macOS
+	// reports critical memory pressure, and resumes it once the pressure
+	// is back to normal (guard.go).
+	MemoryGuard bool
 	// Serve serves an engine's API on a Unix socket: the API of the engine
 	// nested in each privileged container, which it serves until closed.
 	Serve func(e *Engine, socket string) (io.Closer, error)
@@ -71,6 +75,9 @@ type Engine struct {
 	// detach closes when the engine leaves its containers running as it
 	// stops.
 	detach chan struct{}
+	// closing closes as the engine shuts down, stopping its guards.
+	closing     chan struct{}
+	closingOnce sync.Once
 
 	libOnce sync.Once
 	lib     string
@@ -149,6 +156,7 @@ func Open(cfg Config) (*Engine, error) {
 		egress:     map[string]*egressProc{},
 		nested:     map[string]*nestedEngine{},
 		detach:     make(chan struct{}),
+		closing:    make(chan struct{}),
 		containers: map[string]*Container{},
 		volumes:    map[string]*Volume{},
 		networks:   map[string]*Network{},
@@ -157,6 +165,11 @@ func Open(cfg Config) (*Engine, error) {
 	e.mu.timed = cfg.Debug
 	if cfg.Nested != nil {
 		e.libOnce.Do(func() { e.lib = cfg.Nested.Library })
+	}
+	// An engine nested in a container leaves the guard to the engine on the
+	// host, whose container it runs in.
+	if cfg.MemoryGuard && cfg.Nested == nil {
+		go e.guardMemory(pressureLevel, e.closing)
 	}
 	if err := os.MkdirAll(e.runDir(), 0o700); err != nil {
 		return nil, err
@@ -201,6 +214,7 @@ func (e *Engine) Close() { e.shutdown(!e.cfg.LiveRestore) }
 // shutdown stops the containers, or with live restore leaves them and
 // their nested engines running for the next engine.
 func (e *Engine) shutdown(stop bool) {
+	e.closingOnce.Do(func() { close(e.closing) })
 	if !stop {
 		e.nestedMu.Lock()
 		for _, n := range e.nested {

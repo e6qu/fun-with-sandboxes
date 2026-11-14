@@ -37,6 +37,7 @@ func main() {
 	withBuildKit := flag.Bool("buildkit", true, "serve BuildKit for docker build, buildx and docker compose build")
 	liveRestore := flag.Bool("live-restore", false, "keep containers running while the engine stops, and reconnect to them when it starts")
 	archives := flag.String("image-archives", "", "a directory of image archives (*.tar, as docker save writes them) whose images load the first time they are asked for")
+	guard := flag.Bool("memory-guard", true, "while macOS reports critical memory pressure, pause the container holding the most memory, one at a time, and resume them once the pressure is normal")
 	debug := flag.Bool("debug", false, "log each API request, with its status and how long the engine took to serve it, and the steps of each container's create and start")
 	flag.Parse()
 
@@ -51,7 +52,7 @@ func main() {
 		log.Fatal(err)
 	}
 	roles.Use(helper)
-	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress, LiveRestore: *liveRestore, Debug: *debug, ImageArchives: *archives}
+	cfg := engine.Config{Root: *root, PortBase: *portBase, PortLimit: *portLimit, BlockSize: *block, Egress: *egress, LiveRestore: *liveRestore, Debug: *debug, ImageArchives: *archives, MemoryGuard: *guard}
 	if err := run(cfg, *socket, *withBuildKit, *debug); err != nil {
 		log.Fatal(err)
 	}

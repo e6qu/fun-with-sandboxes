@@ -1,0 +1,33 @@
+--- a/frontend/dockerfile/builder/build.go
++++ b/frontend/dockerfile/builder/build.go
+@@ -59,7 +59,7 @@ func Build(ctx context.Context, c client.Client) (_ *client.Result, err error) {
+ 				return nil, errors.Wrapf(err, "failed with %s = %s", keySyntaxArg, cmdline)
+ 			}
+ 			return res, err
+-		} else if ref, cmdline, loc, ok := parser.DetectSyntax(src.Data); ok {
++		} else if ref, cmdline, loc, ok := parser.DetectSyntax(src.Data); ok && !builtinSyntax(ref) {
+ 			res, err := forwardGateway(ctx, c, ref, cmdline)
+ 			if err != nil && len(errdefs.Sources(err)) == 0 {
+ 				return nil, wrapSource(err, src.SourceMap, loc)
+@@ -224,6 +224,21 @@ func Build(ctx context.Context, c client.Client) (_ *client.Result, err error) {
+ 	return rb.Finalize()
+ }
+ 
++// builtinSyntax reports whether a # syntax= directive names Docker's own
++// Dockerfile frontend, which this frontend is: its images are Linux images,
++// which a darwin worker cannot run, so the built-in frontend serves the
++// Dockerfile instead of forwarding to one.
++func builtinSyntax(ref string) bool {
++	ref = strings.TrimPrefix(strings.TrimPrefix(ref, "docker.io/"), "index.docker.io/")
++	if i := strings.IndexAny(ref, "@"); i >= 0 {
++		ref = ref[:i]
++	}
++	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
++		ref = ref[:i]
++	}
++	return ref == "docker/dockerfile" || ref == "docker/dockerfile-upstream"
++}
++
+ func forwardGateway(ctx context.Context, c client.Client, ref string, cmdline string) (*client.Result, error) {
+ 	opts := c.BuildOpts().Opts
+ 	if opts == nil {

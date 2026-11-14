@@ -92,6 +92,20 @@ RUN ["/toolbox", "whoami"]
 	}
 }
 
+// A Dockerfile that names Docker's own frontend in a # syntax= line, as
+// many do, builds with the built-in one: its images are Linux images.
+func TestBuildSyntaxDirective(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(`# syntax=docker/dockerfile:1.7
+FROM fws/toolbox:1
+RUN ["/toolbox", "whoami"]
+`), 0o644)
+	out, err := exec.Command("docker", "buildx", "build", "--no-cache", "--progress", "plain", dir).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "uid=") {
+		t.Fatalf("build with # syntax=docker/dockerfile:1.7: %v\n%s", err, out)
+	}
+}
+
 // On the host's UTS namespace the container reads the host's hostname, and
 // may not name one of its own, as in Docker.
 func TestHostUTSNamespace(t *testing.T) {
