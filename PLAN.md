@@ -232,9 +232,14 @@ each lands in pull requests with tests on the macOS runner.
      use.
    - Next: archives cached per image, so a change to one image rebuilds
      that one.
-2. **The open bugs below are fixed**, each with a test that reproduced it:
-   MongoDB's replica set's `ECONNREFUSED 127.0.0.1:65535`, and the pids
-   limit's listing of every process on each `fork`.
+2. **The open bugs below are fixed**, each with a test that reproduced it.
+   - Done: MongoDB's replica set's `ECONNREFUSED 127.0.0.1:65535`. A
+     router request began with the port, and `0xffff` marked a relay to
+     another stack: port 65535 was refused. Requests now lead with their
+     kind.
+   - Done: the pids limit's listing of every process on each `fork`. A
+     fork's children are read from the kernel's list of the forking
+     process's children.
    - Done: the reaper's slow `profile` step (3.7 s again in a sharded
      run) was no wait on the engine's lock, which `-debug` showed free:
      the reaper is a run's first container, and its start built the
@@ -243,9 +248,13 @@ each lands in pull requests with tests on the macOS runner.
 3. **Limits that keep the machine standing**, enforced by the kernel where
    an unprivileged process can ask it to, and costing nothing on the hot
    path:
-   - A QoS clamp on every container process
-     (`posix_spawnattr_set_qos_clamp_np`), so containers yield the CPU to
-     the user's interactive work; on by default, its class configurable.
+   - Done: a QoS clamp on every container process
+     (`posix_spawnattr_set_qos_clamp_np`), so containers yield the CPU and
+     the disk to the user's interactive work: `fwsd -qos-clamp`, `utility`
+     by default, or `background`, `maintenance` or `none`. The spawn helper
+     executes the command with `posix_spawn`'s `POSIX_SPAWN_SETEXEC`, the
+     one exec that takes the clamp, and every process the command starts
+     inherits it.
    - Done: a fork ceiling. Each container process's `RLIMIT_NPROC`, which
      macOS counts across the user's processes, is set an eighth below
      `kern.maxprocperuid`, so a fork bomb fails in the kernel and the user
@@ -266,7 +275,12 @@ each lands in pull requests with tests on the macOS runner.
      container's processes by the kernel's fork, exec and exit events on
      each, and by the engine's word as an exec or health check starts; it
      reads the process table on those events alone, where it read it each
-     second, so an idle container costs nothing.
+     second, so an idle container costs nothing. A fork's children are
+     read from the kernel's list of the forking process's children
+     (`proc_listpids` with `PROC_PPID_ONLY`) and an exit removes the
+     member; the whole table is read only when a member forked and ended
+     before its children were read, as a launcher that leaves a daemon to
+     launchd does.
    - Finer locking: per-container and per-network locks, so a slow
      request no longer holds every other behind the engine's lock. A
      sharded run's `-debug` log shows the holds to cut first: a create's
@@ -277,7 +291,13 @@ each lands in pull requests with tests on the macOS runner.
      every byte; and a stack's network file is written only when what it
      holds changes, as most stay the same as another stack's container
      comes or goes.
-   - Port blocks that grow with a stack, beside the configurable size.
+   - Port blocks that grow with a stack: not pursued. A container's
+     Seatbelt profile names each port of its stack's block it may connect
+     to, and a profile cannot change once applied, so a container that
+     started before a block was added could not reach the members whose
+     ports lie in it; a profile granting the adjacent blocks ahead would
+     grant another stack's. The block's size stays configurable
+     (`-block-size`).
    - Process starts nearer native. Done: the spawn helper is a C program
      the engine builds beside the container library, where a Go one took
      its runtime's start-up, and it starts the exec anchor itself. Next:
@@ -604,17 +624,27 @@ engine's lock timing showed no wait for the lock then: the reaper is a
 run's first container, and its start built the container library, and
 later the spawn helper, with clang. `fwsd` now builds them as it starts.
 
-Open bug: in one run, MongoDB's replica set with a root user failed as
-the image's `entry` created the root user: `mongosh`, started with
-`--host 127.0.0.1 --port 27017` against the temporary server that listened
-there and had accepted its connections, ended with `MongoNetworkError:
-connect ECONNREFUSED 127.0.0.1:65535`. Nothing else in the run names port
-65535, and the subtest passed in the runs before.
+In one run, MongoDB's replica set with a root user failed as the image's
+`entry` created the root user: `mongosh`, started with `--host 127.0.0.1
+--port 27017` against the temporary server that listened there and had
+accepted its connections, ended with `MongoNetworkError: connect
+ECONNREFUSED 127.0.0.1:65535`. The container's environment names the
+stack's egress proxy, and `mongosh` honours it: it starts a SOCKS5 tunnel
+on loopback, bound to port 0, and connects the driver through it. The
+container library binds port 0 to a port from macOS's ephemeral range,
+49152 to 65535, with a Unix socket, and a connection to it goes through
+the container's router. A request to the router began with the port, two
+bytes, and `0xffff` marked a relay to another stack's member, so the
+router read the request for port 65535 as a relay and refused it: one run
+in 16384 drew that port. Each request now starts with a byte naming its
+kind, and every port is one.
 
-Open bug: with a pids limit, every `fork` and `posix_spawn` lists every
-process of the engine's user and checks each, to count the container's
-against the limit, where a pids cgroup keeps a count. Docker sets no
-limit by default, and no test of the suite sets one.
+With a pids limit, every `fork` and `posix_spawn` listed every process of
+the engine's user and checked each, to count the container's against the
+limit, where a pids cgroup keeps a count. The supervisor now reads a
+fork's children from the kernel's list of the forking process's children,
+and a member's exit removes it; `State.Scans` counts the reads of the
+whole table, which a test of twelve forks holds to three.
 
 Left as they are, each with its reason in `LIMITATIONS.md`:
 

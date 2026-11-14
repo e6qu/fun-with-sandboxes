@@ -1,8 +1,10 @@
 package shim
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -158,6 +160,12 @@ func (e *enforcer) followLocked(parents []int) bool {
 		}
 		for _, p := range kids {
 			if _, ok := e.members[p.PID]; ok {
+				continue
+			}
+			// The exec anchor, which the main process's spawn helper
+			// forks through a child before it executes the command, is
+			// none of the container's.
+			if env, err := procs.Environ(p.PID); err == nil && runtime.IsAnchor(env) {
 				continue
 			}
 			e.members[p.PID] = &member{start: p.Start}
@@ -500,6 +508,42 @@ func (e *enforcer) renice(nice int) error {
 		return fmt.Errorf("set the scheduling priority to %d (only root raises a priority): %s", nice, strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// count is how many processes the container runs, exact as the library
+// asks before a fork: a member that ended is dropped, and the children of
+// the members are read, so a fork the kernel has made counts though its
+// event has not been handled. It reads a list of children per member,
+// where the library listed every process of the user.
+func (e *enforcer) count() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var live []int
+	for _, pid := range e.pidsLocked() {
+		if p, ok := procs.Find(pid); !ok || p.Start != e.members[pid].start {
+			e.removeLocked(pid)
+			continue
+		}
+		live = append(live, pid)
+	}
+	if !e.followLocked(live) {
+		e.scanLocked()
+	}
+	return len(e.members)
+}
+
+// serveCount answers each connection on l with count, until l closes.
+func (e *enforcer) serveCount(l net.Listener) {
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		var b [4]byte
+		binary.NativeEndian.PutUint32(b[:], uint32(int32(e.count())))
+		c.Write(b[:])
+		c.Close()
+	}
 }
 
 func (e *enforcer) track() {

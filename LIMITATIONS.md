@@ -458,6 +458,10 @@ machine — and from what macOS offers an unprivileged process under them.
     the user's (`kern.maxprocperuid`), which macOS counts across all of the
     user's processes: a fork bomb in a container fails in the kernel while
     the user keeps processes to spare for their own programs.
+  - Every container process runs under a QoS clamp, `utility` unless
+    `fwsd -qos-clamp` names `background`, `maintenance` or `none`: macOS
+    schedules its threads, and throttles its disk I/O, below the user's
+    interactive work, whatever QoS a thread asks for.
 - **`--init` runs the engine's own init**, at `/sbin/docker-init` as
   Docker places tini: the engine's helper binary, which by that name
   passes signals on to the command, reaps orphans and exits as the command

@@ -104,6 +104,19 @@ func (s *server) run(report func(Ready)) (int, error) {
 		defer pl.Close()
 		go pidns.Serve(pl, cfg.PidNamespace)
 	}
+	// The library asks from the container's first fork on; the count is
+	// answered once the enforcer follows the container's processes, and a
+	// connection waits in the listener's queue until then.
+	var pidsListener net.Listener
+	if cfg.Pids != "" {
+		os.Remove(cfg.Pids)
+		if pidsListener, err = net.Listen("unix", cfg.Pids); err != nil {
+			report(Ready{Error: err.Error()})
+			return 1, err
+		}
+		defer os.Remove(cfg.Pids)
+		defer pidsListener.Close()
+	}
 	logs, err := logfile.Open(cfg.LogPath)
 	if err != nil {
 		report(Ready{Error: err.Error()})
@@ -268,6 +281,9 @@ func (s *server) run(report func(Ready)) (int, error) {
 		}()
 	}
 	s.enf = newEnforcer(cfg.Tag, proc.Pid(), cfg.Resources, traffic)
+	if pidsListener != nil {
+		go s.enf.serveCount(pidsListener)
+	}
 	report(Ready{Pid: proc.Pid(), Ports: ports, Steps: strings.Join(steps, ", ")})
 	go s.accept(l)
 

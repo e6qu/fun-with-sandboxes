@@ -600,7 +600,7 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	if helper, err := roles.Binary(); err == nil {
 		env = append(env, pathmap.HelperVar+"="+filepath.Base(helper))
 	}
-	env = append(env, pathmap.PidsVar+"="+c.pidsPath())
+	env = append(env, pathmap.PidsVar+"="+c.pidsPath(), pathmap.PidsSocketVar+"="+e.pidsSocket(c))
 	if onNetwork(net) && net.rec.Address != "" {
 		nf, err := ne.networkFile(net.rec.Stack)
 		if err != nil {
@@ -1379,6 +1379,7 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	spec := seatbelt.Spec{
 		Root: c.root(), StateRoot: e.stateRoot(), ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
 		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath()},
+		Sockets: []string{e.pidsSocket(c)},
 	}
 	if c.rec.HostConfig.Privileged {
 		spec.Sockets = append(spec.Sockets, e.engineSocket(c))
@@ -1569,7 +1570,7 @@ func (c *Container) start(e *Engine) error {
 		TTY: c.rec.Config.Tty, Console: c.rec.HostConfig.ConsoleSize, OpenStdin: c.rec.Config.OpenStdin,
 		LogPath: c.logs.path, Socket: e.shimSocket(c), Anchor: e.anchorSocket(c), ExitPath: c.exitPath(),
 		Router: c.rec.RouterPort, PortDir: e.portDir(c),
-		Tag: c.tag(), AllocRoot: e.cfg.Root, Stack: c.rec.Stack, Resources: res,
+		Tag: c.tag(), AllocRoot: e.cfg.Root, Stack: c.rec.Stack, Resources: res, Pids: e.pidsSocket(c),
 	}
 	if nsFile != "" {
 		cfg.Procs, cfg.PidNamespace = e.procsSocket(c), nsFile
@@ -1654,6 +1655,12 @@ func (c *Container) exitPath() string { return filepath.Join(c.dir, "exit.json")
 // pidsPath is the file of the container's pids limit, which its processes
 // read before they fork, as a pids cgroup's pids.max holds it.
 func (c *Container) pidsPath() string { return filepath.Join(c.dir, "pids.max") }
+
+// pidsSocket is where c's shim answers its library with how many processes
+// c runs, as a pids cgroup's pids.current holds it.
+func (e *Engine) pidsSocket(c *Container) string {
+	return filepath.Join(e.runDir(), c.rec.ID[:12]+".pids")
+}
 
 // writePidsLimit writes the container's pids limit to its file.
 func (c *Container) writePidsLimit(limit *int64) error {

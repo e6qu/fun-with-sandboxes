@@ -46,6 +46,11 @@ const (
 // the container runs as many processes.
 const PidsVar = "FWS_PIDS"
 
+// PidsSocketVar names the socket the container's supervisor answers on with
+// how many processes the container runs, which the library compares with
+// the limit before a fork.
+const PidsSocketVar = "FWS_PIDS_SOCKET"
+
 // PidNSVar is "host" for a container on the host's PID namespace: the
 // library presents no pid 1 and lists every process the host does. For a
 // container on another's PID namespace it is the host pid of that

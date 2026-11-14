@@ -103,10 +103,8 @@ static char domainname[256];
 // The host pid of the container's main process (FWS_INIT), its pid 1.
 static pid_t init_pid;
 // On the host's PID namespace (FWS_PIDNS=host) there is no pid 1 to
-// present and every process is listed; root_tag, the variable the engine
-// tags the container's processes with, tells the container's apart.
+// present and every process is listed.
 static int host_pids;
-static char root_tag[PATH_MAX + 16];
 // A PID namespace's file (FWS_PIDNSFILE), which lists the containers that
 // share it, and the socket of the container's shim (FWS_PROCS), which
 // lists, signals and reads the processes of the others' sandboxes, which
@@ -121,6 +119,9 @@ static char helper_comm[MAXCOMLEN + 1];
 // pids.max holds it: a number, or "max" for none. The engine rewrites it
 // as the limit changes.
 static char pids_path[PATH_MAX];
+// The socket the container's supervisor answers on with how many processes
+// the container runs (FWS_PIDS_SOCKET), as pids.current holds it.
+static char pids_socket[sizeof(((struct sockaddr_un *)0)->sun_path)];
 
 struct mount {
     char *dest, *src;
@@ -362,6 +363,10 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     if (pm && pm[0] == '/') {
         strlcpy(pids_path, pm, sizeof pids_path);
     }
+    const char *ps = getenv("FWS_PIDS_SOCKET");
+    if (ps && ps[0] == '/' && strlen(ps) < sizeof pids_socket) {
+        strcpy(pids_socket, ps);
+    }
     const char *hc = getenv("FWS_HELPER");
     if (hc) {
         strlcpy(helper_comm, hc, sizeof helper_comm);
@@ -381,7 +386,6 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     parse_routing(getenv("FWS_PORTDIR"), getenv("FWS_ROUTER"));
     const char *r = getenv("SANDBOX_ROOT");
     if (r && r[0] == '/' && strlen(r) < sizeof root) {
-        snprintf(root_tag, sizeof root_tag, "SANDBOX_ROOT=%s", r);
         strcpy(root, r);
         rootlen = strlen(root);
         while (rootlen > 1 && root[rootlen - 1] == '/') {
@@ -2280,51 +2284,24 @@ static int listed(pid_t pid, const char *comm, const pid_t *ns, int n) {
     return ns && ns_has(ns, n, pid);
 }
 
-// tagged reports whether pid started with the container's root in its
-// environment, as the engine tells a container's processes apart.
-static int tagged(pid_t pid) {
-    int mib[3] = {CTL_KERN, KERN_PROCARGS2, pid};
-    size_t len = 0;
-    if (!root_tag[0] || sysctl(mib, 3, NULL, &len, NULL, 0) != 0 || len <= sizeof(int)) {
-        return 0;
-    }
-    char *b = malloc(len);
-    if (!b) {
-        return 0;
-    }
-    int found = 0;
-    if (sysctl(mib, 3, b, &len, NULL, 0) == 0 && len > sizeof(int)) {
-        int argc;
-        memcpy(&argc, b, sizeof argc);
-        char *p = b + sizeof argc, *end = b + len;
-        // The executable's path, the padding after it, then the arguments.
-        p += strnlen(p, (size_t)(end - p));
-        while (p < end && !*p) p++;
-        for (int i = 0; i < argc && p < end; i++) p += strnlen(p, (size_t)(end - p)) + 1;
-        size_t tl = strlen(root_tag);
-        while (p < end && *p) {
-            size_t n = strnlen(p, (size_t)(end - p));
-            if (n == tl && memcmp(p, root_tag, tl) == 0) {
-                found = 1;
-                break;
-            }
-            p += n + 1;
-        }
-    }
-    free(b);
-    return found;
-}
-
-// counted reports whether pid is one of the container's processes: one of its
-// sandbox's, or on the host's PID namespace, one the engine tagged.
-static int counted(pid_t pid, const char *comm) {
-    if (!host_pids) {
-        return visible(pid, comm);
-    }
-    if (helper_comm[0] && strncmp(comm, helper_comm, MAXCOMLEN) == 0) {
-        return 0;
-    }
-    return pid == getpid() || tagged(pid);
+// pids_count asks the container's supervisor how many processes the
+// container runs: it follows them by their forks and exits, and reads the
+// members' children as it answers, so the count holds a fork the kernel
+// made a moment before. It returns -1 where the supervisor does not answer.
+static long pids_count(void) {
+    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s < 0) return -1;
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    struct sockaddr_un u;
+    memset(&u, 0, sizeof u);
+    u.sun_family = AF_UNIX;
+    strlcpy(u.sun_path, pids_socket, sizeof u.sun_path);
+    u.sun_len = (unsigned char)SUN_LEN(&u);
+    int32_t n = -1;
+    if (connect(s, (struct sockaddr *)&u, u.sun_len) != 0 || !io_all(s, &n, sizeof n, 0)) n = -1;
+    close(s);
+    return n;
 }
 
 // pids_full reports whether the container runs as many processes as its
@@ -2332,7 +2309,7 @@ static int counted(pid_t pid, const char *comm) {
 // cgroup's limit does. The container's supervisor kills any process that
 // a race between two forks lets past it.
 static int pids_full(void) {
-    if (!pids_path[0]) return 0;
+    if (!pids_path[0] || !pids_socket[0]) return 0;
     char b[32];
     int fd = open(pids_path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return 0;
@@ -2342,20 +2319,10 @@ static int pids_full(void) {
     b[n] = 0;
     unsigned long max;
     if (!num(b, &max) || max == 0) return 0;
-    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_RUID, (int)getuid()};
-    size_t len = 0;
-    if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0) return 0;
-    len += 32 * sizeof(struct kinfo_proc);
-    struct kinfo_proc *kp = malloc(len);
-    if (!kp) return 0;
-    unsigned long count = 0;
-    if (sysctl(mib, 4, kp, &len, NULL, 0) == 0) {
-        for (size_t i = 0; i < len / sizeof *kp; i++) {
-            if (kp[i].kp_proc.p_stat != SZOMB && counted(kp[i].kp_proc.p_pid, kp[i].kp_proc.p_comm)) count++;
-        }
-    }
-    free(kp);
-    return count >= max;
+    int e = errno;
+    long count = pids_count();
+    errno = e;
+    return count >= 0 && (unsigned long)count >= max;
 }
 
 static pid_t fws_fork(void) {

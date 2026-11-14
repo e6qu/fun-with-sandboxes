@@ -44,7 +44,11 @@ type Config struct {
 	Tag string
 	// Procs is where the shim answers its container's library about the
 	// PID namespace whose file is PidNamespace (package pidns).
-	Procs        string    `json:",omitempty"`
+	Procs string `json:",omitempty"`
+	// Pids is where the shim answers its container's library with how
+	// many processes the container runs, which it compares with its pids
+	// limit before a fork: four bytes, a native-endian int32.
+	Pids         string    `json:",omitempty"`
 	PidNamespace string    `json:",omitempty"`
 	Publish      []Binding `json:",omitempty"`
 	// AllocRoot and Stack locate the stack's port block, from which UDP
