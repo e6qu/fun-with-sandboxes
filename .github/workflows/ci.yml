@@ -91,6 +91,10 @@ jobs:
         env:
           FWS_CFLAGS: -fsanitize=undefined -fsanitize-trap=undefined -g
         run: go test -count=1 ./internal/pathmap ./internal/runtime ./internal/shim ./internal/seatbelt
+      # Whether macOS enforces a fatal per-process memory limit an
+      # unprivileged parent sets (TestJetsamLimitExperiment), printed.
+      - name: jetsam experiment
+        run: go test -v -count=1 -run TestJetsamLimitExperiment ./internal/runtime
       # What a container's processes pay for each system call the path
       # library interposes, beside the same call made natively.
       - name: system calls through the path library
