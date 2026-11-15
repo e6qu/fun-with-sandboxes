@@ -5,7 +5,7 @@
 // took several, and every container start waits for it.
 //
 //   fws-spawn [-t] [-n nice] [-i iopolicy] [-q clamp] [-r resource:soft:hard]...
-//             -N nproc -c compiled -L library [-a anchor]
+//             -N nproc -c compiled [-p profile] -L library [-a anchor]
 //             -- path argv0 [arg]...
 //
 // -t makes standard input the controlling terminal; -q is the QoS clamp
@@ -14,7 +14,9 @@
 // posix_spawn's POSIX_SPAWN_SETEXEC, the one exec that takes it; -N is the fork
 // ceiling, the soft process limit the container's processes get at most
 // (runtime.ForkCeiling); -c names the compiled profile, the bytecode of
-// the container's Seatbelt profile after its text's SHA-256; -a starts the
+// the container's Seatbelt profile after its text's SHA-256, and -p the
+// text, which the helper compiles itself where macOS refuses the bytecode;
+// -a starts the
 // anchor, that binary run with this process's pid, on the listener at
 // descriptor 4. The environment is the command's, which gets the container library
 // -L names in DYLD_INSERT_LIBRARIES, which the helper itself does not load,
@@ -51,6 +53,11 @@ struct sandbox_profile {
     uint64_t zero[5];
 };
 int sandbox_apply(struct sandbox_profile *profile);
+// libsandbox's public entry point, deprecated but kept: with flags 0 it
+// compiles and applies a profile's text. Declared here, as sandbox.h marks
+// it deprecated, which -Werror refuses.
+int sandbox_init(const char *profile, uint64_t flags, char **errorbuf);
+void sandbox_free_error(char *errorbuf);
 
 enum { statusFD = 3, anchorFD = 4, hashLen = 32, rlimitNproc = 7 };
 
@@ -104,6 +111,26 @@ static int applyCompiled(const char *path) {
     return sandbox_apply(&p);
 }
 
+// applyText compiles and applies the profile text in the file at path: about
+// 15 ms where the bytecode takes 35 µs, but through the interface Apple keeps
+// stable, so a container still starts when sandbox_apply's bytecode or its
+// layout of struct sandbox_profile changes.
+static int applyText(const char *path, char *why, size_t whyLen) {
+    size_t len;
+    char *text = slurp(path, &len);
+    if (!text) {
+        snprintf(why, whyLen, "%s", strerror(errno));
+        return -1;
+    }
+    char *err = NULL;
+    if (sandbox_init(text, 0, &err) != 0) {
+        snprintf(why, whyLen, "%s", err ? err : "sandbox_init failed");
+        if (err) sandbox_free_error(err);
+        return -1;
+    }
+    return 0;
+}
+
 // forkCeiling lowers the soft process limit to ceiling, never raising it.
 static void forkCeiling(unsigned long long ceiling) {
     struct rlimit rl;
@@ -142,7 +169,7 @@ static void startAnchor(const char *anchor) {
 
 int main(int argc, char **argv) {
     int tty = 0, i = 1;
-    const char *compiled = NULL, *anchor = NULL, *library = NULL;
+    const char *compiled = NULL, *text = NULL, *anchor = NULL, *library = NULL;
     unsigned long long ceiling = 0;
     int nice = 0, haveNice = 0, iopolicy = 0, haveIO = 0, clamp = 0;
     struct { int res; struct rlimit rl; } limits[16];
@@ -169,6 +196,8 @@ int main(int argc, char **argv) {
             ceiling = strtoull(v, NULL, 10);
         } else if (strcmp(a, "-c") == 0) {
             compiled = v;
+        } else if (strcmp(a, "-p") == 0) {
+            text = v;
         } else if (strcmp(a, "-a") == 0) {
             anchor = v;
         } else if (strcmp(a, "-L") == 0) {
@@ -215,7 +244,16 @@ int main(int argc, char **argv) {
         }
     }
     forkCeiling(ceiling);
-    if (applyCompiled(compiled) != 0) failErrno("apply the compiled profile");
+    if (applyCompiled(compiled) != 0) {
+        char applied[256], why[512];
+        snprintf(applied, sizeof applied, "%s", strerror(errno));
+        if (!text) fail("apply the compiled profile", applied);
+        if (applyText(text, why, sizeof why) != 0) {
+            char both[900];
+            snprintf(both, sizeof both, "%s; compiling its text: %s", applied, why);
+            fail("apply the compiled profile", both);
+        }
+    }
 
     fcntl(statusFD, F_SETFD, FD_CLOEXEC);
     if (anchor) startAnchor(anchor);

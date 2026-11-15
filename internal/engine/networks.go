@@ -609,6 +609,9 @@ func (e *Engine) NetworkConnect(ref string, req network.ConnectRequest) error {
 	if _, ok := c.rec.Networks[n.Name]; ok {
 		return conflict("endpoint with name %s already exists in network %s", c.rec.Name, n.Name)
 	}
+	if err := checkMAC(req.EndpointConfig); err != nil {
+		return err
+	}
 	s := &network.EndpointSettings{}
 	if req.EndpointConfig != nil {
 		s = req.EndpointConfig.Copy()

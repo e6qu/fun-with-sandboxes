@@ -275,3 +275,37 @@ func TestSocketsAndWriteFilesAreReachable(t *testing.T) {
 		t.Error("a socket path with a quote rendered")
 	}
 }
+
+// A noexec volume stays writable and out of the exec allowance, and the
+// read-only and masked paths' denials come last, after every allowance of
+// the root and the volumes they lie in.
+func TestNoExecVolumeAndPathDenials(t *testing.T) {
+	s := spec()
+	s.Volumes = append(s.Volumes, Volume{Path: "/Users/u/.fws/stacks/a/c/c1/tmpfs/run", NoExec: true})
+	s.ReadOnlyPaths = []string{s.Root + "/proc/sys"}
+	s.MaskedPaths = []string{s.Root + "/proc/kcore"}
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := p[strings.Index(p, "(allow process-exec*"):]
+	exec = exec[:strings.Index(exec, "\n)\n")]
+	if !strings.Contains(exec, "volumes/data") {
+		t.Fatalf("the exec allowance was cut short:\n%s", exec)
+	}
+	if strings.Contains(exec, "tmpfs/run") {
+		t.Errorf("a noexec volume may execute:\n%s", exec)
+	}
+	if !strings.Contains(p, `(subpath "/Users/u/.fws/stacks/a/c/c1/tmpfs/run")`) {
+		t.Error("a noexec volume lost its other allowances")
+	}
+	ro := `(deny file-write* (subpath "` + s.Root + `/proc/sys"))`
+	masked := `(deny file-read* file-write* (subpath "` + s.Root + `/proc/kcore"))`
+	if !strings.HasSuffix(strings.TrimSpace(p), ro+"\n"+masked) {
+		t.Errorf("the path denials are not last:\n%s", p)
+	}
+	s.MaskedPaths = []string{"relative"}
+	if _, err := Render(s); err == nil {
+		t.Error("a relative masked path rendered")
+	}
+}

@@ -133,6 +133,9 @@ func (e *Engine) sample(c *Container) (container.StatsResponse, error) {
 	if r.PidsLimit != nil && *r.PidsLimit > 0 {
 		pidsLimit = uint64(*r.PidsLimit)
 	}
+	// The supervisor's members are what the pids limit counts; the process
+	// listing stands in where no supervisor answers.
+	pids := uint64(len(members))
 	var throttling container.ThrottlingData
 	var blkio container.BlkioStats
 	var networks map[string]container.NetworkStats
@@ -141,8 +144,11 @@ func (e *Engine) sample(c *Container) (container.StatsResponse, error) {
 			throttling = container.ThrottlingData{
 				Periods: st.Periods, ThrottledPeriods: st.ThrottledPeriods, ThrottledTime: uint64(st.ThrottledTime),
 			}
-			// Report the measure the memory limit holds.
+			// Report the measures the memory and pids limits hold.
 			rss = st.Footprint
+			if len(st.Members) > 0 {
+				pids = uint64(len(st.Members))
+			}
 			blkio = blkioStats(c.root(), st.DiskRead, st.DiskWritten)
 			// A container on no network has no interface to report, as
 			// in Docker; the rest have one, as a Docker container's eth0.
@@ -165,7 +171,7 @@ func (e *Engine) sample(c *Container) (container.StatsResponse, error) {
 			ThrottlingData: throttling,
 		},
 		MemoryStats: container.MemoryStats{Usage: rss, Limit: memLimit},
-		PidsStats:   container.PidsStats{Current: uint64(len(members)), Limit: pidsLimit},
+		PidsStats:   container.PidsStats{Current: pids, Limit: pidsLimit},
 		BlkioStats:  blkio,
 		Networks:    networks,
 	}, nil

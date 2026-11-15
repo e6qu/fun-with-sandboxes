@@ -54,6 +54,10 @@ type mountRec struct {
 	// NoCopy keeps a new volume empty rather than copying the image's
 	// content at the mount point into it.
 	NoCopy bool `json:"noCopy,omitempty"`
+	// NoExec denies executing the mount's files; Mode is a tmpfs mount's
+	// permission bits, where it sets them.
+	NoExec bool    `json:"noExec,omitempty"`
+	Mode   *uint32 `json:"mode,omitempty"`
 	// volumeOpts and volumeLabels are the driver options and labels a mount
 	// gives a volume it creates.
 	volumeOpts, volumeLabels map[string]string
@@ -675,6 +679,14 @@ func checkHostConfig(hc *container.HostConfig) error {
 			return unsupported("%s", k.what)
 		}
 	}
+	if hc.VolumeDriver != "" && hc.VolumeDriver != "local" {
+		return unsupported("volume driver %q is not supported; only \"local\" is", hc.VolumeDriver)
+	}
+	for _, p := range append(append([]string{}, hc.MaskedPaths...), hc.ReadonlyPaths...) {
+		if !filepath.IsAbs(p) {
+			return invalid("masked and read-only paths must be absolute: %q", p)
+		}
+	}
 	if hc.Isolation != "" && hc.Isolation != container.IsolationDefault {
 		return invalid("invalid isolation: %q - this engine only supports 'default'", hc.Isolation)
 	}
@@ -830,6 +842,9 @@ func (e *Engine) resolveNetworksLocked(stack, name, service string, req containe
 	}
 	if req.NetworkingConfig != nil {
 		for netName, es := range req.NetworkingConfig.EndpointsConfig {
+			if err := checkMAC(es); err != nil {
+				return nil, err
+			}
 			if err := add(netName, es); err != nil {
 				return nil, err
 			}
@@ -884,19 +899,25 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 		if len(parts) < 2 || len(parts) > 3 {
 			return nil, invalid("invalid volume specification: '%s'", b)
 		}
-		rw := true
+		rw, nocopy := true, false
 		if len(parts) == 3 {
 			for _, o := range strings.Split(parts[2], ",") {
 				switch o {
 				case "ro":
 					rw = false
-				case "rw", "z", "Z", "cached", "delegated", "consistent":
+				case "nocopy":
+					nocopy = true
+				// Propagation holds as rslave whatever is asked: mounts the
+				// host makes below a bind's source show in the container,
+				// which can make none of its own to propagate.
+				case "rw", "z", "Z", "cached", "delegated", "consistent",
+					"shared", "rshared", "slave", "rslave", "private", "rprivate":
 				default:
 					return nil, invalid("invalid mode: %s", o)
 				}
 			}
 		}
-		m := mountRec{Source: parts[0], Destination: parts[1], RW: rw}
+		m := mountRec{Source: parts[0], Destination: parts[1], RW: rw, NoCopy: nocopy}
 		if strings.HasPrefix(parts[0], "/") {
 			m.Type = mount.TypeBind
 		} else {
@@ -935,6 +956,23 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 				m.Subpath = o.Subpath
 			}
 		case mount.TypeTmpfs:
+			if o := mm.TmpfsOptions; o != nil {
+				if o.SizeBytes != 0 {
+					return nil, unsupported("tmpfs size is not supported: the mount is a directory, which no size holds")
+				}
+				if o.Mode != 0 {
+					mode := uint32(o.Mode.Perm())
+					if o.Mode&os.ModeSticky != 0 {
+						mode |= 0o1000
+					}
+					m.Mode = &mode
+				}
+				for _, kv := range o.Options {
+					if err := tmpfsOption(&m, strings.Join(kv, "=")); err != nil {
+						return nil, err
+					}
+				}
+			}
 		default:
 			return nil, unsupported("mount type %q is not supported", mm.Type)
 		}
@@ -942,8 +980,14 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 			return nil, err
 		}
 	}
-	for dest := range hc.Tmpfs {
-		if err := add(mountRec{Type: mount.TypeTmpfs, Destination: dest, RW: true}); err != nil {
+	for dest, opts := range hc.Tmpfs {
+		m := mountRec{Type: mount.TypeTmpfs, Destination: dest, RW: true}
+		for _, o := range strings.Split(opts, ",") {
+			if err := tmpfsOption(&m, o); err != nil {
+				return nil, err
+			}
+		}
+		if err := add(m); err != nil {
 			return nil, err
 		}
 	}
@@ -1071,7 +1115,7 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 			}
 		case mount.TypeTmpfs:
 			m.Source = filepath.Join(filepath.Dir(root), "tmpfs", strings.ReplaceAll(strings.TrimPrefix(m.Destination, "/"), "/", "_"))
-			if err := os.MkdirAll(m.Source, 0o1777); err != nil {
+			if err := makeTmpfs(*m); err != nil {
 				return nil, err
 			}
 		}
@@ -1403,7 +1447,13 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 		spec.ProcsSocket = e.procsSocket(c)
 	}
 	for _, m := range c.rec.Mounts {
-		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW})
+		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW, NoExec: m.NoExec})
+	}
+	for _, p := range c.rec.HostConfig.ReadonlyPaths {
+		spec.ReadOnlyPaths = append(spec.ReadOnlyPaths, c.hostPath(p))
+	}
+	for _, p := range c.rec.HostConfig.MaskedPaths {
+		spec.MaskedPaths = append(spec.MaskedPaths, c.hostPath(p))
 	}
 	// A container on another's network binds that one's ports and listens
 	// in its port directory, as processes of one network namespace do; a
@@ -1506,7 +1556,7 @@ func (c *Container) start(e *Engine) error {
 	for _, m := range c.rec.Mounts {
 		if m.Type == mount.TypeTmpfs {
 			os.RemoveAll(m.Source)
-			if err := os.MkdirAll(m.Source, 0o1777); err != nil {
+			if err := makeTmpfs(m); err != nil {
 				return err
 			}
 		}
@@ -2164,4 +2214,72 @@ func (e *Engine) Prune(f Filters) ([]string, uint64, error) {
 		reclaimed += uint64(size)
 	}
 	return removed, reclaimed, nil
+}
+
+// tmpfsOption applies one option of a tmpfs mount to m, as the engine can
+// honour it: the mount is a directory on disk, which no size, inode count
+// or owner holds, and an unprivileged process makes no setuid file or
+// device in it, so nosuid and nodev hold already.
+func tmpfsOption(m *mountRec, o string) error {
+	k, v, _ := strings.Cut(o, "=")
+	switch k {
+	case "", "nosuid", "nodev":
+	case "rw":
+		m.RW = true
+	case "ro":
+		m.RW = false
+	case "exec":
+		m.NoExec = false
+	case "noexec":
+		m.NoExec = true
+	case "mode":
+		n, err := strconv.ParseUint(v, 8, 32)
+		if err != nil || n > 0o1777 {
+			return invalid("invalid tmpfs mode %q", v)
+		}
+		mode := uint32(n)
+		m.Mode = &mode
+	default:
+		return unsupported("tmpfs mount option %q is not supported: the mount is a directory, which no size, inode count or ownership option holds", o)
+	}
+	return nil
+}
+
+// makeTmpfs makes the directory of tmpfs mount m, world-writable and
+// sticky as a tmpfs is unless its mode says otherwise.
+func makeTmpfs(m mountRec) error {
+	if err := os.MkdirAll(m.Source, 0o700); err != nil {
+		return err
+	}
+	mode := os.FileMode(0o777) | os.ModeSticky
+	if m.Mode != nil {
+		mode = os.FileMode(*m.Mode & 0o777)
+		if *m.Mode&0o1000 != 0 {
+			mode |= os.ModeSticky
+		}
+	}
+	return os.Chmod(m.Source, mode)
+}
+
+// checkMAC refuses a MAC address a client sets: the engine gives each
+// address the MAC its inspect shows, derived from it, on no interface.
+func checkMAC(es *network.EndpointSettings) error {
+	if es != nil && len(es.MacAddress) > 0 {
+		return unsupported("a container's MAC address is not supported: a container has no network interface of its own")
+	}
+	return nil
+}
+
+// hostPath is where container path p lies on the host: in the mount whose
+// destination holds it, the deepest, or else in the root.
+func (c *Container) hostPath(p string) string {
+	p = filepath.Clean(p)
+	best, out := -1, filepath.Join(c.root(), p)
+	for _, m := range c.rec.Mounts {
+		d := filepath.Clean(m.Destination)
+		if (p == d || strings.HasPrefix(p, d+"/")) && len(d) > best {
+			best, out = len(d), filepath.Join(m.Source, strings.TrimPrefix(p, d))
+		}
+	}
+	return out
 }
