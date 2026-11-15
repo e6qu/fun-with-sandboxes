@@ -15,6 +15,8 @@ import (
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/containerd/v2/core/snapshots/storage"
 	"github.com/containerd/continuity/fs"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/image"
 )
 
 // SnapshotterName is how BuildKit and containerd's metadata refer to the
@@ -106,90 +108,17 @@ func (o *snapshotter) full(ids []string) (string, error) {
 	case n == len(ids):
 		err = os.Mkdir(tree, 0o755)
 	case isDelta(o.dir(ids[n])):
-		err = cloneTree(o.fullDir(ids[n]), tree)
+		err = image.CloneTree(o.fullDir(ids[n]), tree)
 	default:
-		err = cloneTree(o.dir(ids[n]), tree)
+		err = image.CloneTree(o.dir(ids[n]), tree)
 	}
 	for i := n - 1; i >= 0 && err == nil; i-- {
-		err = mergeDelta(o.dir(ids[i]), tree, cloneTree)
+		err = image.MergeLayer(o.dir(ids[i]), tree, image.CloneTree)
 	}
 	if err != nil {
 		return "", err
 	}
 	return dst, os.Rename(tree, dst)
-}
-
-// mergeDelta lays the layer whose entries delta holds over the tree at
-// dst: what its whiteouts name goes from dst first, as they hide the
-// layers below and nothing of their own layer, and its entries follow. A
-// directory dst lacks comes as one clone of the layer's whole subtree.
-func mergeDelta(delta, dst string, clone func(src, dst string) error) error {
-	const whiteout, opaque = ".wh.", ".wh..wh..opq"
-	var marks []string
-	err := filepath.WalkDir(delta, func(p string, d os.DirEntry, err error) error {
-		if err != nil || p == delta || !strings.HasPrefix(d.Name(), whiteout) {
-			return err
-		}
-		rel, err := filepath.Rel(delta, p)
-		if err != nil {
-			return err
-		}
-		marks = append(marks, rel)
-		dir := filepath.Join(dst, filepath.Dir(rel))
-		if d.Name() != opaque {
-			return os.RemoveAll(filepath.Join(dir, strings.TrimPrefix(d.Name(), whiteout)))
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		for _, e := range entries {
-			if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	return filepath.WalkDir(delta, func(p string, d os.DirEntry, err error) error {
-		if err != nil || p == delta {
-			return err
-		}
-		if strings.HasPrefix(d.Name(), whiteout) {
-			return nil
-		}
-		rel, err := filepath.Rel(delta, p)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		fi, lerr := os.Lstat(target)
-		if d.IsDir() && lerr == nil && fi.IsDir() {
-			return copyDirMeta(p, target)
-		}
-		if lerr == nil {
-			if err := os.RemoveAll(target); err != nil {
-				return err
-			}
-		}
-		if err := clone(p, target); err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			return nil
-		}
-		// The subtree came whole, the marks inside it too.
-		for _, m := range marks {
-			if strings.HasPrefix(m, rel+string(filepath.Separator)) {
-				if err := os.Remove(filepath.Join(dst, m)); err != nil && !os.IsNotExist(err) {
-					return err
-				}
-			}
-		}
-		return filepath.SkipDir
-	})
 }
 
 func (o *snapshotter) Stat(ctx context.Context, key string) (info snapshots.Info, err error) {
@@ -307,6 +236,7 @@ func (o *snapshotter) Remove(ctx context.Context, key string) error {
 		return fmt.Errorf("remove snapshot %s: %w", key, err)
 	}
 	os.Remove(deltaMark(o.dir(id)))
+	os.Remove(bornStamp(o.dir(id)))
 	if err := os.RemoveAll(o.fullDir(id)); err != nil {
 		return err
 	}
@@ -343,7 +273,10 @@ func (o *snapshotter) create(ctx context.Context, kind snapshots.Kind, key, pare
 			if err != nil {
 				return err
 			}
-			return cloneTree(src, dst)
+			if err := image.CloneTree(src, dst); err != nil {
+				return err
+			}
+			return stampBorn(dst, s.ParentIDs[0])
 		}
 		return os.Mkdir(dst, 0o755)
 	})

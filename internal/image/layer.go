@@ -10,8 +10,10 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/klauspost/compress/gzip"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -21,20 +23,29 @@ const (
 
 // ModeXattr records a file's mode where extraction kept more on disk: the
 // owner's read and write on files and search on directories, which the
-// engine's user, and a container's root, needs.
+// engine's user, and a container's root, needs, and the setuid, setgid and
+// sticky bits, which the disk does not keep.
 const ModeXattr = "com.fws.mode"
 
 // ApplyLayer extracts one image layer onto dir, honouring OCI whiteouts. The
-// engine runs unprivileged, so it drops ownership and setuid/setgid bits, and
-// refuses entries that would land outside dir.
+// engine runs unprivileged, so it records, rather than sets, owners and
+// setuid, setgid and sticky bits (see recordMeta), and refuses entries that
+// would land outside dir. Files, links and directories keep the layer's
+// modification times.
 func ApplyLayer(dir string, r io.Reader) error {
-	return extract(dir, r, extractOptions{whiteouts: true})
+	return extract(dir, r, extractOptions{whiteouts: true, owners: true})
+}
+
+// ExtractLayer is ApplyLayer keeping the layer's whiteouts as the files
+// that name them, for a caller that acts on them itself.
+func ExtractLayer(dir string, r io.Reader) error {
+	return extract(dir, r, extractOptions{owners: true})
 }
 
 // Extract unpacks a plain tar stream onto dir with ApplyLayer's safety rules,
-// treating ".wh." names as ordinary files. With noOverwriteDirNonDir it
-// refuses to replace a directory with a non-directory or the reverse, as
-// `docker cp` asks.
+// treating ".wh." names as ordinary files and giving every file to root.
+// With noOverwriteDirNonDir it refuses to replace a directory with a
+// non-directory or the reverse, as `docker cp` asks.
 func Extract(dir string, r io.Reader, noOverwriteDirNonDir bool) error {
 	return extract(dir, r, extractOptions{noOverwriteDirNonDir: noOverwriteDirNonDir})
 }
@@ -42,6 +53,15 @@ func Extract(dir string, r io.Reader, noOverwriteDirNonDir bool) error {
 type extractOptions struct {
 	whiteouts            bool
 	noOverwriteDirNonDir bool
+	// owners records the owners the stream names.
+	owners bool
+}
+
+// dirTime is a directory's times, which extract sets once the stream is
+// written, as writing the directory's entries changes them.
+type dirTime struct {
+	rel          string
+	atime, mtime time.Time
 }
 
 func extract(dir string, r io.Reader, o extractOptions) error {
@@ -57,21 +77,55 @@ func extract(dir string, r io.Reader, o extractOptions) error {
 		r = br
 	}
 	tr := tar.NewReader(r)
+	var dirs []dirTime
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			return setDirTimes(dir, dirs)
 		}
 		if err != nil {
 			return err
 		}
-		if err := applyEntry(dir, h, tr, o); err != nil {
+		if err := applyEntry(dir, h, tr, o, &dirs); err != nil {
 			return fmt.Errorf("tar entry %q: %w", h.Name, err)
 		}
 	}
 }
 
-func applyEntry(dir string, h *tar.Header, r io.Reader, o extractOptions) error {
+// setDirTimes gives each directory the times its entry named, the last
+// entry's where several name one, skipping what later entries replaced or
+// put behind a link.
+func setDirTimes(dir string, dirs []dirTime) error {
+	for i := len(dirs) - 1; i >= 0; i-- {
+		d := dirs[i]
+		if checkParents(dir, d.rel) != nil {
+			continue
+		}
+		p := filepath.Join(dir, d.rel)
+		if fi, err := os.Lstat(p); err != nil || !fi.IsDir() {
+			continue
+		}
+		if err := setTimes(p, d.atime, d.mtime); err != nil {
+			return fmt.Errorf("directory %q: %w", d.rel, err)
+		}
+	}
+	return nil
+}
+
+// setTimes sets path's access and modification times, not following a
+// link; a zero time leaves its time as it is.
+func setTimes(path string, atime, mtime time.Time) error {
+	if mtime.IsZero() {
+		return nil
+	}
+	if atime.IsZero() {
+		atime = mtime
+	}
+	ts := []unix.Timespec{unix.NsecToTimespec(atime.UnixNano()), unix.NsecToTimespec(mtime.UnixNano())}
+	return unix.UtimesNanoAt(unix.AT_FDCWD, path, ts, unix.AT_SYMLINK_NOFOLLOW)
+}
+
+func applyEntry(dir string, h *tar.Header, r io.Reader, o extractOptions, dirs *[]dirTime) error {
 	rel, err := cleanName(h.Name)
 	if err != nil {
 		return err
@@ -114,27 +168,36 @@ func applyEntry(dir string, h *tar.Header, r io.Reader, o extractOptions) error 
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return err
 	}
-	mode := os.FileMode(h.Mode) & os.ModePerm
+	mode := FileModeBits(h.Mode)
+	perm := mode.Perm()
+	uid, gid := 0, 0
+	if o.owners {
+		uid, gid = h.Uid, h.Gid
+	}
 
 	switch h.Typeflag {
 	case tar.TypeDir:
+		fresh := true
 		if fi, err := os.Lstat(target); err == nil && !fi.IsDir() {
 			if err := os.RemoveAll(target); err != nil {
 				return err
 			}
+		} else if err == nil {
+			fresh = false
 		}
 		if err := os.MkdirAll(target, 0o755); err != nil {
 			return err
 		}
-		if err := os.Chmod(target, mode|0o700); err != nil {
+		if err := os.Chmod(target, perm|0o700); err != nil {
 			return err
 		}
-		return recordMode(target, mode, mode|0o700)
+		*dirs = append(*dirs, dirTime{rel: rel, atime: h.AccessTime, mtime: h.ModTime})
+		return recordMeta(target, mode, perm|0o700, uid, gid, fresh)
 	case tar.TypeReg:
 		if err := removeNonDir(target); err != nil {
 			return err
 		}
-		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode|0o600)
+		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm|0o600)
 		if err != nil {
 			return err
 		}
@@ -145,15 +208,24 @@ func applyEntry(dir string, h *tar.Header, r io.Reader, o extractOptions) error 
 		if err := f.Close(); err != nil {
 			return err
 		}
-		if err := os.Chmod(target, mode|0o600); err != nil {
+		if err := os.Chmod(target, perm|0o600); err != nil {
 			return err
 		}
-		return recordMode(target, mode, mode|0o600)
+		if err := recordMeta(target, mode, perm|0o600, uid, gid, true); err != nil {
+			return err
+		}
+		return setTimes(target, h.AccessTime, h.ModTime)
 	case tar.TypeSymlink:
 		if err := removeNonDir(target); err != nil {
 			return err
 		}
-		return os.Symlink(h.Linkname, target)
+		if err := os.Symlink(h.Linkname, target); err != nil {
+			return err
+		}
+		if err := recordMeta(target, 0, 0, uid, gid, true); err != nil {
+			return err
+		}
+		return setTimes(target, h.AccessTime, h.ModTime)
 	case tar.TypeLink:
 		src, err := cleanName(h.Linkname)
 		if err != nil {

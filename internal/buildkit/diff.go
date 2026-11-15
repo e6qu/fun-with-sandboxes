@@ -13,7 +13,6 @@ import (
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/diff"
 	"github.com/containerd/containerd/v2/core/mount"
-	"github.com/containerd/containerd/v2/pkg/archive"
 	"github.com/containerd/containerd/v2/pkg/archive/compression"
 	"github.com/containerd/containerd/v2/pkg/epoch"
 	"github.com/containerd/containerd/v2/pkg/labels"
@@ -66,7 +65,7 @@ func (a applier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mo
 	// the snapshotter to act on as it puts the tree together.
 	apply := image.ApplyLayer
 	if isDelta(root) {
-		apply = func(dir string, r io.Reader) error { return image.Extract(dir, r, false) }
+		apply = image.ExtractLayer
 	}
 	if err := apply(root, io.TeeReader(r, io.MultiWriter(dg.Hash(), n))); err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("apply layer %s: %w", desc.Digest, err)
@@ -96,10 +95,6 @@ func (s comparer) Compare(ctx context.Context, lower, upper []mount.Mount, opts 
 	}
 	if tm := epoch.FromContext(ctx); tm != nil && cfg.SourceDateEpoch == nil {
 		cfg.SourceDateEpoch = tm
-	}
-	var wopts []archive.WriteDiffOpt
-	if cfg.SourceDateEpoch != nil {
-		wopts = append(wopts, archive.WithSourceDateEpoch(cfg.SourceDateEpoch))
 	}
 	kind := compression.Uncompressed
 	switch {
@@ -158,9 +153,12 @@ func (s comparer) Compare(ctx context.Context, lower, upper []mount.Mount, opts 
 	if cfg.Labels == nil {
 		cfg.Labels = map[string]string{}
 	}
+	// The layer carries the modes and owners containers see, and reads
+	// only the files the step may have changed (settledSince).
+	dopts := image.DiffOptions{SourceDateEpoch: cfg.SourceDateEpoch, Settled: settledSince(lowerDir, upperDir)}
 	if kind == compression.Uncompressed {
 		dg := digest.SHA256.Digester()
-		if err := archive.WriteDiff(ctx, io.MultiWriter(cw, dg.Hash()), lowerDir, upperDir, wopts...); err != nil {
+		if err := image.WriteDiff(ctx, io.MultiWriter(cw, dg.Hash()), lowerDir, upperDir, dopts); err != nil {
 			return ocispec.Descriptor{}, fmt.Errorf("write diff: %w", err)
 		}
 		cfg.Labels[labels.LabelUncompressed] = dg.Digest().String()
@@ -175,7 +173,7 @@ func (s comparer) Compare(ctx context.Context, lower, upper []mount.Mount, opts 
 			return ocispec.Descriptor{}, fmt.Errorf("open compressed stream: %w", err)
 		}
 		dg := digest.SHA256.Digester()
-		err = archive.WriteDiff(ctx, io.MultiWriter(zw, dg.Hash()), lowerDir, upperDir, wopts...)
+		err = image.WriteDiff(ctx, io.MultiWriter(zw, dg.Hash()), lowerDir, upperDir, dopts)
 		if cerr := zw.Close(); err == nil {
 			err = cerr
 		}

@@ -161,9 +161,10 @@ func (v fsView) writeTree(tw *tar.Writer, h, name string) error {
 		hdr.Name += "/"
 	}
 	if fi.Mode()&os.ModeSymlink == 0 {
-		hdr.Mode = hdr.Mode&^0o777 | int64(image.RecordedMode(h, fi))
+		hdr.Mode = hdr.Mode&^0o7777 | image.TarMode(image.RecordedMode(h, fi))
 	}
 	hdr.Uname, hdr.Gname = "", ""
+	hdr.Uid, hdr.Gid, _ = image.RecordedOwner(h)
 	if err := tw.WriteHeader(hdr); err != nil {
 		return err
 	}
