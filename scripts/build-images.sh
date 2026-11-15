@@ -18,7 +18,31 @@ set -euo pipefail
 # builds no cache holds yet, which the images job would compile for hours.
 nixpkgs=${NIXPKGS:-github:NixOS/nixpkgs/f4244ef33645badc8157562b5e80748929b396c2}
 here=$(cd "$(dirname "$0")/.." && pwd)
-nix=(nix --extra-experimental-features 'nix-command flakes')
+# A runner's resolver drops a lookup now and then, and Nix retries a
+# download within a fraction of a second, so a failure to reach a cache is
+# tried again after a pause; any other failure, such as a build's, is not.
+retry_net() {
+  local err attempt
+  err=$(mktemp)
+  for attempt in 1 2 3; do
+    # stderr goes on to the log through tee as it comes, and into err, which
+    # the pipeline has finished writing once it ends; stdout, the outputs'
+    # paths, goes to the caller.
+    # With pipefail, the pipeline fails as the command does.
+    if { "$@" 2>&1 1>&3 3>&- | tee "$err" >&2; } 3>&1; then
+      rm -f "$err"
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ] && grep -qE 'Could not resolve host|unable to download|Connection reset|timed out' "$err"; then
+      echo "retrying after a network failure: $*" >&2
+      sleep $((attempt * 15))
+      continue
+    fi
+    rm -f "$err"
+    return 1
+  done
+}
+nix=(retry_net nix --extra-experimental-features 'nix-command flakes')
 servers=(--impure -f "$here/images/servers.nix" --argstr nixpkgs "$nixpkgs")
 case "${1:-}" in
 --inputs)
