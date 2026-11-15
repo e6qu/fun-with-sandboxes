@@ -217,14 +217,14 @@ operation family and then allows what the container owns:
 
 | Section | Allows |
 |---|---|
-| Baseline | `(deny default)` with Apple's `system.sb`, then forks, sysctl reads, ttys and sockets |
+| Baseline | `(deny default)` with Apple's `system.sb`, then forks, sysctl reads, ttys, `file-ioctl`, inbound network and socket creation, except kernel control and link-layer sockets (domains 32 and 27) |
 | File writes | the container's root, its writable volumes, and a few devices |
-| File reads | everything under `/` except the engine's state directory, of which the container gets back its root, its volumes, the container library and its stack's network file |
+| File reads | everything under `/`, then denied: the engine's state directory and the trees that hold user data or other software (`DeniedReadRoots`: `/Users`, `/Volumes`, `/Library`, `/Applications`, `/opt`, `/usr/local`, `/nix`, temporary directories, `/private/var/root`, `/private/etc/ssh`); then given back: the system trees every process needs (`SystemReadPaths`), the container's root and volumes, its port directory, the container library and helper, and its stack's network file. Only the libraries may be mapped executable from outside the root |
 | Execution | programs in the root and volumes, the system shells `popen()` and `system()` hard-code, and `fws-shim` once, to start the container's exec anchor |
-| Network | Unix sockets in the root and volumes; binds on the loopback host ports behind the container's ports; connections to its stack's block of ports, the egress proxy included when the container has internet access |
+| Network | Unix sockets in the root, volumes and port directory, the supervisor's socket and syslog's; binds on the loopback host ports behind the container's ports; connections to those ports and its stack's block of ports, the egress proxy included when the container has internet access |
 | Mach services | lookups of a fixed list of Apple services (`MachServices`), and registering and looking up the container's own under its IPC prefix |
-| IPC | POSIX shared memory and semaphores under the container's IPC prefix (`--ipc`) |
-| Signals and process information | processes in the same sandbox only |
+| IPC | POSIX shared memory and semaphores under the container's IPC prefix, and System V IPC, whose keys the container library keeps apart; `--ipc none` denies both, `--ipc host` leaves POSIX names open |
+| Signals and process information | processes in the same sandbox only; every process with `--pid host` |
 | IOKit and the rest | nothing: `(deny default)` keeps them denied |
 
 The engine applies the profile without `sandbox-exec`.

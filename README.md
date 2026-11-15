@@ -20,6 +20,7 @@ its own directory tree, so two stacks never clash and never see each other.
 - [`docs/SEATBELT.md`](docs/SEATBELT.md) — the macOS sandbox, a tutorial, and how each container's profile confines it
 - [`LIMITATIONS.md`](LIMITATIONS.md) — what it cannot do, and why
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — setting up, testing, and changing things
+- [`docs/HISTORY.md`](docs/HISTORY.md) — how it got here, and the investigations behind each fix
 
 ## Run it
 
@@ -40,26 +41,29 @@ docker compose up -d --wait
 ```
 
 `fwsd` runs each container's supervisor, and the processes it starts, from
-`fws-shim`, which must sit beside it. It builds its container library with
-clang from the Xcode Command Line Tools (`xcode-select --install`). `fwsd` refuses to run as root. State lives in `~/.fws` (`-root`), stacks get
-host ports from 20000–29999 in blocks of 100 (`-port-base`, `-port-limit`,
-`-block-size`). With `-live-restore` containers keep running while `fwsd`
-stops, for an upgrade say, and the next `fwsd` takes them back. With
-`-image-archives DIR` it loads an image from the archives in `DIR`, as
-`scripts/build-images.sh` or `docker save` writes them, the first time
-the image is asked for, so a catalog on disk costs only the images in use. While macOS reports critical memory pressure, or the disk
-holding its state has under 2 GiB free, it pauses the container using the
-most of it, one at a time, and resumes them once it is normal
-(`-machine-guard=false` turns that off). Container processes run under a
-`utility` QoS clamp, so they yield the CPU and the disk to your own work
-(`-qos-clamp` picks `background`, `maintenance` or `none`).
+`fws-shim`, which must sit beside it. As it starts it builds the container
+library and spawn helper with clang from the Xcode Command Line Tools
+(`xcode-select --install`). It refuses to run as root.
+
+| Flag | Default | |
+|---|---|---|
+| `-root` | `~/.fws` | the engine's state directory |
+| `-socket` | `<root>/docker.sock` | the socket the Docker, libpod and CRI APIs are served on |
+| `-port-base`, `-port-limit`, `-block-size` | 20000, 30000, 100 | the host ports handed to stacks, in a block per stack |
+| `-egress` | on | each stack's HTTP and SOCKS5 proxy to the internet |
+| `-buildkit` | on | BuildKit for `docker build`, buildx and `docker compose build` |
+| `-live-restore` | off | containers keep running while `fwsd` stops, and the next `fwsd` takes them back |
+| `-image-archives DIR` | — | load an image from the archives in `DIR` (as `scripts/build-images.sh` or `docker save` writes them) the first time it is asked for |
+| `-machine-guard` | on | while macOS reports critical memory pressure, or the state disk has under 2 GiB free, pause the container using the most of it, one at a time, and resume them once it is normal |
+| `-qos-clamp` | `utility` | the QoS every container process runs at most at, so containers yield the CPU and disk to your own work: `utility`, `background`, `maintenance` or `none` |
+| `-debug` | off | log each request with its time, and the steps of each create and start |
 
 ## Images
 
 The engine runs on Apple silicon Macs, and its images are macOS-native
 (`darwin/arm64`). Linux images
-cannot run without a VM; the roadmap in `PLAN.md` makes darwin images from
-them and from Dockerfiles written for Linux. `scripts/build-images.sh` builds the catalog from
+cannot run without a VM; the roadmap in `PLAN.md` makes Dockerfiles written
+for Linux build darwin images. `scripts/build-images.sh` builds the catalog from
 Nix packages into archives for `docker load`, and `scripts/publish-images.sh`
 pushes them to a registry the engine can pull from. CI publishes the
 images each push to `main` passes its tests with to GitHub's container
@@ -109,6 +113,7 @@ builds for Linux alone:
 | `fws/playwright:1.59` | Node.js 24 with `playwright` and its Chromium headless shell |
 | `fws/busybox:1` | a shell, `sh` by default, and the commands scripts run in BusyBox's image (`ls`, `cat`, `grep`, `sed`, `awk`, `find`, `tar`, `gzip`, `wget`, `nc -z`…) as separate programs, since BusyBox builds for Linux alone; `busybox CMD` runs them by name |
 | `fws/base:1` | a base to build `FROM` in place of Alpine or Debian: `bash` by default, `fws/busybox`'s commands, `curl`, `git`, `jq`, `less`, and a CA bundle at `/etc/ssl/certs/ca-certificates.crt`; no package manager, as theirs install Linux binaries |
+| `fws/ryuk:0.14.0` | Testcontainers' reaper (see [Testcontainers](#testcontainers)) |
 | `fws/toolbox:1` | the test suite's small app and probe |
 
 ```bash
@@ -158,6 +163,7 @@ the engine also tells the container where its things are:
 | `SANDBOX_PORT_<n>` | the loopback host port of container port `<n>`, for a program that loads no library |
 | `SANDBOX_<SERVICE>_PORT_<n>` | the host port of stack peer `<service>`'s port `<n>` |
 | `SANDBOX_<SERVICE>_HOST` | the host to reach that peer on (`127.0.0.1`); through the container library a peer is reachable by name too |
+| `SANDBOX_HOST` | `127.0.0.1`, the host a container's published ports are on |
 | `SANDBOX_STACK` | the stack (Compose project) name |
 | `SANDBOX_IPC_PREFIX` | the prefix POSIX shared memory and semaphore names start with under private IPC, which the container library adds |
 
@@ -190,9 +196,12 @@ Each container runs under a supervisor that holds it to `--memory`,
 processes start with its `--ulimit`s, `--cpu-shares` priority and
 `--blkio-weight` disk I/O tier; `docker update` changes them live (see
 [LIMITATIONS.md](LIMITATIONS.md) for how each is enforced). Requests the
-engine cannot honour without root — cpusets, user switching, privileged
-mode, added capabilities, host networking, other network drivers — fail with
-an error rather than being ignored.
+engine cannot honour without root or a VM — cpusets, added capabilities,
+host networking outside a privileged container, network drivers other than
+bridge, devices — fail with an error; [LIMITATIONS.md](LIMITATIONS.md) lists
+each, and the few settings still accepted without effect. `--privileged`
+gives the container an engine of its own (Docker in Docker, kind nodes),
+and `--user` is presented by the container library.
 
 ## Testcontainers
 
@@ -302,5 +311,5 @@ Compose; [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the setup and every
 check CI runs:
 
 ```bash
-cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e ./...
+cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e -timeout 90m ./...
 ```
