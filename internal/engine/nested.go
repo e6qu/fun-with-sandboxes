@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
 	stackmembers "github.com/e6qu/fun-with-sandboxes/internal/members"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
@@ -46,6 +47,10 @@ type Nested struct {
 	// nested engine's service reaches an endpoint beyond its own
 	// members, such as a cluster's API server.
 	Dial func(netip.AddrPort) (net.Conn, error)
+	// DialUDP opens a UDP flow to such a member's port, as Dial connects:
+	// how a nested engine's UDP Service reaches an endpoint on another
+	// node, such as cluster DNS's.
+	DialUDP func(netip.AddrPort) (net.Conn, error)
 	// Publish hands the engine it is nested in this engine's members on
 	// networks with subnets of their own, as they change; Peers are those
 	// the engines nested in the containers its container shares a network
@@ -148,6 +153,7 @@ func (e *Engine) openNested(c *Container) error {
 			Path:    func(p string) (string, error) { return e.pathIn(c, p) },
 			Port:    func(p int) (int, string, error) { return e.portIn(c, p) },
 			Dial:    func(ap netip.AddrPort) (net.Conn, error) { return e.dialFrom(c, ap) },
+			DialUDP: func(ap netip.AddrPort) (net.Conn, error) { return e.dialFromUDP(c, ap) },
 			Publish: func(ms []stackmembers.Member) { e.publishPeer(c, ms) },
 			Peers:   func() []stackmembers.Member { return e.peersOf(c.rec.ID) },
 			Node:    func() (*Engine, *Container) { return e, c },
@@ -299,6 +305,59 @@ func (e *Engine) listenOnNode(p int) (net.Listener, error) {
 	// The router writes each client's address before its stream, which
 	// the container library strips for a container's own listeners.
 	return router.Listener(l), nil
+}
+
+// dialFromUDP opens a UDP flow to port ap.Port of the member at ap.Addr
+// that container c shares a network with, from a port of the member's
+// stack's block, which its sandbox lets it answer: to its UDP host port, or
+// its router's flow port for one without.
+func (e *Engine) dialFromUDP(c *Container, ap netip.AddrPort) (net.Conn, error) {
+	owner, err := e.netOwner(c)
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	var hp, rp int
+	var stack string
+	found := false
+	for _, o := range e.containers {
+		if !o.isRunning() || !onNetwork(o) {
+			continue
+		}
+		for n, es := range o.rec.Networks {
+			if n == "none" || n == "host" || owner.rec.Networks[n] == nil || es == nil {
+				continue
+			}
+			if es.IPAddress == ap.Addr() || (o.rec.Address == ap.Addr().String()) {
+				hp, rp, stack, found = o.rec.Ports[fmt.Sprintf("%d/udp", ap.Port())], o.rec.RouterPort, o.rec.Stack, true
+			}
+		}
+		if found {
+			break
+		}
+	}
+	e.mu.Unlock()
+	if !found {
+		// A pod of another node: another nested engine's member.
+		return e.dialPeerUDP(owner, ap)
+	}
+	up, err := udpUpstream(hp, rp, ap)
+	if err != nil {
+		return nil, err
+	}
+	return alloc.DialFlow(e.cfg.Root, stack, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: up})
+}
+
+// udpUpstream is where a member's UDP port ap.Port receives: its host
+// port hp, or the flow port its router at rp gives a port without one.
+func udpUpstream(hp, rp int, ap netip.AddrPort) (int, error) {
+	if hp != 0 {
+		return hp, nil
+	}
+	if rp != 0 {
+		return router.LookupUDP(net.JoinHostPort("127.0.0.1", strconv.Itoa(rp)), int(ap.Port()))
+	}
+	return 0, fmt.Errorf("%s does not listen on UDP port %d", ap.Addr(), ap.Port())
 }
 
 // dialFrom connects to port ap.Port of the member at ap.Addr that

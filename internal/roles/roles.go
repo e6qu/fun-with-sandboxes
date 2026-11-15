@@ -1,6 +1,6 @@
 // Package roles names the binary that runs the engine's helper processes —
-// the spawn helper, each container's supervisor, each stack's egress proxy
-// — and the variable that tells that binary which role to take.
+// each container's supervisor and exec anchor, each stack's egress proxy —
+// and the variable that tells that binary which role to take.
 package roles
 
 import (

@@ -35,8 +35,9 @@ copy-on-write clones**, and **per-stack resource assignment**.
 
 - **Not a Linux container runtime.** It runs macOS-native (Mach-O,
   `darwin/<arch>`) images only. Linux ELF images cannot run on macOS without a
-  VM or emulation, both excluded; the roadmap (`PLAN.md`) makes darwin images
-  from Linux images and Dockerfiles instead.
+  VM or emulation, both excluded. Images come from the Nix-built catalog
+  (§7) or from Dockerfiles built on it; [`PLAN.md`](../PLAN.md) covers
+  building Dockerfiles written for Linux.
 - **Not root-requiring.** No step uses `sudo`, installs a kext, disables SIP,
   adds `lo0` aliases, or writes `pf` rules. If a design choice needs root, it is
   rejected and replaced with an unprivileged equivalent.
@@ -45,22 +46,24 @@ copy-on-write clones**, and **per-stack resource assignment**.
 
 ### Accepted exceptions
 
-The brief allows small leaks where macOS gives no unprivileged alternative.
-These are documented, tested for, and bounded:
+Where macOS gives an unprivileged process no alternative, a container sees
+more of the host than under Docker, though it can act on none of it:
 
-- **Process listing.** `ps`/`pstree` run by the user still see container
-  processes by PID and name. Seatbelt denies *acting on* them across sandboxes
-  (signals, `process-info`), but not their appearance in a global listing. There
-  is no unprivileged PID namespace on macOS.
-- **Shared kernel surfaces.** `sysctl` values, the system clock, and the mach
-  host port are global and readable. No container can write them (Seatbelt
-  denies `system-*`), but they are observable.
-- **System frameworks.** Every container can read `/usr/lib`, `/System/Library`,
-  and the dyld shared cache. macOS binaries cannot run without them, and they
-  carry no user data.
+- **Process listing.** A program that loads no container library, as
+  Apple's `ps` does not, lists every process of the user by host pid.
+  Seatbelt still denies signalling or inspecting another sandbox's
+  processes.
+- **Shared kernel surfaces.** `sysctl` values, the system clock and the
+  Mach host port are global and readable; Seatbelt denies writing them.
+- **The host's system tree.** A container reads everything under `/` but
+  the user's and the machine's data roots (`/Users`, `/Volumes`,
+  `/Library`, `/opt`, `/usr/local`, `/nix`, temporary and per-user
+  directories and others, `seatbelt.DeniedReadRoots`) and the engine's
+  state, of which it gets back only its own root, volumes and files (§3).
 
-Everything else — another stack's files, ports, environment, logs, or the right
-to signal its processes — is denied.
+Another stack's files, ports, environment and logs, and the right to signal
+its processes, stay denied. [`LIMITATIONS.md`](../LIMITATIONS.md) lists every
+gap in full.
 
 ---
 
@@ -80,8 +83,10 @@ Two consequences drive the entire design:
 2. **No private network stack.** Every container shares the host's single
    loopback and port space. Two containers cannot both own `:5432`. → We do not
    fake per-container ports. Instead the engine **assigns** each container real,
-   distinct host ports and real data paths, and passes them to the service
-   through configuration — the mechanism the user has accepted (§5, §6).
+   distinct host ports and real data paths. The container library binds a
+   container port's host port in its place, so a service listens on its
+   container port as written; the `SANDBOX_*` variables name the
+   assignment for a program that loads no library (§5, §6).
 
 This is the pivot of the project: **isolation by assignment, enforced by
 Seatbelt**, not isolation by virtualization. The engine is the authority that
@@ -95,17 +100,19 @@ container using anything it was not handed.
 | Dimension | Primitive | Guarantee | Gap (accepted) |
 |---|---|---|---|
 | Filesystem write | Seatbelt `(deny file-write*)` + allow only the container root and its volumes | A container writes only inside its own clone and mounts | — |
-| Filesystem read of host | Seatbelt `(deny file-read*)` + allow system frameworks and the container root | No read of `$HOME`, other stacks' roots, or user data | System libs/frameworks readable (needed) |
+| Filesystem read of host | Seatbelt `(allow file-read* (subpath "/"))`, then `(deny file-read*)` of the user's and machine's data roots (`seatbelt.DeniedReadRoots`) and the engine's state, then allow the container root, its volumes, the container library and its network file | No read of `$HOME`, other stacks' roots, or user data | The rest of the host's system tree is readable |
 | Cross-stack visibility | Per-stack directory tree + per-stack Seatbelt path allowances | Stack A's profile names only A's paths; A cannot read or write B | — |
 | Ports | Engine allocates a disjoint range per stack; Seatbelt `(deny network-bind)` except the assigned ports | Two stacks never clash; a container binds only its grants | Host sees all listening sockets globally |
 | Process signalling | Seatbelt `(deny signal)` and `(deny process-info*)` except same-sandbox; execs start in the container's sandbox; the container library lists the sandbox's processes alone. `--pid host` allows both, and the library lists every process (`FWS_PIDNS=host`). `--pid container:` shares a namespace through the containers' shims (below) | A cannot `kill`, inspect or list B's processes | pids are the host's (no PID namespace) |
 | Default deny | Seatbelt `(deny default)` on Apple's `system.sb` baseline, each operation class re-allowed by name | A container gets no IOKit, Mach registration, preferences, AppleEvents, kernel control sockets or anything else the profile does not name | — |
 | IPC | Seatbelt `ipc-posix-name-prefix` filters; the container library's per-container System V keys | POSIX shared memory and semaphores confined to a per-container name prefix (`--ipc` private); System V keys hashed with it; `none` denies all IPC | a System V key is presented, not confined: a guessed hashed key reaches another container's object |
-| Resource limits | Per-container supervisor (§3a); `setrlimit` through a spawn helper | Memory, CPU, pids caps, `--ulimit`, priority and disk I/O tiers | Enforced by ending, stopping or killing processes, not by refusing allocations; the container library refuses forks at the pids limit |
-| Identity | Runs as the invoking user | — | No `user:`-switch to arbitrary UID (needs root) → non-default `user:` is **rejected** |
+| Resource limits | Per-container supervisor (§3a); `setrlimit`, the nice value, the disk I/O tier and a QoS clamp through the spawn helper | Memory, CPU, pids caps, `--ulimit`, priority and disk I/O tiers | Enforced by ending, stopping or killing processes, not by refusing allocations; the container library refuses forks at the pids limit |
+| Identity | Runs as the invoking user; the container library presents the user `--user` or `USER` names, resolved against the container's own `/etc/passwd` and `/etc/group` | Programs see the container's user and groups, as under Docker | Presented, not enforced: every process runs as the invoking user |
 
 Rejections are deliberate: an unsupported knob returns a clear API error rather
 than silently doing nothing. Silent no-ops would be a fidelity bug.
+[`SEATBELT.md`](SEATBELT.md) shows the profile's sections and how to read a
+container's profile and its denials.
 
 ### 3a. Isolation and limits without cgroups
 
@@ -123,9 +130,36 @@ same knobs, each enforced by a real mechanism or refused:
   (nofile, fsize, cpu, core, stack), the nice value `--cpu-shares` maps to,
   the disk I/O policy tier `--blkio-weight` maps to, the controlling
   terminal and the fork ceiling, applies the container's compiled Seatbelt
-  profile (`sandbox_apply`, from the bytecode the engine compiled ahead),
-  and executes the command with the container library loaded. A limit the
-  user cannot set fails the start, reported on a close-on-exec status pipe.
+  profile (`sandbox_apply`), and executes the command with the container
+  library loaded, through `posix_spawn` with `POSIX_SPAWN_SETEXEC`, the one
+  exec that takes a QoS clamp. A limit the user cannot set fails the start,
+  reported on a close-on-exec status pipe.
+- **Compiled profiles.** libsandbox takes about 15 ms to compile a
+  profile's text and the kernel about 35 µs to apply the bytecode. The
+  engine renders the profile (`internal/seatbelt`) to `profile.sb`,
+  compiles it with `sandbox_compile_string` (`libsystem.SandboxCompile`)
+  to `profile.bin` beside it, keyed by the text's SHA-256
+  (`internal/runtime`), while the shim starts, and the helper applies the
+  bytecode. A start whose text is unchanged, as a restart's, compiles
+  nothing.
+- **Fork ceiling.** The helper lowers the soft `RLIMIT_NPROC` of every
+  container process to `kern.maxprocperuid` less a reserve of an eighth
+  of it, at least 64 (`runtime.ForkCeiling`), so a fork bomb fails in the
+  kernel while the user's own programs can still start.
+- **QoS clamp.** Every container process and what it starts runs at most
+  at the quality of service `fwsd -qos-clamp` names (`utility` by default;
+  `none`, `background` or `maintenance`), set with
+  `posix_spawnattr_set_qos_clamp_np`, so containers yield the CPU and the
+  disk to the user's interactive work.
+- **Machine guards.** With `-machine-guard` (on by default) the engine
+  reads two measures every 2 s: macOS's memory pressure level
+  (`kern.memorystatus_vm_pressure_level`) and the free space of the disk
+  holding its state, critical under 2 GiB and normal again from 4 GiB.
+  While a measure is critical it pauses, one container a step, the running
+  container that uses the most of it (the shim's footprint, or bytes
+  written), as `docker pause` does, and resumes the ones it paused once the
+  measure is back to normal. A paused container's memory pages out and it
+  writes no more; its work waits instead of being lost.
 - **Exec anchor.** Seatbelt lets a process signal and inspect only the
   processes of its own sandbox, the ones that inherited it, and a process
   that enters the container's profile by itself is a sandbox of its own. So
@@ -146,6 +180,9 @@ same knobs, each enforced by a real mechanism or refused:
     that process as pid 1.
   - The profile lets the sandbox execute `fws-shim` for it, and nothing
     else beyond the root, its volumes and the system shells.
+
+  Step 4 of [`SEATBELT.md`](SEATBELT.md)'s tutorial shows the sandbox
+  inheritance this relies on.
 - **Shared PID namespaces.** A running container's sandbox takes in no
   process of another's, so `--pid container:<name>` shares a namespace
   through the shims, outside the sandboxes:
@@ -176,8 +213,10 @@ same knobs, each enforced by a real mechanism or refused:
   forking process's children, the processes macOS holds the main process
   responsible for, and anything that started with the container's
   `SANDBOX_ROOT` tag — reading the whole process table only when a member
-  forked and ended before its children were read, and enforces, every
-  100 ms:
+  forked and ended before its children were read, or an exec starts. With
+  no limit set it waits on those events alone; with one, it also samples
+  the members every 100 ms, the kernel's default CFS period, and
+  enforces:
   - `--memory`: the sum of the processes' physical footprints, which counts
     compressed and swapped-out memory, so `--memory-swap` may only equal it;
     past the limit the largest process is killed, as the kernel OOM killer
@@ -193,8 +232,7 @@ same knobs, each enforced by a real mechanism or refused:
     it, and fails the call with `EAGAIN` when the container already runs
     that many. The shim answers from the members it follows, dropping
     those that ended and reading each one's children, so the count holds
-    a fork made a moment before; the library listed every process of the
-    user on each call. Processes past the limit, which
+    a fork made a moment before. Processes past the limit, which
     two racing forks or a program without the library start, are killed
     as they appear.
   `docker update` changes these live; `docker pause` stops the processes
@@ -399,7 +437,10 @@ same knobs, each enforced by a real mechanism or refused:
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would
   need root, is refused, but `IPC_LOCK`, which grants what macOS lets every
-  process do already, lock memory up to its `RLIMIT_MEMLOCK`. `no-new-privileges` holds for every container.
+  process do already: macOS does not enforce `RLIMIT_MEMLOCK`, so any
+  process may lock memory within the system's wired-memory limits. For the
+  same reason `--ulimit memlock` is accepted only as unlimited.
+  `no-new-privileges` holds for every container.
 
 ---
 
@@ -413,18 +454,38 @@ paths.
 
 ```
 ~/.fws/
-  docker.sock                      # the Docker Engine API
+  docker.sock                      # the Docker Engine, libpod and CRI APIs
   alloc.json                       # per-stack port blocks and assignments
+  networks.json  volumes.json  pods.json
+  lib/                             # fwsroot and the spawn helper, built by clang
+  run/                             # per container <id12>: .sock (shim),
+                                   #   .anchor, .pids, .procs, .engine,
+                                   #   .p/ (port directory); egress-<stack>
+                                   #   .json/.key/.log
   images/images.json               # image records: tags, config, manifest
   images/oci/                      # an OCI image layout: oci-layout,
                                    #   index.json, blobs/sha256/
   images/roots/<config-digest>/    # each image, unpacked once
+  stacks/<stack>/network           # the stack's network file (FWS_NETWORK)
   stacks/<stack>/c/<id12>/
     r/                             # the container root: an APFS clone
-    config.json  log.jsonl  profile.sb
+    init/                          # the root as create left it, for diff
+    config.json  exit.json  log.jsonl
+    profile.sb  profile.bin        # the profile's text and its bytecode
+    pids.max  pidns  shm           # the pids limit, a shared PID
+                                   #   namespace's file, the shm ledger
+    engine/                        # a privileged container's nested engine
   volumes/<name>/_data/            # named and anonymous volumes
-  networks.json  volumes.json
+  staging/  trash/                 # roots being cloned or deleted
+  buildcache/                      # the classic builder's step cache
+  buildkit/                        # BuildKit's content store, snapshots, metadata
 ```
+
+A container's root is a clone of its image's, which takes as long to make
+and to delete as the image has files. So the engine clones into `staging/`
+and deletes from `trash/` without holding its lock, and moves a root into or
+out of place under the lock with a `rename`. At start-up it deletes whatever
+an earlier engine left in either, in the background.
 
 Every image is an OCI image in `images/oci`, an OCI image layout whose
 `index.json` names each tagged image as containerd and `docker save` name
@@ -432,6 +493,14 @@ them (`io.containerd.image.name`, `org.opencontainers.image.ref.name`). Pulled
 and loaded images keep their manifests, configs and layers byte for byte, so
 their digests and IDs (the config digest, as in Docker) survive a save, load,
 push or pull. Removing an image removes the blobs no other image refers to.
+
+The store can also stand on a directory of image archives (`fwsd
+-image-archives`, `*.tar` as `docker save` and the catalog's build write
+them; `internal/image/archives.go`). It reads each archive's names when it
+opens, and loads an archive, once, the first time one of its names is asked
+for and the store holds no image of that name. A catalog then costs only the
+images a session uses, and the engine works offline from it; an image
+removed after its archive loaded stays removed.
 
 Registry credentials come from the client, as dockerd takes them: `docker
 login` sends them to `POST /auth`, which checks them against the registry,
@@ -503,7 +572,9 @@ ports.
 ## 6. Networking without root or a network stack
 
 The host has one loopback and one port space. The engine does not virtualise
-it; it tells services their assignment through the environment.
+it: it assigns each container port a real host port, the container library
+puts the assignment in the program's place, and the environment names it for
+a program that loads no library.
 
 - **Binding.** A service listens on its container port, as under Docker,
   and the container library binds that port's host port on loopback in its
@@ -516,7 +587,9 @@ it; it tells services their assignment through the environment.
   point at replica 1. A client of `db:5432` reads
   `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
 - **Published ports.** `ports:` entries bind real host listeners in the
-  engine, which forward each connection to the container's assigned port. A
+  container's shim (`internal/portproxy`), outside the sandbox, which
+  forward each connection to the container's host port, or to the Unix
+  socket in its port directory for a port without one. A
   taken host port fails the start with Docker's "port is already allocated",
   and a host port range binds the first port of it the host has free. UDP
   ports publish through a userland proxy, as Docker's `docker-proxy` does:
@@ -580,10 +653,27 @@ it; it tells services their assignment through the environment.
   rebind a name onto the host. Containers with `network_mode: none`, or only
   on `internal: true` networks, get no proxy variables and their profiles omit
   the proxy's port.
-- **Networks.** Compose's networks are recorded and reported faithfully, but
-  they carry no traffic: reachability is the stack. A container cannot join a
-  network another stack owns, and `host` and `container:` network modes are
-  refused.
+- **Networks.** User-defined networks decide which members a container
+  resolves and reaches: the container library and the routers answer only
+  for members it shares a network with or links to, and a network shared
+  with another stack joins the two stacks through their routers (above).
+  Seatbelt's fence is the stack's block, so between two members of one
+  stack the separation is the library's, not the kernel's. Network mode
+  `container:<id>` takes that container's network wholesale (§3a);
+  `host` is refused, but for a nested engine's containers, which take the
+  privileged container's network (§3a). Only the `bridge` driver and the
+  default IPAM driver are accepted.
+- **ICMP.** A container's traffic is held to its stack's TCP and UDP ports,
+  and ICMP has none. The container library makes an unprivileged datagram
+  ICMP socket, as `ping` opens, a Unix datagram socket pair, and answers an
+  echo request to loopback, the container's own address or a member it
+  sees at once, as that member's kernel would. It sends one to a host
+  outside the machine, over IPv4, to the container's router as an `Echo`
+  request (the address, the message's length, the message); the router,
+  outside the sandbox, pings the host through macOS's unprivileged ICMP
+  socket for a container with internet access, and answers with the reply,
+  or refuses after 2 s. An echo to any other address fails with
+  `ENETUNREACH`.
 
 A program that loads the container library listens on and connects to
 `5432` as written; one that loads none, as Apple's do not, needs the
@@ -606,17 +696,26 @@ Stock Docker Hub images are Linux. The catalog is built from Nixpkgs for
   layer per store path, in sorted order, and a last layer with everything
   else, so images that share store paths share layers. The profile denies the host's
   `/nix`, so the tests prove it.
-- **Entrypoints are Go programs** (`images/*/entry`) that configure the
-  service as the official image's entrypoint does, on its container ports,
-  and `exec` it. Images carry no
-  `#!` scripts: the kernel resolves interpreters on the host.
-- **Catalog.** `fws/postgres:16`, with `initdb`, `POSTGRES_PASSWORD`,
-  `POSTGRES_DB` and `docker-entrypoint-initdb.d/*.sql` handled the way the
-  official image handles them; `fws/redis:8`; and `fws/toolbox:1`, a small
-  HTTP app backed by its stack's Redis that doubles as the tests' probe;
-  and `fws/ryuk:0.14.0`, Testcontainers' reaper built from its release
-  unchanged, and an `nc` that checks a container port through the container
-  library, as Testcontainers' in-container port check runs `nc -z`. A container reaches
+- **Entrypoints.** Where the official image's entrypoint configures the
+  service, the catalog's is a Go program (`images/*/entry`) that does the
+  same, on its container ports, and `exec`s it; other images run their
+  program directly, or the upstream image's own `#!` scripts (Kafka's
+  `configure`, the Lambda runtimes' `bootstrap`), which run under the
+  interpreter in the root, and a `#!/usr/bin/env` line under the program
+  the container's `PATH` names (`internal/runtime/script.go`).
+- **Catalog.** `scripts/build-images.sh` builds every image under
+  `images/`, among them `fws/postgres`, with `initdb`,
+  `POSTGRES_PASSWORD`, `POSTGRES_DB` and `docker-entrypoint-initdb.d/*.sql`
+  handled the way the official image handles them; `fws/redis`;
+  `fws/toolbox`, a small HTTP app backed by its stack's Redis that doubles
+  as the tests' probe; `fws/ryuk`, Testcontainers' reaper built from its
+  release unchanged; databases, brokers and servers (MySQL, MariaDB,
+  MongoDB, Kafka, RabbitMQ, NATS, nginx, Vault, SeaweedFS as the S3
+  server and others); language runtimes (Node, Bun, Python, the Lambda
+  runtimes); `fws/dind`; and the Kubernetes images (`kind-node`, the
+  control plane's components, `kubelet`, `kubectl`, `pause`). An `nc`
+  checks a container port through the container library, as
+  Testcontainers' in-container port check runs `nc -z`. A container reaches
   a Unix socket it bind-mounts, as in Docker, and makes sockets in its
   writable mounts.
   macOS allows only 87 System V semaphores machine-wide by default, so the
@@ -648,7 +747,8 @@ with or without the `/v1.xx` prefix:
   unframed output, binary from API 1.28 on), both ending on a terminal at
   the client's detach keys (ctrl-p ctrl-q unless it names its own), `archive` (`HEAD`, `GET`, `PUT`:
   `docker cp`), `top`, `stats` (streamed every second, or one sample),
-  `pause`, `unpause`, `update` (restart policy), `DELETE`, `prune`
+  `pause`, `unpause`, `update` (restart policy and resource limits),
+  `DELETE`, `prune`
   (`label`, `until`)
 - Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached,
   detached, TTY, detaching at the exec's detach keys), `/exec/{id}/resize`, `GET /exec/{id}/json`
@@ -666,6 +766,9 @@ with or without the `/v1.xx` prefix:
   and `GET /containers/{id}/export`
 - Networks: `json`, `create`, `{id}`, `connect`, `disconnect`, `prune`, `DELETE`
 - Volumes: `json`, `create`, `{name}`, `prune`, `DELETE`
+- The engine's own: `GET` and `PUT /fws/networks/{name}/services`, a
+  network's virtual services, which `fws-kube-proxy` keeps in step with a
+  cluster's (see Kubernetes below)
 
 A container's create ends with an APFS clone of its root, taken once its
 mounts are set up: the state Docker's init layer holds. `docker diff` and a
@@ -677,10 +780,19 @@ timeout, start period, retries) and report Docker's states and events. Restart
 policies follow Docker's back-off.
 
 Requests the engine cannot honour return an error rather than being
-accepted: `501` for memory, CPU, PID, ulimit and device limits; privileged
-mode; capabilities; non-default users; `host` networking; non-`bridge`
+accepted, `501` for a knob only a kernel or root could enforce: a swap limit
+apart from the memory limit, memory reservations, swappiness and disabling
+the OOM killer; cpusets, real-time CPU scheduling and per-device block I/O
+limits; the `nproc`, `data`, `as`, `rss` and similar ulimits, and a finite
+`memlock`; devices, cgroups, sysctls, user namespaces, DNS options and
+storage options; a capability beyond Docker's default set but `IPC_LOCK`,
+and security options; `host` networking outside a nested engine; non-`bridge`
 network drivers; IPAM drivers other than the default, more than one subnet
-of a family and IPv6-only networks; SCTP publishing; and resource updates.
+of a family and IPv6-only networks; SCTP publishing; and a change of a
+running container's block I/O weight. Memory, CPU, pids and ulimit limits
+otherwise hold, and `docker update` changes them live (§3a); privileged
+mode runs a nested engine (§3a); a non-default user is presented by the
+container library (§3).
 
 `POST /grpc` and `POST /session` serve an embedded BuildKit
 (`internal/buildkit`), as dockerd does, so buildx's docker driver, `docker
@@ -713,10 +825,21 @@ Linux-specific:
 
 The BuildKit packages the engine uses live in `third_party/buildkit`, copied
 by `scripts/sync-buildkit.sh` with their imports rewritten into this module
-and the patches in `third_party/buildkit-patches` applied. One patch matters:
-BuildKit's darwin mounter mounts a read-only snapshot with `mount(2)`, which
-needs root; the patched mounter reads the snapshot's directory directly, as it
-already did for read-write ones. Keeping the packages in the module, rather
+and the patches in `third_party/buildkit-patches` applied:
+
+- `localmounter_darwin`: BuildKit's darwin mounter mounts a read-only
+  snapshot with `mount(2)`, which needs root; the patched mounter reads the
+  snapshot's directory directly, as it already did for read-write ones.
+- `ssh_socket_owner`: a step's SSH agent socket stays the worker's user's,
+  which stands for the step's root, since no other owner can be set
+  without root.
+- `syntax_builtin`: a `# syntax=` directive naming Docker's own Dockerfile
+  frontend, a Linux image a darwin worker cannot run, is served by the
+  built-in frontend instead of being forwarded.
+- `resolvecache_race`: the frontend's resolve cache is set up once, before
+  stages resolve their bases concurrently.
+
+Keeping the packages in the module, rather
 than behind a `replace` directive, keeps `go install …/cmd/fwsd@<version>`
 working.
 
@@ -751,15 +874,22 @@ fetches the context itself: a Git repository at the fragment's ref and
 subdirectory, fetched shallow with submodules, a tarball, or a plain
 Dockerfile.
 
-`pause` sends SIGSTOP to each of the container's process groups and `unpause`
-SIGCONT; health checks and `exec` wait while a container is paused, and
-stopping a paused container resumes it to deliver the stop signal.
+`pause` has the container's shim send SIGSTOP to every process it tracks
+(§3a), so its CPU throttling never continues them, and `unpause` SIGCONT;
+health checks and `exec` wait while a container is paused, and stopping a
+paused container resumes it to deliver the stop signal.
 
-`top` and `stats` read the host's process table through `ps`, as dockerd's
-`top` does, keeping the processes of the container's process groups. CPU usage
-is their accumulated CPU time; `system_cpu_usage` is the machine's CPU time
-elapsed since the engine started, so the client's CPU percentage is the share
-of one CPU the container used.
+`top` reads the host's process table through `ps`, as dockerd's `top` does,
+and keeps the container's processes: those of its main process's and its
+running execs' process groups, those carrying its `SANDBOX_ROOT` tag, and
+those macOS holds its main process responsible for, but the exec anchor.
+`stats` sums the same processes' CPU time; `system_cpu_usage` is the
+machine's CPU time elapsed since the engine started, so the client's CPU
+percentage is the share of one CPU the container used. Memory (the physical
+footprint the memory limit holds), CPU throttling, block I/O and network
+counts come from the shim. The pids count is the number of those
+processes, while the pids limit counts the shim's members (§3a); the two
+can differ for a process the shim has not yet followed.
 
 `docker cp` resolves paths as the container's processes do, absolute symlinks
 on the host, and refuses any result outside the container's root and mounts.
@@ -784,15 +914,67 @@ Pods are the engine's: a record per pod, kept in `pods.json`, and Podman's
 `io.podman.pod` label on each member. Errors carry Podman's `cause` and
 `response` beside Docker's `message`, for both clients.
 
+### Kubernetes
+
+- **CRI.** The socket also serves the Kubernetes Container Runtime
+  Interface (`internal/cri`): a request over unencrypted HTTP/2 with a
+  gRPC content type goes to it, the rest to the Docker and Podman
+  handlers. It maps CRI onto the engine as cri-dockerd maps it onto
+  Docker. A pod sandbox is a pause container (`fws/pause:3.10.1`) that
+  holds the pod's network, ports and DNS, and the pod's containers join it
+  as `--network container:` joins one. Every pod not on its node's network
+  joins the user-defined network `fws-pods`, whose subnet is the pod CIDR
+  the kubelet sends, or kind's `10.244.0.0/16` until it sends one. The
+  engine copies each container's output to the log file the kubelet names,
+  in CRI's format, and serves exec, attach and port-forward streams on a
+  loopback port, or a nested engine's on its privileged container's.
+- **Nodes.** A kind node is a privileged container whose nested engine
+  (§3a) is its kubelet's runtime.
+- **Cross-node pods.** Nested engines in privileged containers that share
+  a network are a cluster's nodes (`internal/engine/peers.go`). Each
+  nested engine publishes its members on networks with subnets of their
+  own to the engine it is nested in, which hands them to the nested engines
+  of the containers its container shares a network with. Each lists them in
+  its network files as foreign members of the networks of the same names,
+  reached through their routers, which listen on the host's loopback as
+  every router does, so a pod reaches another node's pods at their
+  addresses. The outer engine refreshes the others from a goroutine of its
+  own, and takes no nested engine's lock while holding its own.
+- **Services.** A network can carry virtual services
+  (`internal/engine/services.go`), as Kubernetes Services' cluster IPs:
+  each has an address on the network, names (`name`, `name.namespace`,
+  `name.namespace.svc` and `name.namespace.svc.cluster.local`) and TCP or
+  UDP ports, each with its endpoints' addresses and ports. The engine
+  serves each service port on a loopback port, outside any sandbox, and
+  carries each connection, or each UDP client's flow, to the next of its
+  endpoints, as kube-proxy's userspace mode does. The network file lists
+  services as members of the stack `services`, so the library resolves and
+  reaches them as it does members. A TCP service port with a node port
+  also answers on the node's port of that number: for a nested engine,
+  its privileged container's port.
+- **fws-kube-proxy.** `cmd/fws-kube-proxy` is the node's kube-proxy. It
+  polls the API server for Services and EndpointSlices (every second by
+  default, `-interval`), with no client library, and `PUT`s the whole list
+  to `/fws/networks/fws-pods/services` on the engine's socket
+  (`FWS_ENGINE`) when it changes, and again every 30 s (`-resync`), so an
+  engine that restarted gets it back.
+
 ## 9. Runtime launch sequence
 
 On create: clone the image root, assign the stack's ports, realise the
 mounts, and record the container. On start:
 
-1. Render the Seatbelt profile from the container's grants (§3) and write it
-   next to the container's state, outside the root.
+1. Render the Seatbelt profile from the container's grants (§3), write it
+   to `profile.sb` next to the container's state, outside the root, and
+   compile it to `profile.bin` unless the bytecode of the same text is
+   kept already (§3a), alongside step 3.
 2. Build the environment: image and container variables, `PATH` mapped into
-   the root, `HOME` under the root, and the `SANDBOX_*` variables.
+   the root, `HOME` under the root, and the `SANDBOX_*` variables. With
+   `--init`, link the `fws-shim` binary at `/sbin/docker-init` in the root,
+   as Docker mounts its init, and put it before the command: run by that
+   name it acts as tini, forwarding the signals it receives to the
+   command, reaping every process that ends up its child, and exiting as
+   the command does.
 3. Start the container's shim (§3a), which binds the published host ports.
 4. The shim spawns the helper, which applies the limits and the Seatbelt
    profile and executes `<root>/<argv0> …` with the container library
@@ -801,7 +983,7 @@ mounts, and record the container. On start:
    the json-file log through real pipes, so the shim sees the exit at once
    even if a descendant still holds stdout.
 5. When the main process exits, the shim kills the rest of the container,
-   drains the output, records the exit, and tells the engine, which applies
+   drains the output for up to 2 s, records the exit, and tells the engine, which applies
    the restart policy.
 
 `exec` and health checks start further processes in the container's
@@ -812,97 +994,69 @@ or a pty (`creack/pty`).
 
 ## 10. Go implementation
 
-Pure Go; the engine cross-compiles with `CGO_ENABLED=0` for `darwin/arm64`,
-Apple silicon, alone. `clonefile` comes from `golang.org/x/sys/unix`, image
-handling from `go-containerregistry`, and the API types from
-`github.com/moby/moby/api`, so the JSON matches what Docker clients decode.
+The engine is Go and cross-compiles with `CGO_ENABLED=0` for `darwin/arm64`,
+Apple silicon, alone. What runs inside every container process start is C,
+which the engine compiles with clang on the Mac before its first container
+starts, into `lib/`: the container
+library (`internal/pathmap/src/fwsroot.c`) and the spawn helper
+(`internal/pathmap/src/spawn.c`). `clonefile` comes from
+`golang.org/x/sys/unix`, image handling from `go-containerregistry`, and the
+API types from `github.com/moby/moby/api`, so the JSON matches what Docker
+clients decode.
 
 ```
-cmd/fwsd/             # the daemon
+cmd/fwsd/             # the daemon: Docker Engine, libpod and CRI APIs over a unix socket
+cmd/fws-shim/         # the helper binary: supervisors, exec anchors, egress proxies, docker-init
 cmd/fws-mkimage/      # Nix closure -> darwin image archive
+cmd/fws-kube-proxy/   # kube-proxy for a node whose runtime is the engine
 internal/alloc/       # per-stack port blocks and directories
-internal/seatbelt/    # profile rendering
-internal/image/       # image store, layer extraction, clonefile
-internal/runtime/     # starting container processes through the spawn helper
-internal/pathmap/     # the container library: paths, identity, users, hostname
-internal/identity/    # resolve --user and USER against the container's files
-internal/egress/      # the per-stack HTTP proxy to the internet
-internal/procs/       # the host process table, for top and stats
-internal/dockerfile/  # Dockerfile parsing and variable expansion
+internal/api/         # the Docker Engine API (the Compose subset) and Podman's libpod
 internal/buildkit/    # embedded BuildKit with a darwin worker
-third_party/buildkit/ # the BuildKit packages it uses, patched (sync-buildkit.sh)
+internal/cri/         # the Kubernetes Container Runtime Interface
+internal/dockerfile/  # Dockerfile parsing and variable expansion
+internal/egress/      # the per-stack HTTP and SOCKS5 proxy to the internet
+internal/engine/      # containers, volumes, networks, exec, health, events, machine guards
+internal/execpath/    # finding a container's executables, as execve and a shell do
+internal/identity/    # users and groups from the container's /etc/passwd
+internal/image/       # image store, layer extraction, clonefile roots
+internal/libsystem/   # libSystem calls syscall does not offer (posix_spawn, I/O policy,
+                      #   sandbox_compile_string)
+internal/logfile/     # json-file logs
+internal/members/     # a stack's network file: member addresses and names
+internal/netstat/     # per-socket network counters for docker stats
+internal/pathmap/     # fwsroot, the container library, the spawn helper, and their build
+internal/pidns/       # PID namespaces containers share, through their shims
+internal/portproxy/   # published host ports, TCP and UDP
+internal/procs/       # the host process table: the shim's member tracking, top and stats
+internal/roles/       # the helper processes the engine's binary runs
 internal/rootfs/      # chroot-style path resolution inside a root
-internal/engine/      # containers, volumes, networks, exec, health, events
-internal/api/         # the Docker Engine API
+internal/router/      # traffic to container ports without host ports, relays, ICMP echo
+internal/runtime/     # starting container processes through the spawn helper; the
+                      #   compiled-profile cache; docker-init
 internal/sandboxenv/  # the container side of the SANDBOX_* contract
-images/               # entrypoints and specs for the catalog
+internal/seatbelt/    # Seatbelt profile rendering
+internal/shim/        # a container's supervisor: limits, output, live restore
+third_party/buildkit/ # the BuildKit packages it uses, patched (sync-buildkit.sh)
+images/               # entrypoints and Nix specs for the darwin catalog
 tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite (own module)
 ```
 
 ---
 
-## 11. Testing — the milestone's definition of done
+## 11. Testing
 
-All tests run on a **macOS CI runner** (GitHub Actions `macos-15`, Apple
-Silicon). No `t.Skip` for "tool missing" — required tools are installed in the
-workflow.
+Every isolation property is proven by a test that tries to break it, on a
+macOS runner; no test skips for a missing tool. The unit tests run on Linux
+where they are portable and on macOS in full, where the Seatbelt and
+container-library packages run probes under the real sandbox. The
+end-to-end suite drives the stock Docker CLI, Docker Compose, Podman,
+Testcontainers, kind and `crictl` against an engine of its own. The
+two-stack test that was the first milestone's definition of done — two
+Compose stacks of `postgres`, `redis` and an app, unable to reach each
+other's ports or paths, with `down` on one leaving the other working —
+still runs in it. [`CONTRIBUTING.md`](../CONTRIBUTING.md) lists every check
+CI runs and how to run each locally.
 
-1. **Unit.** Allocator disjointness (no two stacks share a port/path), Seatbelt
-   profile generation, API request/response shapes.
-2. **Runtime integration (the core proof).** Build the Nix `postgres` and
-   `redis` images, then bring up **two independent compose stacks
-   simultaneously**, each a `postgres` + `redis` + a tiny app:
-   - Assert both stacks are healthy and serve queries concurrently.
-   - Assert their assigned ports differ and neither can reach the other's ports
-     (attempt a cross-stack connect → refused by Seatbelt).
-   - Assert stack A cannot read or write any path under stack B (attempt →
-     denied).
-   - Assert `compose down` on A leaves B fully working, and frees A's ports.
-3. **Isolation assertions.** From inside a container: writing outside its root
-   fails; reading `$HOME` fails; signalling the other stack's PID fails; reading
-   the other stack's data dir fails.
-4. **API conformance.** Drive the real `docker compose` binary and the Docker Go
-   client against the daemon for the full `up`/`ps`/`logs`/`exec`/`down` cycle —
-   same client code a real-Docker user runs, differing only in the socket path.
-
-The milestone is done when (2)–(4) are green in CI on macOS. The accepted
-exceptions (§1) are documented in `LIMITATIONS.md`; the tests assert that
-every *action* across stacks is denied.
-
----
-
-## 12. Known limitations (stated, not hidden)
-
-- macOS-native images only; no Linux images, ever, without a VM.
-- Images must be macOS builds; programs the container library cannot load
-  into must follow the `$SANDBOX_ROOT` + configurable-port contract.
-- Memory and CPU limits are enforced by a supervisor that kills or stops
-  processes, not by a kernel that refuses an allocation; the container
-  library refuses a fork at the pids limit, and the supervisor kills what
-  gets past it.
-- `user:` and `USER` are presented by the container library; every process
-  runs as the invoking user.
-- Pids are the host's but the main process's, which the container library
-  presents as 1, and a program that loads no library lists every process
-  of the user; listings through the library, and every action, stay
-  within the sandbox.
-- Seatbelt's `sandbox_init` and `sandbox-exec` are Apple-deprecated (since
-  2016) but still functional and used by Chrome, Bazel, and the major
-  coding-agent sandboxes; there is no supported replacement for this use.
-- Running the engine *inside* another Seatbelt sandbox (e.g. a coding agent's)
-  is untested; Seatbelt profiles may not nest.
-
----
-
-## 13. Milestone plan (single PR)
-
-One branch, one PR, fully tested:
-
-1. Repo skeleton, Go module, CI workflow (macOS runner).
-2. `internal/alloc` + unit tests.
-3. `internal/image` (pull/unpack + `clonefile` root) + tests.
-4. `internal/runtime` (launch under `sandbox-exec`, process groups) + tests.
-5. `internal/api` (the Compose subset) + Docker-client conformance tests.
-6. `images/` Nix definitions for `postgres` and `redis`.
-7. The two-stack concurrent integration test (§11.2) — the proof.
-8. `README.md`, this `DESIGN.md`, and a `LIMITATIONS.md` kept in sync.
+What the engine cannot do, and why, is in
+[`LIMITATIONS.md`](../LIMITATIONS.md); how the project got here is in
+[`HISTORY.md`](HISTORY.md).

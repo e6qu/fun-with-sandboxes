@@ -64,12 +64,28 @@ func main() {
 	var removes multi
 	flag.Var(&removes, "remove", "image path to leave out of the image, such as a store path's file (repeatable)")
 	arch := flag.String("arch", runtime.GOARCH, "image architecture")
+	reuse := flag.Bool("reuse", false, "keep the archive at -out where it was made from the same inputs, as <out>.inputs records them")
 	flag.Parse()
 	if *specPath == "" || *out == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := build(*specPath, *closure, pkgs, files, *out, *arch, *tag, env, links, removes); err != nil {
+	// The digest of the archive's inputs is recorded beside it once it is
+	// made, and rewritten when it is kept, so a build can tell the
+	// archives it made or kept from those an earlier catalog left.
+	digest, err := inputsDigest(*specPath, *closure, pkgs, files, *arch, *tag, env, links, removes)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *reuse && current(*out, digest) {
+		log.Printf("%s: kept, made from the same inputs", *out)
+	} else {
+		os.Remove(inputsPath(*out))
+		if err := build(*specPath, *closure, pkgs, files, *out, *arch, *tag, env, links, removes); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(inputsPath(*out), []byte(digest+"\n"), 0o644); err != nil {
 		log.Fatal(err)
 	}
 }

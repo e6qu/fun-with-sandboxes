@@ -1,6 +1,7 @@
-// Command fws-shim runs the engine's helper processes: the spawn helper
-// every container process starts through, each container's supervisor,
-// and each stack's egress proxy. fwsd starts it from its own directory;
+// Command fws-shim runs the engine's helper processes: each container's
+// supervisor and exec anchor, the init process `--init` runs, and each
+// stack's egress proxy. The spawn helper every container process starts
+// through is C (internal/pathmap/src/spawn.c). fwsd starts it from its own directory;
 // it holds only those roles, so a supervisor per container stays small.
 package main
 

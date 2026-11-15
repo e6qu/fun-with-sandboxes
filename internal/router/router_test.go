@@ -3,6 +3,7 @@ package router
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -606,5 +607,77 @@ func TestRelaysDatagramsToForeignMembers(t *testing.T) {
 	smu.Unlock()
 	if _, err := lookupForeign(mine.Addr().String(), make([]byte, KeySize), netip.MustParseAddr("127.88.0.3"), 53); err == nil {
 		t.Error("a lookup without the relay key was answered")
+	}
+}
+
+// A pod of another node, whose stack no allocator of this node knows, is
+// sent to from a port of the block its line names, which its sandbox lets
+// it answer.
+func TestRelaysDatagramsToAPodOfAnotherNode(t *testing.T) {
+	pod, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pod.Close()
+	froms := make(chan int, 1)
+	go func() {
+		buf := make([]byte, 128)
+		for {
+			n, from, err := pod.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			select {
+			case froms <- from.Port:
+			default:
+			}
+			pod.WriteToUDP(append([]byte("pod "), buf[:n]...), from)
+		}
+	}()
+	// The block: a free port, and the pod's own, which it holds.
+	free, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := free.LocalAddr().(*net.UDPAddr).Port
+	free.Close()
+	block := members.Block{Base: base, Limit: base + 1}
+	client, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	file := filepath.Join(portDir(t), "network")
+	ms := []members.Member{
+		{Address: "127.88.0.2", Names: []string{"app"}, Ports: map[string]int{"9000/udp": client.LocalAddr().(*net.UDPAddr).Port}, Networks: []string{"kind"}},
+		{Address: "10.244.1.5", Ports: map[string]int{"53/udp": pod.LocalAddr().(*net.UDPAddr).Port}, Networks: []string{"kind"},
+			Foreign: true, Stack: "peer-node2", Block: block},
+	}
+	if err := os.WriteFile(file, members.Format(ms), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := portDir(t)
+	mine, err := Listen("127.0.0.1:0", dir, listenFlow, Network{File: file, Address: "127.88.0.2",
+		DialFlow: func(stack string, raddr *net.UDPAddr) (net.Conn, error) {
+			return nil, fmt.Errorf("no allocator of this node knows stack %s", stack)
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mine.Close()
+	f, err := lookupForeign(mine.Addr().String(), readKey(t, dir), netip.MustParseAddr("10.244.1.5"), 53)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.WriteToUDP([]byte("q"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: f}); err != nil {
+		t.Fatal(err)
+	}
+	client.SetReadDeadline(time.Now().Add(10 * time.Second))
+	buf := make([]byte, 128)
+	if n, _, err := client.ReadFromUDP(buf); err != nil || string(buf[:n]) != "pod q" {
+		t.Fatalf("the pod answered %q, %v", buf[:max(n, 0)], err)
+	}
+	if from := <-froms; from != base {
+		t.Errorf("the relay sent from port %d, outside the pod's block %v", from, block)
 	}
 }

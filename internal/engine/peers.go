@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
 	stackmembers "github.com/e6qu/fun-with-sandboxes/internal/members"
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
@@ -133,10 +134,42 @@ func (e *Engine) dialPeer(c *Container, ap netip.AddrPort) (net.Conn, error) {
 	return nil, fmt.Errorf("no member at %s shares a network with %s", ap.Addr(), c.rec.Name)
 }
 
+// dialPeerUDP opens a UDP flow to port ap.Port of the member at ap.Addr
+// that another nested engine published, from a port of its stack's block,
+// as its line names it.
+func (e *Engine) dialPeerUDP(c *Container, ap netip.AddrPort) (net.Conn, error) {
+	peers := e.peersOf(c.rec.ID)
+	for _, m := range peers {
+		if !m.Has(ap.Addr().String()) {
+			continue
+		}
+		if m.Block.IsZero() {
+			return nil, fmt.Errorf("%s publishes no block of host ports", ap.Addr())
+		}
+		up, err := udpUpstream(m.Ports[fmt.Sprintf("%d/udp", ap.Port())], m.Router, ap)
+		if err != nil {
+			return nil, err
+		}
+		taken := map[int]bool{}
+		for _, o := range peers {
+			if o.Block != m.Block {
+				continue
+			}
+			taken[o.Router] = true
+			for _, hp := range o.Ports {
+				taken[hp] = true
+			}
+		}
+		return alloc.DialFrom(m.Block.Base, m.Block.Limit, taken, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: up})
+	}
+	return nil, fmt.Errorf("no member at %s shares a network with %s", ap.Addr(), c.rec.Name)
+}
+
 // crossMembersLocked are what a nested engine publishes: its members on
 // networks with subnets of their own, at their addresses there, which are
 // unique on a cluster's pod network as member addresses are not across
-// engines.
+// engines, each with its stack's block of host ports, which the other
+// nodes' allocators do not know.
 func (e *Engine) crossMembersLocked() []stackmembers.Member {
 	var out []stackmembers.Member
 	for _, o := range e.containers {
@@ -144,6 +177,9 @@ func (e *Engine) crossMembersLocked() []stackmembers.Member {
 			continue
 		}
 		m := stackmembers.Member{Ports: map[string]int{}, Router: o.rec.RouterPort}
+		if s, err := e.alloc.Stack(o.rec.Stack); err == nil {
+			m.Block = stackmembers.Block{Base: s.PortBase, Limit: s.PortBase + s.BlockSize}
+		}
 		for _, n := range userNetworks(o) {
 			es := o.rec.Networks[n]
 			if es == nil || !es.IPAddress.IsValid() {

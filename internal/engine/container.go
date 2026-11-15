@@ -402,6 +402,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err != nil {
 		return container.CreateResponse{}, err
 	}
+	st.mark("networks")
 
 	if _, err := e.alloc.Stack(stack); err != nil {
 		return container.CreateResponse{}, invalid("stack %q: %v", stack, err)
@@ -424,6 +425,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err := os.Rename(stagedRoot, c.root()); err != nil {
 		return container.CreateResponse{}, err
 	}
+	st.mark("root")
 
 	ports := map[string]int{}
 	// On the host's network a container's ports are the node's, as Docker
@@ -446,10 +448,12 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		}
 	}
 
+	st.mark("ports")
 	mounts, err := e.prepareMountsLocked(c.root(), img, cfg, req.HostConfig)
 	if err != nil {
 		return container.CreateResponse{}, err
 	}
+	st.mark("mounts")
 	address := ""
 	if net == nil && node == nil {
 		if address, err = e.assignAddressLocked(stack); err != nil {

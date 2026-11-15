@@ -52,6 +52,12 @@ out=${1:?usage: build-images.sh OUTPUT_DIR | --server-derivations | --servers}
 build=$(mktemp -d)
 trap 'rm -rf "$build"' EXIT
 mkdir -p "$out"
+# OUTPUT_DIR may hold an earlier catalog: fws-mkimage -reuse keeps each
+# archive made from the same inputs, as the digest beside it records them,
+# and rewrites that digest, so what this build neither made nor kept is
+# older than this marker and goes at the end.
+started="$build/started"
+touch "$started"
 cd "$here"
 
 go build -o "$build/fws-mkimage" ./cmd/fws-mkimage
@@ -115,7 +121,7 @@ closure() { nix-store -qR "$@" "$dash" | sort -u; }
 # /bin/nc answers the in-container port check Testcontainers runs, which
 # reads /proc/net/tcp on Linux.
 mkimage() {
-  "$build/fws-mkimage" "$@" -pkg "$dash" -link /bin/sh=dash -file "/bin/nc=$build/nc" \
+  "$build/fws-mkimage" -reuse "$@" -pkg "$dash" -link /bin/sh=dash -file "/bin/nc=$build/nc" \
     -file "/etc/services=$iana/etc/services" -file "/etc/protocols=$iana/etc/protocols"
 }
 
@@ -500,7 +506,7 @@ mkimage $(accounts playwright pwuser 1000 1000 /home/pwuser) -spec images/playwr
   -file "/entry=$build/playwright-entry" -file "/usr/lib/node_modules=$build/playwright/modules/node_modules" \
   -file "/ms-playwright=$build/playwright/browsers" -out "$out/playwright.tar"
 
-"$build/fws-mkimage" -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"
+"$build/fws-mkimage" -reuse -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"
 
 # BusyBox as scripts use its image: a POSIX shell and the commands they run
 # in it, as separate programs from the GNU tools and others nixpkgs builds
@@ -535,7 +541,7 @@ ryuk_src=$(GOFLAGS=-mod=mod go mod download -json "github.com/testcontainers/mob
 cp -R "$ryuk_src" "$build/ryuk-src"
 chmod -R u+w "$build/ryuk-src"
 (cd "$build/ryuk-src" && GOFLAGS=-mod=mod go build -o "$build/ryuk" .)
-"$build/fws-mkimage" -spec images/ryuk/image.json -file "/bin/ryuk=$build/ryuk" \
+"$build/fws-mkimage" -reuse -spec images/ryuk/image.json -file "/bin/ryuk=$build/ryuk" \
   -file "/bin/nc=$build/nc" -out "$out/ryuk.tar"
 
 # Kubernetes' control-plane images as its release lays them out: each
@@ -610,4 +616,11 @@ mkimage $(accounts kind-node) -spec images/kind-node/image.json -closure "$build
 mkimage $(accounts k3s) -spec images/k3s/image.json -closure "$build/kind-node.closure" "${node_files[@]}" \
   -file "/bin/k3s=$build/kind-node-entry" -out "$out/k3s.tar"
 
+# An image the catalog no longer has leaves its archive behind.
+for a in "$out"/*.tar; do
+  if [ ! "$a.inputs" -nt "$started" ]; then
+    echo "removing $a, which this build neither made nor kept"
+    rm -f "$a" "$a.inputs"
+  fi
+done
 ls -l "$out"

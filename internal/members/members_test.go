@@ -142,3 +142,25 @@ func TestIPv6Addresses(t *testing.T) {
 		t.Error("InSubnet misreads the members' IPv6 subnets")
 	}
 }
+
+// A pod of another node carries its stack's block of host ports, after its
+// subnets, which a member without subnets leaves empty.
+func TestBlock(t *testing.T) {
+	ms := []Member{
+		{Address: "10.244.1.5", Names: []string{"pod"}, Ports: map[string]int{"53/udp": 30105}, Router: 30101, Networks: []string{"kind"},
+			Foreign: true, Stack: "peer-abc", Block: Block{Base: 30100, Limit: 30200}},
+		{Address: "10.244.1.6", Foreign: true, Stack: "peer-abc", Block: Block{Base: 30100, Limit: 30200},
+			Subnets: []NetAddress{{Network: "kind", Address: netip.MustParsePrefix("10.244.1.6/24")}}},
+		{Address: "127.88.0.2", Names: []string{"app"}},
+	}
+	got := Parse(Format(ms))
+	if len(got) != 3 || got[0].Block != ms[0].Block || got[1].Block != ms[1].Block || !got[2].Block.IsZero() {
+		t.Fatalf("parsed %+v", got)
+	}
+	if len(got[1].Subnets) != 1 || got[1].Subnets[0] != ms[1].Subnets[0] {
+		t.Errorf("the subnets beside a block: %+v", got[1].Subnets)
+	}
+	if parseBlock("30200-30100") != (Block{}) || parseBlock("x") != (Block{}) {
+		t.Error("a malformed block parsed")
+	}
+}

@@ -2,8 +2,8 @@
 // member of the stack, of its member address, the names it answers to, the
 // host ports behind its ports, its router's port, the networks it is on,
 // whether it belongs to another stack, that stack, the aliases links give
-// it, and its addresses on networks with subnets of their own,
-// tab-separated. The engine writes it;
+// it, its addresses on networks with subnets of their own, and, for a pod
+// of another node, its stack's block of host ports, tab-separated. The engine writes it;
 // the container library, the container's router and the stack's egress
 // proxy read it.
 package members
@@ -50,6 +50,34 @@ type Member struct {
 	// have subnets of their own, IPv4 and IPv6, each with its subnet's
 	// length; on every other network the member is at Address.
 	Subnets []NetAddress
+	// Block is the host ports of a foreign member's stack where no
+	// allocator of the reader's engine knows that stack, as for a pod of
+	// another node: a datagram to the member is sent from a free port of
+	// it, so that its replies may return.
+	Block Block
+}
+
+// Block is a range of host ports, Limit exclusive; the zero Block is none.
+type Block struct {
+	Base, Limit int
+}
+
+func (b Block) String() string { return fmt.Sprintf("%d-%d", b.Base, b.Limit) }
+
+// Contains reports whether port lies in b.
+func (b Block) Contains(port int) bool { return port >= b.Base && port < b.Limit }
+
+// IsZero reports whether b is no block.
+func (b Block) IsZero() bool { return b.Limit <= b.Base }
+
+func parseBlock(s string) Block {
+	lo, hi, ok := strings.Cut(s, "-")
+	b, errB := strconv.Atoi(lo)
+	l, errL := strconv.Atoi(hi)
+	if !ok || errB != nil || errL != nil || b <= 0 || l <= b || l > 65536 {
+		return Block{}
+	}
+	return Block{Base: b, Limit: l}
 }
 
 // NetAddress is a member's address on a network with a subnet.
@@ -135,12 +163,15 @@ func Format(ms []Member) []byte {
 			links[i] = l.Viewer + "/" + l.Alias
 		}
 		fmt.Fprintf(&b, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s", m.Address, strings.Join(m.Names, " "), strings.Join(ports, ","), m.Router, strings.Join(m.Networks, " "), foreign, m.Stack, strings.Join(links, " "))
-		if len(m.Subnets) > 0 {
+		if len(m.Subnets) > 0 || !m.Block.IsZero() {
 			subnets := make([]string, len(m.Subnets))
 			for i, s := range m.Subnets {
 				subnets[i] = s.Network + "=" + s.Address.String()
 			}
 			fmt.Fprintf(&b, "\t%s", strings.Join(subnets, " "))
+		}
+		if !m.Block.IsZero() {
+			fmt.Fprintf(&b, "\t%s", m.Block)
 		}
 		b.WriteByte('\n')
 	}
@@ -152,14 +183,17 @@ func Parse(b []byte) []Member {
 	var out []Member
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) < 6 || len(f) > 9 || f[0] == "" {
+		if len(f) < 6 || len(f) > 10 || f[0] == "" {
 			continue
 		}
 		m := Member{Address: f[0], Names: strings.Fields(f[1]), Ports: map[string]int{}, Networks: strings.Fields(f[4]), Foreign: f[5] == "1"}
 		if len(f) >= 7 {
 			m.Stack = f[6]
 		}
-		if len(f) == 9 {
+		if len(f) == 10 {
+			m.Block = parseBlock(f[9])
+		}
+		if len(f) >= 9 {
 			for _, t := range strings.Fields(f[8]) {
 				n, a, ok := strings.Cut(t, "=")
 				if p, err := netip.ParsePrefix(a); ok && n != "" && err == nil {

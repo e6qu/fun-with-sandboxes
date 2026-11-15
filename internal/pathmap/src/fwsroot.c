@@ -5670,6 +5670,9 @@ static const char *next_member(const char *p, struct member *m) {
             const char *t6 = t5 ? memchr(t5 + 1, '\t', (size_t)(end - t5 - 1)) : NULL;
             const char *t7 = t6 ? memchr(t6 + 1, '\t', (size_t)(end - t6 - 1)) : NULL;
             const char *t8 = t7 ? memchr(t7 + 1, '\t', (size_t)(end - t7 - 1)) : NULL;
+            // A tenth field, a pod of another node's block of host ports,
+            // is the container's router's alone.
+            const char *t9 = t8 ? memchr(t8 + 1, '\t', (size_t)(end - t8 - 1)) : NULL;
             unsigned long r = 0;
             m->names = t1 + 1;
             m->names_end = t2;
@@ -5682,7 +5685,7 @@ static const char *next_member(const char *p, struct member *m) {
             m->links = t7 ? t7 + 1 : end;
             m->links_end = t8 ? t8 : end;
             m->subs = t8 ? t8 + 1 : end;
-            m->subs_end = end;
+            m->subs_end = t9 ? t9 : end;
             return nl ? nl + 1 : end;
         }
         p = nl ? nl + 1 : end;

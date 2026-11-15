@@ -8,22 +8,15 @@ APFS clones. Read [PLAN](PLAN.md) for what it sets out to do,
 
 ## Ground rules
 
-These come from [PLAN](PLAN.md), and a change that breaks one is not
-merged:
+A change that breaks one of [PLAN](PLAN.md#constraints)'s constraints is not
+merged: no virtual machine, no root, Go that cross-compiles for
+`darwin/arm64` with C only where a process start is at stake, and isolation
+the kernel enforces and a test proves. Two more rules follow from them:
 
-- **No virtual machines.** No Hypervisor.framework, no
-  Virtualization.framework, no Containerization framework.
-- **No root.** The engine, its install and every container run as the
-  invoking user: no `sudo`, no root daemon, no kernel or system extension,
-  no change to System Integrity Protection.
-- **Go, cross-compiling.** The engine builds with `CGO_ENABLED=0` for
-  `darwin/arm64` and `darwin/amd64` from any host. The container library is
-  C, which the engine compiles on the user's Mac.
-- **Isolation is proven, not claimed.** Each property is enforced by the
-  kernel through Seatbelt, and a test tries to break it.
 - **Refuse what cannot be honoured.** An option the engine cannot enforce
   returns a clear Docker API error. It is never accepted and silently
-  ignored.
+  ignored; [LIMITATIONS](LIMITATIONS.md) lists the few that still are, as
+  bugs to fix.
 - **Tests run everything they name.** No `t.Skip` for a missing tool:
   install the tool in CI instead.
 
@@ -31,16 +24,17 @@ merged:
 
 You need:
 
-- **macOS** on Apple silicon or Intel, for everything beyond the portable
-  unit tests;
+- **macOS** on Apple silicon, for everything beyond the portable unit
+  tests;
 - **Go**, at the version `go.mod` names;
 - **the Xcode Command Line Tools** (`xcode-select --install`), whose clang
   builds the container library;
 - **[Nix](https://nixos.org/download)**, to build the image catalog;
-- **the Docker CLI, Docker Compose and buildx**, for the end-to-end suite:
+- **the Docker CLI, Docker Compose, buildx, Podman, `podman-compose` and
+  `crictl`**, for the end-to-end suite:
 
   ```bash
-  brew install docker docker-compose docker-buildx
+  brew install docker docker-compose docker-buildx podman podman-compose cri-tools
   ```
 
 Run the engine from a checkout:
@@ -59,20 +53,11 @@ export DOCKER_HOST=unix://$HOME/.fws/docker.sock
 
 ## Layout
 
-| Path | What it holds |
-|---|---|
-| `cmd/fwsd`, `cmd/fws-shim` | the engine, and the per-container supervisor |
-| `cmd/fws-mkimage` | the tool that turns a Nix closure into an OCI image |
-| `internal/api` | the Docker Engine API server |
-| `internal/engine` | containers, images, volumes, networks, builds, execs |
-| `internal/seatbelt` | the Seatbelt profile each container runs under |
-| `internal/pathmap` | the container library (`src/fwsroot.c`) that presents a container's paths, users, hostname, ports and peers |
-| `internal/runtime`, `internal/shim` | starting a container's processes and supervising them |
-| `internal/alloc`, `internal/egress`, `internal/portproxy` | port blocks, the internet proxy, published ports |
-| `internal/buildkit`, `third_party/buildkit` | BuildKit's solver with a darwin worker |
-| `images/` | the catalog's images and the entry program each runs |
-| `scripts/` | building, publishing and vetting |
-| `tests/e2e` | the end-to-end suite, driven through the Docker CLI, Compose and Testcontainers |
+[DESIGN §10](docs/DESIGN.md#10-go-implementation) lists every package.
+Beyond them, `images/` holds the catalog's Nix specs and entry programs,
+`scripts/` builds, publishes and vets them and shards the end-to-end suite,
+`third_party/` holds the patched BuildKit, and `tests/e2e` the end-to-end
+suite, a module of its own.
 
 ## Test
 
@@ -87,14 +72,14 @@ The checks CI runs, in the order to run them locally:
 2. **Vet**, for the macOS build the engine ships:
 
    ```bash
-   GOOS=darwin scripts/vet.sh
+   GOOS=darwin GOARCH=arm64 scripts/vet.sh
    ```
 
 3. **Unit tests.** On Linux these are the portable ones. On macOS they also
    build the container library and run probes under the real sandbox:
 
    ```bash
-   go test -race ./...
+   go test -race -count=3 ./...
    ```
 
 4. **End to end, on macOS.** Build the catalog's image archives, then run
@@ -111,7 +96,7 @@ The checks CI runs, in the order to run them locally:
    One shard of it, as CI runs it:
 
    ```bash
-   cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e -v -count=1 -run "$(../../scripts/e2e-shard.sh 4 1)" ./...
+   cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e -v -count=1 -timeout 75m -run "$(../../scripts/e2e-shard.sh 4 1)" ./...
    ```
 
    The suite starts an engine of its own, under a state directory of its
@@ -120,24 +105,31 @@ The checks CI runs, in the order to run them locally:
    single test or a shard loads only what it uses. It runs the engine with `-debug` and
    ends with the time the engine took to serve each endpoint.
 
-CI runs these jobs on every push:
+CI runs these jobs on pull requests, pushes to `main` and by hand:
 
-- `linux`: formatting, cross-builds, vet and the portable unit tests;
+- `linux`: formatting, the cross-build, vet (the end-to-end module's too),
+  the portable unit tests, that the shards hold every test once, and that
+  `third_party/buildkit` matches its sync script;
 - `macos`: the unit tests on macOS, what a container's processes pay
-  for each system call the path library interposes, and how long a
-  container's main process takes to start, part by part;
+  for each system call the path library interposes, how long a
+  container's main process takes to start, part by part, and how long
+  Seatbelt takes to compile a profile;
 - `servers`: the MySQL and MariaDB builds, cached by derivation;
 - `images`: the catalog's archives and a local registry that takes them,
   cached under a hash of the files the build reads
   (`scripts/build-images.sh --inputs`), so a push that changes none of
-  them skips the build. It waits for `linux` and `macos`, so a change the
-  unit tests fail spends no image build or end-to-end run;
+  them skips the build. Otherwise it restores the newest earlier catalog
+  and keeps each archive whose inputs are unchanged (`fws-mkimage
+  -reuse`), so a change to one image rebuilds that one. It waits for
+  `linux`, `macos` and `servers`, so a change the unit tests fail spends no
+  image build or end-to-end run;
 - `e2e`: the end-to-end suite, in four shards on runners of their own.
   `scripts/e2e-shard.sh` spreads the tests by their durations in
   `tests/e2e/durations.txt`, seconds per test from an earlier run; a test
   the file does not list counts as 30 seconds. Refresh the file from a
-  run's `--- PASS` lines when a test's time changes much. `linux` checks
-  that the shards hold every test once.
+  run's `--- PASS` lines when a test's time changes much;
+- `publish`: on `main`, once the suite passes, the archives to
+  `ghcr.io/e6qu/fws-*`.
 
 An image's entry program that imports the engine's packages is rebuilt,
 with every image, whenever those packages change; keep what entries need
@@ -169,8 +161,9 @@ connection, never on a fixed sleep.
   and error text, and add an end-to-end test that drives the change through
   the Docker CLI or Compose.
 - **An image.** Add it to `scripts/build-images.sh` and `images/`, list it
-  in the README's catalog, load it in CI's `e2e` job, and drive it in
-  `tests/e2e/catalog_test.go` through the client its users would use.
+  in the README's catalog and in the `images` job's registry check in
+  `.github/workflows/ci.yml`, and drive it in `tests/e2e/catalog_test.go`
+  through the client its users would use.
 - **BuildKit.** Change the packages it copies with
   `scripts/sync-buildkit.sh`, and patches in `third_party/buildkit-patches`.
   Never edit `third_party/buildkit` by hand: CI checks it matches the
