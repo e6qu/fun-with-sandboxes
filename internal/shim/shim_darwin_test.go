@@ -290,14 +290,26 @@ func TestPidsLimit(t *testing.T) {
 func TestDaemonLauncher(t *testing.T) {
 	h := launch(t, []string{"daemon"}, nil)
 	h.waitLog("waited")
-	st, err := h.client.State()
-	if err != nil {
-		t.Fatal(err)
-	}
 	var pid int
 	fmt.Sscanf(h.logs()[strings.Index(h.logs(), "daemonized"):], "daemonized %d", &pid)
-	if pid == 0 || !slices.Contains(st.Members, pid) {
-		t.Fatalf("the supervisor's members %v miss daemon %d; logged %q", st.Members, pid, h.logs())
+	if pid == 0 {
+		t.Fatalf("the container logged no daemon: %q", h.logs())
+	}
+	// The supervisor finds the daemon as it handles the launcher's fork and
+	// exit, which may come after the main process has waited.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		st, err := h.client.State()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(st.Members, pid) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the supervisor's members %v miss daemon %d; logged %q", st.Members, pid, h.logs())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
