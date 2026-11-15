@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -44,12 +45,32 @@ func TestNodesSeeOneAnothersPods(t *testing.T) {
 		outer.nested[id] = &nestedEngine{e: sub}
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, id) }))
 		t.Cleanup(srv.Close)
+		// The pod answers datagrams on 53/udp with its node's name and the
+		// port they came from.
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { pc.Close() })
+		go func() {
+			buf := make([]byte, 64)
+			for {
+				_, from, err := pc.ReadFromUDP(buf)
+				if err != nil {
+					return
+				}
+				pc.WriteToUDP([]byte(fmt.Sprintf("%s %d", id, from.Port)), from)
+			}
+		}()
+		if _, err := sub.alloc.Stack("pod"); err != nil {
+			t.Fatal(err)
+		}
 		addr, err := sub.assignAddressLocked("pod")
 		if err != nil {
 			t.Fatal(err)
 		}
 		sub.containers["pod"] = &Container{rec: record{ID: "pod", Name: "pod", Stack: "pod", Address: addr,
-			Ports: map[string]int{"80/tcp": srv.Listener.Addr().(*net.TCPAddr).Port}, State: stateRec{Status: container.StateRunning},
+			Ports: map[string]int{"80/tcp": srv.Listener.Addr().(*net.TCPAddr).Port, "53/udp": pc.LocalAddr().(*net.UDPAddr).Port}, State: stateRec{Status: container.StateRunning},
 			Networks: map[string]*network.EndpointSettings{"pods": {IPAddress: netip.MustParseAddr(podIP), IPPrefixLen: 24}}}}
 		return c, sub, podIP
 	}
@@ -93,5 +114,29 @@ func TestNodesSeeOneAnothersPods(t *testing.T) {
 	b, _ := io.ReadAll(c)
 	if want := "node-a-000000000"; len(b) < len(want) || string(b[len(b)-len(want):]) != want {
 		t.Errorf("node B dialling node A's pod: %q", b)
+	}
+
+	// A datagram reaches node A's pod from a port of its stack's block,
+	// which node B's file names, as its sandbox answers no other.
+	m, _ := stackmembers.Find(read(subB), ipA)
+	if m.Block != (stackmembers.Block{Base: 31000, Limit: 31100}) {
+		t.Fatalf("node B's file gives node A's pod the block %v", m.Block)
+	}
+	u, err := outer.dialFromUDP(nodeB, netip.MustParseAddrPort(ipA+":53"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer u.Close()
+	u.Write([]byte("q"))
+	u.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 64)
+	n, err := u.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var who string
+	var port int
+	if _, err := fmt.Sscanf(string(buf[:n]), "%s %d", &who, &port); err != nil || who != "node-a-000000000" || !m.Block.Contains(port) {
+		t.Errorf("node A's pod answered %q: a datagram from outside its block %v", buf[:n], m.Block)
 	}
 }

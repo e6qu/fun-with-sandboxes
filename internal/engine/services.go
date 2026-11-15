@@ -315,18 +315,16 @@ func (e *Engine) dialMemberUDP(network string, ep netip.AddrPort) (net.Conn, err
 		break
 	}
 	e.mu.Unlock()
-	if !found {
+	switch {
+	case !found && e.cfg.Nested != nil && e.cfg.Nested.DialUDP != nil:
+		// An endpoint on another node, as cluster DNS's often is.
+		return e.cfg.Nested.DialUDP(ep)
+	case !found:
 		return nil, fmt.Errorf("no running member of %s is at %s", network, ep.Addr())
 	}
-	up := hp
-	if up == 0 && rp != 0 {
-		var err error
-		if up, err = router.LookupUDP(net.JoinHostPort("127.0.0.1", strconv.Itoa(rp)), int(ep.Port())); err != nil {
-			return nil, err
-		}
-	}
-	if up == 0 {
-		return nil, fmt.Errorf("%s does not listen on UDP port %d", ep.Addr(), ep.Port())
+	up, err := udpUpstream(hp, rp, ep)
+	if err != nil {
+		return nil, err
 	}
 	return alloc.DialFlow(e.cfg.Root, stack, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: up})
 }

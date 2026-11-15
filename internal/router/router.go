@@ -40,6 +40,7 @@ import (
 
 	"golang.org/x/net/icmp"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
 	"github.com/e6qu/fun-with-sandboxes/internal/members"
 	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
 )
@@ -530,15 +531,43 @@ func (r *Router) relay(addr netip.Addr, port int) (int, error) {
 			return nil, err
 		}
 		// A Service is served outside any sandbox, which answers a
-		// datagram from any port; a member's sandbox answers its stack's.
-		if stack == members.ServicesStack {
+		// datagram from any port; a member's sandbox answers its stack's,
+		// whose block the network file names for a pod of another node.
+		switch {
+		case stack == members.ServicesStack:
 			return net.DialUDP("udp", nil, raddr)
+		case !to.Block.IsZero():
+			taken, err := r.blockPorts(to.Block)
+			if err != nil {
+				return nil, err
+			}
+			return alloc.DialFrom(to.Block.Base, to.Block.Limit, taken, raddr)
 		}
 		return r.net.DialFlow(stack, raddr)
 	}, r.sends)
 	r.relays[key] = pc
 	r.relayClosers = append(r.relayClosers, px)
 	return pc.LocalAddr().(*net.UDPAddr).Port, nil
+}
+
+// blockPorts are the host ports the members of block hold, as the network
+// file lists them, which a relay leaves to them.
+func (r *Router) blockPorts(block members.Block) (map[int]bool, error) {
+	b, err := os.ReadFile(r.net.File)
+	if err != nil {
+		return nil, err
+	}
+	taken := map[int]bool{}
+	for _, m := range members.Parse(b) {
+		if m.Block != block {
+			continue
+		}
+		taken[m.Router] = true
+		for _, hp := range m.Ports {
+			taken[hp] = true
+		}
+	}
+	return taken, nil
 }
 
 // sends reports whether a datagram from port of loopback came from the

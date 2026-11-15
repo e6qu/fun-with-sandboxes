@@ -333,7 +333,13 @@ each lands in pull requests with tests on the macOS runner.
      answer; a container's router relays to it as to another stack's
      member, from any port, as the engine's socket is in no sandbox.
      `fws-kube-proxy` passes a Service's UDP ports, so cluster DNS answers
-     on 53/udp. Next: UDP between pods of different nodes.
+     on 53/udp.
+   - Done: UDP between pods of different nodes. A node publishes each
+     pod with its stack's block of host ports, a tenth column of the
+     network file, which no other node's allocator knows; a router's
+     relay to such a pod, and a node's UDP Service with an endpoint on
+     another node, send from a free port of that block, which the pod's
+     sandbox lets it answer.
    - Done: ICMP echo on the virtual network. A datagram ICMP socket is a
      Unix datagram pair in the library, and an echo request to loopback,
      the container's own address or a member it sees is answered at once,

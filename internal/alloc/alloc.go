@@ -258,7 +258,23 @@ func flow(root, stack string, bind func(*net.UDPAddr) (*net.UDPConn, error)) (*n
 	for _, p := range s.Ports {
 		taken[p] = true
 	}
-	for p := s.PortBase; p < s.PortBase+s.BlockSize; p++ {
+	c, err := bindIn(s.PortBase, s.PortBase+s.BlockSize, taken, bind)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", err, stack)
+	}
+	return c, nil
+}
+
+// DialFrom opens a UDP socket to raddr from a loopback port of base to
+// limit, exclusive, that taken leaves out and no socket holds: the block of
+// a stack no allocator at hand knows, such as a pod's on another node,
+// which its network file names.
+func DialFrom(base, limit int, taken map[int]bool, raddr *net.UDPAddr) (*net.UDPConn, error) {
+	return bindIn(base, limit, taken, func(laddr *net.UDPAddr) (*net.UDPConn, error) { return net.DialUDP("udp", laddr, raddr) })
+}
+
+func bindIn(base, limit int, taken map[int]bool, bind func(*net.UDPAddr) (*net.UDPConn, error)) (*net.UDPConn, error) {
+	for p := base; p < limit; p++ {
 		if taken[p] {
 			continue
 		}
@@ -270,7 +286,7 @@ func flow(root, stack string, bind func(*net.UDPAddr) (*net.UDPConn, error)) (*n
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("%w: %s", ErrBlockFull, stack)
+	return nil, ErrBlockFull
 }
 
 // Release frees the stack's block and removes its directory tree.
