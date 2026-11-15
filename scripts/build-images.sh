@@ -12,8 +12,8 @@
 # the archives on their content.
 set -euo pipefail
 
-# nixos-26.05, pinned, so a rebuild makes the same images.
-nixpkgs=${NIXPKGS:-github:NixOS/nixpkgs/9bb52223f4f6a0cc606fd0852d8784f896c137d5}
+# nixos-26.05 as of 2026-11-13, pinned, so a rebuild makes the same images.
+nixpkgs=${NIXPKGS:-github:NixOS/nixpkgs/f1e5c356f35d07e7b71a6b5e6c9338e0b029e0c0}
 here=$(cd "$(dirname "$0")/.." && pwd)
 nix=(nix --extra-experimental-features 'nix-command flakes')
 servers=(--impure -f "$here/images/servers.nix" --argstr nixpkgs "$nixpkgs")
@@ -480,12 +480,13 @@ mkimage $(accounts lambda-java sbx_user1051 993 990 /home/sbx_user1051) -spec im
   -out "$out/lambda-java.tar"
 
 # Playwright on Node.js 24, with the playwright packages of the version
-# nixpkgs ships and its Chromium headless shell, Chrome for Testing's build,
-# checked against the digest pinned here.
-pw_version=1.59.1
-pw_revision=1217
-pw_chrome=147.0.7727.15
-pw_platform=mac-arm64 pw_sum=92e16fab914827a637607e46468b4360ebd2d30bbad06044d333bb5c0ceb3319
+# pinned here and the Chromium headless shell its browsers.json names
+# (revision and Chrome version), Chrome for Testing's build, checked
+# against the digest pinned here.
+pw_version=1.65.1
+pw_revision=1255
+pw_chrome=159.0.8154.6
+pw_platform=mac-arm64 pw_sum=b08e7beaf02a19e2ee5ed6955f9c3853ab9176cd5bb57ba87afbb82e9f81cc29
 mkdir -p "$build/playwright/modules" "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
 # The install is retried as curl retries below: a runner's resolver drops a
 # lookup now and then, and npm retries no failed lookup itself.

@@ -11,33 +11,33 @@ require (
 	github.com/google/go-containerregistry v0.22.1
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/rabbitmq/amqp091-go v1.16.0
-	github.com/testcontainers/testcontainers-go v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/clickhouse v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/consul v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/dind v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/etcd v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/influxdb v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/k3s v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/kafka v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/mailpit v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/mariadb v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/meilisearch v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/memcached v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/mongodb v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/mysql v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/nats v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/neo4j v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/opensearch v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/qdrant v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/toxiproxy v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/valkey v0.44.0
-	github.com/testcontainers/testcontainers-go/modules/vault v0.44.0
+	github.com/testcontainers/testcontainers-go v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/clickhouse v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/consul v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/dind v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/etcd v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/influxdb v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/k3s v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/kafka v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/mailpit v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/mariadb v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/meilisearch v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/memcached v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/mongodb v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/mysql v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/nats v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/neo4j v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/opensearch v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/postgres v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/qdrant v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/redis v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/toxiproxy v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/valkey v0.45.0
+	github.com/testcontainers/testcontainers-go/modules/vault v0.45.0
 	github.com/twmb/franz-go v1.22.2
 	go.mongodb.org/mongo-driver/v2 v2.10.0
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	sigs.k8s.io/kind v0.31.0
 	sigs.k8s.io/yaml v1.4.0
 )
@@ -46,7 +46,7 @@ require (
 	al.essio.dev/pkg/shellescape v1.5.1 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
-	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
+	github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4 // indirect
 	github.com/BurntSushi/toml v1.4.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.26 // indirect
@@ -70,7 +70,7 @@ require (
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/cli v29.7.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect
-	github.com/docker/go-connections v0.7.0 // indirect
+	github.com/docker/go-connections v0.8.2 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/evanphx/json-patch/v5 v5.6.0 // indirect
@@ -84,16 +84,16 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260330125221-c963978e514e // indirect
-	github.com/magiconair/properties v1.8.10 // indirect
+	github.com/magiconair/properties v1.18.12 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mdelapenya/tlscert v0.2.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
-	github.com/moby/go-archive v0.2.0 // indirect
-	github.com/moby/moby/api v1.55.0 // indirect
-	github.com/moby/moby/client v0.5.1 // indirect
+	github.com/moby/go-archive v0.3.3 // indirect
+	github.com/moby/moby/api v1.56.1 // indirect
+	github.com/moby/moby/client v0.6.2 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/sys/sequential v0.7.0 // indirect
-	github.com/moby/sys/user v0.4.0 // indirect
+	github.com/moby/sys/user v0.4.1 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
@@ -101,13 +101,12 @@ require (
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pierrec/lz4/v4 v4.1.33 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.6 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
+	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.15.0 // indirect
@@ -120,11 +119,11 @@ require (
 	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.57.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
+	software.sslmate.com/src/go-pkcs12 v0.7.3 // indirect
 )
