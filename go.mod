@@ -31,9 +31,9 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/hiddeco/sshsig v0.2.0
 	github.com/in-toto/in-toto-golang v0.11.0
-	github.com/klauspost/compress v1.20.1
+	github.com/klauspost/compress v1.20.3
 	github.com/moby/docker-image-spec v1.3.1
-	github.com/moby/go-archive v0.2.0
+	github.com/moby/go-archive v0.3.3
 	github.com/moby/locker v1.0.1
 	github.com/moby/moby/api v1.56.1
 	github.com/moby/patternmatcher v0.6.1
@@ -78,7 +78,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.57.0
 	golang.org/x/mod v0.41.0
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/time v0.16.0
