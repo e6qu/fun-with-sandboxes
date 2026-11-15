@@ -138,10 +138,14 @@ same knobs, each enforced by a real mechanism or refused:
   profile's text and the kernel about 35 µs to apply the bytecode. The
   engine renders the profile (`internal/seatbelt`) to `profile.sb`,
   compiles it with `sandbox_compile_string` (`libsystem.SandboxCompile`)
-  to `profile.bin` beside it, keyed by the text's SHA-256
-  (`internal/runtime`), while the shim starts, and the helper applies the
-  bytecode. A start whose text is unchanged, as a restart's, compiles
-  nothing.
+  to `profile.bin` beside it, keyed by the SHA-256 of the text and the
+  macOS build (`kern.osversion`) (`internal/runtime`), while the shim
+  starts, and the helper applies the bytecode. A start whose text is
+  unchanged, as a restart's, compiles nothing; an update of macOS
+  compiles every profile again. Where macOS refuses the bytecode, the
+  helper compiles the text itself through `sandbox_init`, the stable,
+  deprecated interface, and the container starts 15 ms later, confined
+  the same.
 - **Fork ceiling.** The helper lowers the soft `RLIMIT_NPROC` of every
   container process to `kern.maxprocperuid` less a reserve of an eighth
   of it, at least 64 (`runtime.ForkCeiling`), so a fork bomb fails in the
@@ -545,7 +549,10 @@ bind or a tmpfs — becomes a symlink at its destination inside the root that
 points at the backing host directory. The kernel follows it, and Seatbelt
 checks the resolved path, so the profile grants the backing directory. A new
 volume first receives the image's content at its mount point, as Docker's
-copy-up does.
+copy-up does. A `noexec` tmpfs mount's directory is left out of the
+profile's `process-exec` allowance, and Docker's `ReadonlyPaths` and
+`MaskedPaths` become denials of writes, and of reads and writes, at the end
+of the profile, at each path's place in the root or the mount holding it.
 
 ---
 

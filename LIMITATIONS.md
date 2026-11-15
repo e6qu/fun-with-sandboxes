@@ -156,8 +156,8 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   - A network without a subnet reports `127.88.0.0/16`, a loopback block,
     so a program that advertises its first global address (Kubernetes'
     API server, SeaweedFS) finds none there: create it with a subnet.
-  - A user-set MAC address is ignored; each address gets a MAC of
-    Docker's form.
+  - A user-set MAC address is refused; each address gets a MAC of
+    Docker's form, derived from it, on no interface.
 - **A container's interfaces are presented.** `getifaddrs`, the
   `SIOCGIF*` ioctls (IPv4 only) and the routing sysctl list loopback and
   `eth0` onwards. The kernel knows no `eth0`: binding to its index or
@@ -291,13 +291,14 @@ Limits are enforced by the container's supervisor, `fws-shim`, every
   - devices, `--gpus`, device cgroup rules, `--cgroup-parent`, cgroup
     sharing, `--oom-score-adj`, `--storage-opt`, Windows-only limits and
     isolation technologies other than the default;
-  - volume drivers other than `local`, and mount types other than bind,
-    volume, image and tmpfs.
-- **Some settings are accepted and ignored**, as nothing holds them:
-  `--cap-drop`, `seccomp`/`apparmor=unconfined`, `label=disable`,
-  `--cgroupns`, tmpfs mount options (size, mode), a user-set MAC
-  address, `HostConfig.VolumeDriver`, bind propagation, and
-  `MaskedPaths`/`ReadonlyPaths`.
+  - volume drivers other than `local` (`--volume-driver` too), and mount
+    types other than bind, volume, image and tmpfs.
+- **Some settings are accepted and change nothing**, as each asks for no
+  more confinement than a container has: `--cap-drop`,
+  `seccomp`/`apparmor=unconfined`, `label=disable` and `--cgroupns`.
+  Bind propagation holds as `rslave` whatever is asked: mounts the host
+  makes below a bind's source show in the container, which can make
+  none of its own.
 - **`docker pause` uses `SIGSTOP`**, not a cgroup freezer; connections
   to a paused container are still accepted and wait.
 - **`docker update` changes restart policies and limits**, live for a
@@ -315,8 +316,10 @@ Limits are enforced by the container's supervisor, `fws-shim`, every
 - **`docker cp` refuses paths** that resolve outside the container's
   root and mounts.
 - **tmpfs mounts are directories**, emptied at each start, not
-  memory-backed. tmpfs volumes are directories too, and their size and
-  ownership options are refused. The one memory-backed filesystem an
+  memory-backed. `rw`, `ro`, `noexec` (through the profile) and `mode`
+  hold, as do `nosuid` and `nodev`, as an unprivileged process makes no
+  setuid file or device; `size`, `nr_inodes`, `uid` and `gid` are
+  refused, on tmpfs volumes too. The one memory-backed filesystem an
   unprivileged user can make, an `hdiutil` RAM disk, mounts system-wide
   under `/Volumes`.
 - **A bind's missing source is created**, as Docker does; a read-only

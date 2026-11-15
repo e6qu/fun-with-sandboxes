@@ -69,20 +69,36 @@ The checks CI runs, in the order to run them locally:
    test -z "$(gofmt -l .)"
    ```
 
-2. **Vet**, for the macOS build the engine ships:
+2. **Vet and staticcheck**, for the macOS build the engine ships
+   (`staticcheck.conf` names the checks left out), and **govulncheck**:
 
    ```bash
    GOOS=darwin GOARCH=arm64 scripts/vet.sh
    ```
 
-3. **Unit tests.** On Linux these are the portable ones. On macOS they also
+   ```bash
+   GOOS=darwin GOARCH=arm64 staticcheck $(go list ./... | grep -v /third_party/)
+   ```
+
+   ```bash
+   GOOS=darwin GOARCH=arm64 govulncheck ./...
+   ```
+
+3. **Fuzzing**, of each `Fuzz` target for the time given; a failing input
+   lands in its package's `testdata/fuzz` and runs with the tests after:
+
+   ```bash
+   scripts/fuzz.sh 30s
+   ```
+
+4. **Unit tests.** On Linux these are the portable ones. On macOS they also
    build the container library and run probes under the real sandbox:
 
    ```bash
    go test -race -count=3 ./...
    ```
 
-4. **End to end, on macOS.** Build the catalog's image archives, then run
+5. **End to end, on macOS.** Build the catalog's image archives, then run
    the suite against them:
 
    ```bash
@@ -107,10 +123,13 @@ The checks CI runs, in the order to run them locally:
 
 CI runs these jobs on pull requests, pushes to `main` and by hand:
 
-- `linux`: formatting, the cross-build, vet (the end-to-end module's too),
-  the portable unit tests, that the shards hold every test once, and that
+- `linux`: formatting, the cross-build, vet, staticcheck and govulncheck
+  (the end-to-end module's too), the portable unit tests, 30 s of each
+  fuzz target, that the shards hold every test once, and that
   `third_party/buildkit` matches its sync script;
-- `macos`: the unit tests on macOS, what a container's processes pay
+- `macos`, on macOS 15 and 26: the unit tests, the probes again with the
+  container library and spawn helper built under
+  UndefinedBehaviorSanitizer (`FWS_CFLAGS`), what a container's processes pay
   for each system call the path library interposes, how long a
   container's main process takes to start, part by part, and how long
   Seatbelt takes to compile a profile;

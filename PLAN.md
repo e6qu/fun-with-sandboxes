@@ -102,39 +102,19 @@ Each open item, judged against the constraints, as of November 2026:
 
 ## What is missing
 
-Things the project should do and does not:
+Things the project should do and does not yet:
 
-- **No fuzzing or sanitizers for the C that runs in every container
-  process.** `fwsroot.c` is 6,400 lines of path mapping, socket emulation
-  and parsing, loaded into every program; a memory error there corrupts
-  whatever a container runs. Neither it nor the Go parsers (Dockerfile,
-  the network file, the router's requests) are fuzzed, and the probes do
-  not run under AddressSanitizer or UndefinedBehaviorSanitizer.
-- **No fallback when the compiled profile stops applying.** The spawn helper
-  fails when `sandbox_apply` refuses the bytecode, which a macOS update can
-  cause; compiling the text in the process (`sandbox_init_with_parameters`
-  or `sandbox_compile_string` there) would keep containers starting, at
-  15 ms more each, with a warning.
-- **CI on one macOS release.** Every macOS job runs on `macos-15`, while the
-  engine leans on private interfaces that change with each release. The
-  unit tests and probes should run on the current release too.
-- **CI actions on a deprecated runtime.** `actions/checkout@v4` and
-  `actions/setup-go@v5` target Node.js 20, which GitHub forces onto 24 with
-  a warning; their current majors do not.
-- **No static analysis beyond `go vet`, and no vulnerability scan.**
-  `staticcheck` and `govulncheck` would catch what vet does not, the latter
-  across BuildKit's and Kubernetes' dependencies.
-- **No dependency or image version updates.** Go modules, actions and the
-  catalog's pinned upstream versions are bumped by hand.
-- **Settings accepted and ignored, against the rule above.** Tmpfs mount
-  options (`--tmpfs /x:size=64m`, `Mount.TmpfsOptions`), a user-set MAC
-  address, `VolumeDriver`, bind propagation, and `MaskedPaths` and
-  `ReadonlyPaths` are taken and dropped, where a tmpfs volume's same
-  options are refused. Each should be refused, or honoured where it can
-  be (`ReadonlyPaths` through the profile).
-- **`docker stats`' pid count disagrees with the pids limit.** Stats count
-  the `ps` listing; the limit counts the supervisor's members, which
-  include daemons the main process answers for.
+- **The container library's C is not fuzzed.** `fwsroot.c` is 6,400 lines
+  of path mapping, socket emulation and parsing, loaded into every
+  program. CI runs its probes with the library built under
+  UndefinedBehaviorSanitizer, but no fuzzer drives its path mapping, and
+  nothing checks that its reading of the network file matches the Go
+  reader's (`internal/members`), which the Go fuzz target holds to a
+  round trip.
+- **Version updates are by hand.** Go modules, actions and the catalog's
+  pins (nixpkgs, Playwright, Kubernetes, kind) are bumped in roadmap PRs.
+  Dependabot would open a pull request per update, against the one open
+  pull request this project keeps at a time.
 - **`TestComposeWatch` still takes about 236 s** of its 300 s limit
   (`tests/e2e/durations.txt`); whether the snapshotter's fix ended the
   `compose up --build` stall is unconfirmed (below).
@@ -144,28 +124,37 @@ Things the project should do and does not:
 Large pull requests, one open at a time, each with its tests on the macOS
 runner.
 
-1. **Faster test loop; cross-node UDP; docs** — in review as
-   [#65](https://github.com/e6qu/fun-with-sandboxes/pull/65). Image
-   archives kept per image, so a change to one rebuilds that one; UDP
-   between pods of different nodes; a removed volume emptied off the
-   engine's lock and `prepare` timed by step; the loader's cost split by
-   what is interposed; the docs checked against the code and this plan.
-2. **Hardening the code in every process.** Fuzz targets for the container
-   library's path mapping and the Go parsers; the probes run once under
-   AddressSanitizer and UndefinedBehaviorSanitizer on the macOS runner; a
-   fallback to compiling the profile in the process when its bytecode does
-   not apply; the ignored settings above refused or honoured, and
-   `docker stats` counting the supervisor's members; `staticcheck` and `govulncheck` in CI; CI actions on current
-   majors; the unit tests and probes on the current macOS release as well;
-   Dependabot for Go modules and actions.
-3. **Process starts and the engine's lock.** Cut `fwsroot`'s loader cost by
+1. **Faster test loop; cross-node UDP; docs** — merged as
+   [#65](https://github.com/e6qu/fun-with-sandboxes/pull/65).
+2. **Hardening, and the catalog refreshed** — in review. Fuzz targets for
+   the Dockerfile parser, the network file and the router's header
+   (`scripts/fuzz.sh`); the probes again with the C built under
+   UndefinedBehaviorSanitizer; the unit tests on macOS 15 and 26;
+   `staticcheck` and `govulncheck` in CI; actions on Node.js 24. A
+   compiled profile keyed by the macOS build too, and the spawn helper
+   compiling the text where macOS refuses the bytecode. The settings that
+   were accepted and dropped are honoured (tmpfs `ro`, `noexec`, `mode`;
+   `ReadonlyPaths` and `MaskedPaths`, through the profile) or refused
+   (tmpfs `size`, a MAC address, a volume driver); `-v` takes propagation
+   modes and `nocopy`; `docker stats` counts the supervisor's members.
+   nixpkgs at the head of 26.05 (PostgreSQL 16.16 and 18.7, MariaDB
+   11.8.9, etcd 3.6.16, Mailpit 1.33, Node.js 26.13.1, Docker 29.9.3),
+   Playwright 1.65, Go 1.26.11, testcontainers-go 0.45.
+3. **Kubernetes 1.37 and kind 0.33.** The control plane, the kubelet and
+   its darwin patch moved from 1.35.0 to the release kind 0.33's node
+   image ships, `fws/kind-node` to what kind 0.33 asks of a node, and the
+   catalog onto nixos-26.11 once it is released, with each image's tag
+   following its new version.
+4. **Process starts and the engine's lock.** Cut `fwsroot`'s loader cost by
    interposing fewer functions or ones fewer images bind, guided by
    `BenchmarkCalls`' one- and four-function libraries; the jetsam
    experiment, kept as a per-process backstop if macOS enforces it and
    recorded in `LIMITATIONS.md` if not; the engine's lock split where the
    `-debug` timings still show long holds; `TestComposeWatch` run to see
-   whether the build stall is gone, with its cause found if not.
-4. **Dockerfiles written for Linux.** Explicit base-image mapping, the
+   whether the build stall is gone, with its cause found if not; a fuzzer
+   for the library's path mapping and a Go-against-C check of the network
+   file.
+5. **Dockerfiles written for Linux.** Explicit base-image mapping, the
    package-name table and `apt-get`, `apk` and `yum`/`dnf` stand-ins in
    the build that install from it, with a set of real Dockerfiles (Python,
    Node.js and Go services) built and run in the end-to-end suite.
