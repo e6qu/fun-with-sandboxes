@@ -228,9 +228,10 @@ export CONTAINER_HOST=unix://$HOME/.fws/docker.sock
 podman --remote run --rm fws/python:3.14 python3 -c 'print("hi")'
 ```
 
-Pods share no namespaces: create them with `--infra=false --share=`, as
-`podman-compose` does; an infra container runs Podman's pause image, which
-the engine does not have.
+A pod's infra container runs `fws/pause`, and the pod's containers join
+its network, IPC and, where shared, PID namespace; `--infra=false
+--share=`, as `podman-compose` creates pods, makes one that shares
+nothing.
 
 ## Kubernetes' Container Runtime Interface
 

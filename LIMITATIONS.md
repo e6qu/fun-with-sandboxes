@@ -147,10 +147,14 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
     `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
   - Servers see clients connect from `127.0.0.1`; a UDP server sees an
     IPv6 client at its IPv4-mapped address.
-  - A network takes one IPv4 subnet and at most one IPv6 subnet; more,
-    and IPv6-only networks (`enable_ipv4: false`), are refused, as the
-    library reaches every member over IPv4 (*not built yet*). There is
-    no link-local IPv6 address.
+  - A network takes any number of IPv4 and IPv6 subnets; a container
+    takes an address of each family from the first subnet with room, or
+    the one holding the address it names. On an IPv6-only network
+    (`enable_ipv4: false`) members hold, report and resolve to IPv6
+    addresses only, but a container's interface list still shows its
+    member address in `127.88.0.0/16` beside the IPv6 one, and pods of
+    other nodes do not see its members (*not built yet*). There is no
+    link-local IPv6 address.
   - A container keeps its addresses while it exists, where Docker frees
     a stopped container's.
   - A network without a subnet reports `127.88.0.0/16`, a loopback block,
@@ -256,9 +260,11 @@ Limits are enforced by the container's supervisor, `fws-shim`, every
   `posix_spawn` fail with `EAGAIN` at the limit; a process forked past
   it by a race, `vfork` or a program without the library is killed.
 - **`--blkio-weight`** picks a disk I/O tier (standard, utility,
-  throttle) and cannot change on a running container, as macOS lets a
-  process set only its own policy (*not built yet* through the library).
-  Per-device rates are refused.
+  throttle). On a running container an update reaches every process the
+  container starts after it, as the library sets each one's as it
+  starts; processes already running keep their tier until the container
+  restarts, as macOS lets a process set only its own policy. Per-device
+  rates are refused.
 - **`--ulimit`** sets nofile, fsize, cpu, core and stack, and memlock
   only unlimited. Refused: nproc (macOS counts it per user); data, as and
   a finite memlock (macOS does not enforce them); rss, locks, sigpending,
@@ -275,14 +281,15 @@ Limits are enforced by the container's supervisor, `fws-shim`, every
   more.** It runs Docker in Docker (`fws/dind`): the outer engine runs
   the nested engine's containers, as macOS refuses a second Seatbelt
   profile in a sandboxed process; no devices, capabilities or mounts are
-  granted. The nested engine publishes TCP ports only (*not built yet*
-  for UDP) and takes four port blocks cut into forty stacks.
+  granted. The nested engine publishes TCP and UDP ports and takes four
+  port blocks cut into forty stacks.
   `docker exec --privileged` is refused outside a privileged container.
   Linux `docker:dind`, `kindest/node` and Podman need a VM.
-- **Podman's pods share no namespaces.** Infra containers are refused,
-  so create pods with `--infra=false --share=`, as `podman-compose`
-  does (*not built yet*). `generate kube`, `play kube`, checkpoints and
-  quadlets are not served.
+- **A Podman pod shares its network, IPC and PID namespaces**, through
+  an infra container that runs `fws/pause`, which must be in the store.
+  The UTS namespace comes with the network; the user and cgroup
+  namespaces cannot be shared, as containers have none. `generate kube`,
+  `play kube`, checkpoints and quadlets are not served.
 - **Settings without a macOS counterpart are refused**:
   - DNS servers, search domains and options (names resolve through the
     host's resolver and the egress proxy);
