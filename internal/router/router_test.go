@@ -272,7 +272,8 @@ func dialForeign(router string, key []byte, addr netip.Addr, port int) (net.Conn
 	}
 	req := foreignRequest(StreamRelay, key, addr, port)
 	var ans [1]byte
-	if _, err := c.Write(req); err == nil {
+	_, err = c.Write(req)
+	if err == nil {
 		_, err = io.ReadFull(c, ans[:])
 	}
 	if err != nil {

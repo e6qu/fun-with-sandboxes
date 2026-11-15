@@ -676,7 +676,8 @@ func Dial(addr string, port int) (net.Conn, error) {
 	}
 	req := binary.BigEndian.AppendUint16([]byte{Stream}, uint16(port))
 	var ans [1]byte
-	if _, err := c.Write(req); err == nil {
+	_, err = c.Write(req)
+	if err == nil {
 		_, err = io.ReadFull(c, ans[:])
 	}
 	if err != nil {

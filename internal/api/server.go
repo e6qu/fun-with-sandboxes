@@ -840,18 +840,7 @@ func causeOf(msg string) string {
 	return msg
 }
 
-type unsupportedError string
-
-func (u unsupportedError) Error() string { return string(u) }
-
-func unsupportedErr(msg string) error { return unsupportedError(msg) }
-
 func writeEngineError(w http.ResponseWriter, err error) {
-	var u unsupportedError
-	if errors.As(err, &u) {
-		writeError(w, http.StatusNotImplemented, err.Error())
-		return
-	}
 	switch engine.KindOf(err) {
 	case engine.KindInvalid:
 		writeError(w, http.StatusBadRequest, err.Error())

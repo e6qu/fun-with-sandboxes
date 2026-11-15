@@ -132,13 +132,20 @@ func archs() []string {
 	return []string{"-arch", "arm64", "-arch", "arm64e"}
 }
 
+// CFlagsVar names clang flags Build adds to both programs, such as CI's
+// UndefinedBehaviorSanitizer build, which traps where the C would act
+// undefined: -fsanitize=undefined -fsanitize-trap=undefined.
+const CFlagsVar = "FWS_CFLAGS"
+
 // Build compiles the library into dir, and the spawn helper beside it as
-// Spawner names it, unless a build of these sources is there already, and
-// returns the library's path.
+// Spawner names it, unless a build of these sources and flags is there
+// already, and returns the library's path.
 func Build(dir string) (string, error) {
+	extra := strings.Fields(os.Getenv(CFlagsVar))
 	h := sha256.New()
 	h.Write(source)
 	h.Write(spawnSource)
+	h.Write([]byte(strings.Join(extra, "\x00")))
 	out := filepath.Join(dir, "fwsroot-"+hex.EncodeToString(h.Sum(nil)[:8])+".dylib")
 	if _, err := os.Stat(out); err == nil {
 		return out, nil
@@ -164,7 +171,7 @@ func Build(dir string) (string, error) {
 		"-Wl,-U,_IORegisterForSystemPower", "-Wl,-U,_IONotificationPortCreate",
 		"-Wl,-U,_connect$NOCANCEL", "-Wl,-U,_sendto$NOCANCEL", "-Wl,-U,_sendmsg$NOCANCEL",
 		"-Wl,-U,_recvfrom$NOCANCEL", "-Wl,-U,_recvmsg$NOCANCEL", "-Wl,-U,_accept$NOCANCEL"}, archs()...)
-	if err := clang(append(args, "-o", lib, src)); err != nil {
+	if err := clang(append(append(args, extra...), "-o", lib, src)); err != nil {
 		return "", err
 	}
 	spawnSrc := filepath.Join(work, "spawn.c")
@@ -172,7 +179,7 @@ func Build(dir string) (string, error) {
 		return "", err
 	}
 	spawn := filepath.Join(work, "spawn")
-	if err := clang([]string{"clang", "-O2", "-Wall", "-Werror", "-o", spawn, spawnSrc, "-lsandbox"}); err != nil {
+	if err := clang(append(append([]string{"clang", "-O2", "-Wall", "-Werror"}, extra...), "-o", spawn, spawnSrc, "-lsandbox")); err != nil {
 		return "", err
 	}
 	// Another engine may have built them meanwhile; either build is the

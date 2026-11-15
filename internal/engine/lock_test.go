@@ -26,6 +26,7 @@ func TestTimedMutexLogsLongHoldsAndWaits(t *testing.T) {
 		}()
 		<-held
 		m.Lock()
+		//lint:ignore SA2001 taking the lock is the test: it waits behind the holder.
 		m.Unlock()
 		<-done
 		out := buf.String()

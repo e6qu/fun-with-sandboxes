@@ -63,8 +63,11 @@ type Service struct {
 	controller *control.Controller
 	sessions   *session.Manager
 	grpc       *grpc.Server
-	h2         *http2.Server
-	worker     *darwinWorker
+	// x/net's http2.Server is deprecated for net/http's own HTTP/2, which
+	// serves no single connection a handler hijacked, as POST /grpc needs.
+	//lint:ignore SA1019 see above
+	h2     *http2.Server
+	worker *darwinWorker
 }
 
 // darwinWorker adds the engine's moby exporter to BuildKit's base worker.
@@ -216,6 +219,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	srv := grpc.NewServer()
 	ctl.Register(srv)
+	//lint:ignore SA1019 net/http serves no hijacked connection (Service.h2)
 	return &Service{controller: ctl, sessions: sm, grpc: srv, h2: &http2.Server{}, worker: w}, nil
 }
 
@@ -238,6 +242,7 @@ func (s *Service) ServeGRPC(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 		return
 	}
+	//lint:ignore SA1019 net/http serves no hijacked connection (Service.h2)
 	s.h2.ServeConn(conn, &http2.ServeConnOpts{Handler: s.grpc})
 }
 

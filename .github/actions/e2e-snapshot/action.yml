@@ -17,7 +17,7 @@ runs:
           sleep 1
         done
         tail -n 3 "$RUNNER_TEMP/e2e/test.log" || true
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v6
       with:
         name: ${{ inputs.name }}
         path: ${{ runner.temp }}/e2e

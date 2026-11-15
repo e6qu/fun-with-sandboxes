@@ -1,6 +1,6 @@
 module github.com/e6qu/fun-with-sandboxes
 
-go 1.26.8
+go 1.26.11
 
 require (
 	github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29
