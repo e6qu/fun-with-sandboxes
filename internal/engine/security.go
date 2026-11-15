@@ -16,7 +16,8 @@ var defaultCapabilities = []string{
 
 // heldCapabilities are capabilities beyond Docker's default set whose
 // power every container holds already: IPC_LOCK's, to lock memory, which
-// macOS grants an unprivileged process up to its RLIMIT_MEMLOCK.
+// macOS grants every process within the system's wired-memory limits; it
+// does not enforce RLIMIT_MEMLOCK.
 var heldCapabilities = []string{"IPC_LOCK"}
 
 // No default capability grants a container here a power to give up: they

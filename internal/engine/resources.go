@@ -93,7 +93,7 @@ func containerLimits(r container.Resources) (runtime.Limits, shim.Resources, err
 		what string
 	}{
 		{r.CpusetCpus != "" || r.CpusetMems != "", "cpusets are not supported: macOS gives no process a choice of CPUs"},
-		{r.CPURealtimePeriod != 0 || r.CPURealtimeRuntime != 0, "real-time CPU scheduling is not supported: it needs root"},
+		{r.CPURealtimePeriod != 0 || r.CPURealtimeRuntime != 0, "real-time CPU scheduling is not supported: Docker's real-time budget is a cgroup's, which macOS has no counterpart for"},
 		{r.CPUCount != 0 || r.CPUPercent != 0 || r.IOMaximumIOps != 0 || r.IOMaximumBandwidth != 0, "Windows resource limits are not supported"},
 		{len(r.BlkioWeightDevice) > 0 || len(r.BlkioDeviceReadBps) > 0 || len(r.BlkioDeviceWriteBps) > 0 ||
 			len(r.BlkioDeviceReadIOps) > 0 || len(r.BlkioDeviceWriteIOps) > 0, "per-device block I/O limits are not supported: macOS sets disk I/O policy per process, not per device"},
