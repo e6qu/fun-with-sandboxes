@@ -35,8 +35,9 @@ copy-on-write clones**, and **per-stack resource assignment**.
 
 - **Not a Linux container runtime.** It runs macOS-native (Mach-O,
   `darwin/<arch>`) images only. Linux ELF images cannot run on macOS without a
-  VM or emulation, both excluded; the roadmap (`PLAN.md`) makes darwin images
-  from Linux images and Dockerfiles instead.
+  VM or emulation, both excluded. Images come from the Nix-built catalog
+  (§7) or from Dockerfiles built on it; [`PLAN.md`](../PLAN.md) covers
+  building Dockerfiles written for Linux.
 - **Not root-requiring.** No step uses `sudo`, installs a kext, disables SIP,
   adds `lo0` aliases, or writes `pf` rules. If a design choice needs root, it is
   rejected and replaced with an unprivileged equivalent.
@@ -695,17 +696,26 @@ Stock Docker Hub images are Linux. The catalog is built from Nixpkgs for
   layer per store path, in sorted order, and a last layer with everything
   else, so images that share store paths share layers. The profile denies the host's
   `/nix`, so the tests prove it.
-- **Entrypoints are Go programs** (`images/*/entry`) that configure the
-  service as the official image's entrypoint does, on its container ports,
-  and `exec` it. Images carry no
-  `#!` scripts: the kernel resolves interpreters on the host.
-- **Catalog.** `fws/postgres:16`, with `initdb`, `POSTGRES_PASSWORD`,
-  `POSTGRES_DB` and `docker-entrypoint-initdb.d/*.sql` handled the way the
-  official image handles them; `fws/redis:8`; and `fws/toolbox:1`, a small
-  HTTP app backed by its stack's Redis that doubles as the tests' probe;
-  and `fws/ryuk:0.14.0`, Testcontainers' reaper built from its release
-  unchanged, and an `nc` that checks a container port through the container
-  library, as Testcontainers' in-container port check runs `nc -z`. A container reaches
+- **Entrypoints.** Where the official image's entrypoint configures the
+  service, the catalog's is a Go program (`images/*/entry`) that does the
+  same, on its container ports, and `exec`s it; other images run their
+  program directly, or the upstream image's own `#!` scripts (Kafka's
+  `configure`, the Lambda runtimes' `bootstrap`), which run under the
+  interpreter in the root, and a `#!/usr/bin/env` line under the program
+  the container's `PATH` names (`internal/runtime/script.go`).
+- **Catalog.** `scripts/build-images.sh` builds every image under
+  `images/`, among them `fws/postgres`, with `initdb`,
+  `POSTGRES_PASSWORD`, `POSTGRES_DB` and `docker-entrypoint-initdb.d/*.sql`
+  handled the way the official image handles them; `fws/redis`;
+  `fws/toolbox`, a small HTTP app backed by its stack's Redis that doubles
+  as the tests' probe; `fws/ryuk`, Testcontainers' reaper built from its
+  release unchanged; databases, brokers and servers (MySQL, MariaDB,
+  MongoDB, Kafka, RabbitMQ, NATS, nginx, Vault, SeaweedFS as the S3
+  server and others); language runtimes (Node, Bun, Python, the Lambda
+  runtimes); `fws/dind`; and the Kubernetes images (`kind-node`, the
+  control plane's components, `kubelet`, `kubectl`, `pause`). An `nc`
+  checks a container port through the container library, as
+  Testcontainers' in-container port check runs `nc -z`. A container reaches
   a Unix socket it bind-mounts, as in Docker, and makes sockets in its
   writable mounts.
   macOS allows only 87 System V semaphores machine-wide by default, so the
@@ -737,7 +747,8 @@ with or without the `/v1.xx` prefix:
   unframed output, binary from API 1.28 on), both ending on a terminal at
   the client's detach keys (ctrl-p ctrl-q unless it names its own), `archive` (`HEAD`, `GET`, `PUT`:
   `docker cp`), `top`, `stats` (streamed every second, or one sample),
-  `pause`, `unpause`, `update` (restart policy), `DELETE`, `prune`
+  `pause`, `unpause`, `update` (restart policy and resource limits),
+  `DELETE`, `prune`
   (`label`, `until`)
 - Exec: `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached,
   detached, TTY, detaching at the exec's detach keys), `/exec/{id}/resize`, `GET /exec/{id}/json`
@@ -755,6 +766,9 @@ with or without the `/v1.xx` prefix:
   and `GET /containers/{id}/export`
 - Networks: `json`, `create`, `{id}`, `connect`, `disconnect`, `prune`, `DELETE`
 - Volumes: `json`, `create`, `{name}`, `prune`, `DELETE`
+- The engine's own: `GET` and `PUT /fws/networks/{name}/services`, a
+  network's virtual services, which `fws-kube-proxy` keeps in step with a
+  cluster's (see Kubernetes below)
 
 A container's create ends with an APFS clone of its root, taken once its
 mounts are set up: the state Docker's init layer holds. `docker diff` and a
@@ -766,10 +780,19 @@ timeout, start period, retries) and report Docker's states and events. Restart
 policies follow Docker's back-off.
 
 Requests the engine cannot honour return an error rather than being
-accepted: `501` for memory, CPU, PID, ulimit and device limits; privileged
-mode; capabilities; non-default users; `host` networking; non-`bridge`
+accepted, `501` for a knob only a kernel or root could enforce: a swap limit
+apart from the memory limit, memory reservations, swappiness and disabling
+the OOM killer; cpusets, real-time CPU scheduling and per-device block I/O
+limits; the `nproc`, `data`, `as`, `rss` and similar ulimits, and a finite
+`memlock`; devices, cgroups, sysctls, user namespaces, DNS options and
+storage options; a capability beyond Docker's default set but `IPC_LOCK`,
+and security options; `host` networking outside a nested engine; non-`bridge`
 network drivers; IPAM drivers other than the default, more than one subnet
-of a family and IPv6-only networks; SCTP publishing; and resource updates.
+of a family and IPv6-only networks; SCTP publishing; and a change of a
+running container's block I/O weight. Memory, CPU, pids and ulimit limits
+otherwise hold, and `docker update` changes them live (§3a); privileged
+mode runs a nested engine (§3a); a non-default user is presented by the
+container library (§3).
 
 `POST /grpc` and `POST /session` serve an embedded BuildKit
 (`internal/buildkit`), as dockerd does, so buildx's docker driver, `docker
@@ -802,10 +825,21 @@ Linux-specific:
 
 The BuildKit packages the engine uses live in `third_party/buildkit`, copied
 by `scripts/sync-buildkit.sh` with their imports rewritten into this module
-and the patches in `third_party/buildkit-patches` applied. One patch matters:
-BuildKit's darwin mounter mounts a read-only snapshot with `mount(2)`, which
-needs root; the patched mounter reads the snapshot's directory directly, as it
-already did for read-write ones. Keeping the packages in the module, rather
+and the patches in `third_party/buildkit-patches` applied:
+
+- `localmounter_darwin`: BuildKit's darwin mounter mounts a read-only
+  snapshot with `mount(2)`, which needs root; the patched mounter reads the
+  snapshot's directory directly, as it already did for read-write ones.
+- `ssh_socket_owner`: a step's SSH agent socket stays the worker's user's,
+  which stands for the step's root, since no other owner can be set
+  without root.
+- `syntax_builtin`: a `# syntax=` directive naming Docker's own Dockerfile
+  frontend, a Linux image a darwin worker cannot run, is served by the
+  built-in frontend instead of being forwarded.
+- `resolvecache_race`: the frontend's resolve cache is set up once, before
+  stages resolve their bases concurrently.
+
+Keeping the packages in the module, rather
 than behind a `replace` directive, keeps `go install …/cmd/fwsd@<version>`
 working.
 
@@ -840,15 +874,22 @@ fetches the context itself: a Git repository at the fragment's ref and
 subdirectory, fetched shallow with submodules, a tarball, or a plain
 Dockerfile.
 
-`pause` sends SIGSTOP to each of the container's process groups and `unpause`
-SIGCONT; health checks and `exec` wait while a container is paused, and
-stopping a paused container resumes it to deliver the stop signal.
+`pause` has the container's shim send SIGSTOP to every process it tracks
+(§3a), so its CPU throttling never continues them, and `unpause` SIGCONT;
+health checks and `exec` wait while a container is paused, and stopping a
+paused container resumes it to deliver the stop signal.
 
-`top` and `stats` read the host's process table through `ps`, as dockerd's
-`top` does, keeping the processes of the container's process groups. CPU usage
-is their accumulated CPU time; `system_cpu_usage` is the machine's CPU time
-elapsed since the engine started, so the client's CPU percentage is the share
-of one CPU the container used.
+`top` reads the host's process table through `ps`, as dockerd's `top` does,
+and keeps the container's processes: those of its main process's and its
+running execs' process groups, those carrying its `SANDBOX_ROOT` tag, and
+those macOS holds its main process responsible for, but the exec anchor.
+`stats` sums the same processes' CPU time; `system_cpu_usage` is the
+machine's CPU time elapsed since the engine started, so the client's CPU
+percentage is the share of one CPU the container used. Memory (the physical
+footprint the memory limit holds), CPU throttling, block I/O and network
+counts come from the shim. The pids count is the number of those
+processes, while the pids limit counts the shim's members (§3a); the two
+can differ for a process the shim has not yet followed.
 
 `docker cp` resolves paths as the container's processes do, absolute symlinks
 on the host, and refuses any result outside the container's root and mounts.
@@ -873,15 +914,67 @@ Pods are the engine's: a record per pod, kept in `pods.json`, and Podman's
 `io.podman.pod` label on each member. Errors carry Podman's `cause` and
 `response` beside Docker's `message`, for both clients.
 
+### Kubernetes
+
+- **CRI.** The socket also serves the Kubernetes Container Runtime
+  Interface (`internal/cri`): a request over unencrypted HTTP/2 with a
+  gRPC content type goes to it, the rest to the Docker and Podman
+  handlers. It maps CRI onto the engine as cri-dockerd maps it onto
+  Docker. A pod sandbox is a pause container (`fws/pause:3.10.1`) that
+  holds the pod's network, ports and DNS, and the pod's containers join it
+  as `--network container:` joins one. Every pod not on its node's network
+  joins the user-defined network `fws-pods`, whose subnet is the pod CIDR
+  the kubelet sends, or kind's `10.244.0.0/16` until it sends one. The
+  engine copies each container's output to the log file the kubelet names,
+  in CRI's format, and serves exec, attach and port-forward streams on a
+  loopback port, or a nested engine's on its privileged container's.
+- **Nodes.** A kind node is a privileged container whose nested engine
+  (§3a) is its kubelet's runtime.
+- **Cross-node pods.** Nested engines in privileged containers that share
+  a network are a cluster's nodes (`internal/engine/peers.go`). Each
+  nested engine publishes its members on networks with subnets of their
+  own to the engine it is nested in, which hands them to the nested engines
+  of the containers its container shares a network with. Each lists them in
+  its network files as foreign members of the networks of the same names,
+  reached through their routers, which listen on the host's loopback as
+  every router does, so a pod reaches another node's pods at their
+  addresses. The outer engine refreshes the others from a goroutine of its
+  own, and takes no nested engine's lock while holding its own.
+- **Services.** A network can carry virtual services
+  (`internal/engine/services.go`), as Kubernetes Services' cluster IPs:
+  each has an address on the network, names (`name`, `name.namespace`,
+  `name.namespace.svc` and `name.namespace.svc.cluster.local`) and TCP or
+  UDP ports, each with its endpoints' addresses and ports. The engine
+  serves each service port on a loopback port, outside any sandbox, and
+  carries each connection, or each UDP client's flow, to the next of its
+  endpoints, as kube-proxy's userspace mode does. The network file lists
+  services as members of the stack `services`, so the library resolves and
+  reaches them as it does members. A TCP service port with a node port
+  also answers on the node's port of that number: for a nested engine,
+  its privileged container's port.
+- **fws-kube-proxy.** `cmd/fws-kube-proxy` is the node's kube-proxy. It
+  polls the API server for Services and EndpointSlices (every second by
+  default, `-interval`), with no client library, and `PUT`s the whole list
+  to `/fws/networks/fws-pods/services` on the engine's socket
+  (`FWS_ENGINE`) when it changes, and again every 30 s (`-resync`), so an
+  engine that restarted gets it back.
+
 ## 9. Runtime launch sequence
 
 On create: clone the image root, assign the stack's ports, realise the
 mounts, and record the container. On start:
 
-1. Render the Seatbelt profile from the container's grants (§3) and write it
-   next to the container's state, outside the root.
+1. Render the Seatbelt profile from the container's grants (§3), write it
+   to `profile.sb` next to the container's state, outside the root, and
+   compile it to `profile.bin` unless the bytecode of the same text is
+   kept already (§3a), alongside step 3.
 2. Build the environment: image and container variables, `PATH` mapped into
-   the root, `HOME` under the root, and the `SANDBOX_*` variables.
+   the root, `HOME` under the root, and the `SANDBOX_*` variables. With
+   `--init`, link the `fws-shim` binary at `/sbin/docker-init` in the root,
+   as Docker mounts its init, and put it before the command: run by that
+   name it acts as tini, forwarding the signals it receives to the
+   command, reaping every process that ends up its child, and exiting as
+   the command does.
 3. Start the container's shim (§3a), which binds the published host ports.
 4. The shim spawns the helper, which applies the limits and the Seatbelt
    profile and executes `<root>/<argv0> …` with the container library
@@ -890,7 +983,7 @@ mounts, and record the container. On start:
    the json-file log through real pipes, so the shim sees the exit at once
    even if a descendant still holds stdout.
 5. When the main process exits, the shim kills the rest of the container,
-   drains the output, records the exit, and tells the engine, which applies
+   drains the output for up to 2 s, records the exit, and tells the engine, which applies
    the restart policy.
 
 `exec` and health checks start further processes in the container's
@@ -903,7 +996,8 @@ or a pty (`creack/pty`).
 
 The engine is Go and cross-compiles with `CGO_ENABLED=0` for `darwin/arm64`,
 Apple silicon, alone. What runs inside every container process start is C,
-which the engine compiles with clang on the Mac as it starts: the container
+which the engine compiles with clang on the Mac before its first container
+starts, into `lib/`: the container
 library (`internal/pathmap/src/fwsroot.c`) and the spawn helper
 (`internal/pathmap/src/spawn.c`). `clonefile` comes from
 `golang.org/x/sys/unix`, image handling from `go-containerregistry`, and the
@@ -912,7 +1006,7 @@ clients decode.
 
 ```
 cmd/fwsd/             # the daemon: Docker Engine, libpod and CRI APIs over a unix socket
-cmd/fws-shim/         # the helper binary: supervisors, exec anchors, egress proxies
+cmd/fws-shim/         # the helper binary: supervisors, exec anchors, egress proxies, docker-init
 cmd/fws-mkimage/      # Nix closure -> darwin image archive
 cmd/fws-kube-proxy/   # kube-proxy for a node whose runtime is the engine
 internal/alloc/       # per-stack port blocks and directories
@@ -925,20 +1019,22 @@ internal/engine/      # containers, volumes, networks, exec, health, events, mac
 internal/execpath/    # finding a container's executables, as execve and a shell do
 internal/identity/    # users and groups from the container's /etc/passwd
 internal/image/       # image store, layer extraction, clonefile roots
-internal/libsystem/   # libSystem calls syscall does not offer (posix_spawn, I/O policy)
+internal/libsystem/   # libSystem calls syscall does not offer (posix_spawn, I/O policy,
+                      #   sandbox_compile_string)
 internal/logfile/     # json-file logs
 internal/members/     # a stack's network file: member addresses and names
 internal/netstat/     # per-socket network counters for docker stats
 internal/pathmap/     # fwsroot, the container library, the spawn helper, and their build
 internal/pidns/       # PID namespaces containers share, through their shims
 internal/portproxy/   # published host ports, TCP and UDP
-internal/procs/       # the host process table, for top and stats
+internal/procs/       # the host process table: the shim's member tracking, top and stats
 internal/roles/       # the helper processes the engine's binary runs
 internal/rootfs/      # chroot-style path resolution inside a root
-internal/router/      # traffic to container ports without host ports
-internal/runtime/     # starting container processes through the spawn helper
+internal/router/      # traffic to container ports without host ports, relays, ICMP echo
+internal/runtime/     # starting container processes through the spawn helper; the
+                      #   compiled-profile cache; docker-init
 internal/sandboxenv/  # the container side of the SANDBOX_* contract
-internal/seatbelt/    # Seatbelt profile rendering and compiled profiles
+internal/seatbelt/    # Seatbelt profile rendering
 internal/shim/        # a container's supervisor: limits, output, live restore
 third_party/buildkit/ # the BuildKit packages it uses, patched (sync-buildkit.sh)
 images/               # entrypoints and Nix specs for the darwin catalog
