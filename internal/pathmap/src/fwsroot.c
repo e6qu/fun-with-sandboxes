@@ -3848,7 +3848,11 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
     if (k->ss_family == AF_UNIX && kn > (socklen_t)offsetof(struct sockaddr_un, sun_path)) {
         // A Unix socket's path is the container's.
         struct sockaddr_un *u = (struct sockaddr_un *)&v;
-        u->sun_path[sizeof u->sun_path - 1] = 0;
+        // The path ends where the kernel's length says: macOS 26 reports a
+        // datagram's source without its terminating NUL, and the bytes past
+        // it are whatever the caller's buffer held.
+        size_t pn = (size_t)kn - offsetof(struct sockaddr_un, sun_path);
+        u->sun_path[pn < sizeof u->sun_path ? pn : sizeof u->sun_path - 1] = 0;
         char *name = fd >= 0 && fd < NET_FDS ? (own ? unix_names : unix_peers)[fd] : NULL;
         if (name && u->sun_path[0] && u->sun_path[0] != '/') {
             strlcpy(u->sun_path, name, sizeof u->sun_path);
