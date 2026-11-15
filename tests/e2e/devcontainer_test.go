@@ -6,11 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/go-containerregistry/pkg/registry"
 )
 
 // devcontainer runs the Dev Containers CLI, which drives the engine through
@@ -170,5 +177,142 @@ func TestDevcontainerDockerfileAndFeature(t *testing.T) {
 	}
 	if out != "built\nhello from a feature\ninstalled\n" {
 		t.Errorf("the built dev container printed %q", out)
+	}
+}
+
+// A feature published to a registry as an OCI artifact: the CLI pushes it
+// with features publish, and up fetches it by reference and installs it.
+func TestDevcontainerRegistryFeature(t *testing.T) {
+	reg := httptest.NewServer(registry.New())
+	defer reg.Close()
+	// The CLI speaks plain HTTP only to a registry named localhost.
+	host := "localhost" + reg.URL[strings.LastIndex(reg.URL, ":"):]
+
+	src := filepath.Join(t.TempDir(), "src", "motto")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"devcontainer-feature.json": `{
+  "id": "motto",
+  "version": "1.2.3",
+  "name": "Motto",
+  "options": {"text": {"type": "string", "default": "none"}}
+}
+`,
+		"install.sh": "#!/bin/sh\nset -e\necho \"$TEXT\" > /etc/fws-e2e-motto\n",
+	} {
+		if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := devcontainer(t, "features", "publish", "--registry", host, "--namespace", "e2e/features", filepath.Dir(src)); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, _ := devcontainerUp(t, map[string]string{
+		".devcontainer/devcontainer.json": `{
+  "image": "fws/base:1",
+  "features": {"` + host + `/e2e/features/motto:1": {"text": "from a registry"}}
+}
+`,
+	})
+	out, err := devcontainer(t, "exec", "--workspace-folder", dir, "cat", "/etc/fws-e2e-motto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "from a registry\n" {
+		t.Errorf("the feature from the registry left %q", out)
+	}
+}
+
+// appPort publishes a port of the dev container on the host, and the
+// container's server answers there.
+func TestDevcontainerAppPort(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := fmt.Sprint(l.Addr().(*net.TCPAddr).Port)
+	l.Close()
+	devcontainerUp(t, map[string]string{
+		"index.txt": "served from the workspace\n",
+		".devcontainer/devcontainer.json": `{
+  "image": "fws/python:1",
+  "appPort": ["127.0.0.1:` + port + `:8000"],
+  "postStartCommand": "nohup python3 -m http.server 8000 > /tmp/server.log 2>&1 &"
+}
+`,
+	})
+	var body string
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		res, err := http.Get("http://127.0.0.1:" + port + "/index.txt")
+		if err != nil {
+			continue
+		}
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		body = string(b)
+		break
+	}
+	if body != "served from the workspace\n" {
+		t.Errorf("the dev container's published port answered %q", body)
+	}
+}
+
+// A dev container that is a service of a Compose project: the CLI brings
+// the project up with an override file of its own, runs commands in the
+// named service, and the service reaches its neighbour by name.
+func TestDevcontainerCompose(t *testing.T) {
+	dir, res := devcontainerUp(t, map[string]string{
+		"index.txt": "from the neighbour\n",
+		".devcontainer/compose.yaml": `services:
+  dev:
+    image: fws/python:1
+    command: ["python3", "-c", "import time; time.sleep(600)"]
+    volumes:
+      - ..:/workspace
+  web:
+    image: fws/python:1
+    working_dir: /srv
+    command: ["python3", "-m", "http.server", "8000"]
+    volumes:
+      - ..:/srv
+`,
+		".devcontainer/devcontainer.json": `{
+  "dockerComposeFile": "compose.yaml",
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+  "postCreateCommand": "echo created > /tmp/created"
+}
+`,
+	})
+	// The CLI names the project after the folder that holds .devcontainer.
+	project := "com.docker.compose.project=" + strings.ToLower(filepath.Base(dir)) + "_devcontainer"
+	t.Cleanup(func() {
+		if ids, _ := docker(t, "ps", "-aq", "--filter", "label="+project); strings.TrimSpace(ids) != "" {
+			docker(t, append([]string{"rm", "-f", "-v"}, strings.Fields(ids)...)...)
+		}
+		if ids, _ := docker(t, "network", "ls", "-q", "--filter", "label="+project); strings.TrimSpace(ids) != "" {
+			docker(t, append([]string{"network", "rm"}, strings.Fields(ids)...)...)
+		}
+	})
+	if res.RemoteWorkspaceFolder != "/workspace" {
+		t.Errorf("devcontainer up: %+v", res)
+	}
+	script := `import urllib.request, time
+for i in range(100):
+    try:
+        print(urllib.request.urlopen("http://web:8000/index.txt").read().decode(), end="")
+        break
+    except OSError:
+        time.sleep(0.2)
+print(open("/tmp/created").read(), end="")`
+	out, err := devcontainer(t, "exec", "--workspace-folder", dir, "python3", "-c", script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "from the neighbour\ncreated\n" {
+		t.Errorf("the Compose dev container printed %q", out)
 	}
 }
