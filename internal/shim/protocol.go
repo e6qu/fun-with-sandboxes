@@ -38,13 +38,20 @@ type Config struct {
 	// members, for its router's relays to other stacks' members.
 	NetworkFile string
 	Address     string
-	ExitPath    string
+	// Internet is whether the container reaches hosts outside the
+	// machine: its router then relays its pings of them.
+	Internet bool
+	ExitPath string
 	// Tag is the environment entry every process of the container starts
 	// with.
 	Tag string
 	// Procs is where the shim answers its container's library about the
 	// PID namespace whose file is PidNamespace (package pidns).
-	Procs        string    `json:",omitempty"`
+	Procs string `json:",omitempty"`
+	// Pids is where the shim answers its container's library with how
+	// many processes the container runs, which it compares with its pids
+	// limit before a fork: four bytes, a native-endian int32.
+	Pids         string    `json:",omitempty"`
 	PidNamespace string    `json:",omitempty"`
 	Publish      []Binding `json:",omitempty"`
 	// AllocRoot and Stack locate the stack's port block, from which UDP
@@ -143,4 +150,7 @@ type State struct {
 	ThrottledTime    time.Duration
 	OOMKills         uint64
 	Resources        Resources
+	// Scans counts the supervisor's reads of the whole process table; it
+	// follows the container's forks and exits without one.
+	Scans uint64
 }

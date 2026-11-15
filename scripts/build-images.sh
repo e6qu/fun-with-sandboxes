@@ -479,10 +479,7 @@ mkimage $(accounts lambda-java sbx_user1051 993 990 /home/sbx_user1051) -spec im
 pw_version=1.59.1
 pw_revision=1217
 pw_chrome=147.0.7727.15
-case "$(uname -m)" in
-  arm64) pw_platform=mac-arm64 pw_sum=92e16fab914827a637607e46468b4360ebd2d30bbad06044d333bb5c0ceb3319 ;;
-  x86_64) pw_platform=mac-x64 pw_sum=ef808c5be0d15913f58d44689e2bd114311c8c6b41718fab695cdc1bbcb0e2aa ;;
-esac
+pw_platform=mac-arm64 pw_sum=92e16fab914827a637607e46468b4360ebd2d30bbad06044d333bb5c0ceb3319
 mkdir -p "$build/playwright/modules" "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
 # The install is retried as curl retries below: a runner's resolver drops a
 # lookup now and then, and npm retries no failed lookup itself.

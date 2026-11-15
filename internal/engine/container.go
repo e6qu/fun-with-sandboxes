@@ -600,7 +600,7 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	if helper, err := roles.Binary(); err == nil {
 		env = append(env, pathmap.HelperVar+"="+filepath.Base(helper))
 	}
-	env = append(env, pathmap.PidsVar+"="+c.pidsPath())
+	env = append(env, pathmap.PidsVar+"="+c.pidsPath(), pathmap.PidsSocketVar+"="+e.pidsSocket(c))
 	if onNetwork(net) && net.rec.Address != "" {
 		nf, err := ne.networkFile(net.rec.Stack)
 		if err != nil {
@@ -1158,20 +1158,26 @@ func containsBind(binds []string, src string) bool {
 }
 
 // copyUp fills a new volume's empty directory dst with the image's content
-// at src: an APFS clone where the two share a volume, which takes
-// milliseconds under the engine's lock where a copy took seconds, or else
-// a copy.
+// at src: an APFS clone where the two are on the same filesystem, which
+// shares the image's blocks and takes milliseconds under the engine's lock,
+// and a copy where the volume is on another, such as a local volume that
+// binds a directory of another disk.
 func copyUp(src, dst string) error {
-	if fi, err := os.Lstat(src); err != nil || !fi.IsDir() {
-		if os.IsNotExist(err) {
+	var srcSt, dstSt syscall.Stat_t
+	if err := syscall.Lstat(src, &srcSt); err != nil {
+		if errors.Is(err, syscall.ENOENT) {
 			return nil
 		}
 		return err
 	}
-	if err := cloneInto(src, dst); err == nil {
+	if srcSt.Mode&syscall.S_IFMT != syscall.S_IFDIR {
 		return nil
-	} else if !emptyDir(dst) {
+	}
+	if err := syscall.Stat(dst, &dstSt); err != nil {
 		return err
+	}
+	if srcSt.Dev == dstSt.Dev {
+		return cloneInto(src, dst)
 	}
 	return copyTree(src, dst)
 }
@@ -1373,6 +1379,7 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	spec := seatbelt.Spec{
 		Root: c.root(), StateRoot: e.stateRoot(), ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
 		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath()},
+		Sockets: []string{e.pidsSocket(c)},
 	}
 	if c.rec.HostConfig.Privileged {
 		spec.Sockets = append(spec.Sockets, e.engineSocket(c))
@@ -1491,6 +1498,7 @@ func (c *Container) start(e *Engine) error {
 	if err != nil {
 		return err
 	}
+	limits.QoSClamp = e.cfg.QoSClamp
 	for _, m := range c.rec.Mounts {
 		if m.Type == mount.TypeTmpfs {
 			os.RemoveAll(m.Source)
@@ -1562,7 +1570,7 @@ func (c *Container) start(e *Engine) error {
 		TTY: c.rec.Config.Tty, Console: c.rec.HostConfig.ConsoleSize, OpenStdin: c.rec.Config.OpenStdin,
 		LogPath: c.logs.path, Socket: e.shimSocket(c), Anchor: e.anchorSocket(c), ExitPath: c.exitPath(),
 		Router: c.rec.RouterPort, PortDir: e.portDir(c),
-		Tag: c.tag(), AllocRoot: e.cfg.Root, Stack: c.rec.Stack, Resources: res,
+		Tag: c.tag(), AllocRoot: e.cfg.Root, Stack: c.rec.Stack, Resources: res, Pids: e.pidsSocket(c),
 	}
 	if nsFile != "" {
 		cfg.Procs, cfg.PidNamespace = e.procsSocket(c), nsFile
@@ -1572,6 +1580,7 @@ func (c *Container) start(e *Engine) error {
 			return err
 		}
 		cfg.Address = c.rec.Address
+		cfg.Internet = e.hasEgress(c)
 	}
 	for _, p := range plan {
 		cfg.Publish = append(cfg.Publish, p.binding)
@@ -1580,7 +1589,7 @@ func (c *Container) start(e *Engine) error {
 	// The profile compiles while the supervisor starts; its start waits for
 	// the compile rather than doing it again.
 	if err := runtime.Precompile(cfg.Spec); err != nil {
-		log.Printf("container %s: compile its profile ahead: %v", c.rec.ID[:12], err)
+		return fmt.Errorf("compile the container's profile: %w", err)
 	}
 	st.mark("precompile")
 	task, ready, err := shim.Launch(c.dir, cfg)
@@ -1648,6 +1657,12 @@ func (c *Container) exitPath() string { return filepath.Join(c.dir, "exit.json")
 // read before they fork, as a pids cgroup's pids.max holds it.
 func (c *Container) pidsPath() string { return filepath.Join(c.dir, "pids.max") }
 
+// pidsSocket is where c's shim answers its library with how many processes
+// c runs, as a pids cgroup's pids.current holds it.
+func (e *Engine) pidsSocket(c *Container) string {
+	return filepath.Join(e.runDir(), c.rec.ID[:12]+".pids")
+}
+
 // writePidsLimit writes the container's pids limit to its file.
 func (c *Container) writePidsLimit(limit *int64) error {
 	v := "max"
@@ -1679,14 +1694,13 @@ func (e *Engine) anchorSocket(c *Container) string {
 }
 
 // anchor is the socket of the running container's exec anchor, which
-// starts execs in its sandbox, or "" for a run an engine without anchors
-// started, whose execs enter the profile by themselves.
-func (e *Engine) anchor(c *Container) string {
+// starts execs, and health checks, in its sandbox.
+func (e *Engine) anchor(c *Container) (string, error) {
 	p := e.anchorSocket(c)
 	if _, err := os.Stat(p); err != nil {
-		return ""
+		return "", conflict("container %s has no exec anchor to run a process in its sandbox: %v", c.rec.ID, err)
 	}
-	return p
+	return p, nil
 }
 
 // watch follows a run until its shim reports the main process's end, then

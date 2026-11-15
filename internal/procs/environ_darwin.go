@@ -32,18 +32,34 @@ func Own() ([]Entry, error) {
 		return nil, fmt.Errorf("procs: list processes: %w", err)
 	}
 	out := make([]Entry, 0, len(kps))
-	for _, kp := range kps {
-		// A zombie has ended; it stays listed until its parent reaps it. A
-		// process working on its exit has ended too, and has already
-		// reported NOTE_EXIT.
-		if kp.Proc.P_stat == sZomb || kp.Proc.P_flag&pWexit != 0 {
-			continue
+	for i := range kps {
+		if e, ok := entry(&kps[i]); ok {
+			out = append(out, e)
 		}
-		st := kp.Proc.P_starttime
-		out = append(out, Entry{
-			PID: int(kp.Proc.P_pid), PPID: int(kp.Eproc.Ppid), PGID: int(kp.Eproc.Pgid),
-			Start: st.Sec*1e6 + int64(st.Usec),
-		})
 	}
 	return out, nil
+}
+
+// Find is pid's entry in the process table, if it lives, from one
+// kern.proc.pid sysctl.
+func Find(pid int) (Entry, bool) {
+	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil || int(kp.Proc.P_pid) != pid {
+		return Entry{}, false
+	}
+	return entry(kp)
+}
+
+// entry is a live process's entry. A zombie has ended; it stays listed
+// until its parent reaps it. A process working on its exit has ended too,
+// and has already reported NOTE_EXIT.
+func entry(kp *unix.KinfoProc) (Entry, bool) {
+	if kp.Proc.P_stat == sZomb || kp.Proc.P_flag&pWexit != 0 {
+		return Entry{}, false
+	}
+	st := kp.Proc.P_starttime
+	return Entry{
+		PID: int(kp.Proc.P_pid), PPID: int(kp.Eproc.Ppid), PGID: int(kp.Eproc.Pgid),
+		Start: st.Sec*1e6 + int64(st.Usec),
+	}, true
 }

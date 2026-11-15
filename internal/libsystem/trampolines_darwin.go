@@ -77,10 +77,6 @@ var libc_shm_unlink_trampoline_addr uintptr
 
 //go:cgo_import_dynamic libc_shm_unlink shm_unlink "/usr/lib/libSystem.B.dylib"
 
-var libsandbox_sandbox_init_with_parameters_trampoline_addr uintptr
-
-//go:cgo_import_dynamic libsandbox_sandbox_init_with_parameters sandbox_init_with_parameters "/usr/lib/libSystem.B.dylib"
-
 var libsandbox_sandbox_free_error_trampoline_addr uintptr
 
 //go:cgo_import_dynamic libsandbox_sandbox_free_error sandbox_free_error "/usr/lib/libSystem.B.dylib"
@@ -88,6 +84,10 @@ var libsandbox_sandbox_free_error_trampoline_addr uintptr
 var libc_proc_pidinfo_trampoline_addr uintptr
 
 //go:cgo_import_dynamic libc_proc_pidinfo proc_pidinfo "/usr/lib/libSystem.B.dylib"
+
+var libc_proc_listpids_trampoline_addr uintptr
+
+//go:cgo_import_dynamic libc_proc_listpids proc_listpids "/usr/lib/libSystem.B.dylib"
 
 var libc_proc_pidpath_trampoline_addr uintptr
 

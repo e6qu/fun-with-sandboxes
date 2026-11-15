@@ -4,13 +4,13 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/e6qu/fun-with-sandboxes/internal/execpath"
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 )
@@ -54,6 +54,33 @@ type Limits struct {
 	// IOPolicy is a disk I/O policy (libsystem.IOPolicy*), or 0 to keep
 	// the default.
 	IOPolicy int `json:",omitempty"`
+	// QoSClamp caps the quality of service of every thread of the process
+	// and of what it starts, so the container yields the CPU, and the disk,
+	// to the user's interactive work.
+	QoSClamp QoSClamp `json:",omitempty"`
+}
+
+// QoSClamp is a process's quality-of-service clamp, as
+// posix_spawnattr_set_qos_clamp_np takes it (POSIX_SPAWN_PROC_CLAMP_*).
+type QoSClamp int
+
+const (
+	QoSNone        QoSClamp = 0
+	QoSUtility     QoSClamp = 1
+	QoSBackground  QoSClamp = 2
+	QoSMaintenance QoSClamp = 3
+)
+
+var qosClampNames = map[string]QoSClamp{"none": QoSNone, "utility": QoSUtility, "background": QoSBackground, "maintenance": QoSMaintenance}
+
+// ParseQoSClamp reads a clamp by its class's name: none, utility,
+// background or maintenance.
+func ParseQoSClamp(name string) (QoSClamp, error) {
+	c, ok := qosClampNames[name]
+	if !ok {
+		return 0, fmt.Errorf("QoS clamp %q: want none, utility, background or maintenance", name)
+	}
+	return c, nil
 }
 
 // Rlimit is a resource limit, as setrlimit takes it.
@@ -85,16 +112,6 @@ func exitCode(ws syscall.WaitStatus) int {
 // Docker's docker-init: the engine's helper binary, which takes the init's
 // role when it runs by that name.
 const InitPath = "/sbin/docker-init"
-
-// FromWorkDir makes a relative argv[0] with a slash absolute in the
-// container (package execpath).
-func FromWorkDir(workDir, argv0 string) string { return execpath.FromWorkDir(workDir, argv0) }
-
-// Resolve maps argv[0] to the executable's host path inside root (package
-// execpath).
-func Resolve(root, argv0 string, env []string) (string, error) {
-	return execpath.Resolve(root, argv0, env)
-}
 
 // DrainIO waits for the output pipes to drain, which happens once every
 // process holding them has exited. A descendant that left the process group
@@ -182,19 +199,16 @@ func (p *Process) KillAll() {
 
 const groupExitTimeout = 10 * time.Second
 
-// The roles of a container's exec anchor and of the launcher that starts
-// it, which run in the container's sandbox.
-const (
-	anchorLaunchRole = "anchor-launch"
-	anchorRole       = "anchor"
-)
+// anchorRole is the role of a container's exec anchor, which runs in the
+// container's sandbox.
+const anchorRole = "anchor"
 
 // IsAnchor reports whether env is the environment of a container's exec
-// anchor or its launcher: processes of the engine's in the container's
-// sandbox, which are not the container's own.
+// anchor: a process of the engine's in the container's sandbox, which is
+// not the container's own.
 func IsAnchor(env []string) bool {
 	for _, kv := range env {
-		if kv == RoleVar+"="+anchorRole || kv == RoleVar+"="+anchorLaunchRole {
+		if kv == RoleVar+"="+anchorRole {
 			return true
 		}
 	}

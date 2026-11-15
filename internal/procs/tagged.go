@@ -114,20 +114,6 @@ func killFound(find func() ([]int, error), what string) error {
 	}
 }
 
-// Find is pid's entry in the process table, if it lives.
-func Find(pid int) (Entry, bool) {
-	live, err := Own()
-	if err != nil {
-		return Entry{}, false
-	}
-	for _, p := range live {
-		if p.PID == pid {
-			return p, true
-		}
-	}
-	return Entry{}, false
-}
-
 const killTimeout = 10 * time.Second
 
 // parseProcargs reads the environment out of a kern.procargs2 buffer: the

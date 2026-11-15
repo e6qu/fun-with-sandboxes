@@ -18,6 +18,11 @@ import (
 	"strings"
 )
 
+// ServicesStack is the stack of the members that are a network's Services,
+// which the engine serves on loopback, outside any sandbox: a datagram may
+// reach one from any port.
+const ServicesStack = "services"
+
 type Member struct {
 	Address string
 	Names   []string
@@ -34,7 +39,8 @@ type Member struct {
 	// which a container reaches only through its router.
 	Foreign bool
 	// Stack names a foreign member's stack, whose block a datagram to it
-	// is sent from, so that its replies may return.
+	// is sent from, so that its replies may return; ServicesStack for a
+	// Service, which the engine serves outside any sandbox.
 	Stack string
 	// Links are the names the member answers to for one member alone, as
 	// a container's links name others; a legacy link also lets the member

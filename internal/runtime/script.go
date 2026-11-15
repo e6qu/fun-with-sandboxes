@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/execpath"
 )
 
 // scriptCommand is how a container runs path with argv when path is a
@@ -50,7 +52,7 @@ func scriptCommand(root, path string, argv, env []string) (string, []string) {
 		if len(words) == 0 || strings.HasPrefix(words[0], "-") || strings.Contains(words[0], "=") {
 			return path, argv
 		}
-		if interp, err = Resolve(root, words[0], env); err != nil {
+		if interp, err = execpath.Resolve(root, words[0], env); err != nil {
 			return path, argv
 		}
 		out = append(out, words...)

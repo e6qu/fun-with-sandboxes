@@ -254,29 +254,6 @@ func ShmUnlink(name string) error {
 	return nil
 }
 
-// SandboxInit confines the calling process, and every program it executes,
-// to the Seatbelt profile text, as sandbox-exec does before it executes its
-// command.
-func SandboxInit(profile string) error {
-	cprofile, err := syscall.BytePtrFromString(profile)
-	if err != nil {
-		return err
-	}
-	params := [1]uintptr{0}
-	var errbuf *byte
-	r, _, _ := syscall_syscall6(libsandbox_sandbox_init_with_parameters_trampoline_addr,
-		uintptr(unsafe.Pointer(cprofile)), 0, uintptr(unsafe.Pointer(&params[0])), uintptr(unsafe.Pointer(&errbuf)), 0, 0)
-	if int32(r) == 0 {
-		return nil
-	}
-	msg := "unknown error"
-	if errbuf != nil {
-		msg = goString(errbuf)
-		syscall_syscall(libsandbox_sandbox_free_error_trampoline_addr, uintptr(unsafe.Pointer(errbuf)), 0, 0)
-	}
-	return fmt.Errorf("sandbox_init: %s", msg)
-}
-
 // sandboxProfile is libsandbox's compiled profile: its kind and its
 // bytecode, then fields sandbox_apply reads too, which a profile applied
 // from bytecode alone leaves zero.
@@ -358,6 +335,35 @@ func ProcPidinfo(pid, flavor int, arg uint64, buf []byte) (int, error) {
 		errno = syscall.ESRCH
 	}
 	return 0, errno
+}
+
+// procPPIDOnly is proc_listpids's PROC_PPID_ONLY: the processes whose
+// parent is the given one.
+const procPPIDOnly = 6
+
+// ChildPIDs lists ppid's children (proc_listpids with PROC_PPID_ONLY): the
+// kernel walks its process list, so the call costs a few microseconds where
+// reading every process's entry costs a listing of the whole table.
+func ChildPIDs(ppid int) ([]int, error) {
+	buf := make([]int32, 64)
+	for {
+		size := len(buf) * 4
+		r, _, errno := syscall_syscall6(libc_proc_listpids_trampoline_addr, procPPIDOnly, uintptr(ppid), uintptr(unsafe.Pointer(&buf[0])), uintptr(size), 0, 0)
+		n := int(int32(r))
+		if n < 0 {
+			return nil, errno
+		}
+		if n < size {
+			out := make([]int, 0, n/4)
+			for _, pid := range buf[:n/4] {
+				if pid != 0 {
+					out = append(out, int(pid))
+				}
+			}
+			return out, nil
+		}
+		buf = make([]int32, 2*len(buf))
+	}
 }
 
 // ProcPidpath is proc_pidpath: the path of pid's executable.

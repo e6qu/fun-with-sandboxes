@@ -1153,7 +1153,13 @@ func TestDaemonsStayContained(t *testing.T) {
 		t.Fatalf("the container's log names no daemon: %v", err)
 	}
 	defer syscall.Kill(pid, syscall.SIGKILL)
-	if top := mustDocker(t, "top", name, "-o", "pid"); !strings.Contains(top, strconv.Itoa(pid)) {
+	top, err := docker(t, "top", name, "-o", "pid")
+	if err != nil {
+		state, _ := docker(t, "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}} {{.State.Error}}", name)
+		logs, _ := docker(t, "logs", name)
+		t.Fatalf("docker top: %v; the container is %s, and logged:\n%s", err, strings.TrimSpace(state), logs)
+	}
+	if !strings.Contains(top, strconv.Itoa(pid)) {
 		t.Fatalf("docker top does not list daemon %d:\n%s", pid, top)
 	}
 	mustDocker(t, "stop", "--time", "1", name)

@@ -221,6 +221,7 @@ func run(op, arg string) error {
 			return err
 		}
 		fmt.Println("daemonized", child.Pid)
+		return nil
 	case "hold":
 		hold()
 	case "alloc":
