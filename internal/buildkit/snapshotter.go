@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/containerd/v2/core/snapshots"
@@ -81,6 +82,7 @@ func extracts(key string) bool {
 // tree put together from the nearest ancestor that has one and the deltas
 // above it.
 func (o *snapshotter) full(ids []string) (string, error) {
+	defer slow(time.Now(), "the whole tree of snapshot %s, of %d layers", ids[0], len(ids))
 	if !isDelta(o.dir(ids[0])) {
 		return o.dir(ids[0]), nil
 	}
@@ -140,6 +142,7 @@ func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpath
 // Usage measures what a snapshot holds that its parent does not, as
 // containerd defines a snapshot's usage, when BuildKit asks for it.
 func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, error) {
+	defer slow(time.Now(), "the usage of snapshot %s", key)
 	var id, parentID string
 	err := o.ms.WithTransaction(ctx, false, func(ctx context.Context) error {
 		var info snapshots.Info
@@ -226,6 +229,7 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 }
 
 func (o *snapshotter) Remove(ctx context.Context, key string) error {
+	defer slow(time.Now(), "removing snapshot %s", key)
 	var id string
 	err := o.ms.WithTransaction(ctx, true, func(ctx context.Context) error {
 		var err error
@@ -252,6 +256,7 @@ func (o *snapshotter) Walk(ctx context.Context, fn snapshots.WalkFunc, filters .
 func (o *snapshotter) Close() error { return o.ms.Close() }
 
 func (o *snapshotter) create(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) (_ []mount.Mount, err error) {
+	defer slow(time.Now(), "snapshot %s on %q", key, parent)
 	var s storage.Snapshot
 	err = o.ms.WithTransaction(ctx, true, func(ctx context.Context) error {
 		s, err = storage.CreateSnapshot(ctx, kind, key, parent, opts...)

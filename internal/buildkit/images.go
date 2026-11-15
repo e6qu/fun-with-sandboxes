@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 
@@ -104,6 +105,7 @@ func (l *localImages) Delete(ctx context.Context, name string, opts ...images.De
 // is stored, manifest, config and layers byte for byte, and records it in
 // containerd's image metadata.
 func (l *localImages) materialise(ctx context.Context, name string, rec image.Image) (images.Image, error) {
+	defer slow(time.Now(), "writing image %s into the content store", name)
 	ctx, done, err := leaseutil.WithLease(ctx, l.leases, leaseutil.MakeTemporary)
 	if err != nil {
 		return images.Image{}, err

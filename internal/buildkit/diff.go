@@ -44,6 +44,7 @@ func bindDir(mounts []mount.Mount) (string, func(), error) {
 type applier struct{ store content.Provider }
 
 func (a applier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mount.Mount, _ ...diff.ApplyOpt) (ocispec.Descriptor, error) {
+	defer slow(time.Now(), "applying layer %s of %d bytes", desc.Digest, desc.Size)
 	root, done, err := bindDir(mounts)
 	if err != nil {
 		return ocispec.Descriptor{}, err
@@ -87,6 +88,7 @@ func (c *counter) Write(p []byte) (int, error) { c.n += int64(len(p)); return le
 type comparer struct{ store content.Store }
 
 func (s comparer) Compare(ctx context.Context, lower, upper []mount.Mount, opts ...diff.Opt) (ocispec.Descriptor, error) {
+	defer slow(time.Now(), "comparing two snapshots")
 	var cfg diff.Config
 	for _, o := range opts {
 		if err := o(&cfg); err != nil {

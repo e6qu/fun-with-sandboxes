@@ -76,9 +76,9 @@ func TestNetworkWithSeveralSubnets(t *testing.T) {
 
 	// The /30 holds one container's address and the /126 two.
 	serveHTTP(t, "e2e-multi-api", "--network", network)
-	mustDocker(t, "run", "-d", "--name", "e2e-multi-client", "--network", network, "fws/python:3.14", "sleep", "600")
+	mustDocker(t, "run", "-d", "--name", "e2e-multi-client", "--network", network, "fws/python:3.14", "python3", "-c", "import time; time.sleep(600)")
 	t.Cleanup(func() { docker(t, "rm", "-f", "e2e-multi-client") })
-	mustDocker(t, "run", "-d", "--name", "e2e-multi-static", "--network", network, "--ip", "10.71.2.100", "--ip6", "fd00:71:2::100", "fws/python:3.14", "sleep", "600")
+	mustDocker(t, "run", "-d", "--name", "e2e-multi-static", "--network", network, "--ip", "10.71.2.100", "--ip6", "fd00:71:2::100", "fws/python:3.14", "python3", "-c", "import time; time.sleep(600)")
 	t.Cleanup(func() { docker(t, "rm", "-f", "e2e-multi-static") })
 	for name, want := range map[string]netEndpoint{
 		"e2e-multi-api":    {IPAddress: "10.71.1.2", IPPrefixLen: 30, Gateway: "10.71.1.1", GlobalIPv6Address: "fd00:71:1::2", GlobalIPv6PrefixLen: 126, IPv6Gateway: "fd00:71:1::1"},

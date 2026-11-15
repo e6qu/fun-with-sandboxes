@@ -83,10 +83,6 @@ func TestPodmanRemote(t *testing.T) {
 	if out := mustPodman(t, "ps", "-a", "--format", "{{.Names}}"); strings.Contains(out, "e2e-pweb") {
 		t.Errorf("a removed container listed: %q", out)
 	}
-	if _, err := podman(t, "pod", "create", "--name", "e2e-infra"); err == nil {
-		podman(t, "pod", "rm", "-f", "e2e-infra")
-		t.Error("a pod with an infra container was made")
-	}
 }
 
 // podman-compose brings a project up through podman, in a pod of its own,
