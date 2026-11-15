@@ -12,8 +12,11 @@
 # the archives on their content.
 set -euo pipefail
 
-# nixos-26.05 as of 2026-11-13, pinned, so a rebuild makes the same images.
-nixpkgs=${NIXPKGS:-github:NixOS/nixpkgs/f1e5c356f35d07e7b71a6b5e6c9338e0b029e0c0}
+# nixpkgs-26.05-darwin as of 2026-11-09, pinned, so a rebuild makes the
+# same images. That branch, not nixos-26.05, advances once Hydra has built
+# and cached its darwin packages: a nixos-26.05 commit can name darwin
+# builds no cache holds yet, which the images job would compile for hours.
+nixpkgs=${NIXPKGS:-github:NixOS/nixpkgs/f4244ef33645badc8157562b5e80748929b396c2}
 here=$(cd "$(dirname "$0")/.." && pwd)
 nix=(nix --extra-experimental-features 'nix-command flakes')
 servers=(--impure -f "$here/images/servers.nix" --argstr nixpkgs "$nixpkgs")

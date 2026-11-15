@@ -137,9 +137,9 @@ runner.
    `ReadonlyPaths` and `MaskedPaths`, through the profile) or refused
    (tmpfs `size`, a MAC address, a volume driver); `-v` takes propagation
    modes and `nocopy`; `docker stats` counts the supervisor's members.
-   nixpkgs at the head of 26.05 (PostgreSQL 16.16 and 18.7, MariaDB
-   11.8.9, etcd 3.6.16, Mailpit 1.33, Node.js 26.13.1, Docker 29.9.3),
-   Playwright 1.65, Go 1.26.11, testcontainers-go 0.45.
+   nixpkgs at the head of `nixpkgs-26.05-darwin`, the branch whose darwin
+   builds are cached (Mailpit 1.33), Playwright 1.65, Go 1.26.11,
+   testcontainers-go 0.45, and the module fixes govulncheck asked for.
 3. **Kubernetes 1.37 and kind 0.33.** The control plane, the kubelet and
    its darwin patch moved from 1.35.0 to the release kind 0.33's node
    image ships, `fws/kind-node` to what kind 0.33 asks of a node, and the
