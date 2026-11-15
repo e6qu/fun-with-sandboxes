@@ -436,7 +436,10 @@ same knobs, each enforced by a real mechanism or refused:
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` of anything beyond the default set, which would
   need root, is refused, but `IPC_LOCK`, which grants what macOS lets every
-  process do already, lock memory up to its `RLIMIT_MEMLOCK`. `no-new-privileges` holds for every container.
+  process do already: macOS does not enforce `RLIMIT_MEMLOCK`, so any
+  process may lock memory within the system's wired-memory limits. For the
+  same reason `--ulimit memlock` is accepted only as unlimited.
+  `no-new-privileges` holds for every container.
 
 ---
 
@@ -489,6 +492,14 @@ them (`io.containerd.image.name`, `org.opencontainers.image.ref.name`). Pulled
 and loaded images keep their manifests, configs and layers byte for byte, so
 their digests and IDs (the config digest, as in Docker) survive a save, load,
 push or pull. Removing an image removes the blobs no other image refers to.
+
+The store can also stand on a directory of image archives (`fwsd
+-image-archives`, `*.tar` as `docker save` and the catalog's build write
+them; `internal/image/archives.go`). It reads each archive's names when it
+opens, and loads an archive, once, the first time one of its names is asked
+for and the store holds no image of that name. A catalog then costs only the
+images a session uses, and the engine works offline from it; an image
+removed after its archive loaded stays removed.
 
 Registry credentials come from the client, as dockerd takes them: `docker
 login` sends them to `POST /auth`, which checks them against the registry,
@@ -560,7 +571,9 @@ ports.
 ## 6. Networking without root or a network stack
 
 The host has one loopback and one port space. The engine does not virtualise
-it; it tells services their assignment through the environment.
+it: it assigns each container port a real host port, the container library
+puts the assignment in the program's place, and the environment names it for
+a program that loads no library.
 
 - **Binding.** A service listens on its container port, as under Docker,
   and the container library binds that port's host port on loopback in its
@@ -573,7 +586,9 @@ it; it tells services their assignment through the environment.
   point at replica 1. A client of `db:5432` reads
   `$SANDBOX_DB_HOST:$SANDBOX_DB_PORT_5432`.
 - **Published ports.** `ports:` entries bind real host listeners in the
-  engine, which forward each connection to the container's assigned port. A
+  container's shim (`internal/portproxy`), outside the sandbox, which
+  forward each connection to the container's host port, or to the Unix
+  socket in its port directory for a port without one. A
   taken host port fails the start with Docker's "port is already allocated",
   and a host port range binds the first port of it the host has free. UDP
   ports publish through a userland proxy, as Docker's `docker-proxy` does:
@@ -637,10 +652,27 @@ it; it tells services their assignment through the environment.
   rebind a name onto the host. Containers with `network_mode: none`, or only
   on `internal: true` networks, get no proxy variables and their profiles omit
   the proxy's port.
-- **Networks.** Compose's networks are recorded and reported faithfully, but
-  they carry no traffic: reachability is the stack. A container cannot join a
-  network another stack owns, and `host` and `container:` network modes are
-  refused.
+- **Networks.** User-defined networks decide which members a container
+  resolves and reaches: the container library and the routers answer only
+  for members it shares a network with or links to, and a network shared
+  with another stack joins the two stacks through their routers (above).
+  Seatbelt's fence is the stack's block, so between two members of one
+  stack the separation is the library's, not the kernel's. Network mode
+  `container:<id>` takes that container's network wholesale (§3a);
+  `host` is refused, but for a nested engine's containers, which take the
+  privileged container's network (§3a). Only the `bridge` driver and the
+  default IPAM driver are accepted.
+- **ICMP.** A container's traffic is held to its stack's TCP and UDP ports,
+  and ICMP has none. The container library makes an unprivileged datagram
+  ICMP socket, as `ping` opens, a Unix datagram socket pair, and answers an
+  echo request to loopback, the container's own address or a member it
+  sees at once, as that member's kernel would. It sends one to a host
+  outside the machine, over IPv4, to the container's router as an `Echo`
+  request (the address, the message's length, the message); the router,
+  outside the sandbox, pings the host through macOS's unprivileged ICMP
+  socket for a container with internet access, and answers with the reply,
+  or refuses after 2 s. An echo to any other address fails with
+  `ENETUNREACH`.
 
 A program that loads the container library listens on and connects to
 `5432` as written; one that loads none, as Apple's do not, needs the
