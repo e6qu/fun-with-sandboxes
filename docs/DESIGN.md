@@ -812,97 +812,66 @@ or a pty (`creack/pty`).
 
 ## 10. Go implementation
 
-Pure Go; the engine cross-compiles with `CGO_ENABLED=0` for `darwin/arm64`,
-Apple silicon, alone. `clonefile` comes from `golang.org/x/sys/unix`, image
-handling from `go-containerregistry`, and the API types from
-`github.com/moby/moby/api`, so the JSON matches what Docker clients decode.
+The engine is Go and cross-compiles with `CGO_ENABLED=0` for `darwin/arm64`,
+Apple silicon, alone. What runs inside every container process start is C,
+which the engine compiles with clang on the Mac as it starts: the container
+library (`internal/pathmap/src/fwsroot.c`) and the spawn helper
+(`internal/pathmap/src/spawn.c`). `clonefile` comes from
+`golang.org/x/sys/unix`, image handling from `go-containerregistry`, and the
+API types from `github.com/moby/moby/api`, so the JSON matches what Docker
+clients decode.
 
 ```
-cmd/fwsd/             # the daemon
+cmd/fwsd/             # the daemon: Docker Engine, libpod and CRI APIs over a unix socket
+cmd/fws-shim/         # the helper binary: supervisors, exec anchors, egress proxies
 cmd/fws-mkimage/      # Nix closure -> darwin image archive
+cmd/fws-kube-proxy/   # kube-proxy for a node whose runtime is the engine
 internal/alloc/       # per-stack port blocks and directories
-internal/seatbelt/    # profile rendering
-internal/image/       # image store, layer extraction, clonefile
-internal/runtime/     # starting container processes through the spawn helper
-internal/pathmap/     # the container library: paths, identity, users, hostname
-internal/identity/    # resolve --user and USER against the container's files
-internal/egress/      # the per-stack HTTP proxy to the internet
-internal/procs/       # the host process table, for top and stats
-internal/dockerfile/  # Dockerfile parsing and variable expansion
+internal/api/         # the Docker Engine API (the Compose subset) and Podman's libpod
 internal/buildkit/    # embedded BuildKit with a darwin worker
-third_party/buildkit/ # the BuildKit packages it uses, patched (sync-buildkit.sh)
+internal/cri/         # the Kubernetes Container Runtime Interface
+internal/dockerfile/  # Dockerfile parsing and variable expansion
+internal/egress/      # the per-stack HTTP and SOCKS5 proxy to the internet
+internal/engine/      # containers, volumes, networks, exec, health, events, machine guards
+internal/execpath/    # finding a container's executables, as execve and a shell do
+internal/identity/    # users and groups from the container's /etc/passwd
+internal/image/       # image store, layer extraction, clonefile roots
+internal/libsystem/   # libSystem calls syscall does not offer (posix_spawn, I/O policy)
+internal/logfile/     # json-file logs
+internal/members/     # a stack's network file: member addresses and names
+internal/netstat/     # per-socket network counters for docker stats
+internal/pathmap/     # fwsroot, the container library, the spawn helper, and their build
+internal/pidns/       # PID namespaces containers share, through their shims
+internal/portproxy/   # published host ports, TCP and UDP
+internal/procs/       # the host process table, for top and stats
+internal/roles/       # the helper processes the engine's binary runs
 internal/rootfs/      # chroot-style path resolution inside a root
-internal/engine/      # containers, volumes, networks, exec, health, events
-internal/api/         # the Docker Engine API
+internal/router/      # traffic to container ports without host ports
+internal/runtime/     # starting container processes through the spawn helper
 internal/sandboxenv/  # the container side of the SANDBOX_* contract
-images/               # entrypoints and specs for the catalog
+internal/seatbelt/    # Seatbelt profile rendering and compiled profiles
+internal/shim/        # a container's supervisor: limits, output, live restore
+third_party/buildkit/ # the BuildKit packages it uses, patched (sync-buildkit.sh)
+images/               # entrypoints and Nix specs for the darwin catalog
 tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite (own module)
 ```
 
 ---
 
-## 11. Testing — the milestone's definition of done
+## 11. Testing
 
-All tests run on a **macOS CI runner** (GitHub Actions `macos-15`, Apple
-Silicon). No `t.Skip` for "tool missing" — required tools are installed in the
-workflow.
+Every isolation property is proven by a test that tries to break it, on a
+macOS runner; no test skips for a missing tool. The unit tests run on Linux
+where they are portable and on macOS in full, where the Seatbelt and
+container-library packages run probes under the real sandbox. The
+end-to-end suite drives the stock Docker CLI, Docker Compose, Podman,
+Testcontainers, kind and `crictl` against an engine of its own. The
+two-stack test that was the first milestone's definition of done — two
+Compose stacks of `postgres`, `redis` and an app, unable to reach each
+other's ports or paths, with `down` on one leaving the other working —
+still runs in it. [`CONTRIBUTING.md`](../CONTRIBUTING.md) lists every check
+CI runs and how to run each locally.
 
-1. **Unit.** Allocator disjointness (no two stacks share a port/path), Seatbelt
-   profile generation, API request/response shapes.
-2. **Runtime integration (the core proof).** Build the Nix `postgres` and
-   `redis` images, then bring up **two independent compose stacks
-   simultaneously**, each a `postgres` + `redis` + a tiny app:
-   - Assert both stacks are healthy and serve queries concurrently.
-   - Assert their assigned ports differ and neither can reach the other's ports
-     (attempt a cross-stack connect → refused by Seatbelt).
-   - Assert stack A cannot read or write any path under stack B (attempt →
-     denied).
-   - Assert `compose down` on A leaves B fully working, and frees A's ports.
-3. **Isolation assertions.** From inside a container: writing outside its root
-   fails; reading `$HOME` fails; signalling the other stack's PID fails; reading
-   the other stack's data dir fails.
-4. **API conformance.** Drive the real `docker compose` binary and the Docker Go
-   client against the daemon for the full `up`/`ps`/`logs`/`exec`/`down` cycle —
-   same client code a real-Docker user runs, differing only in the socket path.
-
-The milestone is done when (2)–(4) are green in CI on macOS. The accepted
-exceptions (§1) are documented in `LIMITATIONS.md`; the tests assert that
-every *action* across stacks is denied.
-
----
-
-## 12. Known limitations (stated, not hidden)
-
-- macOS-native images only; no Linux images, ever, without a VM.
-- Images must be macOS builds; programs the container library cannot load
-  into must follow the `$SANDBOX_ROOT` + configurable-port contract.
-- Memory and CPU limits are enforced by a supervisor that kills or stops
-  processes, not by a kernel that refuses an allocation; the container
-  library refuses a fork at the pids limit, and the supervisor kills what
-  gets past it.
-- `user:` and `USER` are presented by the container library; every process
-  runs as the invoking user.
-- Pids are the host's but the main process's, which the container library
-  presents as 1, and a program that loads no library lists every process
-  of the user; listings through the library, and every action, stay
-  within the sandbox.
-- Seatbelt's `sandbox_init` and `sandbox-exec` are Apple-deprecated (since
-  2016) but still functional and used by Chrome, Bazel, and the major
-  coding-agent sandboxes; there is no supported replacement for this use.
-- Running the engine *inside* another Seatbelt sandbox (e.g. a coding agent's)
-  is untested; Seatbelt profiles may not nest.
-
----
-
-## 13. Milestone plan (single PR)
-
-One branch, one PR, fully tested:
-
-1. Repo skeleton, Go module, CI workflow (macOS runner).
-2. `internal/alloc` + unit tests.
-3. `internal/image` (pull/unpack + `clonefile` root) + tests.
-4. `internal/runtime` (launch under `sandbox-exec`, process groups) + tests.
-5. `internal/api` (the Compose subset) + Docker-client conformance tests.
-6. `images/` Nix definitions for `postgres` and `redis`.
-7. The two-stack concurrent integration test (§11.2) — the proof.
-8. `README.md`, this `DESIGN.md`, and a `LIMITATIONS.md` kept in sync.
+What the engine cannot do, and why, is in
+[`LIMITATIONS.md`](../LIMITATIONS.md); how the project got here is in
+[`HISTORY.md`](HISTORY.md).
