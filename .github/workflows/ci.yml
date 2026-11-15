@@ -322,6 +322,11 @@ jobs:
           mkdir -p ~/.docker
           echo "{\"cliPluginsExtraDirs\": [\"$(brew --prefix)/lib/docker/cli-plugins\"]}" > ~/.docker/config.json
           docker buildx version
+      # The Dev Containers CLI, which the suite drives against the engine.
+      - name: install the Dev Containers CLI
+        run: |
+          npm install -g @devcontainers/cli@0.90.0
+          devcontainer --version
       # A runner that dies takes its job's log with it. The suite runs in
       # the background, and each snapshot keeps its output so far and the
       # runner's memory, disk and busiest processes as an artifact.
