@@ -476,6 +476,7 @@ func (s *Server) libpodCreate(w http.ResponseWriter, r *http.Request) {
 			spec.Labels = map[string]string{}
 		}
 		spec.Labels[podLabel] = p.ID
+		joinPod(p, &spec)
 	}
 	req, err := dockerCreate(spec)
 	if err != nil {
@@ -593,7 +594,7 @@ func (s *Server) libpodList(w http.ResponseWriter, r *http.Request) {
 			"AutoRemove": in.HostConfig.AutoRemove, "Command": append(append([]string{}, in.Config.Entrypoint...), in.Config.Cmd...),
 			"Created": created, "CreatedAt": created.Format("2006-01-02 15:04:05.999999999 -0700 MST"),
 			"Exited": state == "exited", "ExitedAt": finished.Unix(), "ExitCode": st.ExitCode, "ExposedPorts": exposed,
-			"Id": c.ID, "Image": c.Image, "ImageID": c.ImageID, "IsInfra": false, "Labels": c.Labels, "Mounts": mounts,
+			"Id": c.ID, "Image": c.Image, "ImageID": c.ImageID, "IsInfra": pod != "" && s.pods.infraOf(pod) == c.ID, "Labels": c.Labels, "Mounts": mounts,
 			"Names": names, "Namespaces": map[string]string{}, "Networks": networks, "Pid": st.Pid, "Pod": pod,
 			"PodName": s.pods.name(pod), "Ports": libpodPortMappings(ports), "Restarts": in.RestartCount,
 			"StartedAt": started.Unix(), "State": state, "Status": c.Status,
@@ -657,7 +658,7 @@ func (s *Server) libpodInspect(w http.ResponseWriter, r *http.Request) {
 		"ExecIDs": in.ExecIDs, "GraphDriver": map[string]any{"Name": in.Driver, "Data": map[string]string{}},
 		"Mounts": d["Mounts"], "Dependencies": []string{},
 		"NetworkSettings": map[string]any{"Ports": ports, "Networks": nets, "SandboxKey": "", "Bridge": ""},
-		"Namespace":       "", "IsInfra": false, "IsService": false, "KubeExitCodePropagation": "invalid", "lockNumber": 0,
+		"Namespace":       "", "IsInfra": in.Config.Labels[podLabel] != "" && s.pods.infraOf(in.Config.Labels[podLabel]) == in.ID, "IsService": false, "KubeExitCodePropagation": "invalid", "lockNumber": 0,
 		"Config": cfg, "HostConfig": host, "UseImageHosts": false, "UseImageHostname": false,
 	}
 	if out["ExecIDs"] == nil {

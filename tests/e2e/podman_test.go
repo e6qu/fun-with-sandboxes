@@ -126,3 +126,49 @@ func TestPodmanCompose(t *testing.T) {
 		t.Errorf("the client reached web: %q", out)
 	}
 }
+
+// A pod with an infra container, as podman pod create makes one by
+// default: its members share the infra container's network, so one
+// reaches another's port on localhost, and the pod starts, stops and is
+// removed with it.
+func TestPodmanInfraPod(t *testing.T) {
+	mustPodman(t, "pod", "create", "--name", "e2e-ipod")
+	defer podman(t, "pod", "rm", "-f", "e2e-ipod")
+	infra := strings.TrimSpace(mustPodman(t, "pod", "inspect", "e2e-ipod", "--format", "{{.InfraContainerID}}"))
+	if infra == "" {
+		t.Fatal("the pod has no infra container")
+	}
+	mustPodman(t, "run", "-d", "--name", "e2e-iweb", "--pod", "e2e-ipod", "fws/python:3.14", "python3", "-m", "http.server", "8000")
+	fetch := `
+import time, urllib.request
+for i in range(100):
+    try:
+        print(urllib.request.urlopen("http://127.0.0.1:8000/").status)
+        break
+    except OSError:
+        time.sleep(0.1)
+else:
+    raise SystemExit("the pod's other container never answered on localhost")
+`
+	if out := mustPodman(t, "run", "--rm", "--pod", "e2e-ipod", "fws/python:3.14", "python3", "-c", fetch); out != "200\n" {
+		t.Errorf("a member reaching another on localhost printed %q", out)
+	}
+	if out := mustPodman(t, "pod", "ps", "--format", "{{.Name}} {{.NumberOfContainers}}"); !strings.Contains(out, "e2e-ipod 2") {
+		t.Errorf("podman pod ps: %q, want the member and the infra container", out)
+	}
+	if out := mustPodman(t, "ps", "-a", "--filter", "id="+infra, "--format", "{{.IsInfra}}"); out != "true\n" {
+		t.Errorf("the infra container's IsInfra: %q", out)
+	}
+	mustPodman(t, "pod", "stop", "e2e-ipod")
+	if out := mustPodman(t, "pod", "ps", "--format", "{{.Name}} {{.Status}}"); !strings.Contains(out, "e2e-ipod Exited") {
+		t.Errorf("after pod stop: %q", out)
+	}
+	mustPodman(t, "pod", "start", "e2e-ipod")
+	if out := mustPodman(t, "pod", "ps", "--format", "{{.Name}} {{.Status}}"); !strings.Contains(out, "e2e-ipod Running") {
+		t.Errorf("after pod start: %q", out)
+	}
+	mustPodman(t, "pod", "rm", "-f", "e2e-ipod")
+	if out, err := podman(t, "container", "exists", infra); err == nil {
+		t.Errorf("the infra container outlived its pod: %s", out)
+	}
+}
