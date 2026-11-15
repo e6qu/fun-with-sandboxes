@@ -20,6 +20,15 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   a multi-platform index stores its `darwin/<arch>` image alone, and a
   BuildKit build's attestations stay out of the engine's store, as
   dockerd's classic image store leaves them out.
+- **Disk figures are estimates.** An image's root is made of clones that
+  share blocks with its cached layers, so `docker system df`, an image's
+  size and what a prune reports reclaimed count more than the disk gave
+  up. A layer with a hard link into a lower layer is unpacked for each
+  image that holds it rather than shared.
+- **`docker commit`, `docker diff` and `docker ps -s` read files** whose
+  size and whole-second modification time match the image's, to tell
+  whether they changed: slow on a large image (*not built yet*: a stamp
+  of when the container's root was cloned would spare the read).
 - **Catalog images are built by Nix**, mostly from source rather than the
   vendors' binaries; MongoDB and Vault are the vendors' own macOS builds.
 - **Catalog images differ from upstream's where Linux parts are missing.**
@@ -73,8 +82,10 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
     Catalog images carry their own `/bin/sh` and `/bin/nc` so `system()`,
     `popen()` and port checks keep the library.
   - The identity is presented, not enforced: every process runs as the
-    engine's user, so a non-root user can do what root can, and `chown`
-    records an owner in an extended attribute that `stat` reports.
+    engine's user, so a non-root user can do what root can. An image's owners and a
+    `chown` are recorded in an extended attribute that `stat` reports,
+    and setuid, setgid and sticky bits are presented and never take
+    effect.
   - The library reserves the `nodump` file flag (`UF_NODUMP`) to mark
     files whose owner or mode it records; containers never see it and
     cannot set or clear it.
@@ -183,8 +194,10 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
 - **Internet access goes through a proxy.** Seatbelt cannot express "any
   host but this machine", so containers reach the internet only through
   their stack's egress proxy: HTTP(S) via `HTTP_PROXY`/`HTTPS_PROXY`, any
-  TCP via its SOCKS5 side (`ALL_PROXY`). UDP and DNS do not leave the
-  machine. `fwsd -egress=false` turns the proxy off.
+  TCP via its SOCKS5 side (`ALL_PROXY`). UDP does not leave the
+  machine; DNS leaves it only for a container given `--dns`,
+  `--dns-search` or `--dns-option`, whose router, outside the sandbox,
+  queries the servers of its `resolv.conf`. `fwsd -egress=false` turns the proxy off.
 - **Published UDP clients are bounded by the stack's block**, one flow
   port each, ended after 90 idle seconds. SCTP ports cannot be published:
   macOS has no SCTP.
@@ -219,16 +232,24 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
 - **The CRI does not serve** `CheckpointContainer`,
   `GetContainerEvents`, the metrics RPCs or `UpdatePodSandboxResources`,
   (*not built yet*). It drops a pod's DNS settings, which the kubelet
-  sends for every pod and the engine would refuse.
+  sends for every pod: their servers name cluster DNS, a Service the
+  container's router cannot reach, and the library answers cluster
+  names from the stack's members.
 - **Pod networks are IPv4.** A pod takes its node's pod network address;
   other nodes' pods reach it through the routers, and the host's engine
   does not route to it. A dual-stack pod CIDR's IPv4 subnet alone is
   used, and a changed CIDR applies once the node's pods are gone.
-- **Services carry TCP and UDP on IPv4.** SCTP ports, UDP node ports,
-  IPv6 cluster IPs, external IPs, load balancers' addresses, session
-  affinity and `ExternalName` are not served (SCTP is absent from macOS;
-  the rest are *not built yet*). A Service's short name answers in every
-  namespace. Changes arrive within the proxy's poll, a second by default.
+- **Services carry TCP and UDP.** Cluster IPs, IPv4 and IPv6 or both,
+  external IPs and load balancers' addresses answer alike, and node ports
+  carry TCP and UDP. `sessionAffinity: ClientIP` keeps a pod, known by
+  its address on the pod network, on its endpoint until the timeout;
+  clients on the node's loopback count as one client, and a UDP flow a
+  pod's router opened before its Service gained affinity keeps none.
+  SCTP ports are not served: macOS has no SCTP. An `ExternalName`
+  Service's name is an alias the egress proxy follows, but the container
+  library does not resolve it (*not built yet*). A Service's short name
+  answers in every namespace. Changes arrive within the proxy's poll, a
+  second by default.
 - **kind runs on `fws/kind-node` only.** Nodes run no systemd or
   containerd: `ctr` supports `images import`, `tag` and `ls`, and
   `journalctl` reads the node's logs. `containerdConfigPatches` and IPv6
@@ -290,9 +311,18 @@ Limits are enforced by the container's supervisor, `fws-shim`, every
   The UTS namespace comes with the network; the user and cgroup
   namespaces cannot be shared, as containers have none. `generate kube`,
   `play kube`, checkpoints and quadlets are not served.
+- **DNS settings reach `getaddrinfo` and `gethostbyname` alone.** A
+  container with `--dns`, `--dns-search` or `--dns-option` resolves the
+  names its `/etc/hosts` and its stack do not answer through its router,
+  which needs internet access. Asynchronous lookups
+  (`getaddrinfo_async_start`, `DNSServiceGetAddrInfo`, Network.framework)
+  still use the host's resolver, and a program that sends DNS itself
+  (`dig`, Go's pure resolver) cannot reach the servers (*not built
+  yet*). Of the options, `ndots`, `timeout` and `attempts` take effect.
+  A server in the stack, or a Service, cannot serve.
 - **Settings without a macOS counterpart are refused**:
-  - DNS servers, search domains and options (names resolve through the
-    host's resolver and the egress proxy);
+  - DNS settings in an engine nested in a privileged container, and a
+    DNS server on loopback;
   - `--sysctl`, `--userns`, runtimes other than runc, log drivers other
     than `json-file` and `local` (including `none`);
   - devices, `--gpus`, device cgroup rules, `--cgroup-parent`, cgroup
