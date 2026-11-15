@@ -316,3 +316,58 @@ print(open("/tmp/created").read(), end="")`
 		t.Errorf("the Compose dev container printed %q", out)
 	}
 }
+
+// VS Code's server, the program its Dev Containers extension starts in a
+// dev container, runs in one: Microsoft's own darwin build, unpacked into
+// the workspace, listens on a port of the container that appPort
+// publishes, and answers there with the commit it was built from.
+func TestDevcontainerVSCodeServer(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := fmt.Sprint(l.Addr().(*net.TCPAddr).Port)
+	l.Close()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := os.MkdirTemp(home, "fws-e2e-vscode-server-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(server) })
+	if server, err = filepath.EvalSymlinks(server); err != nil {
+		t.Fatal(err)
+	}
+	fetch := exec.Command("sh", "-c", `curl -fsSL --retry 3 https://update.code.visualstudio.com/latest/server-darwin-arm64/stable | tar -xz --strip-components 1 -C "$1"`, "sh", server)
+	if out, err := fetch.CombinedOutput(); err != nil {
+		t.Fatalf("fetching VS Code's server: %v\n%s", err, out)
+	}
+
+	dir, _ := devcontainerUp(t, map[string]string{
+		".devcontainer/devcontainer.json": `{
+  "image": "fws/base:1",
+  "mounts": ["type=bind,source=` + server + `,target=/vscode-server"],
+  "appPort": ["127.0.0.1:` + port + `:8000"],
+  "postStartCommand": "nohup /vscode-server/bin/code-server --host 0.0.0.0 --port 8000 --without-connection-token --accept-server-license-terms > /tmp/server.log 2>&1 &"
+}
+`,
+	})
+	var version string
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(500 * time.Millisecond) {
+		res, err := http.Get("http://127.0.0.1:" + port + "/version")
+		if err != nil {
+			continue
+		}
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		version = strings.TrimSpace(string(b))
+		break
+	}
+	if len(version) != 40 {
+		log, _ := devcontainer(t, "exec", "--workspace-folder", dir, "cat", "/tmp/server.log")
+		t.Fatalf("VS Code's server answered %q on the published port; its log:\n%s", version, log)
+	}
+}
