@@ -26,14 +26,31 @@ func BenchmarkCalls(b *testing.B) {
 	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-dynamiclib", "-o", empty, "testdata/empty/empty.c").CombinedOutput(); err != nil {
 		b.Fatalf("build the empty library: %v\n%s", err, out)
 	}
+	// one and few interpose one rarely bound function, and four bound
+	// nearly everywhere: whether the loader's cost of fwsroot's interposing
+	// grows with what it interposes, or with how widely that is bound.
+	interposers := map[string]string{}
+	for _, name := range []string{"one", "few"} {
+		lib := filepath.Join(b.TempDir(), name+".dylib")
+		if out, err := exec.Command("/usr/bin/xcrun", "clang", "-dynamiclib", "-O2", "-o", lib, "testdata/interpose/"+name+".c").CombinedOutput(); err != nil {
+			b.Fatalf("build the %s library: %v\n%s", name, err, out)
+		}
+		interposers[name] = lib
+	}
 	for _, op := range []string{"getpid", "getuid", "open", "stat", "stat-missing", "fstat", "pread", "readdir", "socket", "spawn", "started"} {
 		// empty inserts a library that does nothing: what the loader costs.
 		// bare inserts fwsroot without a container's variables: what its
 		// interposing costs the loader, beside what it does for a container.
-		for _, mode := range []string{"native", "empty", "bare", "fwsroot"} {
+		modes := []string{"native", "empty", "bare", "fwsroot"}
+		if op == "spawn" || op == "started" {
+			modes = append(modes, "one", "few")
+		}
+		for _, mode := range modes {
 			b.Run(op+"/"+mode, func(b *testing.B) {
 				dir, env := root, []string(nil)
 				switch mode {
+				case "one", "few":
+					env = []string{"DYLD_INSERT_LIBRARIES=" + interposers[mode]}
 				case "empty":
 					env = []string{"DYLD_INSERT_LIBRARIES=" + empty}
 				case "bare":

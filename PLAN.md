@@ -232,8 +232,15 @@ each lands in pull requests with tests on the macOS runner.
    - Done: `fwsd -image-archives DIR` loads an archive the first time one
      of its images is asked for, so each shard loads only what its tests
      use.
-   - Next: archives cached per image, so a change to one image rebuilds
-     that one.
+   - Done: archives kept per image. `fws-mkimage -reuse` records a
+     digest of an archive's inputs beside it (`<archive>.inputs`): the
+     program itself, its flags, the content of every file they name
+     outside the Nix store, and the store paths by name. The images job
+     restores the newest earlier catalog, and each archive made from the
+     same inputs is kept, so a change to one image rebuilds that one; an
+     archive the build neither made nor kept is removed. The catalog
+     took 56 minutes to build on the runner, Nix substituting every
+     package.
 2. **The open bugs below are fixed**, each with a test that reproduced it.
    - Done: MongoDB's replica set's `ECONNREFUSED 127.0.0.1:65535`. A
      router request began with the port, and `0xffff` marked a relay to
@@ -293,7 +300,12 @@ each lands in pull requests with tests on the macOS runner.
      image's tree with APFS, which shares its blocks, where it copied
      every byte; and a stack's network file is written only when what it
      holds changes, as most stay the same as another stack's container
-     comes or goes.
+     comes or goes. A sharded run's `-debug` log since shows a create's
+     `prepare` holding the lock up to 980 ms for Compose stacks, and a
+     volume's removal 441 ms. A removed volume's directory now goes to
+     the trash under the lock and empties without it, as a removed
+     container's does, and `prepare` is timed in its steps (networks,
+     root, ports, mounts), to show which to cut next.
    - Port blocks that grow with a stack: not pursued. A container's
      Seatbelt profile names each port of its stack's block it may connect
      to, and a profile cannot change once applied, so a container that
@@ -304,8 +316,16 @@ each lands in pull requests with tests on the macOS runner.
    - Process starts nearer native. Done: the spawn helper is a C program
      the engine builds beside the container library, where a Go one took
      its runtime's start-up, and it starts the exec anchor itself. Next:
-     the loader's cost for the inserted library (about 4 ms) measured and
-     cut.
+     the loader's cost for the inserted library. On a runner a process
+     reached `main` in 3.8 ms natively, 6.6 ms with an empty library
+     inserted, and 11.6 ms with `fwsroot` inserted without a container's
+     variables, 11.3 ms with them: the library's own constructor costs
+     nothing measurable, and its 157 interposed functions cost the loader
+     about 5 ms, which patches each where any image binds it.
+     `BenchmarkCalls` now inserts a library interposing one rarely bound
+     function, `getpid`, and one interposing four bound everywhere
+     (`read`, `write`, `close`, `fstat`), to tell whether the cost grows
+     with the number interposed or with how widely they are bound.
 5. **Fewer correctness gaps**, each at no cost on the hot path:
    - Done: UDP Services. The engine serves a Service's UDP port on
      loopback and opens each client's flow to the next endpoint, from a

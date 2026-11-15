@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -155,8 +157,11 @@ func (e *Engine) VolumeRemove(name string, force bool) error {
 	return e.removeVolumeLocked(name)
 }
 
+// removeVolumeLocked forgets a volume and moves its directory to the trash,
+// which empties without the engine's lock: a volume of a database's files
+// took hundreds of milliseconds to delete, every other request waiting.
 func (e *Engine) removeVolumeLocked(name string) error {
-	if err := os.RemoveAll(filepath.Dir(e.VolumeDir(name))); err != nil {
+	if err := e.discard(filepath.Dir(e.VolumeDir(name))); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	delete(e.volumes, name)

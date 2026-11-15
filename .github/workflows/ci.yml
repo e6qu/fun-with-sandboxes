@@ -178,6 +178,15 @@ jobs:
             /Library/Developer/CoreSimulator/Caches ~/Library/Developer/CoreSimulator/Caches
           xcrun simctl delete all || true
           df -h /
+      # The newest earlier catalog, whose archives fws-mkimage keeps where
+      # they were made from the same inputs: a change to one image rebuilds
+      # that one.
+      - uses: actions/cache/restore@v4
+        if: steps.images.outputs.cache-hit != 'true'
+        with:
+          path: ~/fws-images
+          key: ${{ steps.key.outputs.key }}
+          restore-keys: images-
       # What the image build makes rather than substitutes from
       # cache.nixos.org: the files the images pin from GitHub releases and
       # repositories, and the packages Hydra does not build, such as Consul
