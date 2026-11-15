@@ -406,7 +406,7 @@ func TestIPv6OnlyNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	path, _ := e.networkFile("proj")
-	if b, err := os.ReadFile(path); err != nil || !strings.HasSuffix(string(b), "\tsix\t0\t\t\tsix=fd00:6::2/64\n") {
+	if b, err := os.ReadFile(path); err != nil || !strings.HasSuffix(string(b), "\tsix\t0\t\t\tsix=fd00:6::2/64 six=-\n") {
 		t.Errorf("network file: %q, %v", b, err)
 	}
 }

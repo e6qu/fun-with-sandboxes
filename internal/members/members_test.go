@@ -139,10 +139,10 @@ func TestIPv6Addresses(t *testing.T) {
 	if got[0].On("back") != "172.28.0.5" || got[0].On6("back") != "" || got[1].SeenBy(got[0]) != "172.28.0.6" || got[1].SeenBy6(got[0]) != "" {
 		t.Errorf("an IPv4 network read as IPv6: %q %q", got[0].On6("back"), got[1].SeenBy6(got[0]))
 	}
-	// front gives its members IPv6 addresses alone: it is IPv6-only, and
-	// they reach one another there at no IPv4 address.
-	if got[0].On("front") != "" || got[0].SeenBy(got[2]) != "" || got[0].SeenBy6(got[2]) != "fd00:f::5" || got[2].SeenBy6(got[0]) != "fd00:f::7" {
-		t.Errorf("on an IPv6-only network api reads as %q and %q", got[0].SeenBy(got[2]), got[0].SeenBy6(got[2]))
+	// front has an IPv6 subnet and none for IPv4: its members reach one
+	// another over IPv4 at their member addresses, and over IPv6.
+	if got[0].On("front") != "127.88.0.2" || got[0].SeenBy(got[2]) != "127.88.0.2" || got[0].SeenBy6(got[2]) != "fd00:f::5" || got[2].SeenBy6(got[0]) != "fd00:f::7" {
+		t.Errorf("on a network with an IPv6 subnet alone api reads as %q and %q", got[0].SeenBy(got[2]), got[0].SeenBy6(got[2]))
 	}
 	if !InSubnet(got, netip.MustParseAddr("fd00:f::99")) || InSubnet(got, netip.MustParseAddr("fd00:e::1")) {
 		t.Error("InSubnet misreads the members' IPv6 subnets")
@@ -179,12 +179,12 @@ func TestIPv6OnlyNetworks(t *testing.T) {
 	got := Parse(Format([]Member{
 		{Address: "127.88.0.2", Names: []string{"api"}, Networks: []string{"dual", "plain", "six"}, Subnets: []NetAddress{
 			{"dual", netip.MustParsePrefix("10.1.0.2/24")}, {"dual", netip.MustParsePrefix("fd00:1::2/64")}, {"six", netip.MustParsePrefix("fd00:6::2/64")},
-		}},
-		{Address: "127.88.0.3", Names: []string{"web"}, Networks: []string{"six"}, Subnets: []NetAddress{{"six", netip.MustParsePrefix("fd00:6::3/64")}}},
+		}, Only6: []string{"six"}},
+		{Address: "127.88.0.3", Names: []string{"web"}, Networks: []string{"six"}, Subnets: []NetAddress{{"six", netip.MustParsePrefix("fd00:6::3/64")}}, Only6: []string{"six"}},
 		{Address: "127.88.0.4", Names: []string{"db"}, Networks: []string{"dual", "six"}, Subnets: []NetAddress{
 			{"dual", netip.MustParsePrefix("10.1.0.4/24")}, {"dual", netip.MustParsePrefix("fd00:1::4/64")}, {"six", netip.MustParsePrefix("fd00:6::4/64")},
-		}},
-		{Address: "127.88.0.5", Names: []string{"cache"}, Networks: []string{"plain", "six"}, Subnets: []NetAddress{{"six", netip.MustParsePrefix("fd00:6::5/64")}}},
+		}, Only6: []string{"six"}},
+		{Address: "127.88.0.5", Names: []string{"cache"}, Networks: []string{"plain", "six"}, Subnets: []NetAddress{{"six", netip.MustParsePrefix("fd00:6::5/64")}}, Only6: []string{"six"}},
 	}))
 	for _, c := range []struct {
 		m, viewer   int

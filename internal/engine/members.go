@@ -234,6 +234,9 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 			if es := m.rec.Networks[n]; es != nil && es.GlobalIPv6Address.IsValid() {
 				member.Subnets = append(member.Subnets, stackmembers.NetAddress{Network: n, Address: netip.PrefixFrom(es.GlobalIPv6Address, es.GlobalIPv6PrefixLen)})
 			}
+			if nw, err := e.networkLocked(n); err == nil && nw.IPv4Disabled {
+				member.Only6 = append(member.Only6, n)
+			}
 		}
 		ms = append(ms, member)
 	}

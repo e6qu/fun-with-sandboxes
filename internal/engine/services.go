@@ -812,10 +812,15 @@ func (e *Engine) serviceMembers(nets map[string]bool, clients map[string]netip.A
 			for _, a := range s.addresses() {
 				subnets = append(subnets, stackmembers.NetAddress{Network: n, Address: netip.PrefixFrom(a, a.BitLen())})
 			}
-			out = append(out, stackmembers.Member{
+			sm := stackmembers.Member{
 				Address: member, Names: svcNames, Ports: ports, Networks: []string{n}, Foreign: true, Stack: stackmembers.ServicesStack,
 				Subnets: subnets,
-			})
+			}
+			// A service with no IPv4 cluster IP answers over IPv6 alone.
+			if !ok {
+				sm.Only6 = []string{n}
+			}
+			out = append(out, sm)
 		}
 	}
 	return out

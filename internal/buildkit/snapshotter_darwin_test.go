@@ -116,8 +116,10 @@ func TestSnapshotterDeltas(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if u, err := sn.Usage(ctx, "layer-3"); err != nil || u.Size != 3 {
-		t.Errorf("the third layer's usage: %+v, %v; want its 3 bytes", u, err)
+	// Its own file's blocks and directories, not the first layer's 8192
+	// bytes below it.
+	if u, err := sn.Usage(ctx, "layer-3"); err != nil || u.Size == 0 || u.Size >= 8192 {
+		t.Errorf("the third layer's usage: %+v, %v; want its own file's alone", u, err)
 	}
 	for _, key := range []string{"view", "again"} {
 		ms, err := sn.View(ctx, key, "layer-3")

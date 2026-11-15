@@ -50,6 +50,11 @@ type Member struct {
 	// have subnets of their own, IPv4 and IPv6, each with its subnet's
 	// length; on every other network the member is at Address.
 	Subnets []NetAddress
+	// Only6 are the networks the member is on that are IPv6-only: it has
+	// no IPv4 address there, not even its member address. A network with
+	// an IPv6 subnet and no IPv4 one of its own is not one of them: its
+	// members reach one another over IPv4 at their member addresses.
+	Only6 []string
 	// Block is the host ports of a foreign member's stack where no
 	// allocator of the reader's engine knows that stack, as for a pod of
 	// another node: a datagram to the member is sent from a free port of
@@ -116,18 +121,13 @@ func (m Member) Has(a string) bool {
 // with an IPv4 subnet, none on an IPv6-only network, where it holds an
 // IPv6 address alone, else its member address.
 func (m Member) On(network string) string {
-	only6 := false
+	if slices.Contains(m.Only6, network) {
+		return ""
+	}
 	for _, s := range m.Subnets {
-		if s.Network != network {
-			continue
-		}
-		if s.Address.Addr().Is4() {
+		if s.Network == network && s.Address.Addr().Is4() {
 			return s.Address.Addr().String()
 		}
-		only6 = true
-	}
-	if only6 {
-		return ""
 	}
 	return m.Address
 }
@@ -188,6 +188,10 @@ func InSubnet(ms []Member, ip netip.Addr) bool {
 	return false
 }
 
+// only6Mark stands where an address would, in a member's subnets, for a
+// network that is IPv6-only.
+const only6Mark = "-"
+
 // Link is an alias the member at Viewer knows another member by.
 type Link struct {
 	Viewer, Alias string
@@ -218,10 +222,14 @@ func Format(ms []Member) []byte {
 			address = "=" + m.Alias
 		}
 		fmt.Fprintf(&b, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s", address, strings.Join(m.Names, " "), strings.Join(ports, ","), m.Router, strings.Join(m.Networks, " "), foreign, m.Stack, strings.Join(links, " "))
-		if len(m.Subnets) > 0 || !m.Block.IsZero() {
-			subnets := make([]string, len(m.Subnets))
+		if len(m.Subnets) > 0 || len(m.Only6) > 0 || !m.Block.IsZero() {
+			subnets := make([]string, len(m.Subnets), len(m.Subnets)+len(m.Only6))
 			for i, s := range m.Subnets {
 				subnets[i] = s.Network + "=" + s.Address.String()
+			}
+			// only6Mark, which no reader of addresses takes for one.
+			for _, n := range m.Only6 {
+				subnets = append(subnets, n+"="+only6Mark)
 			}
 			fmt.Fprintf(&b, "\t%s", strings.Join(subnets, " "))
 		}
@@ -254,7 +262,12 @@ func Parse(b []byte) []Member {
 		if len(f) >= 9 {
 			for _, t := range strings.Fields(f[8]) {
 				n, a, ok := strings.Cut(t, "=")
-				if p, err := netip.ParsePrefix(a); ok && n != "" && err == nil {
+				if !ok || n == "" {
+					continue
+				}
+				if a == only6Mark {
+					m.Only6 = append(m.Only6, n)
+				} else if p, err := netip.ParsePrefix(a); err == nil {
 					m.Subnets = append(m.Subnets, NetAddress{Network: n, Address: p})
 				}
 			}

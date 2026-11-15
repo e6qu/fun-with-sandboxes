@@ -6026,16 +6026,17 @@ static int seen_addr6(const struct member *m, const struct member *viewer, int h
 }
 
 // only6_on reports whether the network of len bytes at net is IPv6-only
-// for member m: it gives m an IPv6 address there and no IPv4 one, where
-// a network with IPv6 and IPv4 gives one of each.
+// for member m: its subnets hold net=-, the engine's mark of one. A
+// network with an IPv6 subnet and no IPv4 one of its own is not: its
+// members reach one another over IPv4 at their member addresses.
 static int only6_on(const struct member *m, const char *net, size_t len) {
-    const char *n;
-    size_t nl;
-    in_addr_t a, k;
-    for (const char *p = m->subs; (p = next_sub(p, m->subs_end, &n, &nl, &a, &k));) {
-        if (nl == len && memcmp(n, net, len) == 0) return 0;
+    for (const char *p = m->subs; p < m->subs_end;) {
+        const char *e = memchr(p, ' ', (size_t)(m->subs_end - p));
+        if (!e) e = m->subs_end;
+        if ((size_t)(e - p) == len + 2 && memcmp(p, net, len) == 0 && p[len] == '=' && p[len + 1] == '-') return 1;
+        p = e + 1;
     }
-    return member_on6(m, net, len, NULL, NULL);
+    return 0;
 }
 
 // seen_addr4 finds member m's IPv4 address as viewer reaches it, as a
