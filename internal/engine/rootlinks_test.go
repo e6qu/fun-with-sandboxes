@@ -28,7 +28,7 @@ func TestWritesInARootStayInIt(t *testing.T) {
 	if err := placeMount(root, "/out/m", dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeHostsFiles(root, "box", "", nil, nil, nil, nil); err != nil {
+	if err := writeHostsFiles(root, "box", "", nil, nil, nil, dnsSettings{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := copyInto(root, ctx, root, 0); err != nil {

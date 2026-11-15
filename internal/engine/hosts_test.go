@@ -1,10 +1,13 @@
 package engine
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
 
 func TestWriteHostsFiles(t *testing.T) {
@@ -14,7 +17,7 @@ func TestWriteHostsFiles(t *testing.T) {
 	os.WriteFile(outside, []byte("host's own\n"), 0o644)
 	// An image whose /etc/hosts is a symlink out of the root.
 	os.Symlink(outside, filepath.Join(root, "etc", "hosts"))
-	if err := writeHostsFiles(root, "web-1", "", []string{"127.88.0.4", "fd00:5::3"}, []string{"db.local:10.0.0.5", "host.docker.internal:host-gateway"}, []string{"127.88.0.2\tdb db-host other"}, nil); err != nil {
+	if err := writeHostsFiles(root, "web-1", "", []string{"127.88.0.4", "fd00:5::3"}, []string{"db.local:10.0.0.5", "host.docker.internal:host-gateway"}, []string{"127.88.0.2\tdb db-host other"}, dnsSettings{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	hosts, _ := os.ReadFile(filepath.Join(root, "etc", "hosts"))
@@ -30,7 +33,7 @@ func TestWriteHostsFiles(t *testing.T) {
 	}
 	// A mount at /etc/hosts stands.
 	root2 := t.TempDir()
-	if err := writeHostsFiles(root2, "x", "", nil, nil, nil, []mountRec{{Destination: "/etc/hosts"}}); err != nil {
+	if err := writeHostsFiles(root2, "x", "", nil, nil, nil, dnsSettings{}, []mountRec{{Destination: "/etc/hosts"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root2, "etc", "hosts")); !os.IsNotExist(err) {
@@ -38,13 +41,13 @@ func TestWriteHostsFiles(t *testing.T) {
 	}
 	// A domain name makes the container's name a fully qualified one.
 	root3 := t.TempDir()
-	if err := writeHostsFiles(root3, "web", "example.com", []string{"127.88.0.4"}, nil, nil, nil); err != nil {
+	if err := writeHostsFiles(root3, "web", "example.com", []string{"127.88.0.4"}, nil, nil, dnsSettings{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(root3, "etc", "hosts")); !strings.HasSuffix(string(b), "127.88.0.4\tweb.example.com web\n") {
 		t.Errorf("/etc/hosts with a domain name:\n%s", b)
 	}
-	if err := writeHostsFiles(t.TempDir(), "x", "", nil, []string{"bad"}, nil, nil); err == nil {
+	if err := writeHostsFiles(t.TempDir(), "x", "", nil, []string{"bad"}, nil, dnsSettings{}, nil); err == nil {
 		t.Error("accepted --add-host without an address")
 	}
 }
@@ -57,15 +60,64 @@ func TestResolvConf(t *testing.T) {
 		{"nameserver 127.0.0.1\nnameserver ::1\nsearch lan\n", "search lan\nnameserver 8.8.8.8\nnameserver 8.8.4.4\n"},
 		{"", "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"},
 	} {
-		if got := resolvConf([]byte(c.host)); got != c.want {
+		if got := resolvConf([]byte(c.host), dnsSettings{}); got != c.want {
 			t.Errorf("resolvConf(%q) = %q, want %q", c.host, got, c.want)
 		}
 	}
 	root := t.TempDir()
-	if err := writeHostsFiles(root, "x", "", nil, nil, nil, nil); err != nil {
+	if err := writeHostsFiles(root, "x", "", nil, nil, nil, dnsSettings{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if b, err := os.ReadFile(filepath.Join(root, "etc", "resolv.conf")); err != nil || !strings.Contains(string(b), "nameserver ") {
 		t.Errorf("/etc/resolv.conf: %q, %v", b, err)
+	}
+}
+
+// A container's own DNS servers, search domains and options replace the
+// host's, as Docker writes them; a search domain of "." alone drops the
+// host's.
+func TestResolvConfWithDNSSettings(t *testing.T) {
+	host := "# comment\nnameserver 192.168.1.1\nsearch lan\noptions ndots:2\n"
+	one, two := netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("2606:4700::1111")
+	for _, c := range []struct {
+		d    dnsSettings
+		want string
+	}{
+		{dnsSettings{Servers: []netip.Addr{one, two}}, "# comment\nsearch lan\noptions ndots:2\nnameserver 1.1.1.1\nnameserver 2606:4700::1111\n"},
+		{dnsSettings{Search: []string{"a.example", "b.example"}}, "# comment\nnameserver 192.168.1.1\noptions ndots:2\nsearch a.example b.example\n"},
+		{dnsSettings{Search: []string{"."}}, "# comment\nnameserver 192.168.1.1\noptions ndots:2\n"},
+		{dnsSettings{Options: []string{"ndots:5", "timeout:1"}}, "# comment\nnameserver 192.168.1.1\nsearch lan\noptions ndots:5 timeout:1\n"},
+	} {
+		if got := resolvConf([]byte(host), c.d); got != c.want {
+			t.Errorf("resolvConf(%+v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+	root := t.TempDir()
+	if err := writeHostsFiles(root, "x", "", nil, nil, nil, dnsSettings{Servers: []netip.Addr{one}, Search: []string{"corp.example"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(root, "etc", "resolv.conf"))
+	d := router.ParseResolvConf(b)
+	if len(d.Servers) != 1 || d.Servers[0] != one || len(d.Search) != 1 || d.Search[0] != "corp.example" {
+		t.Errorf("/etc/resolv.conf %q reads as %+v", b, d)
+	}
+}
+
+func TestCheckDNS(t *testing.T) {
+	for _, c := range []struct {
+		d    dnsSettings
+		kind Kind
+	}{
+		{dnsSettings{Servers: []netip.Addr{netip.MustParseAddr("1.1.1.1")}, Search: []string{"example.com", "."}, Options: []string{"ndots:2", "rotate"}}, -1},
+		{dnsSettings{Servers: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}, KindUnsupported},
+		{dnsSettings{Servers: []netip.Addr{netip.MustParseAddr("127.88.0.3")}}, KindUnsupported},
+		{dnsSettings{Servers: []netip.Addr{netip.MustParseAddr("::1")}}, KindUnsupported},
+		{dnsSettings{Search: []string{"a b"}}, KindInvalid},
+		{dnsSettings{Options: []string{""}}, KindInvalid},
+	} {
+		err := checkDNS(c.d)
+		if c.kind < 0 && err != nil || c.kind >= 0 && (err == nil || KindOf(err) != c.kind) {
+			t.Errorf("checkDNS(%+v) = %v, want kind %d", c.d, err, c.kind)
+		}
 	}
 }

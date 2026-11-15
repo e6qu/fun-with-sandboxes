@@ -197,6 +197,27 @@ func ListenUnix(path func(port int) string, lo, hi int, upstream string, header 
 	return nil, 0, err
 }
 
+// ListenUnixgram binds, for the first port from lo to hi free, or for an
+// ephemeral one with lo 0, the Unix datagram socket path gives that port:
+// a UDP port published in a container whose own ports without host ports
+// are Unix sockets. The caller removes the socket's file once done with it.
+func ListenUnixgram(path func(port int) string, lo, hi int) (*net.UnixConn, int, error) {
+	if lo == 0 {
+		lo, hi = ephemeralLo, ephemeralHi
+	}
+	var err error
+	for port := lo; port <= hi; port++ {
+		var c *net.UnixConn
+		if c, err = net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path(port), Net: "unixgram"}); err == nil {
+			return c, port, nil
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, 0, err
+		}
+	}
+	return nil, 0, err
+}
+
 // udpIdleTimeout is how long a UDP flow lasts without traffic, as Docker's
 // userland proxy keeps its flows.
 const udpIdleTimeout = 90 * time.Second

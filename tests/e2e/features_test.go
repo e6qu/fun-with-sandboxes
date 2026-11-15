@@ -364,8 +364,9 @@ func TestPauseUnpauseUpdate(t *testing.T) {
 	if s := mustDocker(t, "stats", "--no-stream", "--format", "{{.MemUsage}}", "pausetest"); !strings.Contains(s, "/ 64MiB") {
 		t.Fatalf("docker stats does not report the updated memory limit: %q", s)
 	}
-	if _, err := docker(t, "update", "--blkio-weight", "100", "pausetest"); err == nil || !strings.Contains(err.Error(), "block I/O weight of a running container") {
-		t.Fatalf("block I/O weight update of a running container: %v", err)
+	mustDocker(t, "update", "--blkio-weight", "100", "pausetest")
+	if s := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.BlkioWeight}}", "pausetest")); s != "100" {
+		t.Fatalf("block I/O weight after update: %q", s)
 	}
 	mustDocker(t, "pause", "pausetest")
 	mustDocker(t, "stop", "pausetest")

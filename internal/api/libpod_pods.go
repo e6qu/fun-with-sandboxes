@@ -258,7 +258,8 @@ func (s *Server) podCreate(w http.ResponseWriter, r *http.Request) {
 	// a container's own have in Podman's specification.
 	var infra specGen
 	if len(body) > 0 {
-		if err := json.Unmarshal(body, &spec); err == nil {
+		err := json.Unmarshal(body, &spec)
+		if err == nil {
 			err = json.Unmarshal(body, &infra)
 		}
 		if err != nil {

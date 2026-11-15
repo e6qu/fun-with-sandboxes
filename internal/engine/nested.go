@@ -39,9 +39,10 @@ type Nested struct {
 	// mounts, to the host's: the source of a bind mount.
 	Path func(string) (string, error)
 	// Port is where a port the nested engine publishes at the privileged
-	// container's port p listens: the host port of that port, or, for a
-	// port without one, the directory of the container's Unix sockets.
-	Port func(p int) (hostPort int, dir string, err error)
+	// container's port p, TCP or UDP by proto, listens: the host port of
+	// that port, or, for a port without one, the directory of the
+	// container's Unix sockets.
+	Port func(proto string, p int) (hostPort int, dir string, err error)
 	// Dial connects to a port of a member the privileged container
 	// shares a network with, at its address on that network: how a
 	// nested engine's service reaches an endpoint beyond its own
@@ -151,7 +152,7 @@ func (e *Engine) openNested(c *Container) error {
 		Nested: &Nested{
 			Library: lib, RunDir: runDir, StateRoot: e.stateRoot(),
 			Path:    func(p string) (string, error) { return e.pathIn(c, p) },
-			Port:    func(p int) (int, string, error) { return e.portIn(c, p) },
+			Port:    func(proto string, p int) (int, string, error) { return e.portIn(c, proto, p) },
 			Dial:    func(ap netip.AddrPort) (net.Conn, error) { return e.dialFrom(c, ap) },
 			DialUDP: func(ap netip.AddrPort) (net.Conn, error) { return e.dialFromUDP(c, ap) },
 			Publish: func(ms []stackmembers.Member) { e.publishPeer(c, ms) },
@@ -224,15 +225,15 @@ func (e *Engine) pathIn(c *Container, p string) (string, error) {
 	return rootfs.Join(root, p)
 }
 
-// portIn is where c's port p listens: on its host port, or for a port
-// without one, in the directory of its Unix sockets.
-func (e *Engine) portIn(c *Container, p int) (int, string, error) {
+// portIn is where c's port p, TCP or UDP by proto, listens: on its host
+// port, or for a port without one, in the directory of its Unix sockets.
+func (e *Engine) portIn(c *Container, proto string, p int) (int, string, error) {
 	net, err := e.netOwner(c)
 	if err != nil {
 		return 0, "", err
 	}
 	if p != 0 {
-		if hp, ok := net.rec.Ports[fmt.Sprintf("%d/tcp", p)]; ok {
+		if hp, ok := net.rec.Ports[fmt.Sprintf("%d/%s", p, proto)]; ok {
 			return hp, "", nil
 		}
 	}
@@ -250,7 +251,7 @@ func (e *Engine) DialPort(ref string, p int) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	hp, dir, err := e.portIn(c, p)
+	hp, dir, err := e.portIn(c, "tcp", p)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +290,7 @@ func (e *Engine) listenOnNode(p int) (net.Listener, error) {
 	if n == nil {
 		return net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
 	}
-	hp, dir, err := n.Port(p)
+	hp, dir, err := n.Port("tcp", p)
 	if err != nil {
 		return nil, err
 	}

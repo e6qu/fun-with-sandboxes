@@ -45,6 +45,13 @@ const (
 // the container runs as many processes.
 const PidsVar = "FWS_PIDS"
 
+// IOPolicyFile names the file, beside the pids limit's, of the disk I/O
+// policy tier (libsystem.IOPolicy*) the engine writes as an update changes
+// a container's block I/O weight: the library sets each process the
+// container starts after it to the tier, as the library loads in the
+// process or as the process forks.
+const IOPolicyFile = "iopolicy"
+
 // PidsSocketVar names the socket the container's supervisor answers on with
 // how many processes the container runs, which the library compares with
 // the limit before a fork.
@@ -74,6 +81,12 @@ const (
 	NetworkVar = "FWS_NETWORK"
 	AddressVar = "FWS_ADDRESS"
 )
+
+// DNSVar is set for a container with DNS servers, search domains or
+// options of its own: the library resolves a name its /etc/hosts and its
+// stack's members do not answer through the container's router
+// (router.Resolve) rather than the host's resolver.
+const DNSVar = "FWS_DNS"
 
 // Mount is a volume or bind mount: Dest in the container, and Source, the
 // host directory or file behind it.

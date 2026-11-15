@@ -26,14 +26,44 @@ type Network struct {
 	Internal   bool              `json:"internal"`
 	Attachable bool              `json:"attachable"`
 	Predefined bool              `json:"predefined"`
-	// Pool is the IPv4 subnet the network was created with; members on a
-	// network without one take their member addresses in memberSubnet.
+	// Pool is the first IPv4 subnet the network was created with; members
+	// on a network without one take their member addresses in
+	// memberSubnet.
 	Pool
 	// EnableIPv6 gives each member an IPv6 address on the network too,
 	// from IPv6, its own subnet or a /64 of the engine's ULA prefix.
 	EnableIPv6 bool `json:"enableIPv6,omitempty"`
 	IPv6       Pool `json:"ipv6,omitzero"`
+	// More are the subnets past the first of each family, of either
+	// family, in the order the network's IPAM configuration names them.
+	More []Pool `json:"more,omitempty"`
+	// IPv4Disabled marks an IPv6-only network: it holds no IPv4 subnet,
+	// and its members no IPv4 address on it, their member address
+	// included.
+	IPv4Disabled bool `json:"ipv4Disabled,omitempty"`
 }
+
+// pools are the network's subnets of a family, in the order containers
+// take addresses from them.
+func (n *Network) pools(v4 bool) []Pool {
+	var out []Pool
+	first := n.IPv6
+	if v4 {
+		first = n.Pool
+	}
+	if first.Subnet != "" {
+		out = append(out, first)
+	}
+	for _, p := range n.More {
+		if p.is4() == v4 {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// allPools are the network's subnets of both families.
+func (n *Network) allPools() []Pool { return append(n.pools(true), n.pools(false)...) }
 
 // Pool is a subnet of the default IPAM driver, with its gateway, the
 // range containers' addresses come from and the addresses reserved for
@@ -54,6 +84,8 @@ const (
 	memberGateway = "127.88.0.1"
 )
 
+func (p Pool) is4() bool { return netip.MustParsePrefix(p.Subnet).Addr().Is4() }
+
 func (p Pool) config() network.IPAMConfig {
 	c := network.IPAMConfig{Subnet: netip.MustParsePrefix(p.Subnet), Gateway: netip.MustParseAddr(p.Gateway)}
 	if p.IPRange != "" {
@@ -68,30 +100,31 @@ func (p Pool) config() network.IPAMConfig {
 	return c
 }
 
-// ipamConfig is the network's IPAM configuration as Docker reports it.
+// ipamConfig is the network's IPAM configuration as Docker reports it:
+// its IPv4 subnets, then its IPv6 ones.
 func (n *Network) ipamConfig() []network.IPAMConfig {
 	out := []network.IPAMConfig{}
-	switch {
-	case n.Subnet != "":
-		out = append(out, n.Pool.config())
-	case n.Driver == "bridge":
+	v4 := n.pools(true)
+	if len(v4) == 0 && n.Driver == "bridge" && !n.IPv4Disabled {
 		out = append(out, network.IPAMConfig{Subnet: netip.MustParsePrefix(memberSubnet), Gateway: netip.MustParseAddr(memberGateway)})
 	}
-	if n.IPv6.Subnet != "" {
-		out = append(out, n.IPv6.config())
+	for _, p := range append(v4, n.pools(false)...) {
+		out = append(out, p.config())
 	}
 	return out
 }
 
 // checkIPAMLocked reads a network's IPAM configuration into n: of the
-// default driver, at most one IPv4 subnet and, with IPv6 enabled, one
-// IPv6 subnet, a /64 of the engine's ULA prefix when it names none.
+// default driver, any number of IPv4 subnets, none on an IPv6-only
+// network, and, with IPv6 enabled, of IPv6 subnets, a /64 of the
+// engine's ULA prefix when it names none.
 func (e *Engine) checkIPAMLocked(n *Network, ipam *network.IPAM, ipv4, ipv6 *bool) error {
-	if ipv4 != nil && !*ipv4 {
-		return unsupported("network %s: IPv6-only networks are not supported: the container library reaches every member at an IPv4 address", n.Name)
-	}
 	n.EnableIPv6 = ipv6 != nil && *ipv6
-	var v4, v6 *network.IPAMConfig
+	n.IPv4Disabled = ipv4 != nil && !*ipv4
+	if n.IPv4Disabled && !n.EnableIPv6 {
+		return invalid("network %s: IPv4 or IPv6 must be enabled", n.Name)
+	}
+	var v4, v6 []network.IPAMConfig
 	if ipam != nil {
 		if ipam.Driver != "" && ipam.Driver != "default" {
 			return unsupported("IPAM driver %q is not supported; only \"default\" is", ipam.Driver)
@@ -104,57 +137,72 @@ func (e *Engine) checkIPAMLocked(n *Network, ipam *network.IPAM, ipv4, ipv6 *boo
 			if !c.Subnet.IsValid() {
 				return invalid("network %s: an IPAM configuration needs a subnet", n.Name)
 			}
-			slot, family := &v4, "IPv4"
-			if !c.Subnet.Addr().Is4() {
-				slot, family = &v6, "IPv6"
+			if c.Subnet.Addr().Is4() {
+				v4 = append(v4, *c)
+			} else {
+				v6 = append(v6, *c)
 			}
-			if *slot != nil {
-				return unsupported("network %s: more than one %s subnet is not supported: a container holds one address of each family on a network", n.Name, family)
-			}
-			*slot = c
 		}
 	}
-	if v4 == nil && n.EnableIPv6 {
-		// A network with IPv6 is dual-stack, as Docker's are: it takes an
-		// IPv4 subnet of the defaults too, so its members hold an address
-		// of each family on it, as kind's nodes need on its network.
+	if n.IPv4Disabled && len(v4) > 0 {
+		return invalid("network %s: an IPv4 subnet needs IPv4 enabled on the network", n.Name)
+	}
+	if !n.EnableIPv6 && len(v6) > 0 {
+		return invalid("network %s: an IPv6 subnet needs IPv6 enabled on the network", n.Name)
+	}
+	var pools []Pool
+	add := func(c network.IPAMConfig, auto bool) error {
+		p, err := e.checkPoolLocked(c, pools)
+		if err != nil {
+			return err
+		}
+		p.Auto = auto
+		pools = append(pools, p)
+		return nil
+	}
+	if len(v4) == 0 && n.EnableIPv6 && !n.IPv4Disabled {
+		// A network with IPv6 is dual-stack unless IPv4 is disabled, as
+		// Docker's are: it takes an IPv4 subnet of the defaults too, so
+		// its members hold an address of each family on it, as kind's
+		// nodes need on its network.
 		subnet, err := e.autoSubnetLocked()
 		if err != nil {
 			return err
 		}
-		p, err := e.checkPoolLocked(network.IPAMConfig{Subnet: subnet})
-		if err != nil {
+		if err := add(network.IPAMConfig{Subnet: subnet}, true); err != nil {
 			return err
 		}
-		p.Auto = true
-		n.Pool = p
-	} else if v4 != nil {
-		p, err := e.checkPoolLocked(*v4)
-		if err != nil {
+	}
+	for _, c := range v4 {
+		if err := add(c, false); err != nil {
 			return err
 		}
-		n.Pool = p
 	}
-	if !n.EnableIPv6 {
-		if v6 != nil {
-			return invalid("network %s: an IPv6 subnet needs IPv6 enabled on the network", n.Name)
-		}
-		return nil
-	}
-	auto := v6 == nil
-	if auto {
+	if n.EnableIPv6 && len(v6) == 0 {
 		subnet, err := e.ulaSubnetLocked()
 		if err != nil {
 			return err
 		}
-		v6 = &network.IPAMConfig{Subnet: subnet}
+		if err := add(network.IPAMConfig{Subnet: subnet}, true); err != nil {
+			return err
+		}
 	}
-	p, err := e.checkPoolLocked(*v6)
-	if err != nil {
-		return err
+	for _, c := range v6 {
+		if err := add(c, false); err != nil {
+			return err
+		}
 	}
-	p.Auto = auto
-	n.IPv6 = p
+	n.Pool, n.IPv6, n.More = Pool{}, Pool{}, nil
+	for _, p := range pools {
+		switch {
+		case p.is4() && n.Subnet == "":
+			n.Pool = p
+		case !p.is4() && n.IPv6.Subnet == "":
+			n.IPv6 = p
+		default:
+			n.More = append(n.More, p)
+		}
+	}
 	return nil
 }
 
@@ -176,8 +224,9 @@ var reservedBlocks = []struct {
 // checkPoolLocked reads a subnet's configuration into a pool: its
 // gateway, by default its first host address, its range and its
 // auxiliary addresses, inside it, and the subnet outside the reserved
-// blocks and every other network's subnets.
-func (e *Engine) checkPoolLocked(c network.IPAMConfig) (Pool, error) {
+// blocks, every network's subnets and the pools its own network has
+// taken so far, siblings.
+func (e *Engine) checkPoolLocked(c network.IPAMConfig, siblings []Pool) (Pool, error) {
 	subnet := c.Subnet
 	if subnet.Masked() != subnet {
 		return Pool{}, invalid("invalid subnet %s : it should be %s", subnet, subnet.Masked())
@@ -194,11 +243,13 @@ func (e *Engine) checkPoolLocked(c network.IPAMConfig) (Pool, error) {
 			return Pool{}, errorf(r.kind, "subnet %s overlaps %s", subnet, r.why)
 		}
 	}
+	taken := siblings
 	for _, o := range e.networks {
-		for _, p := range []Pool{o.Pool, o.IPv6} {
-			if p.Subnet != "" && netip.MustParsePrefix(p.Subnet).Overlaps(subnet) {
-				return Pool{}, forbidden("invalid pool request: Pool overlaps with other one on this address space")
-			}
+		taken = append(taken, o.allPools()...)
+	}
+	for _, p := range taken {
+		if netip.MustParsePrefix(p.Subnet).Overlaps(subnet) {
+			return Pool{}, forbidden("invalid pool request: Pool overlaps with other one on this address space")
 		}
 	}
 	p := Pool{Subnet: subnet.String(), Gateway: subnet.Addr().Next().String()}
@@ -237,8 +288,6 @@ func (e *Engine) ulaPrefix() netip.Prefix {
 	return netip.PrefixFrom(netip.AddrFrom16(b), 48)
 }
 
-// ulaSubnetLocked is the lowest /64 of the engine's ULA prefix no
-// network's subnet overlaps.
 // autoSubnetLocked is the first of Docker's default IPv4 pools, past
 // docker0's 172.17.0.0/16, that no network holds and no interface of the
 // host's addresses lies in: 172.18.0.0/16 to 172.31.0.0/16, then the /20s
@@ -264,8 +313,10 @@ func (e *Engine) autoSubnetLocked() (netip.Prefix, error) {
 next:
 	for _, c := range candidates {
 		for _, o := range e.networks {
-			if o.Pool.Subnet != "" && netip.MustParsePrefix(o.Pool.Subnet).Overlaps(c) {
-				continue next
+			for _, p := range o.pools(true) {
+				if netip.MustParsePrefix(p.Subnet).Overlaps(c) {
+					continue next
+				}
 			}
 		}
 		for _, h := range host {
@@ -278,6 +329,8 @@ next:
 	return netip.Prefix{}, forbidden("could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network")
 }
 
+// ulaSubnetLocked is the lowest /64 of the engine's ULA prefix no
+// network's subnet overlaps.
 func (e *Engine) ulaSubnetLocked() (netip.Prefix, error) {
 	base := e.ulaPrefix().Addr().As16()
 	for id := 0; id < 1<<16; id++ {
@@ -286,9 +339,10 @@ func (e *Engine) ulaSubnetLocked() (netip.Prefix, error) {
 		subnet := netip.PrefixFrom(netip.AddrFrom16(b), 64)
 		free := true
 		for _, o := range e.networks {
-			if o.IPv6.Subnet != "" && netip.MustParsePrefix(o.IPv6.Subnet).Overlaps(subnet) {
-				free = false
-				break
+			for _, p := range o.pools(false) {
+				if netip.MustParsePrefix(p.Subnet).Overlaps(subnet) {
+					free = false
+				}
 			}
 		}
 		if free {
@@ -299,10 +353,11 @@ func (e *Engine) ulaSubnetLocked() (netip.Prefix, error) {
 }
 
 // assignNetAddressLocked gives the endpoint s of container id its
-// addresses on n: on a network with a subnet of a family, the one its
-// IPAM configuration names, or the lowest of the range no container,
-// gateway or reserved host holds; on one with no IPv4 subnet, no IPv4
-// address, as the container's member address serves every such network.
+// addresses on n: of each family the network has subnets of, the one its
+// IPAM configuration names, or the lowest free one of the first subnet
+// with room; on one with no IPv4 subnet, no IPv4 address, as the
+// container's member address serves every such network but an
+// IPv6-only one.
 func (e *Engine) assignNetAddressLocked(n *Network, id string, s *network.EndpointSettings) error {
 	var static4, static6 netip.Addr
 	if s.IPAMConfig != nil {
@@ -310,39 +365,49 @@ func (e *Engine) assignNetAddressLocked(n *Network, id string, s *network.Endpoi
 	}
 	s.IPAddress, s.IPPrefixLen, s.Gateway, s.MacAddress = netip.Addr{}, 0, netip.Addr{}, nil
 	s.GlobalIPv6Address, s.GlobalIPv6PrefixLen, s.IPv6Gateway = netip.Addr{}, 0, netip.Addr{}
+	if static4.IsValid() && n.IPv4Disabled {
+		return invalid("network %s is IPv6-only: a container takes no IPv4 address on it", n.Name)
+	}
 	if (static4.IsValid() && (n.Subnet == "" || n.Pool.Auto)) || (static6.IsValid() && (n.IPv6.Subnet == "" || n.IPv6.Auto)) {
 		return invalid("user specified IP address is supported only when connecting to networks with user configured subnets")
 	}
-	if n.Subnet != "" {
-		ip, bits, gw, err := e.pickAddressLocked(n, n.Pool, id, static4, func(es *network.EndpointSettings) netip.Addr { return es.IPAddress })
+	if pools := n.pools(true); len(pools) > 0 {
+		ip, bits, gw, err := e.pickAddressLocked(n, pools, id, static4, func(es *network.EndpointSettings) netip.Addr { return es.IPAddress })
 		if err != nil {
 			return err
 		}
 		s.IPAddress, s.IPPrefixLen, s.Gateway, s.MacAddress = ip, bits, gw, macOf(ip)
 	}
-	if n.IPv6.Subnet != "" {
-		ip, bits, gw, err := e.pickAddressLocked(n, n.IPv6, id, static6, func(es *network.EndpointSettings) netip.Addr { return es.GlobalIPv6Address })
+	if pools := n.pools(false); len(pools) > 0 {
+		ip, bits, gw, err := e.pickAddressLocked(n, pools, id, static6, func(es *network.EndpointSettings) netip.Addr { return es.GlobalIPv6Address })
 		if err != nil {
 			return err
 		}
 		s.GlobalIPv6Address, s.GlobalIPv6PrefixLen, s.IPv6Gateway = ip, bits, gw
+		if len(s.MacAddress) == 0 {
+			s.MacAddress = macOf(ip)
+		}
 	}
 	return nil
 }
 
-// pickAddressLocked is container id's address in pool p of network n,
-// with the subnet's length and gateway: static, when valid, or the lowest
-// of the pool's range that no other container's endpoint, as addr reads
-// it, the gateway or a reserved host holds.
-func (e *Engine) pickAddressLocked(n *Network, p Pool, id string, static netip.Addr, addr func(*network.EndpointSettings) netip.Addr) (netip.Addr, int, netip.Addr, error) {
-	subnet, gateway := netip.MustParsePrefix(p.Subnet), netip.MustParseAddr(p.Gateway)
-	v4 := subnet.Addr().Is4()
-	taken := map[netip.Addr]bool{gateway: true, subnet.Addr(): true}
-	if v4 {
-		taken[broadcast(subnet)] = true
-	}
-	for _, a := range p.AuxAddresses {
-		taken[netip.MustParseAddr(a)] = true
+// pickAddressLocked is container id's address in the pools, all of one
+// family, of network n, with its subnet's length and gateway: static,
+// when valid, in the pool whose subnet holds it, or the lowest of the
+// first pool's range that no other container's endpoint, as addr reads
+// it, no gateway and no reserved host holds, else of the next pool's.
+func (e *Engine) pickAddressLocked(n *Network, pools []Pool, id string, static netip.Addr, addr func(*network.EndpointSettings) netip.Addr) (netip.Addr, int, netip.Addr, error) {
+	v4 := pools[0].is4()
+	taken := map[netip.Addr]bool{}
+	for _, p := range pools {
+		subnet := netip.MustParsePrefix(p.Subnet)
+		taken[netip.MustParseAddr(p.Gateway)], taken[subnet.Addr()] = true, true
+		if v4 {
+			taken[broadcast(subnet)] = true
+		}
+		for _, a := range p.AuxAddresses {
+			taken[netip.MustParseAddr(a)] = true
+		}
 	}
 	for _, o := range e.containers {
 		if es := o.rec.Networks[n.Name]; o.rec.ID != id && es != nil && addr(es).IsValid() {
@@ -350,21 +415,25 @@ func (e *Engine) pickAddressLocked(n *Network, p Pool, id string, static netip.A
 		}
 	}
 	if static.IsValid() {
-		if static.Is4() != v4 || !subnet.Contains(static) {
-			return netip.Addr{}, 0, netip.Addr{}, invalid("no configured subnet or ip-range contain the IP address %s", static)
+		for _, p := range pools {
+			if subnet := netip.MustParsePrefix(p.Subnet); static.Is4() == v4 && subnet.Contains(static) {
+				if taken[static] {
+					return netip.Addr{}, 0, netip.Addr{}, forbidden("Address already in use")
+				}
+				return static, subnet.Bits(), netip.MustParseAddr(p.Gateway), nil
+			}
 		}
-		if taken[static] {
-			return netip.Addr{}, 0, netip.Addr{}, forbidden("Address already in use")
+		return netip.Addr{}, 0, netip.Addr{}, invalid("no configured subnet or ip-range contain the IP address %s", static)
+	}
+	for _, p := range pools {
+		subnet, pool := netip.MustParsePrefix(p.Subnet), netip.MustParsePrefix(p.Subnet)
+		if p.IPRange != "" {
+			pool = netip.MustParsePrefix(p.IPRange)
 		}
-		return static, subnet.Bits(), gateway, nil
-	}
-	pool := subnet
-	if p.IPRange != "" {
-		pool = netip.MustParsePrefix(p.IPRange)
-	}
-	for a := pool.Addr(); pool.Contains(a); a = a.Next() {
-		if !taken[a] {
-			return a, subnet.Bits(), gateway, nil
+		for a := pool.Addr(); pool.Contains(a); a = a.Next() {
+			if !taken[a] {
+				return a, subnet.Bits(), netip.MustParseAddr(p.Gateway), nil
+			}
 		}
 	}
 	family := "IPv6"
@@ -381,10 +450,10 @@ func broadcast(p netip.Prefix) netip.Addr {
 }
 
 // macOf is the MAC address Docker gives an endpoint at address a: 02:42
-// and the address's four bytes.
+// and the address's four bytes, of an IPv6 address its last four.
 func macOf(a netip.Addr) network.HardwareAddr {
-	b := a.As4()
-	return network.HardwareAddr{0x02, 0x42, b[0], b[1], b[2], b[3]}
+	b := a.As16()
+	return network.HardwareAddr{0x02, 0x42, b[12], b[13], b[14], b[15]}
 }
 
 func (e *Engine) networksPath() string { return filepath.Join(e.cfg.Root, "networks.json") }
@@ -408,7 +477,7 @@ func (e *Engine) loadNetworks() error {
 	// engine whose state predates it gives it the subnet unless a network
 	// of its own took it.
 	if b, err := e.networkLocked("bridge"); err == nil && b.Subnet == "" {
-		if p, err := e.checkPoolLocked(network.IPAMConfig{Subnet: bridgeSubnet}); err == nil {
+		if p, err := e.checkPoolLocked(network.IPAMConfig{Subnet: bridgeSubnet}, nil); err == nil {
 			p.Auto = true
 			b.Pool = p
 		}
@@ -521,7 +590,7 @@ func (e *Engine) networkView(n *Network) network.Inspect {
 	return network.Inspect{
 		Network: network.Network{
 			Name: n.Name, ID: n.ID, Created: n.Created, Scope: "local", Driver: n.Driver,
-			EnableIPv4: n.Driver == "bridge", EnableIPv6: n.EnableIPv6, IPAM: network.IPAM{Driver: "default", Config: n.ipamConfig()},
+			EnableIPv4: n.Driver == "bridge" && !n.IPv4Disabled, EnableIPv6: n.EnableIPv6, IPAM: network.IPAM{Driver: "default", Config: n.ipamConfig()},
 			Internal: n.Internal, Attachable: n.Attachable, Options: n.Options, Labels: n.Labels,
 		},
 		Containers: containers,

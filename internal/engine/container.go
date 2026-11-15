@@ -29,6 +29,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
+	"github.com/e6qu/fun-with-sandboxes/internal/router"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 	"github.com/e6qu/fun-with-sandboxes/internal/shim"
@@ -286,6 +287,11 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if _, node := e.hostNode(); req.HostConfig.NetworkMode == "host" && node == nil {
 		return container.CreateResponse{}, unsupported("network mode \"host\" is not supported: every container is confined to its own stack's ports")
 	}
+	// A nested engine's routers run in its privileged container's sandbox,
+	// which reaches no DNS server.
+	if e.cfg.Nested != nil && dnsOf(*req.HostConfig).set() {
+		return container.CreateResponse{}, unsupported("DNS servers, search domains and options are not supported in an engine nested in a privileged container: the container's router, which asks its DNS servers, runs in that container's sandbox, which reaches none")
+	}
 	switch {
 	case req.HostConfig.ShmSize < 0:
 		return container.CreateResponse{}, invalid("SHM size can not be less than 0")
@@ -464,14 +470,14 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			return container.CreateResponse{}, err
 		}
 	}
-	hostname, domain, extraHosts, hostAddress := cfg.Hostname, cfg.Domainname, req.HostConfig.ExtraHosts, firstAddresses(address, networks)
+	hostname, domain, extraHosts, hostAddress, dns := cfg.Hostname, cfg.Domainname, req.HostConfig.ExtraHosts, firstAddresses(address, networks), dnsOf(*req.HostConfig)
 	if req.HostConfig.NetworkMode == "none" {
 		hostAddress = nil
 	}
 	if net != nil {
 		// A container on another's network has its hostname and hosts, as
 		// it would its UTS namespace's files in Docker.
-		hostname, domain, extraHosts, hostAddress = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks)
+		hostname, domain, extraHosts, hostAddress, dns = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks), dnsOf(net.rec.HostConfig)
 		cfg.Hostname = hostname
 	}
 	if node != nil {
@@ -486,7 +492,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if hostname == "" {
 		hostname = id[:12]
 	}
-	if err := writeHostsFiles(c.root(), hostname, domain, hostAddress, extraHosts, nil, mounts); err != nil {
+	if err := writeHostsFiles(c.root(), hostname, domain, hostAddress, extraHosts, nil, dns, mounts); err != nil {
 		return container.CreateResponse{}, err
 	}
 
@@ -619,6 +625,13 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 			env = append(env, pathmap.PortDirVar+"="+ne.portDir(net), pathmap.RouterVar+"="+strconv.Itoa(net.rec.RouterPort))
 		}
 	}
+	// With DNS settings of its own the container resolves what its hosts
+	// file and its stack do not answer through its router, which asks its
+	// resolv.conf's servers; without a router, as on network none, such a
+	// name does not resolve.
+	if dnsOf(net.rec.HostConfig).set() {
+		env = append(env, pathmap.DNSVar+"=1")
+	}
 	return env, nil
 }
 
@@ -669,8 +682,6 @@ func checkHostConfig(hc *container.HostConfig) error {
 		set  bool
 		what string
 	}{
-		{len(hc.DNS) > 0 || len(hc.DNSSearch) > 0 || len(hc.DNSOptions) > 0,
-			"DNS servers, search domains and options are not supported: a container resolves names through the host's resolver and reaches the internet through its stack's egress proxy, never a DNS server of its own"},
 		{hc.OomScoreAdj != 0, "OOM score adjustments are not supported: macOS ends processes under memory pressure by its own measure"},
 		{len(hc.StorageOpt) > 0, "storage options are not supported: a container's root is a directory, which no size quota holds"},
 		{hc.Cgroup != "", "cgroup sharing is not supported: macOS has no cgroups"},
@@ -678,6 +689,9 @@ func checkHostConfig(hc *container.HostConfig) error {
 		if k.set {
 			return unsupported("%s", k.what)
 		}
+	}
+	if err := checkDNS(dnsOf(*hc)); err != nil {
+		return err
 	}
 	if hc.VolumeDriver != "" && hc.VolumeDriver != "local" {
 		return unsupported("volume driver %q is not supported; only \"local\" is", hc.VolumeDriver)
@@ -1426,7 +1440,7 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	}
 	spec := seatbelt.Spec{
 		Root: c.root(), StateRoot: e.stateRoot(), ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
-		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath()},
+		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath(), c.ioPolicyPath()},
 		Sockets: []string{e.pidsSocket(c)},
 	}
 	if c.rec.HostConfig.Privileged {
@@ -1635,6 +1649,14 @@ func (c *Container) start(e *Engine) error {
 		}
 		cfg.Address = c.rec.Address
 		cfg.Internet = e.hasEgress(c)
+		if d := dnsOf(c.rec.HostConfig); d.set() {
+			rc, err := containerResolvConf(d)
+			if err != nil {
+				return err
+			}
+			dns := router.ParseResolvConf([]byte(rc))
+			cfg.DNS = &dns
+		}
 	}
 	for _, p := range plan {
 		cfg.Publish = append(cfg.Publish, p.binding)

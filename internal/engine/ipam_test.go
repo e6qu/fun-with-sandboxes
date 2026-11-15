@@ -31,8 +31,9 @@ func subnetConfig(subnet, gateway, ipRange string) *network.IPAM {
 	return &network.IPAM{Config: []network.IPAMConfig{c}}
 }
 
-// A network takes one IPv4 subnet of the default driver outside loopback
-// and every other network's subnet, as Docker's default IPAM driver does.
+// A network takes IPv4 subnets of the default driver outside loopback,
+// one another and every other network's subnets, as Docker's default IPAM
+// driver does.
 func TestIPAMConfigurations(t *testing.T) {
 	e := ipamEngine(t)
 	n := &Network{ID: "n1", Name: "front", Driver: "bridge"}
@@ -62,10 +63,11 @@ func TestIPAMConfigurations(t *testing.T) {
 		"a gateway outside":             {subnetConfig("10.1.0.0/24", "10.2.0.1", ""), nil, nil, KindInvalid},
 		"a range outside":               {subnetConfig("10.1.0.0/24", "", "10.2.0.0/25"), nil, nil, KindInvalid},
 		"an IPv6 subnet without IPv6":   {subnetConfig("fd00::/64", "", ""), nil, nil, KindInvalid},
-		"IPv6 alone":                    {nil, &no, &yes, KindUnsupported},
+		"neither family":                {nil, &no, &no, KindInvalid},
+		"IPv4 subnet, IPv4 disabled":    {subnetConfig("10.1.0.0/24", "", ""), &no, &yes, KindInvalid},
 		"another driver":                {&network.IPAM{Driver: "dhcp"}, nil, nil, KindUnsupported},
-		"two IPv4 subnets":              {two("10.1.0.0/24", "10.2.0.0/24"), nil, nil, KindUnsupported},
-		"two IPv6 subnets":              {two("fd00:1::/64", "fd00:2::/64"), nil, &yes, KindUnsupported},
+		"two overlapping subnets":       {two("10.1.0.0/16", "10.1.2.0/24"), nil, nil, KindForbidden},
+		"an overlapping second subnet":  {two("10.1.0.0/24", "172.28.9.0/24"), nil, nil, KindForbidden},
 		"a configuration, no subnet":    {&network.IPAM{Config: []network.IPAMConfig{{Gateway: netip.MustParseAddr("10.1.0.1")}}}, nil, nil, KindInvalid},
 		"IPv6 host bits":                {subnetConfig("fd00::1/64", "", ""), nil, &yes, KindInvalid},
 		"no IPv6 host addresses":        {subnetConfig("fd00::/127", "", ""), nil, &yes, KindInvalid},
@@ -271,5 +273,140 @@ func TestIPv6Networks(t *testing.T) {
 	c := e.containers["a"]
 	if es := c.endpoints()["lan"]; es.GlobalIPv6Address.IsValid() || es.IPv6Gateway.IsValid() {
 		t.Errorf("a stopped container reports %+v", es)
+	}
+}
+
+// A network takes several subnets of each family: inspect reports them
+// all, IPv4 first, and containers take addresses from the first with
+// room, or from the one that holds the address they name, with that
+// subnet's gateway.
+func TestSeveralSubnets(t *testing.T) {
+	e := ipamEngine(t)
+	yes := true
+	n := &Network{ID: "n1", Name: "multi", Driver: "bridge"}
+	ipam := &network.IPAM{Config: []network.IPAMConfig{
+		{Subnet: netip.MustParsePrefix("10.7.0.0/30")},
+		{Subnet: netip.MustParsePrefix("fd00:7::/126")},
+		{Subnet: netip.MustParsePrefix("10.8.0.0/24"), Gateway: netip.MustParseAddr("10.8.0.254"), IPRange: netip.MustParsePrefix("10.8.0.16/28")},
+		{Subnet: netip.MustParsePrefix("fd00:8::/64")},
+	}}
+	if err := e.checkIPAMLocked(n, ipam, nil, &yes); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range n.ipamConfig() {
+		got = append(got, c.Subnet.String()+" "+c.Gateway.String()+" "+c.IPRange.String())
+	}
+	if want := "10.7.0.0/30 10.7.0.1 invalid Prefix|10.8.0.0/24 10.8.0.254 10.8.0.16/28|fd00:7::/126 fd00:7::1 invalid Prefix|fd00:8::/64 fd00:8::1 invalid Prefix"; strings.Join(got, "|") != want {
+		t.Fatalf("reported\n%s\nwant\n%s", strings.Join(got, "|"), want)
+	}
+	e.networks[n.ID] = n
+	if err := e.checkIPAMLocked(&Network{Name: "x"}, subnetConfig("10.8.0.128/25", "", ""), nil, nil); KindOf(err) != KindForbidden {
+		t.Errorf("a subnet overlapping a second one: %v", err)
+	}
+	if err := e.checkIPAMLocked(&Network{Name: "x"}, subnetConfig("fd00:8::/80", "", ""), nil, &yes); KindOf(err) != KindForbidden {
+		t.Errorf("an IPv6 subnet overlapping a second one: %v", err)
+	}
+	join := func(id, static4, static6 string) (*network.EndpointSettings, error) {
+		s := &network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{}}
+		if static4 != "" {
+			s.IPAMConfig.IPv4Address = netip.MustParseAddr(static4)
+		}
+		if static6 != "" {
+			s.IPAMConfig.IPv6Address = netip.MustParseAddr(static6)
+		}
+		if err := e.assignNetAddressLocked(n, id, s); err != nil {
+			return nil, err
+		}
+		e.containers[id] = &Container{rec: record{ID: id, Address: "127.88.0.9", Networks: map[string]*network.EndpointSettings{n.Name: s}}}
+		return s, nil
+	}
+	addrs := func(s *network.EndpointSettings) string {
+		return s.IPAddress.String() + "/" + s.Gateway.String() + " " + s.GlobalIPv6Address.String() + "/" + s.IPv6Gateway.String()
+	}
+	// The /30 and /126 hold one address each past their gateways.
+	for _, c := range []struct{ id, static4, static6, want string }{
+		{"a", "", "", "10.7.0.2/10.7.0.1 fd00:7::2/fd00:7::1"},
+		{"b", "", "", "10.8.0.16/10.8.0.254 fd00:7::3/fd00:7::1"},
+		{"c", "", "", "10.8.0.17/10.8.0.254 fd00:8::2/fd00:8::1"},
+		{"d", "10.8.0.100", "fd00:8::99", "10.8.0.100/10.8.0.254 fd00:8::99/fd00:8::1"},
+	} {
+		s, err := join(c.id, c.static4, c.static6)
+		if err != nil {
+			t.Fatalf("%s: %v", c.id, err)
+		}
+		if got := addrs(s); got != c.want {
+			t.Errorf("%s took %s, want %s", c.id, got, c.want)
+		}
+	}
+	if s := e.containers["d"].rec.Networks["multi"]; s.IPPrefixLen != 24 || s.GlobalIPv6PrefixLen != 64 {
+		t.Errorf("d's prefix lengths: %d, %d", s.IPPrefixLen, s.GlobalIPv6PrefixLen)
+	}
+	for _, c := range []struct {
+		static4, static6 string
+		kind             Kind
+	}{{"10.8.0.100", "", KindForbidden}, {"10.8.0.254", "", KindForbidden}, {"10.9.0.1", "", KindInvalid}, {"", "fd00:7::2", KindForbidden}, {"", "fd00:9::1", KindInvalid}} {
+		if _, err := join("e", c.static4, c.static6); KindOf(err) != c.kind {
+			t.Errorf("static %s%s: %v, want kind %v", c.static4, c.static6, err, c.kind)
+		}
+	}
+	if view := e.networkView(n); len(view.IPAM.Config) != 4 || !view.EnableIPv4 || !view.EnableIPv6 {
+		t.Errorf("network view %+v", view.Network)
+	}
+}
+
+// An IPv6-only network holds IPv6 subnets alone: its containers take an
+// IPv6 address there and none of IPv4, their member address included,
+// and name themselves by it in their hosts file.
+func TestIPv6OnlyNetwork(t *testing.T) {
+	e := ipamEngine(t)
+	yes, no := true, false
+	n := &Network{ID: "n6", Name: "six", Driver: "bridge"}
+	if err := e.checkIPAMLocked(n, subnetConfig("fd00:6::/64", "", ""), &no, &yes); err != nil {
+		t.Fatal(err)
+	}
+	if !n.IPv4Disabled || n.Subnet != "" || n.IPv6.Subnet != "fd00:6::/64" {
+		t.Fatalf("recorded %+v", n)
+	}
+	if got := n.ipamConfig(); len(got) != 1 || got[0].Subnet.String() != "fd00:6::/64" {
+		t.Errorf("reported %+v", got)
+	}
+	e.networks[n.ID] = n
+	auto := &Network{ID: "a6", Name: "auto6", Driver: "bridge"}
+	if err := e.checkIPAMLocked(auto, nil, &no, &yes); err != nil {
+		t.Fatal(err)
+	}
+	if auto.Subnet != "" || !auto.IPv6.Auto || len(auto.ipamConfig()) != 1 {
+		t.Errorf("an IPv6-only network without a subnet took %+v", auto)
+	}
+	s := &network.EndpointSettings{}
+	if err := e.assignNetAddressLocked(n, "a", s); err != nil {
+		t.Fatal(err)
+	}
+	if s.IPAddress.IsValid() || s.GlobalIPv6Address.String() != "fd00:6::2" || s.IPv6Gateway.String() != "fd00:6::1" || s.MacAddress.String() != "02:42:00:00:00:02" {
+		t.Errorf("endpoint %+v", s)
+	}
+	e.containers["a"] = &Container{rec: record{ID: "a", Address: "127.88.0.9", Networks: map[string]*network.EndpointSettings{"six": s}}}
+	if es := e.containers["a"].endpoint("six"); es.IPAddress.IsValid() || es.Gateway.IsValid() || es.GlobalIPv6Address.String() != "fd00:6::2" {
+		t.Errorf("inspect reports %+v", es)
+	}
+	if got := firstAddresses("127.88.0.9", e.containers["a"].rec.Networks); len(got) != 1 || got[0] != "fd00:6::2" {
+		t.Errorf("hosts file addresses %v", got)
+	}
+	s4 := &network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: netip.MustParseAddr("10.0.0.5")}}
+	if err := e.assignNetAddressLocked(n, "b", s4); KindOf(err) != KindInvalid {
+		t.Errorf("a static IPv4 address on an IPv6-only network: %v", err)
+	}
+	if view := e.networkView(n); view.EnableIPv4 || !view.EnableIPv6 {
+		t.Errorf("network view %+v", view.Network)
+	}
+	// The network file gives the member its IPv6 address alone there.
+	e.containers["a"].rec.Stack, e.containers["a"].rec.Name = "proj", "proj-a"
+	if err := e.writeNetworkLocked("proj"); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := e.networkFile("proj")
+	if b, err := os.ReadFile(path); err != nil || !strings.HasSuffix(string(b), "\tsix\t0\t\t\tsix=fd00:6::2/64\n") {
+		t.Errorf("network file: %q, %v", b, err)
 	}
 }

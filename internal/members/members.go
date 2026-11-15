@@ -55,6 +55,12 @@ type Member struct {
 	// another node: a datagram to the member is sent from a free port of
 	// it, so that its replies may return.
 	Block Block
+	// Alias marks names that stand for another name, as a DNS CNAME
+	// record's do, as an ExternalName Service's: the member has no
+	// address or ports, and its names resolve as Alias does. Its line's
+	// address field is "=" and Alias, which the container library, reading
+	// IPv4 addresses there alone, passes over.
+	Alias string
 }
 
 // Block is a range of host ports, Limit exclusive; the zero Block is none.
@@ -88,6 +94,9 @@ type NetAddress struct {
 
 // Has reports whether a is one of the member's addresses.
 func (m Member) Has(a string) bool {
+	if m.Alias != "" {
+		return false
+	}
 	if m.Address == a {
 		return true
 	}
@@ -103,25 +112,67 @@ func (m Member) Has(a string) bool {
 	return false
 }
 
-// On is the member's IPv4 address on network.
+// On is the member's IPv4 address on network: its own there on a network
+// with an IPv4 subnet, none on an IPv6-only network, where it holds an
+// IPv6 address alone, else its member address.
 func (m Member) On(network string) string {
+	only6 := false
 	for _, s := range m.Subnets {
-		if s.Network == network && s.Address.Addr().Is4() {
+		if s.Network != network {
+			continue
+		}
+		if s.Address.Addr().Is4() {
 			return s.Address.Addr().String()
 		}
+		only6 = true
+	}
+	if only6 {
+		return ""
 	}
 	return m.Address
 }
 
-// SeenBy is the member's address as viewer reaches it: on the first of
-// its networks the viewer is on too, else its member address.
-func (m Member) SeenBy(viewer Member) string {
-	for _, n := range m.Networks {
-		if slices.Contains(viewer.Networks, n) {
-			return m.On(n)
+// On6 is the member's IPv6 address on network, or "" where it holds none.
+func (m Member) On6(network string) string {
+	for _, s := range m.Subnets {
+		if s.Network == network && s.Address.Addr().Is6() {
+			return s.Address.Addr().String()
 		}
 	}
+	return ""
+}
+
+// SeenBy is the member's IPv4 address as viewer reaches it, as the
+// container library resolves its name: on the first of its networks the
+// viewer is on too that gives it one; none where every such network is
+// IPv6-only; else, where they share none, its member address.
+func (m Member) SeenBy(viewer Member) string {
+	shared := false
+	for _, n := range m.Networks {
+		if slices.Contains(viewer.Networks, n) {
+			shared = true
+			if a := m.On(n); a != "" {
+				return a
+			}
+		}
+	}
+	if shared {
+		return ""
+	}
 	return m.Address
+}
+
+// SeenBy6 is the member's IPv6 address as viewer reaches it: on the first
+// of its networks the viewer is on too that gives it one, or "".
+func (m Member) SeenBy6(viewer Member) string {
+	for _, n := range m.Networks {
+		if slices.Contains(viewer.Networks, n) {
+			if a := m.On6(n); a != "" {
+				return a
+			}
+		}
+	}
+	return ""
 }
 
 // InSubnet reports whether ip lies in the subnet of a network the members
@@ -162,7 +213,11 @@ func Format(ms []Member) []byte {
 		for i, l := range m.Links {
 			links[i] = l.Viewer + "/" + l.Alias
 		}
-		fmt.Fprintf(&b, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s", m.Address, strings.Join(m.Names, " "), strings.Join(ports, ","), m.Router, strings.Join(m.Networks, " "), foreign, m.Stack, strings.Join(links, " "))
+		address := m.Address
+		if m.Alias != "" {
+			address = "=" + m.Alias
+		}
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s", address, strings.Join(m.Names, " "), strings.Join(ports, ","), m.Router, strings.Join(m.Networks, " "), foreign, m.Stack, strings.Join(links, " "))
 		if len(m.Subnets) > 0 || !m.Block.IsZero() {
 			subnets := make([]string, len(m.Subnets))
 			for i, s := range m.Subnets {
@@ -183,10 +238,13 @@ func Parse(b []byte) []Member {
 	var out []Member
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) < 6 || len(f) > 10 || f[0] == "" {
+		if len(f) < 6 || len(f) > 10 || f[0] == "" || f[0] == "=" {
 			continue
 		}
 		m := Member{Address: f[0], Names: strings.Fields(f[1]), Ports: map[string]int{}, Networks: strings.Fields(f[4]), Foreign: f[5] == "1"}
+		if alias, ok := strings.CutPrefix(f[0], "="); ok {
+			m.Address, m.Alias = "", alias
+		}
 		if len(f) >= 7 {
 			m.Stack = f[6]
 		}
@@ -305,4 +363,24 @@ func Lookup(ms []Member, self, host string) (Member, bool) {
 		}
 	}
 	return Member{}, false
+}
+
+// maxAliases is how many aliases a name is followed through, as a
+// resolver bounds a chain of CNAME records.
+const maxAliases = 8
+
+// Unalias is the name host stands for as the member at self resolves it:
+// the name the alias host is, as Lookup finds it, followed through aliases
+// to a name that is none; host itself where it is no alias, or where the
+// chain runs past maxAliases.
+func Unalias(ms []Member, self, host string) string {
+	name := host
+	for range maxAliases {
+		m, ok := Lookup(ms, self, name)
+		if !ok || m.Alias == "" {
+			return name
+		}
+		name = m.Alias
+	}
+	return host
 }

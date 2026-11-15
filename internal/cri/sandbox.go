@@ -79,9 +79,13 @@ func (s *Service) RunPodSandbox(ctx context.Context, req *runtimeapi.RunPodSandb
 		}
 	}
 	// The pod's DNS servers, search domains and options go unused: the
-	// container library resolves cluster names, Services' among them,
-	// through the host's resolver, and the engine refuses DNS servers of a
-	// container's own. A pod on the node's network has the node's ports.
+	// container library answers cluster names, Services' among them, from
+	// its stack's members, and other names through the host's resolver.
+	// The engine honours DNS settings of a container's own through its
+	// router, outside its sandbox, which reaches neither cluster DNS, a
+	// Service, nor, on an engine nested in a kubelet's privileged
+	// container, any DNS server: that engine refuses them. A pod on the
+	// node's network has the node's ports.
 	exposed := map[string]struct{}{}
 	bindings := map[string][]map[string]string{}
 	for _, pm := range cfg.PortMappings {

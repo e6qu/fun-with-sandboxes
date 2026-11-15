@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/netstat"
+	"github.com/e6qu/fun-with-sandboxes/internal/router"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 )
 
@@ -41,6 +42,10 @@ type Config struct {
 	// Internet is whether the container reaches hosts outside the
 	// machine: its router then relays its pings of them.
 	Internet bool
+	// DNS is how the container resolves names outside its stack when its
+	// engine gave it DNS servers, search domains or options of its own:
+	// its router resolves them so (router.Resolve).
+	DNS      *router.DNS `json:",omitempty"`
 	ExitPath string
 	// Tag is the environment entry every process of the container starts
 	// with.
@@ -68,9 +73,10 @@ type Binding struct {
 	IP       netip.Addr
 	Lo, Hi   int
 	Upstream string
-	// Dir, when set, publishes the TCP port as the Unix socket a
-	// container's port without a host port is in that directory: the
-	// port of a privileged container a nested engine publishes in.
+	// Dir, when set, publishes the port as the Unix socket a container's
+	// port without a host port is in that directory, a stream socket for
+	// TCP and a datagram one for UDP: the port of a privileged container a
+	// nested engine publishes in.
 	Dir string `json:",omitempty"`
 }
 
