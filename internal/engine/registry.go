@@ -92,16 +92,19 @@ func (e *Engine) Push(ctx context.Context, repo, tag string, auth authn.Authenti
 	if len(tags) == 0 {
 		return nil, notFound("tag does not exist: %s", repo)
 	}
-	tr, err := transport.NewWithContext(ctx, repoRef.Registry, auth, http.DefaultTransport, []string{repoRef.Scope(transport.PushScope)})
-	if err != nil {
+	if _, err := transport.NewWithContext(ctx, repoRef.Registry, auth, http.DefaultTransport, []string{repoRef.Scope(transport.PushScope)}); err != nil {
 		var te *transport.Error
 		if errors.As(err, &te) && te.StatusCode == http.StatusUnauthorized {
 			return nil, unauthorized("authentication required to push to %s", repoRef.Name())
 		}
 		return nil, err
 	}
-	client := &http.Client{Transport: tr}
-	opts := []remote.Option{remote.WithAuth(auth), remote.WithContext(ctx)}
+	pusher, err := image.NewPusher(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	// Layers another repository of the registry holds are mounted from it.
+	sources := e.images.LayerSources(repoRef)
 	progress("", fmt.Sprintf("The push refers to repository [%s]", repoRef.Name()))
 	var out []PushResult
 	for _, tg := range tags {
@@ -114,11 +117,19 @@ func (e *Engine) Push(ctx context.Context, repo, tag string, auth authn.Authenti
 			return out, err
 		}
 		for _, l := range layers {
-			if err := pushLayer(ctx, client, repoRef, l, opts, progress); err != nil {
+			dg, err := l.Digest()
+			if err != nil {
+				return out, err
+			}
+			var from *name.Repository
+			if r, ok := sources[dg]; ok {
+				from = &r
+			}
+			if err := pusher.PushLayer(repoRef, l, from, progress); err != nil {
 				return out, err
 			}
 		}
-		if err := remote.Write(repoRef.Tag(tg), img, opts...); err != nil {
+		if err := pusher.PushManifest(repoRef.Tag(tg), img); err != nil {
 			return out, err
 		}
 		dg, err := img.Digest()
@@ -136,36 +147,6 @@ func (e *Engine) Push(ctx context.Context, repo, tag string, auth authn.Authenti
 		out = append(out, PushResult{Tag: tg, Digest: dg.String(), Size: int64(len(m))})
 	}
 	return out, nil
-}
-
-// pushLayer uploads one layer unless the repository holds it already.
-func pushLayer(ctx context.Context, client *http.Client, repo name.Repository, l v1.Layer, opts []remote.Option, progress image.Progress) error {
-	dg, err := l.Digest()
-	if err != nil {
-		return err
-	}
-	id := dg.Hex[:12]
-	progress(id, "Preparing")
-	url := fmt.Sprintf("%s://%s/v2/%s/blobs/%s", repo.Scheme(), repo.RegistryStr(), repo.RepositoryStr(), dg)
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
-	if err != nil {
-		return err
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	res.Body.Close()
-	if res.StatusCode == http.StatusOK {
-		progress(id, "Layer already exists")
-		return nil
-	}
-	progress(id, "Pushing")
-	if err := remote.WriteLayer(repo, l, opts...); err != nil {
-		return err
-	}
-	progress(id, "Pushed")
-	return nil
 }
 
 // ImportOptions describe a `docker import`.

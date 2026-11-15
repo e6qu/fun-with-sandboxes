@@ -158,7 +158,12 @@ func (s *Server) routes() {
 		res, err := s.e.Changes(r.Context(), r.PathValue("id"))
 		respond(w, res, err)
 	})
-	m.HandleFunc("POST /containers/{id}/start", s.simple(func(r *http.Request) error { return s.e.Start(r.PathValue("id")) }, http.StatusNoContent))
+	m.HandleFunc("POST /containers/{id}/start", s.simple(func(r *http.Request) error {
+		if err := s.startInfra(r.PathValue("id")); err != nil {
+			return err
+		}
+		return s.e.Start(r.PathValue("id"))
+	}, http.StatusNoContent))
 	m.HandleFunc("POST /containers/{id}/stop", s.simple(func(r *http.Request) error {
 		return s.e.Stop(r.PathValue("id"), timeoutParam(r), r.URL.Query().Get("signal"))
 	}, http.StatusNoContent))
@@ -840,18 +845,7 @@ func causeOf(msg string) string {
 	return msg
 }
 
-type unsupportedError string
-
-func (u unsupportedError) Error() string { return string(u) }
-
-func unsupportedErr(msg string) error { return unsupportedError(msg) }
-
 func writeEngineError(w http.ResponseWriter, err error) {
-	var u unsupportedError
-	if errors.As(err, &u) {
-		writeError(w, http.StatusNotImplemented, err.Error())
-		return
-	}
 	switch engine.KindOf(err) {
 	case engine.KindInvalid:
 		writeError(w, http.StatusBadRequest, err.Error())

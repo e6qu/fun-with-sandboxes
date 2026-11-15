@@ -147,7 +147,9 @@ func (s *server) run(report func(Ready)) (int, error) {
 	for _, b := range cfg.Publish {
 		var cl io.Closer
 		var port int
-		if b.Dir != "" {
+		if b.Dir != "" && b.Proto == "udp" {
+			cl, port, err = listenUDPDir(b.Dir, b.Lo, b.Hi, b.Upstream, dial)
+		} else if b.Dir != "" {
 			// The container's router writes the client's address before
 			// each connection's stream, which only the container library's
 			// listeners take.
@@ -197,7 +199,7 @@ func (s *server) run(report func(Ready)) (int, error) {
 			traffic.AddEndpoint(os.Getpid(), uint16(c.LocalAddr().(*net.UDPAddr).Port))
 			return c, nil
 		}
-		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir, flow, router.Network{File: cfg.NetworkFile, Address: cfg.Address, DialFlow: dialFlow, Internet: cfg.Internet})
+		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir, flow, router.Network{File: cfg.NetworkFile, Address: cfg.Address, DialFlow: dialFlow, Internet: cfg.Internet, DNS: cfg.DNS})
 		if err != nil {
 			closeProxies()
 			report(Ready{Error: err.Error()})

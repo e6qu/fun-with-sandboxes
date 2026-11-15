@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
+	"time"
+
+	cerrdefs "github.com/containerd/errdefs"
 
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images"
@@ -23,12 +27,48 @@ const (
 
 // localImages lets BuildKit resolve FROM against the engine's images, as
 // dockerd's builder resolves against the daemon's. On first use it writes an
-// engine image's blobs into BuildKit's content store.
+// engine image's blobs into BuildKit's content store; once the engine
+// deletes the image, forget deletes the record and the blobs go with
+// BuildKit's garbage collection.
 type localImages struct {
 	engine  *image.Store
 	meta    images.Store
 	content content.Store
 	leases  leases.Manager
+	// gc collects the content no record or lease refers to.
+	gc func(context.Context) error
+}
+
+// forget deletes the records of the engine images ids names (all those
+// the engine no longer holds, when ids is nil) and collects the blobs only
+// they referred to.
+func (l *localImages) forget(ctx context.Context, ids ...string) error {
+	ctx = withNS(ctx)
+	recs, err := l.meta.List(ctx)
+	if err != nil {
+		return err
+	}
+	held := map[string]bool{}
+	if ids == nil {
+		for _, img := range l.engine.List() {
+			held[img.ID] = true
+		}
+	}
+	deleted := false
+	for _, rec := range recs {
+		id, ok := rec.Labels[labelImageID]
+		if !ok || held[id] || (ids != nil && !slices.Contains(ids, id)) {
+			continue
+		}
+		if err := l.meta.Delete(ctx, rec.Name); err != nil && !cerrdefs.IsNotFound(err) {
+			return err
+		}
+		deleted = true
+	}
+	if !deleted || l.gc == nil {
+		return nil
+	}
+	return l.gc(ctx)
 }
 
 func withNS(ctx context.Context) context.Context { return namespaces.WithNamespace(ctx, namespace) }
@@ -65,6 +105,7 @@ func (l *localImages) Delete(ctx context.Context, name string, opts ...images.De
 // is stored, manifest, config and layers byte for byte, and records it in
 // containerd's image metadata.
 func (l *localImages) materialise(ctx context.Context, name string, rec image.Image) (images.Image, error) {
+	defer slow(time.Now(), "writing image %s into the content store", name)
 	ctx, done, err := leaseutil.WithLease(ctx, l.leases, leaseutil.MakeTemporary)
 	if err != nil {
 		return images.Image{}, err

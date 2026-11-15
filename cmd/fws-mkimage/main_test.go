@@ -89,7 +89,7 @@ func TestWriteArchiveLayersPerStorePath(t *testing.T) {
 	os.Symlink("../nix/store/aaa-tool/bin/tool", filepath.Join(stage, "bin", "tool"))
 	spec := Spec{Tag: "fws/test:1", Config: []byte(`{"Entrypoint":["/entry"],"Healthcheck":{"Test":["CMD","/entry"],"Interval":15000000000,"StartInterval":1000000000}}`)}
 	out := filepath.Join(t.TempDir(), "img.tar")
-	if err := writeArchive(stage, spec, []string{"/nix/store/bbb-lib", "/nix/store/aaa-tool"}, out, runtime.GOARCH); err != nil {
+	if err := writeArchive(stage, t.TempDir(), spec, []string{"/nix/store/bbb-lib", "/nix/store/aaa-tool"}, out, runtime.GOARCH); err != nil {
 		t.Fatal(err)
 	}
 	s, err := image.Open(t.TempDir())
@@ -130,7 +130,7 @@ func TestWriteArchiveLayersPerStorePath(t *testing.T) {
 }
 
 func TestRewriteShebangs(t *testing.T) {
-	stage := t.TempDir()
+	stage, overlay := t.TempDir(), t.TempDir()
 	store := filepath.Join(stage, storeDir)
 	write := func(rel, body string) string {
 		p := filepath.Join(store, rel)
@@ -146,11 +146,15 @@ func TestRewriteShebangs(t *testing.T) {
 	wrapper := write("bbb-wrap/bin/tool", "#!/nix/store/ccc-bash-5/bin/bash -e\nexec \"/nix/store/bbb-wrap/bin/.tool-wrapped\" \"$@\"\n")
 	perl := write("ddd/bin/script", "#!/nix/store/eee-perl/bin/perl\nprint 1\n")
 	plain := write("fff/bin/data", "not a script\n")
-	if err := rewriteShebangs(stage); err != nil {
+	if err := rewriteShebangs(stage, overlay); err != nil {
 		t.Fatal(err)
 	}
+	// The rewrite through /bin goes to the overlay, leaving the store
+	// path as the closure holds it.
+	pipOver := filepath.Join(overlay, "nix/store/aaa-python/bin/pip")
 	for p, want := range map[string]string{
-		pip:     "#!/usr/bin/env -S python3.14 -s\nimport pip\n",
+		pip:     "#!/nix/store/aaa-python/bin/python3.14 -s\nimport pip\n",
+		pipOver: "#!/usr/bin/env -S python3.14 -s\nimport pip\n",
 		wrapper: "#!/bin/bash -e\nexec \"${SANDBOX_ROOT}/nix/store/bbb-wrap/bin/.tool-wrapped\" \"$@\"\n",
 		perl:    "#!/nix/store/eee-perl/bin/perl\nprint 1\n",
 		plain:   "not a script\n",
@@ -159,7 +163,61 @@ func TestRewriteShebangs(t *testing.T) {
 			t.Errorf("%s reads %q, want %q", p, b, want)
 		}
 	}
-	if fi, _ := os.Stat(pip); fi.Mode().Perm() != 0o755 {
+	if fi, _ := os.Stat(pipOver); fi.Mode().Perm() != 0o755 {
 		t.Errorf("pip lost its mode: %v", fi.Mode())
+	}
+}
+
+// A store path's layer is the same whatever the image puts on /bin, and
+// the last layer carries the image's own versions of its files.
+func TestStorePathLayersIgnoreBin(t *testing.T) {
+	// build makes the image and returns its first layer's diff_id and
+	// what its root's pip reads.
+	build := func(bins bool) (string, string) {
+		stage, overlay := t.TempDir(), t.TempDir()
+		p := filepath.Join(stage, "nix/store/aaa-python/bin")
+		os.MkdirAll(p, 0o755)
+		os.WriteFile(filepath.Join(p, "pip"), []byte("#!/nix/store/aaa-python/bin/python3 -s\nimport pip\n"), 0o755)
+		os.WriteFile(filepath.Join(p, "python3"), []byte("py"), 0o755)
+		if bins {
+			if err := linkBin(stage, "/nix/store/aaa-python"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := rewriteShebangs(stage, overlay); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(t.TempDir(), "img.tar")
+		spec := Spec{Tag: "fws/py:1", Config: []byte(`{}`)}
+		if err := writeArchive(stage, overlay, spec, []string{"/nix/store/aaa-python"}, out, runtime.GOARCH); err != nil {
+			t.Fatal(err)
+		}
+		s, err := image.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := os.Open(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		loaded, err := s.Load(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		img := loaded[0]
+		b, _ := os.ReadFile(filepath.Join(s.Root(img.ID), "nix/store/aaa-python/bin/pip"))
+		return img.Config.RootFS.DiffIDs[0].String(), string(b)
+	}
+	plainLayer, plainPip := build(false)
+	binLayer, binPip := build(true)
+	if plainLayer != binLayer {
+		t.Error("the store path's layer differs with the image's /bin")
+	}
+	if want := "#!/nix/store/aaa-python/bin/python3 -s\nimport pip\n"; plainPip != want {
+		t.Errorf("pip reads %q without /bin, want %q", plainPip, want)
+	}
+	if want := "#!/usr/bin/env -S python3 -s\nimport pip\n"; binPip != want {
+		t.Errorf("pip reads %q with /bin, want %q", binPip, want)
 	}
 }

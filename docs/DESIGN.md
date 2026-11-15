@@ -138,10 +138,14 @@ same knobs, each enforced by a real mechanism or refused:
   profile's text and the kernel about 35 µs to apply the bytecode. The
   engine renders the profile (`internal/seatbelt`) to `profile.sb`,
   compiles it with `sandbox_compile_string` (`libsystem.SandboxCompile`)
-  to `profile.bin` beside it, keyed by the text's SHA-256
-  (`internal/runtime`), while the shim starts, and the helper applies the
-  bytecode. A start whose text is unchanged, as a restart's, compiles
-  nothing.
+  to `profile.bin` beside it, keyed by the SHA-256 of the text and the
+  macOS build (`kern.osversion`) (`internal/runtime`), while the shim
+  starts, and the helper applies the bytecode. A start whose text is
+  unchanged, as a restart's, compiles nothing; an update of macOS
+  compiles every profile again. Where macOS refuses the bytecode, the
+  helper compiles the text itself through `sandbox_init`, the stable,
+  deprecated interface, and the container starts 15 ms later, confined
+  the same.
 - **Fork ceiling.** The helper lowers the soft `RLIMIT_NPROC` of every
   container process to `kern.maxprocperuid` less a reserve of an eighth
   of it, at least 64 (`runtime.ForkCeiling`), so a fork bomb fails in the
@@ -520,16 +524,32 @@ reports `Image is up to date` when it names the image already; otherwise it
 downloads only the layers the store lacks, reporting the rest as `Already
 exists`, as dockerd's pull stream does.
 
-An image is also unpacked once, all layers applied in order with OCI
-whiteouts, into `images/roots/<digest>`. On create, the engine gives the container an
+Each layer is unpacked once, by its diff ID, into `images/layers/<diffid>`,
+holding that layer's entries alone with its whiteouts as the files that
+name them, and checked against the config's `rootfs.diff_ids` as it is. An
+image's root, `images/roots/<digest>`, is its layers laid over an empty tree
+in order: a directory the tree lacks comes as one `clonefile` of the layer's
+subtree, so images that share layers share their blocks. A layer with a hard
+link into a lower layer is applied in place instead. Layers go with the
+blobs once no image names their diff ID. BuildKit's snapshotter keeps the
+layers it unpacks the same way (§8). On create, the engine gives the container an
 **APFS clone** of it (`clonefile(2)`): copy-on-write, constant time, and near
 zero bytes until the container writes. `clonefile` is the one primitive macOS
 offers that fits this exactly: instant writable roots with no union mount and
 no root.
 
-The engine runs unprivileged, so layer extraction drops ownership and
-setuid/setgid bits, skips device nodes (the host's `/dev` serves containers),
-and refuses entries that would land outside the root.
+The engine runs unprivileged, so layer extraction keeps each entry's
+modification time and records what it cannot set: an owner other than root
+in `com.fws.owner`, and setuid, setgid and sticky bits in `com.fws.mode`,
+which the container library presents and nothing enforces. It skips device
+nodes (the host's `/dev` serves containers) and refuses entries that would
+land outside the root. The layers the engine writes — `docker commit`,
+BuildKit's, `export` and `cp` — carry the recorded mode and owner, root
+where none is recorded, never the host's user. `docker load` verifies each
+blob against its digest. A pull downloads three layers at a time; a push
+checks each blob once, mounts those another repository of the registry
+holds, and puts the manifest last. The store sweeps what a crash left as it
+opens.
 
 ### The "rooted at a directory, not at /" contract
 
@@ -545,7 +565,10 @@ bind or a tmpfs — becomes a symlink at its destination inside the root that
 points at the backing host directory. The kernel follows it, and Seatbelt
 checks the resolved path, so the profile grants the backing directory. A new
 volume first receives the image's content at its mount point, as Docker's
-copy-up does.
+copy-up does. A `noexec` tmpfs mount's directory is left out of the
+profile's `process-exec` allowance, and Docker's `ReadonlyPaths` and
+`MaskedPaths` become denials of writes, and of reads and writes, at the end
+of the profile, at each path's place in the root or the mount holding it.
 
 ---
 
@@ -784,12 +807,11 @@ accepted, `501` for a knob only a kernel or root could enforce: a swap limit
 apart from the memory limit, memory reservations, swappiness and disabling
 the OOM killer; cpusets, real-time CPU scheduling and per-device block I/O
 limits; the `nproc`, `data`, `as`, `rss` and similar ulimits, and a finite
-`memlock`; devices, cgroups, sysctls, user namespaces, DNS options and
-storage options; a capability beyond Docker's default set but `IPC_LOCK`,
+`memlock`; devices, cgroups, sysctls, user namespaces and storage
+options; a capability beyond Docker's default set but `IPC_LOCK`,
 and security options; `host` networking outside a nested engine; non-`bridge`
-network drivers; IPAM drivers other than the default, more than one subnet
-of a family and IPv6-only networks; SCTP publishing; and a change of a
-running container's block I/O weight. Memory, CPU, pids and ulimit limits
+network drivers; IPAM drivers other than the default; and SCTP publishing.
+Memory, CPU, pids and ulimit limits
 otherwise hold, and `docker update` changes them live (§3a); privileged
 mode runs a nested engine (§3a); a non-default user is presented by the
 container library (§3).

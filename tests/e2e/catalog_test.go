@@ -337,7 +337,7 @@ func TestPlaywright(t *testing.T) {
   await browser.close();
 })().catch((e) => { console.error(e); process.exit(1); });
 `), 0o644)
-	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "fws/playwright:1.59", "node", "page.js")
+	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "fws/playwright:1.65", "node", "page.js")
 	if err != nil || !strings.Contains(out, "title rendered in fws text painted") || !strings.Contains(out, "screenshot true") {
 		t.Fatalf("playwright: %q, %v", out, err)
 	}

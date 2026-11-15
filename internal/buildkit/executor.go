@@ -239,6 +239,7 @@ func env(meta executor.Meta, root string, proxy int) []string {
 }
 
 func (x *seatbeltExecutor) Run(ctx context.Context, id string, rootMount executor.Mount, mounts []executor.Mount, process executor.ProcessInfo, started chan<- struct{}) (resourcestypes.Recorder, error) {
+	defer slow(time.Now(), "running %q", process.Meta.Args)
 	root, releaseRoot, err := mountDir(ctx, rootMount.Src, false, x.opt.ProfileDir)
 	if err != nil {
 		return nil, err

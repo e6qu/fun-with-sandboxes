@@ -32,6 +32,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/klauspost/compress/gzip"
+	"golang.org/x/sync/errgroup"
 )
 
 var ErrNotFound = errors.New("image not found")
@@ -60,6 +61,9 @@ type Image struct {
 	// RootUsage is what the image's unpacked root takes on disk, which the
 	// store measures once, as it unpacks it.
 	RootUsage *Usage `json:"rootUsage,omitempty"`
+	// LayeredRoot reports a root laid from the store's layer cache, whose
+	// blocks the cached layers hold.
+	LayeredRoot bool `json:"layeredRoot,omitempty"`
 }
 
 // Usage is what files take: their bytes on disk and their inodes.
@@ -102,13 +106,21 @@ type Store struct {
 	// archives, where set, are loaded as their names are asked for
 	// (archives.go).
 	archives *archives
+	// clone lays a cached layer's file, link or subtree into a root
+	// (MergeLayer).
+	clone func(src, dst string) error
+	// removed are called with the ID of each image Remove deletes.
+	removedMu sync.Mutex
+	removed   map[int]func(id string)
+	nextHook  int
 }
 
 func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "roots"), 0o700); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, idx: map[string]*Image{}}
+	s := &Store{dir: dir, idx: map[string]*Image{}, clone: defaultClone}
+	s.sweep()
 	b, err := os.ReadFile(s.indexPath())
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -338,6 +350,11 @@ type Removal struct {
 	Image    Image
 	Untagged []string
 	Deleted  bool
+	// Freed is what the deletion gave back on disk: the blobs and cached
+	// layers no other image needs, and a root of the image's own blocks.
+	// A root laid from the layer cache shares the cache's blocks, which
+	// count as their layers go.
+	Freed uint64
 }
 
 // Remove follows `docker rmi`: naming a reference (a tag or a
@@ -346,6 +363,14 @@ type Removal struct {
 // reference or the ID deletes the image, which no container may still use,
 // and an ID referenced from several repositories needs force.
 func (s *Store) Remove(ref string, force bool, inUse func(id string) bool) (Removal, error) {
+	r, err := s.remove(ref, force, inUse)
+	if r.Deleted {
+		s.notifyRemoved(r.Image.ID)
+	}
+	return r, err
+}
+
+func (s *Store) remove(ref string, force bool, inUse func(id string) bool) (Removal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	img, err := s.getLocked(ref)
@@ -396,7 +421,11 @@ func (s *Store) Remove(ref string, force bool, inUse func(id string) bool) (Remo
 	}
 	s.blobs.Lock()
 	defer s.blobs.Unlock()
-	return Removal{Image: *img, Untagged: untagged, Deleted: true}, s.collectLocked()
+	freed, err := s.collectLocked()
+	if img.RootUsage != nil && !img.LayeredRoot {
+		freed += img.RootUsage.Bytes
+	}
+	return Removal{Image: *img, Untagged: untagged, Deleted: true, Freed: freed}, err
 }
 
 func hasTagIn(tags []string, repo string) bool {
@@ -484,6 +513,13 @@ func (s *Store) Pull(ctx context.Context, ref string, auth authn.Authenticator, 
 	if err != nil {
 		return Pulled{}, err
 	}
+	if desc.MediaType.IsIndex() {
+		// The index the repository@digest reference names is kept, so the
+		// reference resolves in the store as in the registry.
+		if err := s.writeBlob(desc.Digest, desc.Manifest); err != nil {
+			return Pulled{}, err
+		}
+	}
 	for _, id := range fetched {
 		progress(id, "Pull complete")
 	}
@@ -513,15 +549,35 @@ func (s *Store) fetchLayers(img v1.Image, progress Progress) ([]string, error) {
 		missing = append(missing, l)
 		ids = append(ids, id)
 	}
+	// Layers download a few at a time, as dockerd's do; progress hears
+	// from one at a time.
+	var mu sync.Mutex
+	report := func(id, status string) {
+		mu.Lock()
+		defer mu.Unlock()
+		progress(id, status)
+	}
+	var g errgroup.Group
+	g.SetLimit(pullConcurrency)
 	for i, l := range missing {
-		progress(ids[i], "Downloading")
-		if err := s.writeLayer(l); err != nil {
-			return nil, err
-		}
-		progress(ids[i], "Download complete")
+		g.Go(func() error {
+			report(ids[i], "Downloading")
+			if err := s.writeLayer(l); err != nil {
+				return err
+			}
+			report(ids[i], "Download complete")
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	return ids, nil
 }
+
+// pullConcurrency is how many layers a pull downloads at once, as many as
+// dockerd's default.
+const pullConcurrency = 3
 
 // writeLayer writes a layer's compressed blob into the layout through a
 // temporary file, checking its digest before it takes the blob's name.
@@ -554,6 +610,35 @@ func (s *Store) writeLayer(l v1.Layer) error {
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != dg.Hex {
 		return fmt.Errorf("layer %s downloaded with digest sha256:%s", dg, got)
+	}
+	return os.Rename(tmp.Name(), s.blobPath(dg))
+}
+
+// writeBlob stores b as the blob dg, which it must hash to, through a
+// temporary file.
+func (s *Store) writeBlob(dg v1.Hash, b []byte) error {
+	sum := sha256.Sum256(b)
+	if dg.Algorithm != "sha256" || hex.EncodeToString(sum[:]) != dg.Hex {
+		return fmt.Errorf("blob %s has digest sha256:%x", dg, sum)
+	}
+	if _, err := os.Stat(s.blobPath(dg)); err == nil {
+		return nil
+	}
+	dir := filepath.Dir(s.blobPath(dg))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".download-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	_, err = tmp.Write(b)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
 	}
 	return os.Rename(tmp.Name(), s.blobPath(dg))
 }
@@ -622,6 +707,11 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 	err = Extract(dir, f, false)
 	f.Close()
 	if err != nil {
+		return nil, err
+	}
+	// The layout stores blobs under the names they come with, which go on
+	// to name them in the store and share them between images.
+	if err := verifyBlobs(dir); err != nil {
 		return nil, err
 	}
 	idx, err := layout.ImageIndexFromPath(dir)
@@ -701,13 +791,27 @@ func platformImage(idx v1.ImageIndex, d v1.Descriptor) (v1.Image, error) {
 			return nil, err
 		}
 		for _, c := range cm.Manifests {
-			if c.MediaType.IsImage() && c.Platform != nil && c.Platform.OS == Platform.OS && c.Platform.Architecture == Platform.Architecture {
+			if c.MediaType.IsImage() && c.Platform != nil && enginePlatform(*c.Platform) {
 				return child.Image(c.Digest)
 			}
 		}
 		return nil, fmt.Errorf("index %s has no image for %s/%s", d.Digest, Platform.OS, Platform.Architecture)
 	}
 	return nil, fmt.Errorf("index entry %s has media type %s, not an image", d.Digest, d.MediaType)
+}
+
+// enginePlatform reports whether p is the engine's platform: its OS and
+// architecture, and the variant the architecture's CPUs are, which an
+// arm64 platform may leave out.
+func enginePlatform(p v1.Platform) bool {
+	return p.OS == Platform.OS && p.Architecture == Platform.Architecture && cpuVariant(p) == cpuVariant(Platform)
+}
+
+func cpuVariant(p v1.Platform) string {
+	if p.Architecture == "arm64" && p.Variant == "" {
+		return "v8"
+	}
+	return p.Variant
 }
 
 func (s *Store) loadManifest(path string) ([]Image, error) {
@@ -902,8 +1006,34 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 	if err != nil {
 		return unpacked{}, err
 	}
-	for _, l := range layers {
-		n, err := measure(l, stage, root == "")
+	cfg, err := local.ConfigFile()
+	if err != nil {
+		return unpacked{}, err
+	}
+	diffIDs := cfg.RootFS.DiffIDs
+	if len(diffIDs) != len(layers) {
+		diffIDs = nil
+	}
+	out.LayeredRoot = root == "" && diffIDs != nil
+	for i, l := range layers {
+		var n int64
+		switch {
+		case root == "" && diffIDs != nil:
+			n, err = s.layLayer(l, diffIDs[i], stage)
+		case root == "":
+			n, err = measure(l, stage, true)
+		default:
+			// The root came with the image, as a build's does: its layers
+			// are read for their lengths alone, and those the cache has
+			// read from these blobs, as a build's base image's, not at all.
+			var known bool
+			if diffIDs != nil {
+				n, known = s.knownSize(l, diffIDs[i])
+			}
+			if !known {
+				n, err = measure(l, stage, false)
+			}
+		}
 		if err != nil {
 			return unpacked{}, err
 		}
@@ -916,12 +1046,20 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 // measure reads a layer's uncompressed stream, applying it onto dir when
 // apply is set, and returns its length.
 func measure(l v1.Layer, dir string, apply bool) (int64, error) {
+	want, err := l.DiffID()
+	if err != nil {
+		return 0, err
+	}
+	h, err := hasher(want)
+	if err != nil {
+		return 0, fmt.Errorf("layer diff_id %s: %w", want, err)
+	}
 	rc, err := uncompressed(l)
 	if err != nil {
 		return 0, err
 	}
 	defer rc.Close()
-	n := &countingReader{r: rc}
+	n := &countingReader{r: io.TeeReader(rc, h)}
 	if apply {
 		if err := ApplyLayer(dir, n); err != nil {
 			return 0, err
@@ -929,6 +1067,10 @@ func measure(l v1.Layer, dir string, apply bool) (int64, error) {
 	}
 	if _, err := io.Copy(io.Discard, n); err != nil {
 		return 0, err
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != want.Hex {
+		dg, _ := l.Digest()
+		return 0, fmt.Errorf("layer %s: uncompressed content has digest %s:%s, but the image config's rootfs.diff_ids lists %s", dg, want.Algorithm, got, want)
 	}
 	return n.n, nil
 }

@@ -55,7 +55,7 @@ func TestLayInitMatchesTheCreatedRoot(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(root, "data/y")); err != nil {
 		t.Fatalf("the mount through /srv: %v", err)
 	}
-	if err := writeHostsFiles(root, "box", "", nil, nil, nil, mounts); err != nil {
+	if err := writeHostsFiles(root, "box", "", nil, nil, nil, dnsSettings{}, mounts); err != nil {
 		t.Fatal(err)
 	}
 	if err := layInit(root, init, initPaths(mounts)); err != nil {

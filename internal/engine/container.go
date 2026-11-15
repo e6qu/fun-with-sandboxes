@@ -29,6 +29,7 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/rootfs"
+	"github.com/e6qu/fun-with-sandboxes/internal/router"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
 	"github.com/e6qu/fun-with-sandboxes/internal/shim"
@@ -54,6 +55,10 @@ type mountRec struct {
 	// NoCopy keeps a new volume empty rather than copying the image's
 	// content at the mount point into it.
 	NoCopy bool `json:"noCopy,omitempty"`
+	// NoExec denies executing the mount's files; Mode is a tmpfs mount's
+	// permission bits, where it sets them.
+	NoExec bool    `json:"noExec,omitempty"`
+	Mode   *uint32 `json:"mode,omitempty"`
 	// volumeOpts and volumeLabels are the driver options and labels a mount
 	// gives a volume it creates.
 	volumeOpts, volumeLabels map[string]string
@@ -282,6 +287,11 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if _, node := e.hostNode(); req.HostConfig.NetworkMode == "host" && node == nil {
 		return container.CreateResponse{}, unsupported("network mode \"host\" is not supported: every container is confined to its own stack's ports")
 	}
+	// A nested engine's routers run in its privileged container's sandbox,
+	// which reaches no DNS server.
+	if e.cfg.Nested != nil && dnsOf(*req.HostConfig).set() {
+		return container.CreateResponse{}, unsupported("DNS servers, search domains and options are not supported in an engine nested in a privileged container: the container's router, which asks its DNS servers, runs in that container's sandbox, which reaches none")
+	}
 	switch {
 	case req.HostConfig.ShmSize < 0:
 		return container.CreateResponse{}, invalid("SHM size can not be less than 0")
@@ -460,14 +470,14 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			return container.CreateResponse{}, err
 		}
 	}
-	hostname, domain, extraHosts, hostAddress := cfg.Hostname, cfg.Domainname, req.HostConfig.ExtraHosts, firstAddresses(address, networks)
+	hostname, domain, extraHosts, hostAddress, dns := cfg.Hostname, cfg.Domainname, req.HostConfig.ExtraHosts, firstAddresses(address, networks), dnsOf(*req.HostConfig)
 	if req.HostConfig.NetworkMode == "none" {
 		hostAddress = nil
 	}
 	if net != nil {
 		// A container on another's network has its hostname and hosts, as
 		// it would its UTS namespace's files in Docker.
-		hostname, domain, extraHosts, hostAddress = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks)
+		hostname, domain, extraHosts, hostAddress, dns = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks), dnsOf(net.rec.HostConfig)
 		cfg.Hostname = hostname
 	}
 	if node != nil {
@@ -482,7 +492,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if hostname == "" {
 		hostname = id[:12]
 	}
-	if err := writeHostsFiles(c.root(), hostname, domain, hostAddress, extraHosts, nil, mounts); err != nil {
+	if err := writeHostsFiles(c.root(), hostname, domain, hostAddress, extraHosts, nil, dns, mounts); err != nil {
 		return container.CreateResponse{}, err
 	}
 
@@ -615,6 +625,13 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 			env = append(env, pathmap.PortDirVar+"="+ne.portDir(net), pathmap.RouterVar+"="+strconv.Itoa(net.rec.RouterPort))
 		}
 	}
+	// With DNS settings of its own the container resolves what its hosts
+	// file and its stack do not answer through its router, which asks its
+	// resolv.conf's servers; without a router, as on network none, such a
+	// name does not resolve.
+	if dnsOf(net.rec.HostConfig).set() {
+		env = append(env, pathmap.DNSVar+"=1")
+	}
 	return env, nil
 }
 
@@ -665,14 +682,23 @@ func checkHostConfig(hc *container.HostConfig) error {
 		set  bool
 		what string
 	}{
-		{len(hc.DNS) > 0 || len(hc.DNSSearch) > 0 || len(hc.DNSOptions) > 0,
-			"DNS servers, search domains and options are not supported: a container resolves names through the host's resolver and reaches the internet through its stack's egress proxy, never a DNS server of its own"},
 		{hc.OomScoreAdj != 0, "OOM score adjustments are not supported: macOS ends processes under memory pressure by its own measure"},
 		{len(hc.StorageOpt) > 0, "storage options are not supported: a container's root is a directory, which no size quota holds"},
 		{hc.Cgroup != "", "cgroup sharing is not supported: macOS has no cgroups"},
 	} {
 		if k.set {
 			return unsupported("%s", k.what)
+		}
+	}
+	if err := checkDNS(dnsOf(*hc)); err != nil {
+		return err
+	}
+	if hc.VolumeDriver != "" && hc.VolumeDriver != "local" {
+		return unsupported("volume driver %q is not supported; only \"local\" is", hc.VolumeDriver)
+	}
+	for _, p := range append(append([]string{}, hc.MaskedPaths...), hc.ReadonlyPaths...) {
+		if !filepath.IsAbs(p) {
+			return invalid("masked and read-only paths must be absolute: %q", p)
 		}
 	}
 	if hc.Isolation != "" && hc.Isolation != container.IsolationDefault {
@@ -830,6 +856,9 @@ func (e *Engine) resolveNetworksLocked(stack, name, service string, req containe
 	}
 	if req.NetworkingConfig != nil {
 		for netName, es := range req.NetworkingConfig.EndpointsConfig {
+			if err := checkMAC(es); err != nil {
+				return nil, err
+			}
 			if err := add(netName, es); err != nil {
 				return nil, err
 			}
@@ -884,19 +913,25 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 		if len(parts) < 2 || len(parts) > 3 {
 			return nil, invalid("invalid volume specification: '%s'", b)
 		}
-		rw := true
+		rw, nocopy := true, false
 		if len(parts) == 3 {
 			for _, o := range strings.Split(parts[2], ",") {
 				switch o {
 				case "ro":
 					rw = false
-				case "rw", "z", "Z", "cached", "delegated", "consistent":
+				case "nocopy":
+					nocopy = true
+				// Propagation holds as rslave whatever is asked: mounts the
+				// host makes below a bind's source show in the container,
+				// which can make none of its own to propagate.
+				case "rw", "z", "Z", "cached", "delegated", "consistent",
+					"shared", "rshared", "slave", "rslave", "private", "rprivate":
 				default:
 					return nil, invalid("invalid mode: %s", o)
 				}
 			}
 		}
-		m := mountRec{Source: parts[0], Destination: parts[1], RW: rw}
+		m := mountRec{Source: parts[0], Destination: parts[1], RW: rw, NoCopy: nocopy}
 		if strings.HasPrefix(parts[0], "/") {
 			m.Type = mount.TypeBind
 		} else {
@@ -935,6 +970,23 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 				m.Subpath = o.Subpath
 			}
 		case mount.TypeTmpfs:
+			if o := mm.TmpfsOptions; o != nil {
+				if o.SizeBytes != 0 {
+					return nil, unsupported("tmpfs size is not supported: the mount is a directory, which no size holds")
+				}
+				if o.Mode != 0 {
+					mode := uint32(o.Mode.Perm())
+					if o.Mode&os.ModeSticky != 0 {
+						mode |= 0o1000
+					}
+					m.Mode = &mode
+				}
+				for _, kv := range o.Options {
+					if err := tmpfsOption(&m, strings.Join(kv, "=")); err != nil {
+						return nil, err
+					}
+				}
+			}
 		default:
 			return nil, unsupported("mount type %q is not supported", mm.Type)
 		}
@@ -942,8 +994,14 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 			return nil, err
 		}
 	}
-	for dest := range hc.Tmpfs {
-		if err := add(mountRec{Type: mount.TypeTmpfs, Destination: dest, RW: true}); err != nil {
+	for dest, opts := range hc.Tmpfs {
+		m := mountRec{Type: mount.TypeTmpfs, Destination: dest, RW: true}
+		for _, o := range strings.Split(opts, ",") {
+			if err := tmpfsOption(&m, o); err != nil {
+				return nil, err
+			}
+		}
+		if err := add(m); err != nil {
 			return nil, err
 		}
 	}
@@ -1071,7 +1129,7 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 			}
 		case mount.TypeTmpfs:
 			m.Source = filepath.Join(filepath.Dir(root), "tmpfs", strings.ReplaceAll(strings.TrimPrefix(m.Destination, "/"), "/", "_"))
-			if err := os.MkdirAll(m.Source, 0o1777); err != nil {
+			if err := makeTmpfs(*m); err != nil {
 				return nil, err
 			}
 		}
@@ -1382,7 +1440,7 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	}
 	spec := seatbelt.Spec{
 		Root: c.root(), StateRoot: e.stateRoot(), ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
-		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath()},
+		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath(), c.ioPolicyPath()},
 		Sockets: []string{e.pidsSocket(c)},
 	}
 	if c.rec.HostConfig.Privileged {
@@ -1403,7 +1461,13 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 		spec.ProcsSocket = e.procsSocket(c)
 	}
 	for _, m := range c.rec.Mounts {
-		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW})
+		spec.Volumes = append(spec.Volumes, seatbelt.Volume{Path: m.Source, ReadOnly: !m.RW, NoExec: m.NoExec})
+	}
+	for _, p := range c.rec.HostConfig.ReadonlyPaths {
+		spec.ReadOnlyPaths = append(spec.ReadOnlyPaths, c.hostPath(p))
+	}
+	for _, p := range c.rec.HostConfig.MaskedPaths {
+		spec.MaskedPaths = append(spec.MaskedPaths, c.hostPath(p))
 	}
 	// A container on another's network binds that one's ports and listens
 	// in its port directory, as processes of one network namespace do; a
@@ -1506,7 +1570,7 @@ func (c *Container) start(e *Engine) error {
 	for _, m := range c.rec.Mounts {
 		if m.Type == mount.TypeTmpfs {
 			os.RemoveAll(m.Source)
-			if err := os.MkdirAll(m.Source, 0o1777); err != nil {
+			if err := makeTmpfs(m); err != nil {
 				return err
 			}
 		}
@@ -1585,6 +1649,14 @@ func (c *Container) start(e *Engine) error {
 		}
 		cfg.Address = c.rec.Address
 		cfg.Internet = e.hasEgress(c)
+		if d := dnsOf(c.rec.HostConfig); d.set() {
+			rc, err := containerResolvConf(d)
+			if err != nil {
+				return err
+			}
+			dns := router.ParseResolvConf([]byte(rc))
+			cfg.DNS = &dns
+		}
 	}
 	for _, p := range plan {
 		cfg.Publish = append(cfg.Publish, p.binding)
@@ -2164,4 +2236,72 @@ func (e *Engine) Prune(f Filters) ([]string, uint64, error) {
 		reclaimed += uint64(size)
 	}
 	return removed, reclaimed, nil
+}
+
+// tmpfsOption applies one option of a tmpfs mount to m, as the engine can
+// honour it: the mount is a directory on disk, which no size, inode count
+// or owner holds, and an unprivileged process makes no setuid file or
+// device in it, so nosuid and nodev hold already.
+func tmpfsOption(m *mountRec, o string) error {
+	k, v, _ := strings.Cut(o, "=")
+	switch k {
+	case "", "nosuid", "nodev":
+	case "rw":
+		m.RW = true
+	case "ro":
+		m.RW = false
+	case "exec":
+		m.NoExec = false
+	case "noexec":
+		m.NoExec = true
+	case "mode":
+		n, err := strconv.ParseUint(v, 8, 32)
+		if err != nil || n > 0o1777 {
+			return invalid("invalid tmpfs mode %q", v)
+		}
+		mode := uint32(n)
+		m.Mode = &mode
+	default:
+		return unsupported("tmpfs mount option %q is not supported: the mount is a directory, which no size, inode count or ownership option holds", o)
+	}
+	return nil
+}
+
+// makeTmpfs makes the directory of tmpfs mount m, world-writable and
+// sticky as a tmpfs is unless its mode says otherwise.
+func makeTmpfs(m mountRec) error {
+	if err := os.MkdirAll(m.Source, 0o700); err != nil {
+		return err
+	}
+	mode := os.FileMode(0o777) | os.ModeSticky
+	if m.Mode != nil {
+		mode = os.FileMode(*m.Mode & 0o777)
+		if *m.Mode&0o1000 != 0 {
+			mode |= os.ModeSticky
+		}
+	}
+	return os.Chmod(m.Source, mode)
+}
+
+// checkMAC refuses a MAC address a client sets: the engine gives each
+// address the MAC its inspect shows, derived from it, on no interface.
+func checkMAC(es *network.EndpointSettings) error {
+	if es != nil && len(es.MacAddress) > 0 {
+		return unsupported("a container's MAC address is not supported: a container has no network interface of its own")
+	}
+	return nil
+}
+
+// hostPath is where container path p lies on the host: in the mount whose
+// destination holds it, the deepest, or else in the root.
+func (c *Container) hostPath(p string) string {
+	p = filepath.Clean(p)
+	best, out := -1, filepath.Join(c.root(), p)
+	for _, m := range c.rec.Mounts {
+		d := filepath.Clean(m.Destination)
+		if (p == d || strings.HasPrefix(p, d+"/")) && len(d) > best {
+			best, out = len(d), filepath.Join(m.Source, strings.TrimPrefix(p, d))
+		}
+	}
+	return out
 }

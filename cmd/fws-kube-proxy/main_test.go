@@ -12,8 +12,14 @@ func TestBuild(t *testing.T) {
 	var svcs struct{ Items []k8sService }
 	var slices struct{ Items []endpointSlice }
 	if err := json.Unmarshal([]byte(`{"items":[
-	  {"metadata":{"name":"web","namespace":"default"},"spec":{"type":"NodePort","clusterIP":"10.96.0.10","ports":[{"name":"http","port":80,"protocol":"TCP","nodePort":30080},{"name":"dns","port":53,"protocol":"UDP"}]}},
+	  {"metadata":{"name":"web","namespace":"default"},"spec":{"type":"NodePort","clusterIP":"10.96.0.10","ports":[{"name":"http","port":80,"protocol":"TCP","nodePort":30080},{"name":"dns","port":53,"protocol":"UDP","nodePort":30053}],
+	   "externalIPs":["192.0.2.10","2001:db8::10","10.96.0.20"],"sessionAffinity":"ClientIP","sessionAffinityConfig":{"clientIP":{"timeoutSeconds":600}}}},
 	  {"metadata":{"name":"headless","namespace":"default"},"spec":{"clusterIP":"None","ports":[{"port":80}]}},
+	  {"metadata":{"name":"ext","namespace":"default"},"spec":{"type":"ExternalName","externalName":"db.example.com","ports":[{"port":5432}]}},
+	  {"metadata":{"name":"badext","namespace":"default"},"spec":{"type":"ExternalName","externalName":"not a name"}},
+	  {"metadata":{"name":"lb","namespace":"default"},"spec":{"type":"LoadBalancer","clusterIP":"10.96.0.30","externalIPs":["192.0.2.10"],"ports":[{"port":80,"nodePort":30081}]},
+	   "status":{"loadBalancer":{"ingress":[{"ip":"192.0.2.30"},{"hostname":"lb.example"}]}}},
+	  {"metadata":{"name":"six","namespace":"default"},"spec":{"type":"ClusterIP","clusterIP":"fd00::7","clusterIPs":["fd00::7"],"sessionAffinity":"None","ports":[{"port":80}]}},
 	  {"metadata":{"name":"api","namespace":"apps"},"spec":{"type":"ClusterIP","clusterIPs":["fd00::5","10.96.0.20"],"ports":[{"port":8443,"nodePort":31000}]}}
 	]}`), &svcs); err != nil {
 		t.Fatal(err)
@@ -24,6 +30,8 @@ func TestBuild(t *testing.T) {
 	   "ports":[{"name":"http","port":8080,"protocol":"TCP"},{"name":"dns","port":5353,"protocol":"UDP"}]},
 	  {"metadata":{"namespace":"default","labels":{"kubernetes.io/service-name":"web"}},"addressType":"IPv6",
 	   "endpoints":[{"addresses":["fd00::6"]}],"ports":[{"name":"http","port":8080}]},
+	  {"metadata":{"namespace":"default","labels":{"kubernetes.io/service-name":"six"}},"addressType":"IPv6",
+	   "endpoints":[{"addresses":["fd00::8"]}],"ports":[{"port":8080}]},
 	  {"metadata":{"namespace":"apps","labels":{"kubernetes.io/service-name":"api"}},"addressType":"IPv4",
 	   "endpoints":[{"addresses":["10.244.0.9"]}],"ports":[{"port":9443}]}
 	]}`), &slices); err != nil {
@@ -31,9 +39,15 @@ func TestBuild(t *testing.T) {
 	}
 	got := build(svcs.Items, slices.Items)
 	want := []Service{
-		{Name: "api", Namespace: "apps", ClusterIP: "10.96.0.20", Ports: []ServicePort{{Port: 8443, Protocol: "TCP", Endpoints: []string{"10.244.0.9:9443"}}}},
-		{Name: "web", Namespace: "default", ClusterIP: "10.96.0.10", Ports: []ServicePort{{Port: 80, Protocol: "TCP", NodePort: 30080, Endpoints: []string{"10.244.0.5:8080", "10.244.0.6:8080"}},
-			{Port: 53, Protocol: "UDP", Endpoints: []string{"10.244.0.5:5353", "10.244.0.6:5353"}}}},
+		{Name: "api", Namespace: "apps", ClusterIP: "fd00::5", ClusterIPs: []string{"fd00::5", "10.96.0.20"},
+			Ports: []ServicePort{{Port: 8443, Protocol: "TCP", Endpoints: []string{"10.244.0.9:9443"}}}},
+		{Name: "ext", Namespace: "default", ExternalName: "db.example.com", Ports: []ServicePort{}},
+		{Name: "lb", Namespace: "default", ClusterIP: "10.96.0.30", ExternalIPs: []string{"192.0.2.10", "192.0.2.30"},
+			Ports: []ServicePort{{Port: 80, Protocol: "TCP", NodePort: 30081, Endpoints: []string{}}}},
+		{Name: "six", Namespace: "default", ClusterIP: "fd00::7", Ports: []ServicePort{{Port: 80, Protocol: "TCP", Endpoints: []string{"[fd00::8]:8080"}}}},
+		{Name: "web", Namespace: "default", ClusterIP: "10.96.0.10", SessionAffinity: "ClientIP", AffinitySeconds: 600,
+			Ports: []ServicePort{{Port: 80, Protocol: "TCP", NodePort: 30080, Endpoints: []string{"10.244.0.5:8080", "10.244.0.6:8080"}},
+				{Port: 53, Protocol: "UDP", NodePort: 30053, Endpoints: []string{"10.244.0.5:5353", "10.244.0.6:5353"}}}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("build:\n%+v\nwant:\n%+v", got, want)

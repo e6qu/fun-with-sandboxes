@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -133,6 +134,36 @@ func TestPullChoosesThePlatformFromAnIndex(t *testing.T) {
 	wantID, _ := darwin.ConfigName()
 	if got.Image.ID != wantID.String() || got.Image.RepoDigests[0] != host+"/r/multi@"+idxDigest.String() {
 		t.Fatalf("pulled %+v, want image %s under index digest %s", got.Image, wantID, idxDigest)
+	}
+	// The index stays in the store while an image's reference names it.
+	if _, err := os.Stat(s.blobPath(idxDigest)); err != nil {
+		t.Fatalf("the pulled index is not stored: %v", err)
+	}
+	if _, err := s.Remove(got.Image.ID, true, func(string) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(s.blobPath(idxDigest)); !os.IsNotExist(err) {
+		t.Fatalf("the index outlived its image: %v", err)
+	}
+}
+
+// Of an index's entries for the engine's OS and architecture, the one of
+// another CPU variant is not the engine's.
+func TestEnginePlatformVariant(t *testing.T) {
+	for _, c := range []struct {
+		p    v1.Platform
+		want bool
+	}{
+		{v1.Platform{OS: Platform.OS, Architecture: Platform.Architecture}, true},
+		{v1.Platform{OS: "linux", Architecture: Platform.Architecture}, false},
+		{v1.Platform{OS: Platform.OS, Architecture: Platform.Architecture, Variant: "v1"}, false},
+	} {
+		if got := enginePlatform(c.p); got != c.want {
+			t.Errorf("enginePlatform(%+v) = %v", c.p, got)
+		}
+	}
+	if Platform.Architecture == "arm64" && !enginePlatform(v1.Platform{OS: Platform.OS, Architecture: "arm64", Variant: "v8"}) {
+		t.Error("arm64/v8 is not the engine's arm64")
 	}
 }
 

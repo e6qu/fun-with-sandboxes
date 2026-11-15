@@ -58,6 +58,7 @@
 #include <sys/shm.h>
 #include <sys/sysctl.h>
 #include <sys/param.h>
+#include <sys/resource.h>
 #include <libproc.h>
 #include <sys/proc_info.h>
 #include <sys/mount.h>
@@ -122,6 +123,10 @@ static char pids_path[PATH_MAX];
 // The socket the container's supervisor answers on with how many processes
 // the container runs (FWS_PIDS_SOCKET), as pids.current holds it.
 static char pids_socket[sizeof(((struct sockaddr_un *)0)->sun_path)];
+// The file of the container's disk I/O policy (pathmap.IOPolicyFile),
+// beside its pids limit's: a tier of sys/resource.h's IOPOL_*, which the
+// engine writes as an update changes the container's block I/O weight.
+static char iopolicy_path[PATH_MAX];
 
 struct mount {
     char *dest, *src;
@@ -280,6 +285,11 @@ static in_addr_t own_address;
 static char port_dir[PATH_MAX];
 static unsigned short router_port;
 
+// Whether the container has DNS servers, search domains or options of its
+// own (FWS_DNS): the router then resolves the names its /etc/hosts and its
+// stack's members do not answer, through the servers of its resolv.conf.
+static int dns_via_router;
+
 static void parse_routing(const char *dir, const char *router) {
     unsigned long v;
     const char *e;
@@ -304,7 +314,7 @@ static void parse_network(const char *path, const char *address) {
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
-static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_DOMAINNAME", "FWS_SHM", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", "FWS_PIDS_SOCKET", "FWS_PIDNS", "FWS_PIDNSFILE", "FWS_PROCS", NULL};
+static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_DOMAINNAME", "FWS_SHM", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", "FWS_PIDS_SOCKET", "FWS_PIDNS", "FWS_PIDNSFILE", "FWS_PROCS", "FWS_DNS", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
 static void set_groups_var(void) {
@@ -312,6 +322,33 @@ static void set_groups_var(void) {
     for (int i = 0; i < fake_ngroups && o < sizeof groups_var; i++) {
         o += (size_t)snprintf(groups_var + o, sizeof groups_var - o, i ? ",%u" : "%u", fake_groups[i]);
     }
+}
+
+// apply_iopolicy sets the calling process's disk I/O policy to the tier
+// the container's file names, where there is one. macOS lets a process set
+// only its own policy, which its children inherit, so each process the
+// container starts takes up the tier as the library loads in it or as it
+// forks; a process that runs on from before an update keeps the tier it
+// has.
+static void apply_iopolicy(void) {
+    if (!iopolicy_path[0]) return;
+    int e = errno;
+    int fd = open(iopolicy_path, O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        char b[16];
+        ssize_t n = read(fd, b, sizeof b - 1);
+        close(fd);
+        unsigned long tier;
+        if (n > 0) {
+            b[n] = 0;
+            // IOPOL_IMPORTANT (1) to IOPOL_STANDARD (5); 0, the default,
+            // leaves the inherited policy.
+            if (num(b, &tier) && tier >= 1 && tier <= 5) {
+                setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_PROCESS, (int)tier);
+            }
+        }
+    }
+    errno = e;
 }
 
 static void parse_shm(const char *v);
@@ -363,6 +400,12 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     if (pm && pm[0] == '/') {
         strlcpy(pids_path, pm, sizeof pids_path);
     }
+    if (pids_path[0]) {
+        const char *slash = strrchr(pids_path, '/');
+        int n = snprintf(iopolicy_path, sizeof iopolicy_path, "%.*s/iopolicy", (int)(slash - pids_path), pids_path);
+        if (n < 0 || (size_t)n >= sizeof iopolicy_path) iopolicy_path[0] = 0;
+    }
+    apply_iopolicy();
     const char *ps = getenv("FWS_PIDS_SOCKET");
     if (ps && ps[0] == '/' && strlen(ps) < sizeof pids_socket) {
         strcpy(pids_socket, ps);
@@ -384,6 +427,7 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     parse_ports(getenv("FWS_PORTS"));
     parse_network(getenv("FWS_NETWORK"), getenv("FWS_ADDRESS"));
     parse_routing(getenv("FWS_PORTDIR"), getenv("FWS_ROUTER"));
+    dns_via_router = getenv("FWS_DNS") != NULL;
     const char *r = getenv("SANDBOX_ROOT");
     if (r && r[0] == '/' && strlen(r) < sizeof root) {
         strcpy(root, r);
@@ -2330,7 +2374,9 @@ static pid_t fws_fork(void) {
         errno = EAGAIN;
         return -1;
     }
-    return fork();
+    pid_t pid = fork();
+    if (pid == 0) apply_iopolicy();
+    return pid;
 }
 INTERPOSE(fws_fork, fork);
 
@@ -3558,6 +3604,7 @@ static int nflows;
 #define ROUTER_FLOW 3
 #define ROUTER_FLOW_RELAY 4
 #define ROUTER_ECHO 5
+#define ROUTER_RESOLVE 6
 
 // relay_key reads the relay key a request for a relay carries, which the
 // container's router keeps in the port directory for the container's life.
@@ -3848,7 +3895,11 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
     if (k->ss_family == AF_UNIX && kn > (socklen_t)offsetof(struct sockaddr_un, sun_path)) {
         // A Unix socket's path is the container's.
         struct sockaddr_un *u = (struct sockaddr_un *)&v;
-        u->sun_path[sizeof u->sun_path - 1] = 0;
+        // The path ends where the kernel's length says: macOS 26 reports a
+        // datagram's source without its terminating NUL, and the bytes past
+        // it are whatever the caller's buffer held.
+        size_t pn = (size_t)kn - offsetof(struct sockaddr_un, sun_path);
+        u->sun_path[pn < sizeof u->sun_path ? pn : sizeof u->sun_path - 1] = 0;
         char *name = fd >= 0 && fd < NET_FDS ? (own ? unix_names : unix_peers)[fd] : NULL;
         if (name && u->sun_path[0] && u->sun_path[0] != '/') {
             strlcpy(u->sun_path, name, sizeof u->sun_path);
@@ -5974,6 +6025,43 @@ static int seen_addr6(const struct member *m, const struct member *viewer, int h
     return 0;
 }
 
+// only6_on reports whether the network of len bytes at net is IPv6-only
+// for member m: its subnets hold net=-, the engine's mark of one. A
+// network with an IPv6 subnet and no IPv4 one of its own is not: its
+// members reach one another over IPv4 at their member addresses.
+static int only6_on(const struct member *m, const char *net, size_t len) {
+    for (const char *p = m->subs; p < m->subs_end;) {
+        const char *e = memchr(p, ' ', (size_t)(m->subs_end - p));
+        if (!e) e = m->subs_end;
+        if ((size_t)(e - p) == len + 2 && memcmp(p, net, len) == 0 && p[len] == '=' && p[len + 1] == '-') return 1;
+        p = e + 1;
+    }
+    return 0;
+}
+
+// seen_addr4 finds member m's IPv4 address as viewer reaches it, as a
+// name resolves to: seen_addr's, past the IPv6-only networks they share,
+// which give it none. It reports 0 where every network they share is
+// IPv6-only.
+static int seen_addr4(const struct member *m, const struct member *viewer, int have_viewer, in_addr_t *out) {
+    int shared = 0;
+    for (const char *p = m->nets; have_viewer && p < m->nets_end;) {
+        const char *e = memchr(p, ' ', (size_t)(m->nets_end - p));
+        if (!e) e = m->nets_end;
+        if (e > p && on_net(viewer, p, (size_t)(e - p))) {
+            if (!only6_on(m, p, (size_t)(e - p))) {
+                *out = member_on(m, p, (size_t)(e - p), NULL);
+                return 1;
+            }
+            shared = 1;
+        }
+        p = e + 1;
+    }
+    if (shared) return 0;
+    *out = m->addr;
+    return 1;
+}
+
 // in_prefix6 reports whether a lies in the bits-long prefix of b.
 static int in_prefix6(const struct in6_addr *a, const struct in6_addr *b, int bits) {
     int whole = bits / 8, rest = bits % 8;
@@ -6089,6 +6177,10 @@ static int own_ifaces(struct iface *out) {
     return n;
 }
 
+// member_address finds the IPv4 address, as the container reaches it,
+// of the member that answers to name. It reports 1 with the address, -1
+// where the member holds none the container reaches, as on IPv6-only
+// networks alone, and 0 where no member answers.
 static int member_address(const char *name, in_addr_t *out) {
     int found = 0;
     pthread_mutex_lock(&members_lock);
@@ -6097,8 +6189,7 @@ static int member_address(const char *name, in_addr_t *out) {
     int have_me = find_self(text, &me);
     for (const char *p = text; (p = next_member(p, &m));) {
         if (sees(&m, &me, have_me) && answers(&m, name)) {
-            *out = seen_addr(&m, &me, have_me);
-            found = 1;
+            found = seen_addr4(&m, &me, have_me, out) ? 1 : -1;
             break;
         }
     }
@@ -6249,13 +6340,12 @@ static int hosts_lookup(const char *name, char addrs[HOSTS_MAX][INET6_ADDRSTRLEN
     return found;
 }
 
-// hosts_addrinfo answers getaddrinfo from the container's /etc/hosts, as
-// a resolver whose hosts file lists the name: what the host's resolver
-// makes of each address it lists, of the family and type asked for.
-static int hosts_addrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
-    char addrs[HOSTS_MAX][INET6_ADDRSTRLEN], canon[256];
-    int n = hosts_lookup(node, addrs, canon, sizeof canon);
-    if (!n) return EAI_NONAME;
+// numeric_addrinfo answers getaddrinfo with the n numeric addresses in
+// addrs, as a resolver that found the name at them, canon its canonical
+// name: what the host's resolver makes of each address, of the family and
+// type asked for.
+static int numeric_addrinfo(char addrs[][INET6_ADDRSTRLEN], int n, const char *canon, const char *service, const struct addrinfo *hints,
+                            struct addrinfo **res) {
     struct addrinfo h = {0};
     if (hints) h = *hints;
     h.ai_flags = (h.ai_flags | AI_NUMERICHOST) & ~(AI_CANONNAME | AI_ADDRCONFIG);
@@ -6282,6 +6372,15 @@ static int hosts_addrinfo(const char *node, const char *service, const struct ad
     return 0;
 }
 
+// hosts_addrinfo answers getaddrinfo from the container's /etc/hosts, as
+// a resolver whose hosts file lists the name.
+static int hosts_addrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
+    char addrs[HOSTS_MAX][INET6_ADDRSTRLEN], canon[256];
+    int n = hosts_lookup(node, addrs, canon, sizeof canon);
+    if (!n) return EAI_NONAME;
+    return numeric_addrinfo(addrs, n, canon, service, hints, res);
+}
+
 // hosts_addr finds the first address of family af, IPv4 or IPv6, the
 // container's /etc/hosts lists name at.
 static int hosts_addr(const char *name, int af, void *out) {
@@ -6293,26 +6392,106 @@ static int hosts_addr(const char *name, int af, void *out) {
     return 0;
 }
 
+#define RESOLVE_MAX 32
+
+// numeric_host reports whether name is an address, which getaddrinfo
+// takes as it is: IPv4 in any form inet_aton reads, IPv6, or IPv6 with a
+// scope.
+static int numeric_host(const char *name) {
+    struct in_addr a4;
+    struct in6_addr a6;
+    return inet_aton(name, &a4) == 1 || inet_pton(AF_INET6, name, &a6) == 1 || strchr(name, '%') != NULL;
+}
+
+// router_resolve asks the container's router to resolve name through the
+// container's DNS servers (package router, Resolve), for addresses of
+// family af, AF_UNSPEC for any. It copies up to max of them to addrs and
+// returns how many, 0 for a name that resolves to none, or -1 when the
+// router does not answer or the container has none.
+static int router_resolve(const char *name, int af, char addrs[][INET6_ADDRSTRLEN], int max) {
+    size_t len = strlen(name);
+    if (!router_port) return -1;
+    if (len == 0 || len > 255) return 0;
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) return -1;
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    // The router gives up on a lookup after router.ResolveTimeout, 30
+    // seconds.
+    struct timeval tv = {40, 0};
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router_port);
+    unsigned char req[3 + 255] = {ROUTER_RESOLVE, (unsigned char)(af == AF_INET ? 4 : af == AF_INET6 ? 6 : 0), (unsigned char)len};
+    memcpy(req + 3, name, len);
+    unsigned char a[2];
+    int n = -1;
+    if (connect(s, (struct sockaddr *)&r, sizeof r) == 0 && io_all(s, req, 3 + len, 1) && io_all(s, a, 1, 0)) {
+        n = 0;
+        if (a[0] == 0 && io_all(s, a + 1, 1, 0)) {
+            for (int i = 0; i < a[1]; i++) {
+                unsigned char l, b[16];
+                if (!io_all(s, &l, 1, 0) || (l != 4 && l != 16) || !io_all(s, b, l, 0)) {
+                    n = -1;
+                    break;
+                }
+                if (n < max && inet_ntop(l == 4 ? AF_INET : AF_INET6, b, addrs[n], INET6_ADDRSTRLEN)) n++;
+            }
+        }
+    }
+    close(s);
+    return n;
+}
+
+// router_addrinfo answers getaddrinfo through the container's router: a
+// name its servers do not resolve is EAI_NONAME, and one the router does
+// not answer for EAI_AGAIN, as a resolver whose servers do not answer.
+static int router_addrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
+    int family = hints ? hints->ai_family : AF_UNSPEC, flags = hints ? hints->ai_flags : 0;
+    int af = family == AF_INET ? AF_INET : family == AF_INET6 && !(flags & AI_V4MAPPED) ? AF_INET6 : AF_UNSPEC;
+    char addrs[RESOLVE_MAX][INET6_ADDRSTRLEN];
+    int n = router_resolve(node, af, addrs, RESOLVE_MAX);
+    if (n < 0) return EAI_AGAIN;
+    if (n == 0) return EAI_NONAME;
+    return numeric_addrinfo(addrs, n, node, service, hints, res);
+}
+
+// router_addr finds the first address of family af the container's
+// router resolves name to.
+static int router_addr(const char *name, int af, void *out) {
+    char addrs[RESOLVE_MAX][INET6_ADDRSTRLEN];
+    int n = router_resolve(name, af, addrs, RESOLVE_MAX);
+    for (int i = 0; i < n; i++) {
+        if (inet_pton(af, addrs[i], out) == 1) return 1;
+    }
+    return 0;
+}
+
 // A name resolves as a container's resolver resolves it: to the addresses
 // its /etc/hosts lists it at, then a member's name to its member address,
 // as Docker's DNS resolves a container on the network, and any other name
-// to what the host resolves.
+// to what the host resolves, or, for a container with DNS settings of its
+// own, to what its router resolves through its servers.
 static int fws_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
     int flags = hints ? hints->ai_flags : 0;
-    in_addr_t a;
+    in_addr_t a = 0;
     if (!node || (flags & AI_NUMERICHOST)) {
         return getaddrinfo(node, service, hints, res);
     }
     int herr = hosts_addrinfo(node, service, hints, res);
     if (herr != EAI_NONAME) return herr;
-    if (!member_address(node, &a)) {
+    int found = member_address(node, &a);
+    if (!found) {
+        if (dns_via_router && *node && !numeric_host(node)) {
+            return router_addrinfo(node, service, hints, res);
+        }
         return getaddrinfo(node, service, hints, res);
     }
     struct in6_addr a6;
-    int has6 = member_address6(node, &a6);
+    int has4 = found == 1, has6 = member_address6(node, &a6);
     // The member's addresses, in the order RFC 6724 sorts them: a global
     // IPv6 address before IPv4, a unique local one after. An IPv6 caller
-    // takes the IPv4 one mapped, when it asks to.
+    // takes the IPv4 one mapped, when it asks to. A member the container
+    // reaches on IPv6-only networks alone has no IPv4 address.
     struct maddr {
         int family;
         const struct in6_addr *a6;
@@ -6321,14 +6500,16 @@ static int fws_getaddrinfo(const char *node, const char *service, const struct a
     int global = has6 && (a6.s6_addr[0] & 0xe0) == 0x20;
     if (family == AF_UNSPEC) {
         if (global) addrs[naddrs++].family = AF_INET6;
-        addrs[naddrs++].family = AF_INET;
+        if (has4) addrs[naddrs++].family = AF_INET;
         if (has6 && !global) addrs[naddrs++].family = AF_INET6;
         for (int i = 0; i < naddrs; i++) addrs[i].a6 = addrs[i].family == AF_INET6 ? &a6 : NULL;
+        if (!naddrs) return EAI_NONAME;
     } else if (family == AF_INET6) {
         if (has6) addrs[naddrs++] = (struct maddr){AF_INET6, &a6};
-        if ((flags & AI_V4MAPPED) && (!has6 || (flags & AI_ALL))) addrs[naddrs++] = (struct maddr){AF_INET6, NULL};
+        if (has4 && (flags & AI_V4MAPPED) && (!has6 || (flags & AI_ALL))) addrs[naddrs++] = (struct maddr){AF_INET6, NULL};
         if (!naddrs) return EAI_NONAME;
     } else if (family == AF_INET) {
+        if (!has4) return EAI_NONAME;
         addrs[naddrs++] = (struct maddr){AF_INET, NULL};
     } else {
         return EAI_FAMILY;
@@ -6393,17 +6574,50 @@ static struct hostent *member_hostent(const char *name, int af, const void *a) {
     return &member_host;
 }
 
-static struct hostent *fws_gethostbyname(const char *name) {
+// member_hostent4 answers an IPv4 lookup of name from the container's
+// /etc/hosts or its members: their entry, NULL with h_errno NO_DATA for a
+// member with no IPv4 address the container reaches, or NULL with *own
+// clear where neither answers, for the host's resolver to.
+static struct hostent *member_hostent4(const char *name, int *own) {
     in_addr_t a;
-    return name && (hosts_addr(name, AF_INET, &a) || member_address(name, &a)) ? member_hostent(name, AF_INET, &a) : gethostbyname(name);
+    *own = 1;
+    if (hosts_addr(name, AF_INET, &a)) return member_hostent(name, AF_INET, &a);
+    switch (member_address(name, &a)) {
+    case 1:
+        return member_hostent(name, AF_INET, &a);
+    case -1:
+        h_errno = NO_DATA;
+        return NULL;
+    }
+    *own = 0;
+    return NULL;
+}
+
+// router_hostent answers gethostbyname for a container with DNS settings
+// of its own: the first address of family af its router resolves name to.
+static struct hostent *router_hostent(const char *name, int af) {
+    struct in6_addr a;
+    if (router_addr(name, af, &a)) return member_hostent(name, af, &a);
+    h_errno = HOST_NOT_FOUND;
+    return NULL;
+}
+
+static struct hostent *fws_gethostbyname(const char *name) {
+    int own = 0;
+    struct hostent *h = name ? member_hostent4(name, &own) : NULL;
+    if (own) return h;
+    if (name && *name && dns_via_router && !numeric_host(name)) return router_hostent(name, AF_INET);
+    return gethostbyname(name);
 }
 INTERPOSE(fws_gethostbyname, gethostbyname);
 
 static struct hostent *fws_gethostbyname2(const char *name, int af) {
-    in_addr_t a;
     struct in6_addr a6;
-    if (af == AF_INET && name && (hosts_addr(name, AF_INET, &a) || member_address(name, &a))) return member_hostent(name, AF_INET, &a);
+    int own = 0;
+    struct hostent *h = af == AF_INET && name ? member_hostent4(name, &own) : NULL;
+    if (own) return h;
     if (af == AF_INET6 && name && (hosts_addr(name, AF_INET6, &a6) || member_address6(name, &a6))) return member_hostent(name, AF_INET6, &a6);
+    if ((af == AF_INET || af == AF_INET6) && name && *name && dns_via_router && !numeric_host(name)) return router_hostent(name, af);
     return gethostbyname2(name, af);
 }
 INTERPOSE(fws_gethostbyname2, gethostbyname2);

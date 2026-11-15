@@ -21,15 +21,11 @@ import (
 // own. So the spawn helper of the container's main process, once in the
 // sandbox, starts an anchor: a process of the engine's helper binary,
 // outside the main process's tree, that starts each exec on the engine's
-// request.
-const (
-	// anchorFD is the listening socket the anchor accepts requests on, in
-	// the spawn helper and in the anchor.
-	anchorFD = 4
-	// initVar holds the main process's host pid, which the container
-	// library presents as pid 1.
-	initVar = "FWS_INIT"
-)
+// request. The spawn helper hands the anchor its listener (spawn.c).
+
+// initVar holds the main process's host pid, which the container library
+// presents as pid 1.
+const initVar = "FWS_INIT"
 
 type anchorRequest struct {
 	Path string

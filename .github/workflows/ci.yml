@@ -18,10 +18,10 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: gofmt
@@ -35,6 +35,24 @@ jobs:
           (cd tests/e2e && GOOS=darwin GOARCH=arm64 go vet -tags e2e ./...)
       - name: portable unit tests
         run: go test -race -count=3 ./...
+      # staticcheck for the build that ships; staticcheck.conf names the
+      # checks left out and why.
+      - name: staticcheck (darwin)
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+          GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/staticcheck" $(go list ./... | grep -v /third_party/)
+          (cd tests/e2e && GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/staticcheck" -tags e2e ./...)
+      # Known vulnerabilities in the code the engine and the suite call,
+      # the standard library's included, for the build that ships.
+      - name: govulncheck (darwin)
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/govulncheck" ./...
+          (cd tests/e2e && GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/govulncheck" -tags e2e ./...)
+      # The parsers of what builds, clients and other containers hand the
+      # engine, each fuzzed for a while; a failing input is printed.
+      - name: fuzz
+        run: scripts/fuzz.sh 30s
       - name: the end-to-end shards hold every test once
         run: |
           for k in 1 2 3 4; do scripts/e2e-shard.sh 4 $k; done | sed 's/^\^(//; s/)\$$//' | tr '|' '\n' | sort > "$RUNNER_TEMP/sharded"
@@ -46,19 +64,37 @@ jobs:
           git diff --exit-code -- third_party/buildkit
           test -z "$(git status --porcelain -- third_party/buildkit)"
 
+  # The unit tests and probes on each macOS the engine runs on: it leans on
+  # Seatbelt's compiled profiles, process responsibility and the loader,
+  # which change with macOS releases.
   macos:
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       # Each test runs three times under the race detector, so a test that
       # passes only sometimes, or races, fails here.
       - name: unit tests
         run: go test -race -count=3 ./...
+      # The probes again, with the container library and the spawn helper
+      # built to trap where their C would act undefined: an out-of-bounds
+      # index, a misaligned or null pointer, a signed overflow.
+      - name: unit tests, C under UndefinedBehaviorSanitizer
+        env:
+          FWS_CFLAGS: -fsanitize=undefined -fsanitize-trap=undefined -g
+        run: go test -count=1 ./internal/pathmap ./internal/runtime ./internal/shim ./internal/seatbelt
+      # Whether macOS enforces a fatal per-process memory limit an
+      # unprivileged parent sets (TestJetsamLimitExperiment), printed.
+      - name: jetsam experiment
+        run: go test -v -count=1 -run TestJetsamLimitExperiment ./internal/runtime
       # What a container's processes pay for each system call the path
       # library interposes, beside the same call made natively.
       - name: system calls through the path library
@@ -83,7 +119,7 @@ jobs:
       matrix:
         server: [mysql, mariadb]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       # A sandboxed build, as Hydra's: MySQL's CMake otherwise takes
@@ -96,7 +132,7 @@ jobs:
       - name: derivation
         id: drv
         run: echo "key=server-${{ matrix.server }}-$(scripts/build-images.sh --server-derivations ${{ matrix.server }} | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         id: cache
         with:
           path: ~/fws-servers/${{ matrix.server }}
@@ -107,7 +143,7 @@ jobs:
         run: |
           paths=$(scripts/build-images.sh --servers ${{ matrix.server }})
           nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-servers/${{ matrix.server }}" $paths
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: steps.cache.outputs.cache-hit != 'true'
         with:
           path: ~/fws-servers/${{ matrix.server }}
@@ -127,10 +163,10 @@ jobs:
     outputs:
       key: ${{ steps.key.outputs.key }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: the archives' inputs
@@ -138,7 +174,7 @@ jobs:
         run: |
           scripts/build-images.sh --inputs > "$RUNNER_TEMP/inputs"
           echo "key=images-$(xargs shasum -a 256 < "$RUNNER_TEMP/inputs" | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         id: images
         with:
           path: ~/fws-images
@@ -155,13 +191,13 @@ jobs:
           for s in mysql mariadb; do
             echo "$s=server-$s-$(scripts/build-images.sh --server-derivations $s | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
           done
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         if: steps.images.outputs.cache-hit != 'true'
         with:
           path: ~/fws-servers/mysql
           key: ${{ steps.drv.outputs.mysql }}
           fail-on-cache-miss: true
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         if: steps.images.outputs.cache-hit != 'true'
         with:
           path: ~/fws-servers/mariadb
@@ -181,7 +217,7 @@ jobs:
       # The newest earlier catalog, whose archives fws-mkimage keeps where
       # they were made from the same inputs: a change to one image rebuilds
       # that one.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         if: steps.images.outputs.cache-hit != 'true'
         with:
           path: ~/fws-images
@@ -192,7 +228,7 @@ jobs:
       # repositories, and the packages Hydra does not build, such as Consul
       # and MongoDB under their licences. Nix substitutes by store path, so
       # an earlier run's cache serves every derivation that has not changed.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         if: steps.images.outputs.cache-hit != 'true'
         id: built
         with:
@@ -225,7 +261,7 @@ jobs:
             nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-built" $built
           fi
           du -sh ~/fws-built
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: steps.images.outputs.cache-hit != 'true' && steps.built.outputs.cache-hit != 'true'
         with:
           path: ~/fws-built
@@ -248,10 +284,10 @@ jobs:
           trap 'kill $registry' EXIT
           until curl -sf 127.0.0.1:5000/v2/ >/dev/null; do sleep 1; done
           scripts/publish-images.sh ~/fws-images 127.0.0.1:5000/e6qu
-          for ref in fws-postgres:16 fws-postgres:18 fws-redis:8 fws-nginx:1 fws-mariadb:11 fws-python:3.14 fws-node:26 fws-bun:1 fws-gitea:1 fws-dynamodb-local:2 fws-rabbitmq:4 fws-lambda/python:3.14 fws-lambda/nodejs:24 fws-lambda/java:17 fws-playwright:1.59 fws-toolbox:1 fws-busybox:1 fws-base:1 fws-ryuk:0.14.0 fws-mysql:8.4 fws-valkey:9 fws-memcached:1.6 fws-nats:2.14 fws-seaweedfs:4.36 fws-etcd:3.6 fws-consul:2.1 fws-vault:2.0 fws-mongo:8.2 fws-kafka:4.2 fws-mailpit:1.32 fws-meilisearch:1.43 fws-qdrant:1.17 fws-neo4j:2026.02 fws-clickhouse:26.5 fws-influxdb:2.7 fws-opensearch:3.5 fws-toxiproxy:2.12 fws-dind:29 fws-kube-apiserver:1.35 fws-kube-controller-manager:1.35 fws-kube-scheduler:1.35 fws-kubectl:1.35 fws-pause:3.10.1 fws-kubelet:1.35 fws-kind-node:1.35 fws-k3s:1.35; do
+          for ref in fws-postgres:16 fws-postgres:18 fws-redis:8 fws-nginx:1 fws-mariadb:11 fws-python:3.14 fws-node:26 fws-bun:1 fws-gitea:1 fws-dynamodb-local:2 fws-rabbitmq:4 fws-lambda/python:3.14 fws-lambda/nodejs:24 fws-lambda/java:17 fws-playwright:1.65 fws-toolbox:1 fws-busybox:1 fws-base:1 fws-ryuk:0.14.0 fws-mysql:8.4 fws-valkey:9 fws-memcached:1.6 fws-nats:2.14 fws-seaweedfs:4.36 fws-etcd:3.6 fws-consul:2.1 fws-vault:2.0 fws-mongo:8.2 fws-kafka:4.2 fws-mailpit:1.33 fws-meilisearch:1.43 fws-qdrant:1.17 fws-neo4j:2026.02 fws-clickhouse:26.5 fws-influxdb:2.7 fws-opensearch:3.5 fws-toxiproxy:2.12 fws-dind:29 fws-kube-apiserver:1.35 fws-kube-controller-manager:1.35 fws-kube-scheduler:1.35 fws-kubectl:1.35 fws-pause:3.10.1 fws-kubelet:1.35 fws-kind-node:1.35 fws-k3s:1.35; do
             "$crane" config "127.0.0.1:5000/e6qu/$ref" | grep -q '"os":"darwin"'
           done
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: steps.images.outputs.cache-hit != 'true'
         with:
           path: ~/fws-images
@@ -269,13 +305,13 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         with:
           path: ~/fws-images
           key: ${{ needs.images.outputs.key }}
@@ -394,11 +430,11 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         with:
           path: ~/fws-images
           key: ${{ needs.images.outputs.key }}

@@ -92,8 +92,16 @@ func TestLibpodRoutes(t *testing.T) {
 	if res := call(t, ts, "POST", "/v5.8.9/libpod/pods/create", `{"name":"p","no_infra":true}`, &pod); res.StatusCode != http.StatusCreated || pod["Id"] == "" {
 		t.Fatalf("pod create: %d %v", res.StatusCode, pod)
 	}
-	if res := call(t, ts, "POST", "/v5.8.9/libpod/pods/create", `{"name":"q"}`, &e); res.StatusCode != http.StatusNotImplemented {
-		t.Errorf("a pod with an infra container: %d %+v", res.StatusCode, e)
+	// A pod's infra container runs the pause image, which this engine's
+	// store lacks: the pod is not left behind without it.
+	if res := call(t, ts, "POST", "/v5.8.9/libpod/pods/create", `{"name":"q"}`, &e); res.StatusCode != http.StatusNotFound {
+		t.Errorf("a pod whose infra image is missing: %d %+v", res.StatusCode, e)
+	}
+	if res := call(t, ts, "GET", "/v5.8.9/libpod/pods/q/exists", "", nil); res.StatusCode == http.StatusNoContent {
+		t.Error("a pod whose infra container could not be made exists")
+	}
+	if res := call(t, ts, "POST", "/v5.8.9/libpod/pods/create", `{"name":"r","shared_namespaces":["user"]}`, &e); res.StatusCode != http.StatusNotImplemented {
+		t.Errorf("a pod sharing the user namespace: %d %+v", res.StatusCode, e)
 	}
 	if res := call(t, ts, "GET", "/v5.8.9/libpod/pods/p/exists", "", nil); res.StatusCode != http.StatusNoContent {
 		t.Errorf("pod exists: %d", res.StatusCode)
@@ -103,5 +111,27 @@ func TestLibpodRoutes(t *testing.T) {
 	}
 	if res := call(t, ts, "DELETE", "/v5.8.9/libpod/pods/p", "", nil); res.StatusCode != 200 {
 		t.Errorf("pod rm: %d", res.StatusCode)
+	}
+}
+
+// A container created in a pod takes from the pod's infra container each
+// namespace the pod shares and its own specification leaves unset.
+func TestJoinPod(t *testing.T) {
+	p := pod{InfraID: "infra", Share: []string{"net", "ipc"}}
+	var spec specGen
+	joinPod(p, &spec)
+	want := namespace{NSMode: "container", Value: "infra"}
+	if spec.NetNS != want || spec.IpcNS != want || spec.PidNS.NSMode != "" {
+		t.Errorf("net %+v ipc %+v pid %+v", spec.NetNS, spec.IpcNS, spec.PidNS)
+	}
+	own := specGen{NetNS: namespace{NSMode: "host"}, IpcNS: namespace{NSMode: "private"}}
+	joinPod(p, &own)
+	if own.NetNS.NSMode != "host" || own.IpcNS.NSMode != "private" {
+		t.Errorf("a container's own namespaces gave way: %+v %+v", own.NetNS, own.IpcNS)
+	}
+	var alone specGen
+	joinPod(pod{}, &alone)
+	if alone.NetNS.NSMode != "" {
+		t.Errorf("a pod without an infra container shared %+v", alone.NetNS)
 	}
 }

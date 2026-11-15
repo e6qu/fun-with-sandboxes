@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/leases"
@@ -79,6 +80,7 @@ func (m *mobyInstance) Attrs() map[string]string { return m.attrs }
 // engine's image store. Attestations stay out, as dockerd's moby exporter
 // leaves them out of its image store.
 func (m *mobyInstance) Export(ctx context.Context, src *exporter.Source, info exporter.ExportBuildInfo) (map[string]string, exporter.FinalizeFunc, exporter.DescriptorReference, error) {
+	defer slow(time.Now(), "exporting the image")
 	if len(src.Refs) > 0 {
 		return nil, nil, nil, fmt.Errorf("exporting a multi-platform build to the engine's images is not supported")
 	}

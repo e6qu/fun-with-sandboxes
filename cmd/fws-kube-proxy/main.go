@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -74,10 +75,15 @@ func main() {
 
 // Service and ServicePort are the engine's services, as its API takes them.
 type Service struct {
-	Name      string        `json:"name"`
-	Namespace string        `json:"namespace"`
-	ClusterIP string        `json:"clusterIP"`
-	Ports     []ServicePort `json:"ports"`
+	Name            string        `json:"name"`
+	Namespace       string        `json:"namespace"`
+	ClusterIP       string        `json:"clusterIP"`
+	ClusterIPs      []string      `json:"clusterIPs,omitempty"`
+	ExternalIPs     []string      `json:"externalIPs,omitempty"`
+	SessionAffinity string        `json:"sessionAffinity,omitempty"`
+	AffinitySeconds int           `json:"sessionAffinityTimeout,omitempty"`
+	ExternalName    string        `json:"externalName,omitempty"`
+	Ports           []ServicePort `json:"ports"`
 }
 
 type ServicePort struct {
@@ -91,16 +97,31 @@ type ServicePort struct {
 type k8sService struct {
 	Metadata struct{ Name, Namespace string } `json:"metadata"`
 	Spec     struct {
-		Type       string   `json:"type"`
-		ClusterIP  string   `json:"clusterIP"`
-		ClusterIPs []string `json:"clusterIPs"`
-		Ports      []struct {
+		Type                  string   `json:"type"`
+		ClusterIP             string   `json:"clusterIP"`
+		ClusterIPs            []string `json:"clusterIPs"`
+		ExternalIPs           []string `json:"externalIPs"`
+		ExternalName          string   `json:"externalName"`
+		SessionAffinity       string   `json:"sessionAffinity"`
+		SessionAffinityConfig struct {
+			ClientIP struct {
+				TimeoutSeconds int `json:"timeoutSeconds"`
+			} `json:"clientIP"`
+		} `json:"sessionAffinityConfig"`
+		Ports []struct {
 			Name     string `json:"name"`
 			Port     int    `json:"port"`
 			Protocol string `json:"protocol"`
 			NodePort int    `json:"nodePort"`
 		} `json:"ports"`
 	} `json:"spec"`
+	Status struct {
+		LoadBalancer struct {
+			Ingress []struct {
+				IP string `json:"ip"`
+			} `json:"ingress"`
+		} `json:"loadBalancer"`
+	} `json:"status"`
 }
 
 type endpointSlice struct {
@@ -123,38 +144,88 @@ type endpointSlice struct {
 }
 
 // build turns the cluster's Services and EndpointSlices into the engine's
-// services: each IPv4 cluster IP, with its TCP and UDP ports, the TCP
-// ports' node ports where the Service has them, and, behind each, the ready IPv4 endpoints
-// of the slices that name it, at the slice port of the same name.
-// Headless Services have no cluster IP to serve.
+// services: each cluster IP, IPv4 and IPv6, with its TCP and UDP ports,
+// their node ports where the Service has them, its external IPs and load
+// balancer addresses, its ClientIP session affinity, and, behind each
+// port, the ready endpoints of the slices that name it, at the slice port
+// of the same name: the IPv4 slices', or the IPv6 slices' for a Service
+// without an IPv4 cluster IP.
+// An ExternalName Service's names stand for its external name. Headless
+// Services have no cluster IP to serve. An external or load
+// balancer address another Service took first, or one of a family no
+// cluster IP has, is left out, as the engine would refuse the whole list
+// for it.
 func build(svcs []k8sService, slices []endpointSlice) []Service {
-	type key struct{ ns, name string }
+	type key struct{ ns, name, family string }
 	byService := map[key][]endpointSlice{}
 	for _, s := range slices {
-		if s.AddressType != "IPv4" {
+		if s.AddressType != "IPv4" && s.AddressType != "IPv6" {
 			continue
 		}
 		n := s.Metadata.Labels["kubernetes.io/service-name"]
 		if n != "" {
-			byService[key{s.Metadata.Namespace, n}] = append(byService[key{s.Metadata.Namespace, n}], s)
+			k := key{s.Metadata.Namespace, n, s.AddressType}
+			byService[k] = append(byService[k], s)
+		}
+	}
+	sort.SliceStable(svcs, func(i, j int) bool {
+		if svcs[i].Metadata.Namespace != svcs[j].Metadata.Namespace {
+			return svcs[i].Metadata.Namespace < svcs[j].Metadata.Namespace
+		}
+		return svcs[i].Metadata.Name < svcs[j].Metadata.Name
+	})
+	taken := map[netip.Addr]bool{}
+	for _, k := range svcs {
+		for _, a := range clusterIPs(k) {
+			taken[a] = true
 		}
 	}
 	var out []Service
 	for _, k := range svcs {
-		ip := k.Spec.ClusterIP
-		if a, err := netip.ParseAddr(ip); err != nil || !a.Is4() {
-			ip = ""
-			for _, c := range k.Spec.ClusterIPs {
-				if a, err := netip.ParseAddr(c); err == nil && a.Is4() {
-					ip = c
-					break
-				}
+		if k.Spec.Type == "ExternalName" {
+			if dnsName(k.Spec.ExternalName) {
+				out = append(out, Service{Name: k.Metadata.Name, Namespace: k.Metadata.Namespace, ExternalName: k.Spec.ExternalName, Ports: []ServicePort{}})
 			}
-		}
-		if ip == "" {
 			continue
 		}
-		svc := Service{Name: k.Metadata.Name, Namespace: k.Metadata.Namespace, ClusterIP: ip}
+		ips := clusterIPs(k)
+		if len(ips) == 0 {
+			continue
+		}
+		svc := Service{Name: k.Metadata.Name, Namespace: k.Metadata.Namespace, ClusterIP: ips[0].String()}
+		family := "IPv6"
+		has := map[bool]bool{}
+		for _, a := range ips {
+			has[a.Is4()] = true
+			if a.Is4() {
+				family = "IPv4"
+			}
+		}
+		if len(ips) > 1 {
+			for _, a := range ips {
+				svc.ClusterIPs = append(svc.ClusterIPs, a.String())
+			}
+		}
+		// A load balancer's addresses answer in the cluster as external
+		// IPs do.
+		external := append([]string(nil), k.Spec.ExternalIPs...)
+		for _, in := range k.Status.LoadBalancer.Ingress {
+			external = append(external, in.IP)
+		}
+		for _, x := range external {
+			a, err := netip.ParseAddr(x)
+			if err != nil || !usable(a) || !has[a.Is4()] || taken[a] {
+				continue
+			}
+			taken[a] = true
+			svc.ExternalIPs = append(svc.ExternalIPs, a.String())
+		}
+		if k.Spec.SessionAffinity == "ClientIP" {
+			svc.SessionAffinity = "ClientIP"
+			if t := k.Spec.SessionAffinityConfig.ClientIP.TimeoutSeconds; t > 0 && t <= 86400 {
+				svc.AffinitySeconds = t
+			}
+		}
 		for _, p := range k.Spec.Ports {
 			proto := p.Protocol
 			if proto == "" {
@@ -165,11 +236,11 @@ func build(svcs []k8sService, slices []endpointSlice) []Service {
 			}
 			sp := ServicePort{Port: p.Port, Protocol: proto, Endpoints: []string{}}
 			// A NodePort Service, and a LoadBalancer one, which is one
-			// too, answers on the node's port as well, for TCP.
-			if proto == "TCP" && (k.Spec.Type == "NodePort" || k.Spec.Type == "LoadBalancer") {
+			// too, answers on the node's port as well.
+			if k.Spec.Type == "NodePort" || k.Spec.Type == "LoadBalancer" {
 				sp.NodePort = p.NodePort
 			}
-			for _, s := range byService[key{svc.Namespace, svc.Name}] {
+			for _, s := range byService[key{svc.Namespace, svc.Name, family}] {
 				target := 0
 				for _, q := range s.Ports {
 					name := ""
@@ -192,7 +263,7 @@ func build(svcs []k8sService, slices []endpointSlice) []Service {
 						continue
 					}
 					for _, a := range ep.Addresses {
-						if addr, err := netip.ParseAddr(a); err == nil && addr.Is4() {
+						if addr, err := netip.ParseAddr(a); err == nil && addr.Is4() == (family == "IPv4") {
 							sp.Endpoints = append(sp.Endpoints, netip.AddrPortFrom(addr, uint16(target)).String())
 						}
 					}
@@ -203,13 +274,48 @@ func build(svcs []k8sService, slices []endpointSlice) []Service {
 		}
 		out = append(out, svc)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Namespace != out[j].Namespace {
-			return out[i].Namespace < out[j].Namespace
-		}
-		return out[i].Name < out[j].Name
-	})
 	return out
+}
+
+// clusterIPs are a Service's cluster IPs the engine serves, its primary
+// first: one of each family at most.
+func clusterIPs(k k8sService) []netip.Addr {
+	var out []netip.Addr
+	for _, c := range append([]string{k.Spec.ClusterIP}, k.Spec.ClusterIPs...) {
+		a, err := netip.ParseAddr(c)
+		if err != nil || !usable(a) || slices.ContainsFunc(out, func(o netip.Addr) bool { return o.Is4() == a.Is4() }) {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// dnsName reports whether name is a DNS name the engine takes:
+// dot-separated labels of letters, digits, hyphens and underscores, with a
+// final dot or without.
+func dnsName(name string) bool {
+	name = strings.TrimSuffix(name, ".")
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	for _, l := range strings.Split(name, ".") {
+		if l == "" || len(l) > 63 || strings.HasPrefix(l, "-") || strings.HasSuffix(l, "-") {
+			return false
+		}
+		for _, c := range l {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// usable reports whether the engine serves a service at address a: a
+// unicast IPv4 or IPv6 address outside loopback.
+func usable(a netip.Addr) bool {
+	return a.Zone() == "" && !a.Is4In6() && !a.IsUnspecified() && !a.IsLoopback() && !a.IsMulticast()
 }
 
 // apiClient reads the API server as a kubeconfig's current context names

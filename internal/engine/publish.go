@@ -76,19 +76,21 @@ func (e *Engine) publishPlan(c *Container) ([]published, error) {
 // nestedBinding publishes a nested engine's container port in the
 // privileged container, as dockerd publishes in its own network namespace:
 // on that container's port's host port when it has one, else on the Unix
-// socket its processes reach the port at.
+// socket its processes reach the port at, a stream socket for a TCP port
+// and a datagram socket for a UDP one.
 func nestedBinding(n *Nested, p network.Port, ip netip.Addr, lo, hi int, upstream string) (published, error) {
-	if p.Proto() != network.TCP {
-		return published{}, unsupported("publishing %s is not supported in a privileged container: its engine publishes TCP ports only", p)
+	proto := string(p.Proto())
+	if p.Proto() != network.TCP && p.Proto() != network.UDP {
+		return published{}, unsupported("publishing %s is not supported in a privileged container: its engine publishes TCP and UDP ports only", p)
 	}
-	hostPort, dir, err := n.Port(lo)
+	hostPort, dir, err := n.Port(proto, lo)
 	if err != nil {
 		return published{}, err
 	}
 	if dir == "" {
 		return published{port: p, report: lo, binding: shim.Binding{
-			Proto: "tcp", IP: netip.MustParseAddr("127.0.0.1"), Lo: hostPort, Hi: hostPort, Upstream: upstream,
+			Proto: proto, IP: netip.MustParseAddr("127.0.0.1"), Lo: hostPort, Hi: hostPort, Upstream: upstream,
 		}}, nil
 	}
-	return published{port: p, binding: shim.Binding{Proto: "tcp", IP: ip, Lo: lo, Hi: hi, Upstream: upstream, Dir: dir}}, nil
+	return published{port: p, binding: shim.Binding{Proto: proto, IP: ip, Lo: lo, Hi: hi, Upstream: upstream, Dir: dir}}, nil
 }

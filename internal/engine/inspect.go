@@ -97,11 +97,12 @@ func (c *Container) endpoints() map[string]*network.EndpointSettings {
 }
 
 // endpoint is the container's endpoint on network name, with its
-// address: its own on a network with a subnet, else its member address
-// in memberSubnet.
+// address: its own on a network with a subnet, none of IPv4 on an
+// IPv6-only network, where it holds an IPv6 address alone, else its
+// member address in memberSubnet.
 func (c *Container) endpoint(name string) *network.EndpointSettings {
 	es := c.rec.Networks[name].Copy()
-	if es.IPAddress.IsValid() || name == "none" || c.rec.Address == "" {
+	if es.IPAddress.IsValid() || es.GlobalIPv6Address.IsValid() || name == "none" || c.rec.Address == "" {
 		return es
 	}
 	a, err := netip.ParseAddr(c.rec.Address)

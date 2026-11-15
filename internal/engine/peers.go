@@ -237,5 +237,6 @@ func (e *Engine) writeAllNetworksLocked() error {
 			return err
 		}
 	}
+	e.pruneServiceClientsLocked()
 	return nil
 }

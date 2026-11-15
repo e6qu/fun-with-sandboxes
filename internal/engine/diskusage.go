@@ -36,7 +36,9 @@ func (e *Engine) Changes(ctx context.Context, ref string) ([]container.Filesyste
 		return nil, unsupported("docker diff: %v", errNoInit)
 	}
 	out := []container.FilesystemChange{}
-	err = fs.Changes(ctx, c.initDir(), c.root(), func(k fs.ChangeKind, p string, _ os.FileInfo, err error) error {
+	// image.Changes, unlike continuity's, sees a chown or chmod the
+	// container library recorded beside a file.
+	err = image.Changes(ctx, c.initDir(), c.root(), nil, func(k fs.ChangeKind, p string, _ os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}

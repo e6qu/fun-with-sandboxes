@@ -13,7 +13,6 @@ import (
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/diff"
 	"github.com/containerd/containerd/v2/core/mount"
-	"github.com/containerd/containerd/v2/pkg/archive"
 	"github.com/containerd/containerd/v2/pkg/archive/compression"
 	"github.com/containerd/containerd/v2/pkg/epoch"
 	"github.com/containerd/containerd/v2/pkg/labels"
@@ -42,14 +41,35 @@ func bindDir(mounts []mount.Mount) (string, func(), error) {
 }
 
 // applier unpacks layers into snapshot directories.
-type applier struct{ store content.Provider }
+type applier struct {
+	store content.Provider
+	// engine is the engine's image store, which holds the layers of its
+	// images unpacked apart.
+	engine *image.Store
+}
 
 func (a applier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mount.Mount, _ ...diff.ApplyOpt) (ocispec.Descriptor, error) {
+	defer slow(time.Now(), "applying layer %s of %d bytes", desc.Digest, desc.Size)
 	root, done, err := bindDir(mounts)
 	if err != nil {
 		return ocispec.Descriptor{}, err
 	}
 	defer done()
+	// A layer of an engine image is unpacked in the engine's store already,
+	// in the shape a delta takes: a clone of it is the layer applied.
+	if a.engine != nil && isDelta(root) {
+		if entries, err := os.ReadDir(root); err == nil && len(entries) == 0 && os.Remove(root) == nil {
+			diffID, size, ok, err := a.engine.CloneCachedLayer(desc.Digest.String(), root)
+			if ok && err == nil {
+				return ocispec.Descriptor{MediaType: ocispec.MediaTypeImageLayer, Size: size, Digest: digest.Digest(diffID)}, nil
+			}
+			// The snapshot's directory again, for the layer to unpack into.
+			os.RemoveAll(root)
+			if err := os.Mkdir(root, 0o755); err != nil {
+				return ocispec.Descriptor{}, err
+			}
+		}
+	}
 	ra, err := a.store.ReaderAt(ctx, desc)
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("open layer %s: %w", desc.Digest, err)
@@ -62,7 +82,13 @@ func (a applier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mo
 	defer r.Close()
 	dg := digest.SHA256.Digester()
 	n := &counter{}
-	if err := image.ApplyLayer(root, io.TeeReader(r, io.MultiWriter(dg.Hash(), n))); err != nil {
+	// A delta keeps the layer's whiteouts as the files that name them, for
+	// the snapshotter to act on as it puts the tree together.
+	apply := image.ApplyLayer
+	if isDelta(root) {
+		apply = image.ExtractLayer
+	}
+	if err := apply(root, io.TeeReader(r, io.MultiWriter(dg.Hash(), n))); err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("apply layer %s: %w", desc.Digest, err)
 	}
 	// Drain what the tar reader left unread so the digest covers the stream.
@@ -82,6 +108,7 @@ func (c *counter) Write(p []byte) (int, error) { c.n += int64(len(p)); return le
 type comparer struct{ store content.Store }
 
 func (s comparer) Compare(ctx context.Context, lower, upper []mount.Mount, opts ...diff.Opt) (ocispec.Descriptor, error) {
+	defer slow(time.Now(), "comparing two snapshots")
 	var cfg diff.Config
 	for _, o := range opts {
 		if err := o(&cfg); err != nil {
@@ -90,10 +117,6 @@ func (s comparer) Compare(ctx context.Context, lower, upper []mount.Mount, opts 
 	}
 	if tm := epoch.FromContext(ctx); tm != nil && cfg.SourceDateEpoch == nil {
 		cfg.SourceDateEpoch = tm
-	}
-	var wopts []archive.WriteDiffOpt
-	if cfg.SourceDateEpoch != nil {
-		wopts = append(wopts, archive.WithSourceDateEpoch(cfg.SourceDateEpoch))
 	}
 	kind := compression.Uncompressed
 	switch {
@@ -152,9 +175,15 @@ func (s comparer) Compare(ctx context.Context, lower, upper []mount.Mount, opts 
 	if cfg.Labels == nil {
 		cfg.Labels = map[string]string{}
 	}
+	// The layer carries the modes and owners containers see, and reads
+	// only the files the step may have changed (settledSince).
+	// The trees behind BuildKit's views are the same as the views', and
+	// their files say when each last changed.
+	lowerDir, upperDir = behindView(lowerDir), behindView(upperDir)
+	dopts := image.DiffOptions{SourceDateEpoch: cfg.SourceDateEpoch, Settled: settledSince(lowerDir, upperDir)}
 	if kind == compression.Uncompressed {
 		dg := digest.SHA256.Digester()
-		if err := archive.WriteDiff(ctx, io.MultiWriter(cw, dg.Hash()), lowerDir, upperDir, wopts...); err != nil {
+		if err := image.WriteDiff(ctx, io.MultiWriter(cw, dg.Hash()), lowerDir, upperDir, dopts); err != nil {
 			return ocispec.Descriptor{}, fmt.Errorf("write diff: %w", err)
 		}
 		cfg.Labels[labels.LabelUncompressed] = dg.Digest().String()
@@ -169,7 +198,7 @@ func (s comparer) Compare(ctx context.Context, lower, upper []mount.Mount, opts 
 			return ocispec.Descriptor{}, fmt.Errorf("open compressed stream: %w", err)
 		}
 		dg := digest.SHA256.Digester()
-		err = archive.WriteDiff(ctx, io.MultiWriter(zw, dg.Hash()), lowerDir, upperDir, wopts...)
+		err = image.WriteDiff(ctx, io.MultiWriter(zw, dg.Hash()), lowerDir, upperDir, dopts)
 		if cerr := zw.Close(); err == nil {
 			err = cerr
 		}

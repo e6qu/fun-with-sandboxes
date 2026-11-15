@@ -142,7 +142,8 @@ func memberClient(p *Proxy, member, password string) *http.Client {
 // A stack's members are reached at the host ports behind their ports, by
 // name or member address, though the policy denies loopback: a client that
 // names itself a member, and sends the stack's own traffic through the
-// proxy, reaches the members it sees.
+// proxy, reaches the members it sees, and a name that stands for
+// another's as that name.
 func TestReachesStackMembers(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "member "+r.Host) }))
 	defer up.Close()
@@ -170,7 +171,8 @@ func TestReachesStackMembers(t *testing.T) {
 	os.WriteFile(network, []byte(fmt.Sprintf(
 		"127.88.0.2\tweb proj-web-1\t8000/tcp=%s\t%d\tproj_default\t0\t\t127.88.0.3/front\tproj_default=10.9.0.2/24 proj_default=fd00:9::2/64\n"+
 			"127.88.0.3\tapp\t\t0\tproj_default\t0\t\t\tproj_default=10.9.0.3/24\n"+
-			"127.88.0.4\tdb\t5432/tcp=%[1]s\t0\tproj_back\t0\n", port, rt.Addr().Port)), 0o644)
+			"127.88.0.4\tdb\t5432/tcp=%[1]s\t0\tproj_back\t0\n"+
+			"=web\tweb-alias\t\t0\tproj_default\t1\tservices\n", port, rt.Addr().Port)), 0o644)
 	policy := testPolicy()
 	policy.Deny = func(net.IP) bool { return true }
 	policy.Members = network
@@ -191,7 +193,7 @@ func TestReachesStackMembers(t *testing.T) {
 		b, _ := io.ReadAll(res.Body)
 		return res.StatusCode, string(b)
 	}
-	for _, url := range []string{"http://web:8000/", "http://PROJ-WEB-1:8000/", "http://127.88.0.2:8000/", "http://10.9.0.2:8000/", "http://[fd00:9::2]:8000/", "http://web:9000/", "http://front:8000/"} {
+	for _, url := range []string{"http://web:8000/", "http://PROJ-WEB-1:8000/", "http://127.88.0.2:8000/", "http://10.9.0.2:8000/", "http://[fd00:9::2]:8000/", "http://web:9000/", "http://front:8000/", "http://web-alias:8000/"} {
 		if code, b := get(app, url); code != 200 || !strings.HasPrefix(b, "member ") {
 			t.Errorf("GET %s: %d %q", url, code, b)
 		}

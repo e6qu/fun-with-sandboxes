@@ -45,6 +45,13 @@ const (
 // the container runs as many processes.
 const PidsVar = "FWS_PIDS"
 
+// IOPolicyFile names the file, beside the pids limit's, of the disk I/O
+// policy tier (libsystem.IOPolicy*) the engine writes as an update changes
+// a container's block I/O weight: the library sets each process the
+// container starts after it to the tier, as the library loads in the
+// process or as the process forks.
+const IOPolicyFile = "iopolicy"
+
 // PidsSocketVar names the socket the container's supervisor answers on with
 // how many processes the container runs, which the library compares with
 // the limit before a fork.
@@ -74,6 +81,12 @@ const (
 	NetworkVar = "FWS_NETWORK"
 	AddressVar = "FWS_ADDRESS"
 )
+
+// DNSVar is set for a container with DNS servers, search domains or
+// options of its own: the library resolves a name its /etc/hosts and its
+// stack's members do not answer through the container's router
+// (router.Resolve) rather than the host's resolver.
+const DNSVar = "FWS_DNS"
 
 // Mount is a volume or bind mount: Dest in the container, and Source, the
 // host directory or file behind it.
@@ -132,13 +145,20 @@ func archs() []string {
 	return []string{"-arch", "arm64", "-arch", "arm64e"}
 }
 
+// CFlagsVar names clang flags Build adds to both programs, such as CI's
+// UndefinedBehaviorSanitizer build, which traps where the C would act
+// undefined: -fsanitize=undefined -fsanitize-trap=undefined.
+const CFlagsVar = "FWS_CFLAGS"
+
 // Build compiles the library into dir, and the spawn helper beside it as
-// Spawner names it, unless a build of these sources is there already, and
-// returns the library's path.
+// Spawner names it, unless a build of these sources and flags is there
+// already, and returns the library's path.
 func Build(dir string) (string, error) {
+	extra := strings.Fields(os.Getenv(CFlagsVar))
 	h := sha256.New()
 	h.Write(source)
 	h.Write(spawnSource)
+	h.Write([]byte(strings.Join(extra, "\x00")))
 	out := filepath.Join(dir, "fwsroot-"+hex.EncodeToString(h.Sum(nil)[:8])+".dylib")
 	if _, err := os.Stat(out); err == nil {
 		return out, nil
@@ -164,7 +184,7 @@ func Build(dir string) (string, error) {
 		"-Wl,-U,_IORegisterForSystemPower", "-Wl,-U,_IONotificationPortCreate",
 		"-Wl,-U,_connect$NOCANCEL", "-Wl,-U,_sendto$NOCANCEL", "-Wl,-U,_sendmsg$NOCANCEL",
 		"-Wl,-U,_recvfrom$NOCANCEL", "-Wl,-U,_recvmsg$NOCANCEL", "-Wl,-U,_accept$NOCANCEL"}, archs()...)
-	if err := clang(append(args, "-o", lib, src)); err != nil {
+	if err := clang(append(append(args, extra...), "-o", lib, src)); err != nil {
 		return "", err
 	}
 	spawnSrc := filepath.Join(work, "spawn.c")
@@ -172,7 +192,7 @@ func Build(dir string) (string, error) {
 		return "", err
 	}
 	spawn := filepath.Join(work, "spawn")
-	if err := clang([]string{"clang", "-O2", "-Wall", "-Werror", "-o", spawn, spawnSrc, "-lsandbox"}); err != nil {
+	if err := clang(append(append([]string{"clang", "-O2", "-Wall", "-Werror"}, extra...), "-o", spawn, spawnSrc, "-lsandbox")); err != nil {
 		return "", err
 	}
 	// Another engine may have built them meanwhile; either build is the

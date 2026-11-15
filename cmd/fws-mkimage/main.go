@@ -5,7 +5,10 @@
 //
 // Every absolute /nix/store reference a Mach-O file loads through, and every
 // absolute symlink, is rewritten relative to the file itself, so the image is
-// self-contained wherever its root lands on the host.
+// self-contained wherever its root lands on the host. A store path's layer
+// depends on that store path alone, so it is the same in every image; what
+// an image changes in a store path for its own /bin goes into its last
+// layer.
 package main
 
 import (
@@ -31,6 +34,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
 )
@@ -113,6 +117,13 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 		return err
 	}
 	defer os.RemoveAll(stage)
+	// overlay holds the image's own versions of store path files, which
+	// its last layer carries over the store paths' layers.
+	overlay, err := os.MkdirTemp("", "fws-mkimage-overlay-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(overlay)
 
 	var paths []string
 	if closure != "" {
@@ -137,7 +148,7 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 		}
 	}
 	if closure != "" {
-		if err := rewriteShebangs(stage); err != nil {
+		if err := rewriteShebangs(stage, overlay); err != nil {
 			return err
 		}
 	}
@@ -180,7 +191,7 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 			return err
 		}
 	}
-	return writeArchive(stage, spec, paths, out, arch)
+	return writeArchive(stage, overlay, spec, paths, out, arch)
 }
 
 func readLines(path string) ([]string, error) {
@@ -462,8 +473,10 @@ var systemShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash"
 // named through /usr/bin/env, which finds it on the container's PATH, and a
 // shell becomes the host's, with the store paths in its script prefixed by
 // the container's root, which every container process finds in
-// SANDBOX_ROOT.
-func rewriteShebangs(stage string) error {
+// SANDBOX_ROOT. A shell script's rewrite depends on the script alone and
+// happens in place; one through /bin depends on what the image puts there,
+// so it goes to overlay, at the script's path, for the image's last layer.
+func rewriteShebangs(stage, overlay string) error {
 	bins := map[string]bool{}
 	if entries, err := os.ReadDir(filepath.Join(stage, "bin")); err == nil {
 		for _, e := range entries {
@@ -482,6 +495,7 @@ func rewriteShebangs(stage string) error {
 		fields := strings.Fields(string(line[2:]))
 		name := filepath.Base(fields[0])
 		var head string
+		dst := p
 		switch {
 		case systemShells[name]:
 			head = "#!/bin/" + name
@@ -490,6 +504,14 @@ func rewriteShebangs(stage string) error {
 			rest = bytes.ReplaceAll(rest, []byte(storeDir+"/"), []byte("${SANDBOX_ROOT}"+storeDir+"/"))
 		case bins[name]:
 			head = "#!/usr/bin/env -S " + name
+			rel, err := filepath.Rel(stage, p)
+			if err != nil {
+				return err
+			}
+			dst = filepath.Join(overlay, rel)
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return err
+			}
 		default:
 			// An interpreter the image does not carry on /bin cannot run
 			// the script in any container.
@@ -502,14 +524,20 @@ func rewriteShebangs(stage string) error {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(p, append([]byte(head+"\n"), rest...), fi.Mode().Perm())
+		return os.WriteFile(dst, append([]byte(head+"\n"), rest...), fi.Mode().Perm())
 	})
 }
 
+// sourceURL is where the images' sources live, for the manifest's
+// org.opencontainers.image.source annotation.
+const sourceURL = "https://github.com/e6qu/fun-with-sandboxes"
+
 // writeArchive writes the stage as an OCI image in the `docker save`
 // layout: a layer per store path, in the closure's sorted order, then one
-// with the rest of the stage.
-func writeArchive(stage string, spec Spec, storePaths []string, out, arch string) error {
+// with the rest of the stage and what overlay holds over the store paths.
+// It writes the epoch as every time, the image's creation included, so
+// the same inputs give the same image.
+func writeArchive(stage, overlay string, spec Spec, storePaths []string, out, arch string) error {
 	dir, err := os.MkdirTemp("", "fws-mkimage-layers-")
 	if err != nil {
 		return err
@@ -519,9 +547,9 @@ func writeArchive(stage string, spec Spec, storePaths []string, out, arch string
 	var adds []mutate.Addendum
 	var history []v1.History
 	var diffIDs []v1.Hash
-	addLayer := func(createdBy string, include func(rel string) bool) error {
+	addLayer := func(createdBy string, sources ...layerSource) error {
 		p := filepath.Join(dir, fmt.Sprintf("%d.tar", len(adds)))
-		if err := writeLayer(stage, p, include); err != nil {
+		if err := writeLayer(p, sources...); err != nil {
 			return err
 		}
 		l, err := tarball.LayerFromFile(p, tarball.WithMediaType(types.OCILayer))
@@ -541,18 +569,20 @@ func writeArchive(stage string, spec Spec, storePaths []string, out, arch string
 	sort.Strings(sorted)
 	for _, sp := range sorted {
 		own := strings.TrimPrefix(sp, "/")
-		if err := addLayer("fws-mkimage: "+sp, func(rel string) bool {
+		if err := addLayer("fws-mkimage: "+sp, layerSource{stage, func(rel string) bool {
 			return rel == "nix" || rel == "nix/store" || rel == own || strings.HasPrefix(rel, own+"/")
-		}); err != nil {
+		}}); err != nil {
 			return err
 		}
 	}
-	if err := addLayer("fws-mkimage", func(rel string) bool {
+	rest := layerSource{stage, func(rel string) bool {
 		if len(sorted) > 0 && rel == "nix" {
 			return false
 		}
 		return !strings.HasPrefix(rel+"/", "nix/store/")
-	}); err != nil {
+	}}
+	all := func(string) bool { return true }
+	if err := addLayer("fws-mkimage", rest, layerSource{overlay, all}); err != nil {
 		return err
 	}
 
@@ -565,13 +595,21 @@ func writeArchive(stage string, spec Spec, storePaths []string, out, arch string
 	if err != nil {
 		return err
 	}
+	variant := ""
+	if arch == "arm64" {
+		variant = "v8"
+	}
 	img, err = mutate.ConfigFile(img, &v1.ConfigFile{
-		Architecture: arch, OS: "darwin", Created: epoch, Config: cfg,
+		Architecture: arch, OS: "darwin", Variant: variant, Created: epoch, Config: cfg,
 		RootFS: v1.RootFS{Type: "layers", DiffIDs: diffIDs}, History: history,
 	})
 	if err != nil {
 		return err
 	}
+	img = mutate.Annotations(img, map[string]string{
+		ocispec.AnnotationCreated: epoch.Format(time.RFC3339),
+		ocispec.AnnotationSource:  sourceURL,
+	}).(v1.Image)
 	// go-containerregistry's config has no field for the health check's
 	// start interval.
 	var health struct {
@@ -596,29 +634,44 @@ func writeArchive(stage string, spec Spec, storePaths []string, out, arch string
 	return f.Close()
 }
 
-// writeLayer writes the stage entries include accepts, by slash-separated
-// path relative to the stage, as a deterministic layer tar.
-func writeLayer(stage, path string, include func(rel string) bool) error {
+// layerSource is a tree a layer takes the entries include accepts from, by
+// slash-separated path relative to dir.
+type layerSource struct {
+	dir     string
+	include func(rel string) bool
+}
+
+// writeLayer writes the entries of sources as a deterministic layer tar,
+// in lexical order of their paths; of entries at the same path, the
+// later source's.
+func writeLayer(path string, sources ...layerSource) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	tw := tar.NewWriter(f)
-	var paths []string
-	err = filepath.WalkDir(stage, func(p string, d fs.DirEntry, err error) error {
+	from := map[string]string{}
+	for _, src := range sources {
+		err = filepath.WalkDir(src.dir, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if rel, _ := filepath.Rel(src.dir, p); p != src.dir && src.include(filepath.ToSlash(rel)) {
+				from[filepath.ToSlash(rel)] = p
+			}
+			return nil
+		})
 		if err != nil {
 			return err
 		}
-		if rel, _ := filepath.Rel(stage, p); p != stage && include(filepath.ToSlash(rel)) {
-			paths = append(paths, p)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
 	}
-	sort.Strings(paths)
-	for _, p := range paths {
+	rels := make([]string, 0, len(from))
+	for rel := range from {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels)
+	for _, rel := range rels {
+		p := from[rel]
 		fi, err := os.Lstat(p)
 		if err != nil {
 			return err
@@ -633,8 +686,7 @@ func writeLayer(stage, path string, include func(rel string) bool) error {
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(stage, p)
-		h.Name = filepath.ToSlash(rel)
+		h.Name = rel
 		if fi.IsDir() {
 			h.Name += "/"
 		}

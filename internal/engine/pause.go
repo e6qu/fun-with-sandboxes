@@ -73,7 +73,8 @@ func (c *Container) stateName() container.ContainerState {
 }
 
 // Update changes the restart policy and the resource limits; the shim of a
-// running container applies new limits at once. A field the request leaves
+// running container applies new limits at once, but for a block I/O
+// weight, which the processes the container starts from then on take up. A field the request leaves
 // zero keeps its value, as with dockerd.
 func (e *Engine) Update(ref string, req container.UpdateConfig) (container.UpdateResponse, error) {
 	c, err := e.Container(ref)
@@ -115,9 +116,6 @@ func (e *Engine) Update(ref string, req container.UpdateConfig) (container.Updat
 		r.PidsLimit = u.PidsLimit
 	}
 	if u.BlkioWeight != 0 {
-		if running {
-			return container.UpdateResponse{}, unsupported("the block I/O weight of a running container cannot change: macOS lets a process set only its own disk I/O policy, which its children inherit as it starts them")
-		}
 		r.BlkioWeight = u.BlkioWeight
 	}
 	if u.CpusetCpus != "" || u.CpusetMems != "" || u.CPURealtimePeriod != 0 || u.CPURealtimeRuntime != 0 ||
@@ -144,6 +142,15 @@ func (e *Engine) Update(ref string, req container.UpdateConfig) (container.Updat
 	}
 	if err := c.writePidsLimit(r.PidsLimit); err != nil {
 		return container.UpdateResponse{}, err
+	}
+	// macOS lets a process set only its own disk I/O policy, so a new
+	// weight reaches the processes the container starts from now on, execs
+	// and forks alike, through the file the container library reads as
+	// they start; a process already running keeps its tier.
+	if u.BlkioWeight != 0 {
+		if err := c.writeIOPolicy(r.BlkioWeight); err != nil {
+			return container.UpdateResponse{}, err
+		}
 	}
 	c.rec.HostConfig.Resources = r
 	if req.RestartPolicy.Name != "" {

@@ -1,7 +1,8 @@
 // Command limits prints the limits it runs under: its descriptor limit, its
 // scheduling priority, its disk I/O policy, whether it has a controlling
 // terminal, its process limit, and its threads' highest base priority,
-// which a QoS clamp lowers.
+// which a QoS clamp lowers. With the argument confined it reports whether
+// its sandbox holds instead.
 package main
 
 import (
@@ -14,6 +15,13 @@ import (
 )
 
 func main() {
+	// limits confined reports whether its sandbox holds: /Users, which a
+	// container's profile denies, cannot be listed.
+	if len(os.Args) > 1 && os.Args[1] == "confined" {
+		_, err := os.ReadDir("/Users")
+		fmt.Printf("confined=%v\n", err != nil)
+		return
+	}
 	var nofile syscall.Rlimit
 	syscall.Getrlimit(syscall.RLIMIT_NOFILE, &nofile)
 	nice, _ := syscall.Getpriority(syscall.PRIO_PROCESS, 0)

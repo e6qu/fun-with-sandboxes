@@ -1,7 +1,6 @@
 package image
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,8 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"sync"
 
-	"github.com/containerd/containerd/v2/pkg/archive"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
@@ -66,6 +66,8 @@ type blobImage struct {
 	desc     v1.Descriptor
 	raw      []byte
 	manifest *v1.Manifest
+	idsMu    sync.Mutex
+	ids      []v1.Hash
 }
 
 func (b *blobImage) MediaType() (types.MediaType, error) { return b.desc.MediaType, nil }
@@ -78,12 +80,39 @@ func (b *blobImage) LayerByDigest(h v1.Hash) (partial.CompressedLayer, error) {
 	if h == b.manifest.Config.Digest {
 		return &blobLayer{s: b.s, desc: b.manifest.Config}, nil
 	}
-	for _, l := range b.manifest.Layers {
+	for i, l := range b.manifest.Layers {
 		if l.Digest == h {
-			return &blobLayer{s: b.s, desc: l}, nil
+			ids, err := b.diffIDs()
+			if err != nil {
+				return nil, err
+			}
+			return &fsLayer{blobLayer{s: b.s, desc: l}, ids[i]}, nil
 		}
 	}
 	return nil, fmt.Errorf("image %s has no blob %s", b.desc.Digest, h)
+}
+
+// diffIDs are the config's rootfs.diff_ids, one for each of the manifest's
+// layers.
+func (b *blobImage) diffIDs() ([]v1.Hash, error) {
+	b.idsMu.Lock()
+	defer b.idsMu.Unlock()
+	if b.ids != nil {
+		return b.ids, nil
+	}
+	raw, err := b.RawConfigFile()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := v1.ParseConfigFile(bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	if n, m := len(b.manifest.Layers), len(cfg.RootFS.DiffIDs); n != m {
+		return nil, fmt.Errorf("image %s has %d layers but its config lists %d diff_ids", b.desc.Digest, n, m)
+	}
+	b.ids = cfg.RootFS.DiffIDs
+	return b.ids, nil
 }
 
 type blobLayer struct {
@@ -95,6 +124,15 @@ func (l *blobLayer) Digest() (v1.Hash, error)            { return l.desc.Digest,
 func (l *blobLayer) Size() (int64, error)                { return l.desc.Size, nil }
 func (l *blobLayer) MediaType() (types.MediaType, error) { return l.desc.MediaType, nil }
 func (l *blobLayer) Compressed() (io.ReadCloser, error)  { return os.Open(l.s.blobPath(l.desc.Digest)) }
+
+// fsLayer is a layer blob with the diff_id its image's config gives it,
+// which measure checks the layer's content against as it unpacks it.
+type fsLayer struct {
+	blobLayer
+	diffID v1.Hash
+}
+
+func (l *fsLayer) DiffID() (v1.Hash, error) { return l.diffID, nil }
 
 // writeIndexLocked rewrites index.json from the image records: a descriptor
 // per tag, named as containerd and Docker name them, and one for each
@@ -133,18 +171,25 @@ func refAnnotations(tag string) map[string]string {
 	return map[string]string{AnnotationImageName: t.Name(), AnnotationRefName: t.TagStr()}
 }
 
-// collectLocked removes the blobs no stored image refers to.
-func (s *Store) collectLocked() error {
+// collectLocked removes the blobs, and the cached layers, no stored image
+// refers to, and returns the bytes they took on disk.
+func (s *Store) collectLocked() (uint64, error) {
 	keep := map[string]bool{}
 	for _, img := range s.idx {
 		keep[img.Manifest.Digest.Hex] = true
+		// The index a pull resolved a reference to.
+		for _, d := range img.RepoDigests {
+			if h, err := v1.NewHash(d[strings.LastIndex(d, "@")+1:]); err == nil {
+				keep[h.Hex] = true
+			}
+		}
 		raw, err := os.ReadFile(s.blobPath(img.Manifest.Digest))
 		if err != nil {
-			return err
+			return 0, err
 		}
 		m, err := v1.ParseManifest(bytes.NewReader(raw))
 		if err != nil {
-			return err
+			return 0, err
 		}
 		keep[m.Config.Digest.Hex] = true
 		for _, l := range m.Layers {
@@ -154,19 +199,24 @@ func (s *Store) collectLocked() error {
 	dir := filepath.Join(s.dir, "oci", "blobs", "sha256")
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return 0, nil
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
+	var freed uint64
 	for _, e := range entries {
 		if !keep[e.Name()] {
-			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
+			p := filepath.Join(dir, e.Name())
+			u := DiskUsage(p)
+			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return freed, err
 			}
+			freed += u.Bytes
 		}
 	}
-	return nil
+	n, err := s.collectLayersLocked()
+	return freed + n, err
 }
 
 // ociLayerType maps a layer media type onto its OCI equivalent, as BuildKit
@@ -240,34 +290,7 @@ func (s *Store) Extend(base string, diffs []string, root string, config Config, 
 }
 
 // Diff writes the changes from lower to upper as an uncompressed OCI layer,
-// whiteouts for what upper removed, with ownership dropped to root as the
-// engine's own layers carry it.
+// whiteouts for what upper removed, as WriteDiff writes it.
 func Diff(ctx context.Context, lower, upper string, w io.Writer) error {
-	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(archive.WriteDiff(ctx, pw, lower, upper)) }()
-	err := rootOwned(pr, w)
-	pr.CloseWithError(err)
-	return err
-}
-
-// rootOwned copies a tar stream with every entry owned by uid and gid 0.
-func rootOwned(r io.Reader, w io.Writer) error {
-	tr := tar.NewReader(r)
-	tw := tar.NewWriter(w)
-	for {
-		h, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			return tw.Close()
-		}
-		if err != nil {
-			return err
-		}
-		h.Uid, h.Gid, h.Uname, h.Gname = 0, 0, "", ""
-		if err := tw.WriteHeader(h); err != nil {
-			return err
-		}
-		if _, err := io.Copy(tw, tr); err != nil {
-			return err
-		}
-	}
+	return WriteDiff(ctx, w, lower, upper, DiffOptions{})
 }

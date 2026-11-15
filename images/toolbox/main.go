@@ -176,6 +176,29 @@ func run(op, arg string) error {
 				return err
 			}
 		}
+	case "udpask":
+		// Send "ping" to UDP address arg, once a second until an answer
+		// comes, for ten seconds, and print the answer.
+		c, err := net.Dial("udp", arg)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		buf := make([]byte, 1500)
+		for range 10 {
+			if _, err := c.Write([]byte("ping")); err != nil {
+				return err
+			}
+			next := time.Now().Add(time.Second)
+			c.SetReadDeadline(next)
+			if n, err := c.Read(buf); err == nil {
+				fmt.Println(string(buf[:n]))
+				return nil
+			}
+			// A refusal returns at once; the next try waits its turn.
+			time.Sleep(time.Until(next))
+		}
+		return fmt.Errorf("no answer from %s", arg)
 	case "detach":
 		// Start a process in a session of its own, outside the container's
 		// process group, print its pid, and stay running.
@@ -224,6 +247,11 @@ func run(op, arg string) error {
 		return nil
 	case "hold":
 		hold()
+	case "iopolicy":
+		// Print the process's disk I/O policy tier; with "watch", print
+		// the tiers of the process and of a child it starts, each time
+		// either changes, and stay running.
+		return ioPolicy(arg == "watch")
 	case "alloc":
 		// Allocate and touch arg MiB, a MiB at a time, then hold it.
 		n, err := strconv.Atoi(arg)

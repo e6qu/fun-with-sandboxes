@@ -3,6 +3,7 @@ package buildkit
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -63,14 +64,20 @@ type Service struct {
 	controller *control.Controller
 	sessions   *session.Manager
 	grpc       *grpc.Server
-	h2         *http2.Server
-	worker     *darwinWorker
+	// x/net's http2.Server is deprecated for net/http's own HTTP/2, which
+	// serves no single connection a handler hijacked, as POST /grpc needs.
+	//lint:ignore SA1019 see above
+	h2     *http2.Server
+	worker *darwinWorker
+	// unwatch stops the engine's image store reporting removals.
+	unwatch func()
 }
 
 // darwinWorker adds the engine's moby exporter to BuildKit's base worker.
 type darwinWorker struct {
 	*base.Worker
-	moby exporter.Exporter
+	moby   exporter.Exporter
+	images *localImages
 }
 
 func (w *darwinWorker) Exporter(name string, sm *session.Manager) (exporter.Exporter, error) {
@@ -116,6 +123,13 @@ func newWorker(ctx context.Context, cfg Config) (*darwinWorker, error) {
 	}
 	hostname, _ := os.Hostname()
 	lm := leaseutil.WithNamespace(ctdmetadata.NewLeaseManager(mdb), namespace)
+	images := &localImages{
+		engine: cfg.Images, meta: ctdmetadata.NewImageStore(mdb), content: cs, leases: lm,
+		gc: func(ctx context.Context) error {
+			_, err := mdb.GarbageCollect(ctx)
+			return err
+		},
+	}
 	// Build steps own their files as root (uid and gid 0), and BuildKit
 	// chowns accordingly. Mapping 0 to the engine's user, as rootless
 	// BuildKit maps it, makes those chowns ones an unprivileged process may
@@ -139,16 +153,14 @@ func newWorker(ctx context.Context, cfg Config) (*darwinWorker, error) {
 		Snapshotter:     containerdsnapshot.NewSnapshotter(SnapshotterName, mdb.Snapshotter(SnapshotterName), namespace, idmap),
 		IdentityMapping: idmap,
 		ContentStore:    cs,
-		Applier:         applier{store: cs},
+		Applier:         applier{store: cs, engine: cfg.Images},
 		Differ:          comparer{store: cs},
-		ImageStore: &localImages{
-			engine: cfg.Images, meta: ctdmetadata.NewImageStore(mdb), content: cs, leases: lm,
-		},
-		Platforms:      []ocispecs.Platform{{OS: "darwin", Architecture: goruntime.GOARCH}},
-		RegistryHosts:  resolver.NewRegistryConfig(nil),
-		LeaseManager:   lm,
-		GarbageCollect: mdb.GarbageCollect,
-		MountPoolRoot:  filepath.Join(root, "cachemounts"),
+		ImageStore:      images,
+		Platforms:       []ocispecs.Platform{{OS: "darwin", Architecture: goruntime.GOARCH}},
+		RegistryHosts:   resolver.NewRegistryConfig(nil),
+		LeaseManager:    lm,
+		GarbageCollect:  mdb.GarbageCollect,
+		MountPoolRoot:   filepath.Join(root, "cachemounts"),
 	}
 	w, err := base.NewWorker(ctx, opt)
 	if err != nil {
@@ -160,7 +172,7 @@ func newWorker(ctx context.Context, cfg Config) (*darwinWorker, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &darwinWorker{Worker: w, moby: &mobyExporter{store: cfg.Images, writer: writer, content: opt.ContentStore, leases: lm}}, nil
+	return &darwinWorker{Worker: w, moby: &mobyExporter{store: cfg.Images, writer: writer, content: opt.ContentStore, leases: lm}, images: images}, nil
 }
 
 // New starts BuildKit's controller on the darwin worker.
@@ -216,7 +228,19 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	srv := grpc.NewServer()
 	ctl.Register(srv)
-	return &Service{controller: ctl, sessions: sm, grpc: srv, h2: &http2.Server{}, worker: w}, nil
+	// The copies of engine images BuildKit holds go with the images: those
+	// the engine deleted while BuildKit was not running now, the others as
+	// the engine deletes them.
+	if err := w.images.forget(ctx); err != nil {
+		log.Printf("buildkit: forget removed images: %v", err)
+	}
+	unwatch := cfg.Images.OnRemove(func(id string) {
+		if err := w.images.forget(context.Background(), id); err != nil {
+			log.Printf("buildkit: forget image %s: %v", id, err)
+		}
+	})
+	//lint:ignore SA1019 net/http serves no hijacked connection (Service.h2)
+	return &Service{controller: ctl, sessions: sm, grpc: srv, h2: &http2.Server{}, worker: w, unwatch: unwatch}, nil
 }
 
 // ServeGRPC upgrades the request to HTTP/2 and serves BuildKit's control API
@@ -238,6 +262,7 @@ func (s *Service) ServeGRPC(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 		return
 	}
+	//lint:ignore SA1019 net/http serves no hijacked connection (Service.h2)
 	s.h2.ServeConn(conn, &http2.ServeConnOpts{Handler: s.grpc})
 }
 
@@ -250,6 +275,7 @@ func (s *Service) ServeSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) Close() error {
+	s.unwatch()
 	s.grpc.Stop()
 	err := s.controller.Close()
 	if werr := s.worker.Close(); err == nil {

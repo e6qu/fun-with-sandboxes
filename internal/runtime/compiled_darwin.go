@@ -37,6 +37,14 @@ func profileText(s Spec) (seatbelt.Spec, string, error) {
 	return p, text, err
 }
 
+// profileSum names a compiled profile by its text and the macOS build
+// that compiled it, so an update of macOS, whose bytecode may differ,
+// compiles each profile again rather than applying the old bytecode.
+func profileSum(text string) [sha256.Size]byte {
+	build, _ := unix.Sysctl("kern.osversion")
+	return sha256.Sum256([]byte(build + "\n" + text))
+}
+
 // compiledPath is where the compiled profile of the profile at ProfilePath
 // is kept.
 func compiledPath(s Spec) string {
@@ -52,7 +60,7 @@ func Precompile(s Spec) error {
 	if err != nil {
 		return err
 	}
-	sum := sha256.Sum256([]byte(text))
+	sum := profileSum(text)
 	path := compiledPath(s)
 	if kept(path, sum) {
 		return nil
@@ -71,7 +79,7 @@ func Precompile(s Spec) error {
 // compiled returns the path of the compiled profile of text, compiling it
 // unless it is kept already or a Precompile is compiling it.
 func compiled(s Spec, text string) (string, error) {
-	sum := sha256.Sum256([]byte(text))
+	sum := profileSum(text)
 	path := compiledPath(s)
 	if kept(path, sum) {
 		return path, nil
@@ -119,8 +127,8 @@ func compileLocked(path string, sum [sha256.Size]byte, text string) error {
 	return os.Rename(tmp, path)
 }
 
-// kept reports whether the compiled profile at path is of the text whose
-// hash is sum.
+// kept reports whether the compiled profile at path is the one profileSum
+// names sum.
 func kept(path string, sum [sha256.Size]byte) bool {
 	f, err := os.Open(path)
 	if err != nil {

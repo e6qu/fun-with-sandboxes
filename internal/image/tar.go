@@ -11,7 +11,8 @@ import (
 )
 
 // WriteTar writes dir as one layer: entries in lexical order, relative
-// names, no ownership, so the same tree yields the same bytes.
+// names, and the modes and owners its container sees (root where none is
+// recorded), so the same tree yields the same bytes.
 func WriteTar(dir string, w io.Writer) error { return WriteTarWith(dir, w, nil) }
 
 // WriteTarWith is WriteTar with asEmptyDir naming entries, by path relative
@@ -64,9 +65,10 @@ func WriteTarWith(dir string, w io.Writer, asEmptyDir func(rel string) bool) err
 		if fi.IsDir() {
 			h.Name += "/"
 		}
-		h.Uid, h.Gid, h.Uname, h.Gname = 0, 0, "", ""
+		h.Uname, h.Gname = "", ""
+		h.Uid, h.Gid, _ = RecordedOwner(p)
 		if fi.Mode()&fs.ModeSymlink == 0 {
-			h.Mode = h.Mode&^0o777 | int64(RecordedMode(p, fi))
+			h.Mode = h.Mode&^0o7777 | TarMode(RecordedMode(p, fi))
 		}
 		h.Format = tar.FormatPAX
 		h.AccessTime, h.ChangeTime = time.Time{}, time.Time{}

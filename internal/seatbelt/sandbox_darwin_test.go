@@ -242,3 +242,41 @@ func TestSignalsStayInOneSandbox(t *testing.T) {
 	// A child of the sandbox signals its sibling.
 	e.allowed("sh", root+"/probe hold - & "+root+"/probe signal $! && kill $!")
 }
+
+// A noexec mount's programs do not run, where another mount's do, and
+// Docker's read-only and masked paths hold inside the root.
+func TestNoExecAndPathRules(t *testing.T) {
+	root := probeRoot(t)
+	exe, noexe := filepath.Join(filepath.Dir(root), "exe"), filepath.Join(filepath.Dir(root), "noexe")
+	echo, err := os.ReadFile("/bin/echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{exe, noexe, filepath.Join(root, "ro"), filepath.Join(root, "masked")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{filepath.Join(exe, "echo"), filepath.Join(noexe, "echo")} {
+		if err := os.WriteFile(f, echo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{filepath.Join(root, "ro", "f"), filepath.Join(root, "masked", "f")} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root),
+		Volumes:       []Volume{{Path: exe}, {Path: noexe, NoExec: true}},
+		ReadOnlyPaths: []string{filepath.Join(root, "ro")},
+		MaskedPaths:   []string{filepath.Join(root, "masked")}})
+	e.allowed("exec", filepath.Join(exe, "echo"))
+	e.denied("exec", filepath.Join(noexe, "echo"))
+	e.allowed("write", filepath.Join(noexe, "f"))
+	e.allowed("read", filepath.Join(root, "ro", "f"))
+	e.denied("write", filepath.Join(root, "ro", "g"))
+	e.denied("read", filepath.Join(root, "masked", "f"))
+	e.denied("write", filepath.Join(root, "masked", "g"))
+	e.allowed("write", filepath.Join(root, "elsewhere"))
+}

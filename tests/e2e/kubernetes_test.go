@@ -370,11 +370,15 @@ func TestKubernetesControlPlane(t *testing.T) {
 		t.Errorf("kubectl exec: %q", out)
 	}
 	// A Service: pods reach it by its DNS name and at its cluster IP, and
-	// the engine carries each connection to one of its pods. A fetch
-	// restarts until fws-kube-proxy has passed the Service on.
+	// the engine carries each connection to one of its pods; one with
+	// session affinity at its external IP too, through a listener of the
+	// client pod's own. A fetch restarts until fws-kube-proxy has passed
+	// the Service on.
 	mustKubectl("expose", "deployment/web", "--port=80", "--name=web")
 	clusterIP := mustKubectl("get", "service/web", "-o", "jsonpath={.spec.clusterIP}")
-	for name, url := range map[string]string{"by-name": "http://web.default.svc.cluster.local/", "by-ip": "http://" + clusterIP + "/"} {
+	mustKubectl("expose", "deployment/web", "--port=80", "--name=web-external", "--external-ip=192.0.2.80", "--session-affinity=ClientIP")
+	for name, url := range map[string]string{"by-name": "http://web.default.svc.cluster.local/", "by-ip": "http://" + clusterIP + "/",
+		"by-external-ip": "http://192.0.2.80/"} {
 		pod := "service-" + name
 		mustKubectl("run", pod, "--image=fws/toolbox:1", "--restart=OnFailure", "--", "fetch", url)
 		if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/"+pod); err != nil {

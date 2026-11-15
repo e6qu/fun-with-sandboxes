@@ -94,7 +94,7 @@ builds for Linux alone:
 | `fws/consul:2.1` | `CONSUL_LOCAL_CONFIG`, `CONSUL_BIND_INTERFACE`, `CONSUL_CLIENT_INTERFACE`; arguments to `consul` (default `agent -dev -client 0.0.0.0`); HTTP on 8500, DNS on 8600 |
 | `fws/vault:2.0` | `VAULT_DEV_ROOT_TOKEN_ID`, `VAULT_DEV_LISTEN_ADDRESS`, `VAULT_LOCAL_CONFIG`, `VAULT_REDIRECT_INTERFACE`, `VAULT_CLUSTER_INTERFACE`; arguments to `vault` (default `server -dev`); port 8200 |
 | `fws/kafka:4.2` | `KAFKA_` variables, written into `/etc/kafka/kafka.properties` as Confluent's images write them (`KAFKA_ADVERTISED_LISTENERS` becomes `advertised.listeners`), `CLUSTER_ID`, and `KAFKA_LOG4J_ROOT_LOGLEVEL` and `KAFKA_LOG4J_LOGGERS` for its log on standard output, through the `/etc/confluent/docker` scripts Testcontainers' module drives; one KRaft broker and controller by default, clients on 9092; Kafka's tools in `/usr/bin` |
-| `fws/mailpit:1.32` | `MP_` variables and arguments to `mailpit`; SMTP on 1025, POP3 on 1110, the web UI and API on 8025 |
+| `fws/mailpit:1.33` | `MP_` variables and arguments to `mailpit`; SMTP on 1025, POP3 on 1110, the web UI and API on 8025 |
 | `fws/meilisearch:1.43` | `MEILI_` variables, such as `MEILI_MASTER_KEY`, and arguments to `meilisearch`, which runs in `/meili_data`; the API on 7700 |
 | `fws/qdrant:1.17` | `QDRANT__` variables over `/qdrant/config`, and `QDRANT_ALLOW_RECOVERY_MODE` as the official entrypoint reads it; storage and snapshots in `/qdrant`; REST and the dashboard on 6333, gRPC on 6334 |
 | `fws/neo4j:2026.02` | `NEO4J_AUTH`, `NEO4J_PLUGINS` and `NEO4J_` settings, written into `/var/lib/neo4j/conf/neo4j.conf` as the official entrypoint writes them (`NEO4J_server_memory_heap_max__size` becomes `server.memory.heap.max_size`), and mounted `/conf`, `/plugins`, `/import`, `/licenses` and `/ssl`; data in `/data`, logs in `/logs`; HTTP on 7474, Bolt on 7687 |
@@ -110,7 +110,7 @@ builds for Linux alone:
 | `fws/nginx:1` | `/usr/share/nginx/html`, and `/etc/nginx/templates/*.template`, rendered into `conf.d` with environment variables substituted; the default server listens on 80 |
 | `fws/python:3.14`, `fws/node:26`, `fws/bun:1` | the language and its package manager (`python3 -m ensurepip` for pip) |
 | `fws/lambda/python:3.14`, `fws/lambda/nodejs:24`, `fws/lambda/java:17` | the handler as the command; functions in `/var/task`, invoked at `POST /2015-03-31/functions/function/invocations` on port 8080 through AWS's Runtime Interface Emulator |
-| `fws/playwright:1.59` | Node.js 24 with `playwright` and its Chromium headless shell |
+| `fws/playwright:1.65` | Node.js 24 with `playwright` and its Chromium headless shell |
 | `fws/busybox:1` | a shell, `sh` by default, and the commands scripts run in BusyBox's image (`ls`, `cat`, `grep`, `sed`, `awk`, `find`, `tar`, `gzip`, `wget`, `nc -z`…) as separate programs, since BusyBox builds for Linux alone; `busybox CMD` runs them by name |
 | `fws/base:1` | a base to build `FROM` in place of Alpine or Debian: `bash` by default, `fws/busybox`'s commands, `curl`, `git`, `jq`, `less`, and a CA bundle at `/etc/ssl/certs/ca-certificates.crt`; no package manager, as theirs install Linux binaries |
 | `fws/ryuk:0.14.0` | Testcontainers' reaper (see [Testcontainers](#testcontainers)) |
@@ -215,7 +215,7 @@ leaves behind when it exits:
 docker tag fws/ryuk:0.14.0 testcontainers/ryuk:0.14.0
 ```
 
-Testcontainers for Go 0.44 runs Ryuk 0.14.0; other Testcontainers releases
+Testcontainers for Go 0.45 runs Ryuk 0.14.0; other Testcontainers releases
 name other Ryuk versions.
 
 ## Podman
@@ -228,9 +228,10 @@ export CONTAINER_HOST=unix://$HOME/.fws/docker.sock
 podman --remote run --rm fws/python:3.14 python3 -c 'print("hi")'
 ```
 
-Pods share no namespaces: create them with `--infra=false --share=`, as
-`podman-compose` does; an infra container runs Podman's pause image, which
-the engine does not have.
+A pod's infra container runs `fws/pause`, and the pod's containers join
+its network, IPC and, where shared, PID namespace; `--infra=false
+--share=`, as `podman-compose` creates pods, makes one that shares
+nothing.
 
 ## Kubernetes' Container Runtime Interface
 

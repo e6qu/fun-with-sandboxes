@@ -12,10 +12,37 @@
 # the archives on their content.
 set -euo pipefail
 
-# nixos-26.05, pinned, so a rebuild makes the same images.
-nixpkgs=${NIXPKGS:-github:NixOS/nixpkgs/9bb52223f4f6a0cc606fd0852d8784f896c137d5}
+# nixpkgs-26.05-darwin as of 2026-11-09, pinned, so a rebuild makes the
+# same images. That branch, not nixos-26.05, advances once Hydra has built
+# and cached its darwin packages: a nixos-26.05 commit can name darwin
+# builds no cache holds yet, which the images job would compile for hours.
+nixpkgs=${NIXPKGS:-github:NixOS/nixpkgs/f4244ef33645badc8157562b5e80748929b396c2}
 here=$(cd "$(dirname "$0")/.." && pwd)
-nix=(nix --extra-experimental-features 'nix-command flakes')
+# A runner's resolver drops a lookup now and then, and Nix retries a
+# download within a fraction of a second, so a failure to reach a cache is
+# tried again after a pause; any other failure, such as a build's, is not.
+retry_net() {
+  local err attempt
+  err=$(mktemp)
+  for attempt in 1 2 3; do
+    # stderr goes on to the log through tee as it comes, and into err, which
+    # the pipeline has finished writing once it ends; stdout, the outputs'
+    # paths, goes to the caller.
+    # With pipefail, the pipeline fails as the command does.
+    if { "$@" 2>&1 1>&3 3>&- | tee "$err" >&2; } 3>&1; then
+      rm -f "$err"
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ] && grep -qE 'Could not resolve host|unable to download|Connection reset|timed out' "$err"; then
+      echo "retrying after a network failure: $*" >&2
+      sleep $((attempt * 15))
+      continue
+    fi
+    rm -f "$err"
+    return 1
+  done
+}
+nix=(retry_net nix --extra-experimental-features 'nix-command flakes')
 servers=(--impure -f "$here/images/servers.nix" --argstr nixpkgs "$nixpkgs")
 case "${1:-}" in
 --inputs)
@@ -480,12 +507,13 @@ mkimage $(accounts lambda-java sbx_user1051 993 990 /home/sbx_user1051) -spec im
   -out "$out/lambda-java.tar"
 
 # Playwright on Node.js 24, with the playwright packages of the version
-# nixpkgs ships and its Chromium headless shell, Chrome for Testing's build,
-# checked against the digest pinned here.
-pw_version=1.59.1
-pw_revision=1217
-pw_chrome=147.0.7727.15
-pw_platform=mac-arm64 pw_sum=92e16fab914827a637607e46468b4360ebd2d30bbad06044d333bb5c0ceb3319
+# pinned here and the Chromium headless shell its browsers.json names
+# (revision and Chrome version), Chrome for Testing's build, checked
+# against the digest pinned here.
+pw_version=1.65.1
+pw_revision=1255
+pw_chrome=159.0.8154.6
+pw_platform=mac-arm64 pw_sum=b08e7beaf02a19e2ee5ed6955f9c3853ab9176cd5bb57ba87afbb82e9f81cc29
 mkdir -p "$build/playwright/modules" "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
 # The install is retried as curl retries below: a runner's resolver drops a
 # lookup now and then, and npm retries no failed lookup itself.

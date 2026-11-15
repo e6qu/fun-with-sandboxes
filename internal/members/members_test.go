@@ -112,7 +112,8 @@ func TestSubnetAddresses(t *testing.T) {
 }
 
 // A member's IPv6 addresses ride beside its IPv4 ones, found by any
-// spelling, and leave its IPv4 address on each network as it was.
+// spelling, and leave its IPv4 address on each network as it was; on a
+// network that gives it an IPv6 address alone it has no IPv4 one.
 func TestIPv6Addresses(t *testing.T) {
 	ms := []Member{
 		{Address: "127.88.0.2", Names: []string{"api"}, Networks: []string{"back", "front"}, Subnets: []NetAddress{
@@ -135,8 +136,13 @@ func TestIPv6Addresses(t *testing.T) {
 	if m, ok := Lookup(got, "127.88.0.4", "fd00:f::5"); !ok || m.Address != "127.88.0.2" {
 		t.Errorf("Lookup by an IPv6 address: %+v, %v", m, ok)
 	}
-	if got[0].On("front") != "127.88.0.2" || got[0].SeenBy(got[2]) != "127.88.0.2" {
-		t.Errorf("an IPv6 address read as IPv4: %s", got[0].SeenBy(got[2]))
+	if got[0].On("back") != "172.28.0.5" || got[0].On6("back") != "" || got[1].SeenBy(got[0]) != "172.28.0.6" || got[1].SeenBy6(got[0]) != "" {
+		t.Errorf("an IPv4 network read as IPv6: %q %q", got[0].On6("back"), got[1].SeenBy6(got[0]))
+	}
+	// front has an IPv6 subnet and none for IPv4: its members reach one
+	// another over IPv4 at their member addresses, and over IPv6.
+	if got[0].On("front") != "127.88.0.2" || got[0].SeenBy(got[2]) != "127.88.0.2" || got[0].SeenBy6(got[2]) != "fd00:f::5" || got[2].SeenBy6(got[0]) != "fd00:f::7" {
+		t.Errorf("on a network with an IPv6 subnet alone api reads as %q and %q", got[0].SeenBy(got[2]), got[0].SeenBy6(got[2]))
 	}
 	if !InSubnet(got, netip.MustParseAddr("fd00:f::99")) || InSubnet(got, netip.MustParseAddr("fd00:e::1")) {
 		t.Error("InSubnet misreads the members' IPv6 subnets")
@@ -162,5 +168,73 @@ func TestBlock(t *testing.T) {
 	}
 	if parseBlock("30200-30100") != (Block{}) || parseBlock("x") != (Block{}) {
 		t.Error("a malformed block parsed")
+	}
+}
+
+// A member on an IPv6-only network and a dual-stack one reads as its
+// address on the first network the viewer shares with it that gives one
+// of the family, and at its member address on a network without a
+// subnet.
+func TestIPv6OnlyNetworks(t *testing.T) {
+	got := Parse(Format([]Member{
+		{Address: "127.88.0.2", Names: []string{"api"}, Networks: []string{"dual", "plain", "six"}, Subnets: []NetAddress{
+			{"dual", netip.MustParsePrefix("10.1.0.2/24")}, {"dual", netip.MustParsePrefix("fd00:1::2/64")}, {"six", netip.MustParsePrefix("fd00:6::2/64")},
+		}, Only6: []string{"six"}},
+		{Address: "127.88.0.3", Names: []string{"web"}, Networks: []string{"six"}, Subnets: []NetAddress{{"six", netip.MustParsePrefix("fd00:6::3/64")}}, Only6: []string{"six"}},
+		{Address: "127.88.0.4", Names: []string{"db"}, Networks: []string{"dual", "six"}, Subnets: []NetAddress{
+			{"dual", netip.MustParsePrefix("10.1.0.4/24")}, {"dual", netip.MustParsePrefix("fd00:1::4/64")}, {"six", netip.MustParsePrefix("fd00:6::4/64")},
+		}, Only6: []string{"six"}},
+		{Address: "127.88.0.5", Names: []string{"cache"}, Networks: []string{"plain", "six"}, Subnets: []NetAddress{{"six", netip.MustParsePrefix("fd00:6::5/64")}}, Only6: []string{"six"}},
+	}))
+	for _, c := range []struct {
+		m, viewer   int
+		want, want6 string
+	}{
+		{0, 1, "", "fd00:6::2"},
+		{1, 0, "", "fd00:6::3"},
+		{0, 2, "10.1.0.2", "fd00:1::2"},
+		{2, 0, "10.1.0.4", "fd00:1::4"},
+		{0, 3, "127.88.0.2", "fd00:6::2"},
+		{3, 0, "127.88.0.5", "fd00:6::5"},
+	} {
+		if a, a6 := got[c.m].SeenBy(got[c.viewer]), got[c.m].SeenBy6(got[c.viewer]); a != c.want || a6 != c.want6 {
+			t.Errorf("%s seen by %s at %q and %q, want %q and %q", got[c.m].Names[0], got[c.viewer].Names[0], a, a6, c.want, c.want6)
+		}
+	}
+	if m, ok := Lookup(got, "127.88.0.3", "fd00:6::4"); !ok || m.Address != "127.88.0.4" {
+		t.Errorf("Lookup by an address on an IPv6-only network: %+v, %v", m, ok)
+	}
+}
+
+// An alias's line carries the name it stands for in its address field,
+// which no reader takes for an address, and its names resolve as that
+// name does.
+func TestAlias(t *testing.T) {
+	ms := []Member{
+		{Address: "127.88.0.2", Names: []string{"client"}, Networks: []string{"n1"}},
+		{Address: "10.96.0.10", Names: []string{"web"}, Networks: []string{"n1"}, Foreign: true, Stack: ServicesStack},
+		{Alias: "web", Names: []string{"front"}, Networks: []string{"n1"}, Foreign: true, Stack: ServicesStack},
+		{Alias: "front", Names: []string{"www"}, Networks: []string{"n1"}, Foreign: true, Stack: ServicesStack},
+		{Alias: "example.com", Names: []string{"ext"}, Networks: []string{"n1"}, Foreign: true, Stack: ServicesStack},
+		{Alias: "loop", Names: []string{"loop"}, Networks: []string{"n1"}, Foreign: true, Stack: ServicesStack},
+	}
+	b := Format(ms)
+	if !strings.Contains(string(b), "\n=example.com\text\t") {
+		t.Errorf("Format:\n%s", b)
+	}
+	got := Parse(b)
+	for i := range got {
+		got[i].Ports = nil
+	}
+	if !reflect.DeepEqual(got, ms) {
+		t.Fatalf("Parse: %+v", got)
+	}
+	if m, ok := Find(ms, ""); ok {
+		t.Errorf("an alias holds the empty address: %+v", m)
+	}
+	for host, want := range map[string]string{"www": "web", "ext": "example.com", "web": "web", "other": "other", "loop": "loop"} {
+		if got := Unalias(ms, "127.88.0.2", host); got != want {
+			t.Errorf("Unalias(%q) = %q, want %q", host, got, want)
+		}
 	}
 }

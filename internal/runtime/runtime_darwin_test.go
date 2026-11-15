@@ -36,6 +36,12 @@ func (s *syncBuffer) Write(p []byte) (int, error) {
 	return s.b.Write(p)
 }
 
+func (s *syncBuffer) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.Reset()
+}
+
 func (s *syncBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -363,12 +369,37 @@ func TestStartsApplyTheCompiledProfile(t *testing.T) {
 	}
 }
 
+// Where macOS refuses a compiled profile's bytecode, as an update of its
+// format or of sandbox_apply's would, the spawn helper compiles the
+// profile's text itself, and the container starts confined as before.
+func TestRefusedBytecodeFallsBackToTheText(t *testing.T) {
+	s, out := limitsSpec(t)
+	s.Argv = []string{"/limits", "confined"}
+	if p := runToEnd(t, s); p.ExitCode() != 0 || strings.TrimSpace(out.String()) != "confined=true" {
+		t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
+	}
+	path := compiledPath(s)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same hash, so the start takes it as kept, over bytecode of a
+	// profile type libsandbox has no such number for.
+	bad := append(b[:sha256.Size:sha256.Size], 0xff, 0xff, 0xff, 0x7f, 1, 2, 3, 4)
+	if err := os.WriteFile(path, bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if p := runToEnd(t, s); p.ExitCode() != 0 || strings.TrimSpace(out.String()) != "confined=true" {
+		t.Fatalf("with refused bytecode: exit %d: %s", p.ExitCode(), out.String())
+	}
+}
+
 // applyCompiledFor reports whether the compiled profile at path is of text,
 // without applying it to the test.
 func applyCompiledFor(t *testing.T, path, text string) bool {
 	t.Helper()
-	sum := sha256.Sum256([]byte(text))
-	return kept(path, sum)
+	return kept(path, profileSum(text))
 }
 
 // withTestLibrary gives the spec the container library, which every

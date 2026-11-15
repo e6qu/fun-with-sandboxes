@@ -49,7 +49,7 @@ func spawnArgs(s Spec, path string, argv []string, compiled string, ceiling uint
 	for _, r := range s.Limits.Rlimits {
 		args = append(args, "-r", fmt.Sprintf("%d:%d:%d", r.Resource, r.Cur, r.Max))
 	}
-	args = append(args, "-N", strconv.FormatUint(ceiling, 10), "-c", compiled, "-L", s.Library)
+	args = append(args, "-N", strconv.FormatUint(ceiling, 10), "-c", compiled, "-p", s.ProfilePath, "-L", s.Library)
 	if s.AnchorListener != nil {
 		args = append(args, "-a", s.Profile.Helper)
 	}

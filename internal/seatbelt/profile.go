@@ -68,6 +68,8 @@ var MachServices = []string{
 type Volume struct {
 	Path     string
 	ReadOnly bool
+	// NoExec denies executing the volume's files, as a noexec mount does.
+	NoExec bool
 }
 
 type Spec struct {
@@ -108,6 +110,10 @@ type Spec struct {
 	// HostPIDs lets the container signal and inspect every process the
 	// engine's user may, as on the host's PID namespace.
 	HostPIDs bool
+	// ReadOnlyPaths are host paths, inside the root or a volume, the
+	// container may read and not write; MaskedPaths ones it may do
+	// neither with, as Docker's ReadonlyPaths and MaskedPaths are.
+	ReadOnlyPaths, MaskedPaths []string
 	// ProcsSocket is where the container's shim answers it about its PID
 	// namespace (package pidns).
 	ProcsSocket string
@@ -160,6 +166,7 @@ func Render(s Spec) (string, error) {
 	for _, v := range s.Volumes {
 		paths = append(paths, v.Path)
 	}
+	paths = append(append(paths, s.ReadOnlyPaths...), s.MaskedPaths...)
 	extra := append(append(append([]string{}, s.Libraries...), s.ReadFiles...), s.WriteFiles...)
 	if s.Helper != "" {
 		extra = append(extra, s.Helper)
@@ -286,7 +293,9 @@ func Render(s Spec) (string, error) {
 	w("(allow process-exec* process-exec-interpreter")
 	w("  (subpath %q)", s.Root)
 	for _, v := range s.Volumes {
-		w("  (subpath %q)", v.Path)
+		if !v.NoExec {
+			w("  (subpath %q)", v.Path)
+		}
 	}
 	for _, sh := range SystemShells {
 		w("  (literal %q)", sh)
@@ -366,6 +375,14 @@ func Render(s Spec) (string, error) {
 		w("(allow signal (target same-sandbox))")
 		w("(deny process-info*)")
 		w("(allow process-info* (target same-sandbox))")
+	}
+
+	// Last, so no earlier allowance of the root or a volume reaches them.
+	for _, p := range s.ReadOnlyPaths {
+		w("(deny file-write* (subpath %q))", p)
+	}
+	for _, p := range s.MaskedPaths {
+		w("(deny file-read* file-write* (subpath %q))", p)
 	}
 
 	return b.String(), nil

@@ -62,6 +62,8 @@ import (
 //     address, two the message's length, then the message. Connected is
 //     followed by the reply's length, two bytes, and the reply; a request
 //     without an answer within EchoTimeout is Refused.
+//   - Resolve: a name to resolve through the container's DNS servers
+//     (resolve.go).
 const (
 	Stream      = 1
 	StreamRelay = 2
@@ -166,6 +168,10 @@ type Network struct {
 	// machine, as its egress proxy carries it: the router then relays its
 	// pings of them.
 	Internet bool
+	// DNS is how the container resolves names outside its stack, when
+	// its engine gave it DNS servers, search domains or options of its
+	// own; the router then answers its Resolve requests, given Internet.
+	DNS *DNS
 }
 
 // Listen starts a router on addr for the port directory dir; flow opens a
@@ -408,6 +414,9 @@ func (r *Router) join(c net.Conn) {
 		return
 	case Echo:
 		r.echo(c)
+		return
+	case Resolve:
+		r.resolve(c)
 		return
 	case StreamRelay:
 		var addr netip.Addr
@@ -676,7 +685,8 @@ func Dial(addr string, port int) (net.Conn, error) {
 	}
 	req := binary.BigEndian.AppendUint16([]byte{Stream}, uint16(port))
 	var ans [1]byte
-	if _, err := c.Write(req); err == nil {
+	_, err = c.Write(req)
+	if err == nil {
 		_, err = io.ReadFull(c, ans[:])
 	}
 	if err != nil {

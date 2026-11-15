@@ -136,6 +136,7 @@ func (e *Engine) writeNetworkLocked(stack string) error {
 			return err
 		}
 	}
+	e.pruneServiceClientsLocked()
 	e.publishLocked()
 	return nil
 }
@@ -186,9 +187,22 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 		}
 	}
 	nets := map[string]bool{}
+	// clients is the stack's address on each network, its lowest, which a
+	// service with session affinity tells the stack's members by.
+	clients := map[string]netip.Addr{}
 	for _, o := range own {
-		for n := range o.rec.Networks {
+		for n, es := range o.rec.Networks {
 			nets[n] = true
+			if es == nil {
+				continue
+			}
+			a := es.IPAddress
+			if !a.IsValid() {
+				a = es.GlobalIPv6Address
+			}
+			if c, ok := clients[n]; a.IsValid() && (!ok || a.Less(c)) {
+				clients[n] = a
+			}
 		}
 	}
 	byAddress := func(cs []*Container) {
@@ -220,10 +234,13 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 			if es := m.rec.Networks[n]; es != nil && es.GlobalIPv6Address.IsValid() {
 				member.Subnets = append(member.Subnets, stackmembers.NetAddress{Network: n, Address: netip.PrefixFrom(es.GlobalIPv6Address, es.GlobalIPv6PrefixLen)})
 			}
+			if nw, err := e.networkLocked(n); err == nil && nw.IPv4Disabled {
+				member.Only6 = append(member.Only6, n)
+			}
 		}
 		ms = append(ms, member)
 	}
-	ms = append(ms, e.serviceMembers(nets)...)
+	ms = append(ms, e.serviceMembers(nets, clients)...)
 	// Other nodes' pods, on the networks of the same names.
 	if n := e.cfg.Nested; n != nil && n.Peers != nil {
 		for _, p := range n.Peers() {

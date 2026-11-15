@@ -156,7 +156,7 @@ func logsOnFailure(t *testing.T, c testcontainers.Container) {
 func TestMailpit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	m, err := tcmailpit.Run(ctx, "fws/mailpit:1.32", tcmailpit.WithSMTPAuth("sender", "secret"))
+	m, err := tcmailpit.Run(ctx, "fws/mailpit:1.33", tcmailpit.WithSMTPAuth("sender", "secret"))
 	testcontainers.CleanupContainer(t, m)
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestMailpit(t *testing.T) {
 // until it first passes.
 func TestMailpitHealth(t *testing.T) {
 	const name = "fws-e2e-mailpit"
-	waitedRun(t, name, "fws/mailpit:1.32")
+	waitedRun(t, name, "fws/mailpit:1.33")
 	if out := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.Config.Healthcheck.StartInterval}}", name)); out != "1s" {
 		t.Errorf("the health check's start interval: %q", out)
 	}

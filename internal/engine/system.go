@@ -269,7 +269,7 @@ func (e *Engine) ImagePrune(f Filters) (imagetypes.PruneReport, error) {
 			report.ImagesDeleted = append(report.ImagesDeleted, imagetypes.DeleteResponse{Untagged: t})
 		}
 		report.ImagesDeleted = append(report.ImagesDeleted, imagetypes.DeleteResponse{Deleted: r.Image.ID})
-		report.SpaceReclaimed += uint64(r.Image.Size)
+		report.SpaceReclaimed += r.Freed
 	}
 	// The classic builder's cache is what dockerd keeps as dangling
 	// intermediate images, which an image prune removes.
