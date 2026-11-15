@@ -62,7 +62,13 @@ func (a applier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mo
 	defer r.Close()
 	dg := digest.SHA256.Digester()
 	n := &counter{}
-	if err := image.ApplyLayer(root, io.TeeReader(r, io.MultiWriter(dg.Hash(), n))); err != nil {
+	// A delta keeps the layer's whiteouts as the files that name them, for
+	// the snapshotter to act on as it puts the tree together.
+	apply := image.ApplyLayer
+	if isDelta(root) {
+		apply = func(dir string, r io.Reader) error { return image.Extract(dir, r, false) }
+	}
+	if err := apply(root, io.TeeReader(r, io.MultiWriter(dg.Hash(), n))); err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("apply layer %s: %w", desc.Digest, err)
 	}
 	// Drain what the tar reader left unread so the digest covers the stream.

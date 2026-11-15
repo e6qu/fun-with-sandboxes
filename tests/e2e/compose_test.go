@@ -176,7 +176,13 @@ func TestComposeWatch(t *testing.T) {
           target: /conf
 `,
 	})
+	// The build once took minutes: BuildKit asks for the usage of each of
+	// the base image's layers, and each answer read the image below it.
+	began := time.Now()
 	p.must("up", "-d", "--build", "--wait")
+	if took := time.Since(began); took > 90*time.Second {
+		t.Errorf("up --build took %s, want under 90s", took.Round(time.Second))
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	watch := p.command(ctx, "watch", "--no-up")
@@ -302,8 +308,7 @@ func TestSettingsTheEngineRefuses(t *testing.T) {
 		flags []string
 		want  string
 	}{
-		{[]string{"--dns", "1.1.1.1"}, "DNS servers, search domains and options are not supported"},
-		{[]string{"--dns-search", "example.com"}, "DNS servers, search domains and options are not supported"},
+		{[]string{"--dns", "127.0.0.1"}, "DNS server 127.0.0.1 is not supported"},
 		{[]string{"--oom-score-adj", "500"}, "OOM score adjustments are not supported"},
 		{[]string{"--storage-opt", "size=1G"}, "storage options are not supported"},
 		{[]string{"--isolation", "hyperv"}, "invalid isolation"},
