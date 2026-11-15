@@ -45,22 +45,24 @@ copy-on-write clones**, and **per-stack resource assignment**.
 
 ### Accepted exceptions
 
-The brief allows small leaks where macOS gives no unprivileged alternative.
-These are documented, tested for, and bounded:
+Where macOS gives an unprivileged process no alternative, a container sees
+more of the host than under Docker, though it can act on none of it:
 
-- **Process listing.** `ps`/`pstree` run by the user still see container
-  processes by PID and name. Seatbelt denies *acting on* them across sandboxes
-  (signals, `process-info`), but not their appearance in a global listing. There
-  is no unprivileged PID namespace on macOS.
-- **Shared kernel surfaces.** `sysctl` values, the system clock, and the mach
-  host port are global and readable. No container can write them (Seatbelt
-  denies `system-*`), but they are observable.
-- **System frameworks.** Every container can read `/usr/lib`, `/System/Library`,
-  and the dyld shared cache. macOS binaries cannot run without them, and they
-  carry no user data.
+- **Process listing.** A program that loads no container library, as
+  Apple's `ps` does not, lists every process of the user by host pid.
+  Seatbelt still denies signalling or inspecting another sandbox's
+  processes.
+- **Shared kernel surfaces.** `sysctl` values, the system clock and the
+  Mach host port are global and readable; Seatbelt denies writing them.
+- **The host's system tree.** A container reads everything under `/` but
+  the user's and the machine's data roots (`/Users`, `/Volumes`,
+  `/Library`, `/opt`, `/usr/local`, `/nix`, temporary and per-user
+  directories and others, `seatbelt.DeniedReadRoots`) and the engine's
+  state, of which it gets back only its own root, volumes and files (§3).
 
-Everything else — another stack's files, ports, environment, logs, or the right
-to signal its processes — is denied.
+Another stack's files, ports, environment and logs, and the right to signal
+its processes, stay denied. [`LIMITATIONS.md`](../LIMITATIONS.md) lists every
+gap in full.
 
 ---
 
@@ -80,8 +82,10 @@ Two consequences drive the entire design:
 2. **No private network stack.** Every container shares the host's single
    loopback and port space. Two containers cannot both own `:5432`. → We do not
    fake per-container ports. Instead the engine **assigns** each container real,
-   distinct host ports and real data paths, and passes them to the service
-   through configuration — the mechanism the user has accepted (§5, §6).
+   distinct host ports and real data paths. The container library binds a
+   container port's host port in its place, so a service listens on its
+   container port as written; the `SANDBOX_*` variables name the
+   assignment for a program that loads no library (§5, §6).
 
 This is the pivot of the project: **isolation by assignment, enforced by
 Seatbelt**, not isolation by virtualization. The engine is the authority that
@@ -95,17 +99,19 @@ container using anything it was not handed.
 | Dimension | Primitive | Guarantee | Gap (accepted) |
 |---|---|---|---|
 | Filesystem write | Seatbelt `(deny file-write*)` + allow only the container root and its volumes | A container writes only inside its own clone and mounts | — |
-| Filesystem read of host | Seatbelt `(deny file-read*)` + allow system frameworks and the container root | No read of `$HOME`, other stacks' roots, or user data | System libs/frameworks readable (needed) |
+| Filesystem read of host | Seatbelt `(allow file-read* (subpath "/"))`, then `(deny file-read*)` of the user's and machine's data roots (`seatbelt.DeniedReadRoots`) and the engine's state, then allow the container root, its volumes, the container library and its network file | No read of `$HOME`, other stacks' roots, or user data | The rest of the host's system tree is readable |
 | Cross-stack visibility | Per-stack directory tree + per-stack Seatbelt path allowances | Stack A's profile names only A's paths; A cannot read or write B | — |
 | Ports | Engine allocates a disjoint range per stack; Seatbelt `(deny network-bind)` except the assigned ports | Two stacks never clash; a container binds only its grants | Host sees all listening sockets globally |
 | Process signalling | Seatbelt `(deny signal)` and `(deny process-info*)` except same-sandbox; execs start in the container's sandbox; the container library lists the sandbox's processes alone. `--pid host` allows both, and the library lists every process (`FWS_PIDNS=host`). `--pid container:` shares a namespace through the containers' shims (below) | A cannot `kill`, inspect or list B's processes | pids are the host's (no PID namespace) |
 | Default deny | Seatbelt `(deny default)` on Apple's `system.sb` baseline, each operation class re-allowed by name | A container gets no IOKit, Mach registration, preferences, AppleEvents, kernel control sockets or anything else the profile does not name | — |
 | IPC | Seatbelt `ipc-posix-name-prefix` filters; the container library's per-container System V keys | POSIX shared memory and semaphores confined to a per-container name prefix (`--ipc` private); System V keys hashed with it; `none` denies all IPC | a System V key is presented, not confined: a guessed hashed key reaches another container's object |
-| Resource limits | Per-container supervisor (§3a); `setrlimit` through a spawn helper | Memory, CPU, pids caps, `--ulimit`, priority and disk I/O tiers | Enforced by ending, stopping or killing processes, not by refusing allocations; the container library refuses forks at the pids limit |
-| Identity | Runs as the invoking user | — | No `user:`-switch to arbitrary UID (needs root) → non-default `user:` is **rejected** |
+| Resource limits | Per-container supervisor (§3a); `setrlimit`, the nice value, the disk I/O tier and a QoS clamp through the spawn helper | Memory, CPU, pids caps, `--ulimit`, priority and disk I/O tiers | Enforced by ending, stopping or killing processes, not by refusing allocations; the container library refuses forks at the pids limit |
+| Identity | Runs as the invoking user; the container library presents the user `--user` or `USER` names, resolved against the container's own `/etc/passwd` and `/etc/group` | Programs see the container's user and groups, as under Docker | Presented, not enforced: every process runs as the invoking user |
 
 Rejections are deliberate: an unsupported knob returns a clear API error rather
 than silently doing nothing. Silent no-ops would be a fidelity bug.
+[`SEATBELT.md`](SEATBELT.md) shows the profile's sections and how to read a
+container's profile and its denials.
 
 ### 3a. Isolation and limits without cgroups
 
@@ -123,9 +129,36 @@ same knobs, each enforced by a real mechanism or refused:
   (nofile, fsize, cpu, core, stack), the nice value `--cpu-shares` maps to,
   the disk I/O policy tier `--blkio-weight` maps to, the controlling
   terminal and the fork ceiling, applies the container's compiled Seatbelt
-  profile (`sandbox_apply`, from the bytecode the engine compiled ahead),
-  and executes the command with the container library loaded. A limit the
-  user cannot set fails the start, reported on a close-on-exec status pipe.
+  profile (`sandbox_apply`), and executes the command with the container
+  library loaded, through `posix_spawn` with `POSIX_SPAWN_SETEXEC`, the one
+  exec that takes a QoS clamp. A limit the user cannot set fails the start,
+  reported on a close-on-exec status pipe.
+- **Compiled profiles.** libsandbox takes about 15 ms to compile a
+  profile's text and the kernel about 35 µs to apply the bytecode. The
+  engine renders the profile (`internal/seatbelt`) to `profile.sb`,
+  compiles it with `sandbox_compile_string` (`libsystem.SandboxCompile`)
+  to `profile.bin` beside it, keyed by the text's SHA-256
+  (`internal/runtime`), while the shim starts, and the helper applies the
+  bytecode. A start whose text is unchanged, as a restart's, compiles
+  nothing.
+- **Fork ceiling.** The helper lowers the soft `RLIMIT_NPROC` of every
+  container process to `kern.maxprocperuid` less a reserve of an eighth
+  of it, at least 64 (`runtime.ForkCeiling`), so a fork bomb fails in the
+  kernel while the user's own programs can still start.
+- **QoS clamp.** Every container process and what it starts runs at most
+  at the quality of service `fwsd -qos-clamp` names (`utility` by default;
+  `none`, `background` or `maintenance`), set with
+  `posix_spawnattr_set_qos_clamp_np`, so containers yield the CPU and the
+  disk to the user's interactive work.
+- **Machine guards.** With `-machine-guard` (on by default) the engine
+  reads two measures every 2 s: macOS's memory pressure level
+  (`kern.memorystatus_vm_pressure_level`) and the free space of the disk
+  holding its state, critical under 2 GiB and normal again from 4 GiB.
+  While a measure is critical it pauses, one container a step, the running
+  container that uses the most of it (the shim's footprint, or bytes
+  written), as `docker pause` does, and resumes the ones it paused once the
+  measure is back to normal. A paused container's memory pages out and it
+  writes no more; its work waits instead of being lost.
 - **Exec anchor.** Seatbelt lets a process signal and inspect only the
   processes of its own sandbox, the ones that inherited it, and a process
   that enters the container's profile by itself is a sandbox of its own. So
@@ -146,6 +179,9 @@ same knobs, each enforced by a real mechanism or refused:
     that process as pid 1.
   - The profile lets the sandbox execute `fws-shim` for it, and nothing
     else beyond the root, its volumes and the system shells.
+
+  Step 4 of [`SEATBELT.md`](SEATBELT.md)'s tutorial shows the sandbox
+  inheritance this relies on.
 - **Shared PID namespaces.** A running container's sandbox takes in no
   process of another's, so `--pid container:<name>` shares a namespace
   through the shims, outside the sandboxes:
@@ -176,8 +212,10 @@ same knobs, each enforced by a real mechanism or refused:
   forking process's children, the processes macOS holds the main process
   responsible for, and anything that started with the container's
   `SANDBOX_ROOT` tag — reading the whole process table only when a member
-  forked and ended before its children were read, and enforces, every
-  100 ms:
+  forked and ended before its children were read, or an exec starts. With
+  no limit set it waits on those events alone; with one, it also samples
+  the members every 100 ms, the kernel's default CFS period, and
+  enforces:
   - `--memory`: the sum of the processes' physical footprints, which counts
     compressed and swapped-out memory, so `--memory-swap` may only equal it;
     past the limit the largest process is killed, as the kernel OOM killer
@@ -193,8 +231,7 @@ same knobs, each enforced by a real mechanism or refused:
     it, and fails the call with `EAGAIN` when the container already runs
     that many. The shim answers from the members it follows, dropping
     those that ended and reading each one's children, so the count holds
-    a fork made a moment before; the library listed every process of the
-    user on each call. Processes past the limit, which
+    a fork made a moment before. Processes past the limit, which
     two racing forks or a program without the library start, are killed
     as they appear.
   `docker update` changes these live; `docker pause` stops the processes
@@ -413,18 +450,38 @@ paths.
 
 ```
 ~/.fws/
-  docker.sock                      # the Docker Engine API
+  docker.sock                      # the Docker Engine, libpod and CRI APIs
   alloc.json                       # per-stack port blocks and assignments
+  networks.json  volumes.json  pods.json
+  lib/                             # fwsroot and the spawn helper, built by clang
+  run/                             # per container <id12>: .sock (shim),
+                                   #   .anchor, .pids, .procs, .engine,
+                                   #   .p/ (port directory); egress-<stack>
+                                   #   .json/.key/.log
   images/images.json               # image records: tags, config, manifest
   images/oci/                      # an OCI image layout: oci-layout,
                                    #   index.json, blobs/sha256/
   images/roots/<config-digest>/    # each image, unpacked once
+  stacks/<stack>/network           # the stack's network file (FWS_NETWORK)
   stacks/<stack>/c/<id12>/
     r/                             # the container root: an APFS clone
-    config.json  log.jsonl  profile.sb
+    init/                          # the root as create left it, for diff
+    config.json  exit.json  log.jsonl
+    profile.sb  profile.bin        # the profile's text and its bytecode
+    pids.max  pidns  shm           # the pids limit, a shared PID
+                                   #   namespace's file, the shm ledger
+    engine/                        # a privileged container's nested engine
   volumes/<name>/_data/            # named and anonymous volumes
-  networks.json  volumes.json
+  staging/  trash/                 # roots being cloned or deleted
+  buildcache/                      # the classic builder's step cache
+  buildkit/                        # BuildKit's content store, snapshots, metadata
 ```
+
+A container's root is a clone of its image's, which takes as long to make
+and to delete as the image has files. So the engine clones into `staging/`
+and deletes from `trash/` without holding its lock, and moves a root into or
+out of place under the lock with a `rename`. At start-up it deletes whatever
+an earlier engine left in either, in the background.
 
 Every image is an OCI image in `images/oci`, an OCI image layout whose
 `index.json` names each tagged image as containerd and `docker save` name
