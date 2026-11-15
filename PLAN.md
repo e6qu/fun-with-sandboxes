@@ -48,37 +48,23 @@ image of kind 0.31, until a newer one is asked for.
 
 One pull request open at a time.
 
-1. **In review,
-   [#66](https://github.com/e6qu/fun-with-sandboxes/pull/66).**
-   - Checks: staticcheck, govulncheck, fuzzing, the C under
-     UndefinedBehaviorSanitizer, macOS 26.
-   - Settings once accepted and dropped are honoured or refused; compiled
-     profiles survive a macOS update.
-   - `compose up --build` no longer stalls on a base image's layers.
-   - Podman pods with infra containers; `--dns`, `--dns-search` and
-     `--dns-option`; networks with several subnets a family and IPv6-only
-     networks; `docker update --blkio-weight` on a running container; UDP
-     ports published from a nested engine.
-   - The image store against the OCI specifications: digests and diff IDs
-     verified, times, owners and modes kept through layers and diffs,
-     unpacked layers shared between images.
-   - The catalog on `nixpkgs-26.05-darwin`, Playwright 1.65.
-2. **Devcontainers.** The Dev Containers CLI and VS Code's Dev Containers
-   extension against the engine: a `devcontainer.json` on a darwin image,
-   its features and lifecycle commands, the workspace mount, port
-   forwarding, and VS Code's server running inside the container. Then a
+1. **Devcontainers.** The Dev Containers CLI and VS Code's Dev Containers
+   extension against the engine. In CI so far: `devcontainer up` on a
+   darwin image and on a Dockerfile with a local feature, lifecycle
+   commands, the workspace mount. Still to do: features from a registry,
+   port forwarding, VS Code's server running inside the container. Then a
    whole graphical Electron application, VS Code itself, running in a
    container: which needs the window server, pasteboard and GPU services a
    container's profile denies today, granted per container.
-3. **Starts and limits.** `fwsroot`'s cost to the loader cut by interposing
+2. **Starts and limits.** `fwsroot`'s cost to the loader cut by interposing
    fewer functions; per-process memory limits in the kernel if CI's jetsam
    experiment shows macOS enforces them; the engine's lock split where
    `-debug` timings still show long holds; a fuzzer for the library's path
    mapping.
-4. **Catalog upkeep.** November's PostgreSQL and MariaDB once their darwin
+3. **Catalog upkeep.** November's PostgreSQL and MariaDB once their darwin
    builds are cached; nixos-26.11; a newer Kubernetes and kind when asked
    for.
-5. **Shipping**, when asked for: signed and notarized releases, prebuilt C
+4. **Shipping**, when asked for: signed and notarized releases, prebuilt C
    parts, an installer, a `launchd` service.
 
 ## Open questions
@@ -86,6 +72,6 @@ One pull request open at a time.
 - Whether an Electron application can run under a Seatbelt profile that
   still confines it: it needs WindowServer and other Mach services, and
   Chromium sandboxes its own helpers, which a process already in a sandbox
-  cannot do the same way. Item 2 starts by finding out.
+  cannot do the same way. Item 1 ends by finding out.
 - Whether macOS enforces a jetsam limit an unprivileged parent sets: CI's
   `jetsam experiment` step prints the answer.
