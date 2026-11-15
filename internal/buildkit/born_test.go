@@ -150,3 +150,74 @@ func TestCompareFindsRewrittenFiles(t *testing.T) {
 		t.Errorf("diff holds %v, want only rewritten", names)
 	}
 }
+
+// BuildKit diffs views of two snapshots, clones made a moment before: the
+// trees behind them are what the stamps tell of, the parent's own snapshot
+// or, for a parent that holds one layer alone, its whole tree.
+func TestBehindView(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "snapshots", "1")
+	at := time.Unix(1_600_000_000, 0)
+	for _, n := range []string{"etc/a", "etc/b"} {
+		write(t, parent, n, "same")
+		os.Chtimes(filepath.Join(parent, n), at, at)
+	}
+	child := cloneSnapshot(t, root, "1", "2")
+	write(t, child, "etc/b", "diff")
+	os.Chtimes(filepath.Join(child, "etc/b"), at, at)
+
+	view := func(of, as string) string {
+		dir := cloneSnapshot(t, root, of, as)
+		if err := stampBorn(dir, viewOf+of); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	lower, upper := view("1", "3"), view("2", "4")
+	if got := behindView(upper); got != child {
+		t.Fatalf("behind the child's view: %s, want %s", got, child)
+	}
+	if got := behindView(lower); got != parent {
+		t.Fatalf("behind the parent's view: %s, want %s", got, parent)
+	}
+	if got := behindView(child); got != child {
+		t.Errorf("behind a snapshot that is no view: %s", got)
+	}
+	// The views alone tell nothing; the trees behind them do.
+	if settledSince(lower, upper) != nil {
+		t.Error("two views are settled against one another")
+	}
+	settled := settledSince(behindView(lower), behindView(upper))
+	if settled == nil {
+		t.Fatal("the trees behind the views are not settled")
+	}
+	stat := func(p string) os.FileInfo {
+		fi, err := os.Lstat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi
+	}
+	for name, want := range map[string]bool{"etc/a": true, "etc/b": false} {
+		got := settled(stat(filepath.Join(parent, name)), stat(filepath.Join(child, name)), stat(filepath.Join(parent, "etc")), stat(filepath.Join(child, "etc")))
+		if got != want {
+			t.Errorf("%s settled: %v, want %v", name, got, want)
+		}
+	}
+
+	// A parent that holds a layer alone: its whole tree is behind its view.
+	delta := filepath.Join(root, "snapshots", "5")
+	write(t, delta, "only", "layer")
+	os.MkdirAll(filepath.Dir(deltaMark(delta)), 0o755)
+	os.WriteFile(deltaMark(delta), nil, 0o600)
+	full := filepath.Join(root, "full", "5")
+	write(t, full, "etc/a", "same")
+	dv := filepath.Join(root, "snapshots", "6")
+	write(t, dv, "etc/a", "same")
+	if err := stampBorn(dv, viewOf+"5"); err != nil {
+		t.Fatal(err)
+	}
+	if got := behindView(dv); got != full {
+		t.Errorf("behind the view of a layer's snapshot: %s, want %s", got, full)
+	}
+}

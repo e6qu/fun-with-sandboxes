@@ -281,6 +281,10 @@ func (o *snapshotter) create(ctx context.Context, kind snapshots.Kind, key, pare
 			if err := image.CloneTree(src, dst); err != nil {
 				return err
 			}
+			// A view is its parent's tree and nothing else, ever.
+			if kind == snapshots.KindView {
+				return stampBorn(dst, viewOf+s.ParentIDs[0])
+			}
 			return stampBorn(dst, s.ParentIDs[0])
 		}
 		return os.Mkdir(dst, 0o755)

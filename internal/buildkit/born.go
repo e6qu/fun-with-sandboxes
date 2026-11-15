@@ -3,6 +3,7 @@ package buildkit
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/image"
@@ -25,6 +26,30 @@ func stampBorn(dir, parent string) error {
 		return err
 	}
 	return os.WriteFile(p, []byte(parent), 0o600)
+}
+
+// viewOf starts the born stamp of a view, before its parent.
+const viewOf = "view:"
+
+// behindView is the directory holding the tree a view at dir was cloned
+// from, which the view's own equals for good: its parent's snapshot, or
+// for a parent that holds one layer alone, that parent's whole tree. It
+// is dir itself for a snapshot that is no view. BuildKit hands a diff
+// views of the two snapshots, clones made a moment before, whose files
+// say nothing of when the snapshots' own last changed.
+func behindView(dir string) string {
+	_, src, ok := readBorn(dir)
+	if !ok || !strings.HasPrefix(src, viewOf) {
+		return dir
+	}
+	parent := filepath.Join(filepath.Dir(dir), strings.TrimPrefix(src, viewOf))
+	if isDelta(parent) {
+		parent = filepath.Join(filepath.Dir(filepath.Dir(dir)), "full", filepath.Base(parent))
+	}
+	if fi, err := os.Stat(parent); err != nil || !fi.IsDir() {
+		return dir
+	}
+	return parent
 }
 
 func readBorn(dir string) (at time.Time, parent string, ok bool) {
@@ -58,9 +83,11 @@ func settledSince(lower, upper string) func(l, u, lowerDir, upperDir os.FileInfo
 	}
 	var lowerBorn time.Time
 	switch {
-	case filepath.Dir(lower) == filepath.Dir(upper) && filepath.Base(lower) == src:
-		// lower is the snapshot upper was cloned from: a file of lower
-		// unchanged since upper's clone is what the clone copied.
+	case filepath.Base(lower) == src && (filepath.Dir(lower) == filepath.Dir(upper) ||
+		lower == filepath.Join(filepath.Dir(filepath.Dir(upper)), "full", src)):
+		// lower is the snapshot upper was cloned from, or that snapshot's
+		// whole tree: a file of lower unchanged since upper's clone is
+		// what the clone copied.
 		lowerBorn = upperBorn
 	default:
 		at, lsrc, ok := readBorn(lower)

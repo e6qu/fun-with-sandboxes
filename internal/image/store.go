@@ -1006,21 +1006,33 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 	if err != nil {
 		return unpacked{}, err
 	}
-	var diffIDs []v1.Hash
-	if root == "" {
-		cfg, err := local.ConfigFile()
-		if err != nil {
-			return unpacked{}, err
-		}
-		diffIDs = cfg.RootFS.DiffIDs
-		out.LayeredRoot = len(diffIDs) == len(layers)
+	cfg, err := local.ConfigFile()
+	if err != nil {
+		return unpacked{}, err
 	}
+	diffIDs := cfg.RootFS.DiffIDs
+	if len(diffIDs) != len(layers) {
+		diffIDs = nil
+	}
+	out.LayeredRoot = root == "" && diffIDs != nil
 	for i, l := range layers {
 		var n int64
-		if len(diffIDs) == len(layers) {
+		switch {
+		case root == "" && diffIDs != nil:
 			n, err = s.layLayer(l, diffIDs[i], stage)
-		} else {
-			n, err = measure(l, stage, root == "")
+		case root == "":
+			n, err = measure(l, stage, true)
+		default:
+			// The root came with the image, as a build's does: its layers
+			// are read for their lengths alone, and those the cache has
+			// read from these blobs, as a build's base image's, not at all.
+			var known bool
+			if diffIDs != nil {
+				n, known = s.knownSize(l, diffIDs[i])
+			}
+			if !known {
+				n, err = measure(l, stage, false)
+			}
 		}
 		if err != nil {
 			return unpacked{}, err

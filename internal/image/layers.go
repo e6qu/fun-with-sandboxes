@@ -233,3 +233,57 @@ func (s *Store) collectLayersLocked() (uint64, error) {
 	}
 	return freed, nil
 }
+
+// layerOfBlob finds the cached layer the store has read from the
+// compressed blob of digest blob, by the records that name it.
+func (s *Store) layerOfBlob(blob string) (v1.Hash, layerMeta, bool) {
+	entries, err := os.ReadDir(s.layersDir())
+	if err != nil {
+		return v1.Hash{}, layerMeta{}, false
+	}
+	for _, e := range entries {
+		hex, ok := strings.CutSuffix(e.Name(), ".json")
+		if !ok || strings.HasPrefix(hex, ".") {
+			continue
+		}
+		d := v1.Hash{Algorithm: "sha256", Hex: hex}
+		if m, ok := s.cachedLayer(d); ok && slices.Contains(m.Blobs, blob) {
+			return d, m, true
+		}
+	}
+	return v1.Hash{}, layerMeta{}, false
+}
+
+// CloneCachedLayer clones the cached layer the store read from the
+// compressed blob of digest blob to dst, which must not exist: the layer's
+// entries alone, its whiteouts as the files that name them, as
+// ExtractLayer leaves them. It returns the layer's diff_id and the length
+// of its uncompressed stream; ok is false where the store holds no such
+// layer apart, and dst is not made.
+func (s *Store) CloneCachedLayer(blob, dst string) (diffID string, size int64, ok bool, err error) {
+	// Shared with the collector, which removes the layers no image names.
+	s.blobs.RLock()
+	defer s.blobs.RUnlock()
+	d, m, ok := s.layerOfBlob(blob)
+	if !ok || m.InPlace {
+		return "", 0, false, nil
+	}
+	if err := s.clone(s.layerDir(d), dst); err != nil {
+		return "", 0, false, err
+	}
+	return d.String(), m.Size, true, nil
+}
+
+// knownSize is the length of the uncompressed stream of the layer l, whose
+// diff_id is d, where the cache has read it from this very blob.
+func (s *Store) knownSize(l v1.Layer, d v1.Hash) (int64, bool) {
+	m, ok := s.cachedLayer(d)
+	if !ok {
+		return 0, false
+	}
+	dg, err := l.Digest()
+	if err != nil || !slices.Contains(m.Blobs, dg.String()) {
+		return 0, false
+	}
+	return m.Size, true
+}

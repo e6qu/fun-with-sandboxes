@@ -153,7 +153,7 @@ func newWorker(ctx context.Context, cfg Config) (*darwinWorker, error) {
 		Snapshotter:     containerdsnapshot.NewSnapshotter(SnapshotterName, mdb.Snapshotter(SnapshotterName), namespace, idmap),
 		IdentityMapping: idmap,
 		ContentStore:    cs,
-		Applier:         applier{store: cs},
+		Applier:         applier{store: cs, engine: cfg.Images},
 		Differ:          comparer{store: cs},
 		ImageStore:      images,
 		Platforms:       []ocispecs.Platform{{OS: "darwin", Architecture: goruntime.GOARCH}},

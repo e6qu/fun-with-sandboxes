@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -259,4 +260,107 @@ func TestOnRemove(t *testing.T) {
 	if len(got) != 1 || got[0] != img.ID {
 		t.Fatalf("removal reported %v, want %s", got, img.ID)
 	}
+}
+
+// countingLayer counts the bytes read of its streams.
+type countingLayer struct {
+	v1.Layer
+	read *int64
+}
+
+type layerReadCounter struct {
+	io.ReadCloser
+	n *int64
+}
+
+func (c layerReadCounter) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	*c.n += int64(n)
+	return n, err
+}
+
+func (c countingLayer) Uncompressed() (io.ReadCloser, error) {
+	rc, err := c.Layer.Uncompressed()
+	return layerReadCounter{rc, c.read}, err
+}
+
+func (c countingLayer) Compressed() (io.ReadCloser, error) {
+	rc, err := c.Layer.Compressed()
+	return layerReadCounter{rc, c.read}, err
+}
+
+// A build hands the store its image with the root already made: the store
+// reads none of the layers its cache holds from the same blobs, as the
+// base image's are, and a cached layer clones out by its blob's digest, as
+// BuildKit unpacks a base image.
+func TestBuiltImagesReuseCachedLayers(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := layer(t, entry{name: "etc/", typ: tar.TypeDir, mode: 0o755}, entry{name: "etc/os", body: "base"}, entry{name: "etc/gone", body: "x"})
+	baseImg := layered(t, "base", bytes.NewBuffer(base.Bytes()))
+	stored, err := s.Add(baseImg, []string{"base:1"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	layers, _ := baseImg.Layers()
+	blob, _ := layers[0].Digest()
+	diffID, _ := layers[0].DiffID()
+
+	dst := filepath.Join(t.TempDir(), "layer")
+	got, size, ok, err := s.CloneCachedLayer(blob.String(), dst)
+	if err != nil || !ok || got != diffID.String() || size != stored.LayerSizes[0] {
+		t.Fatalf("CloneCachedLayer: %s %d %v %v, want %s %d", got, size, ok, err, diffID, stored.LayerSizes[0])
+	}
+	if readAt(t, dst, "etc/os") != "base" {
+		t.Errorf("the cloned layer: %s", listTree(t, dst))
+	}
+	if _, _, ok, err := s.CloneCachedLayer("sha256:"+strings.Repeat("0", 64), filepath.Join(t.TempDir(), "none")); ok || err != nil {
+		t.Errorf("a blob the store never read cloned: %v %v", ok, err)
+	}
+
+	// The built image: the base's layer and one of its own, its root made.
+	own := layer(t, entry{name: "app/a", body: "a"})
+	built := layered(t, "built", bytes.NewBuffer(base.Bytes()), own)
+	bl, _ := built.Layers()
+	var baseRead, ownRead int64
+	counted, err := mutate.ConfigFile(empty.Image, mustConfig(t, built))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counted, err = mutate.AppendLayers(counted, countingLayer{bl[0], &baseRead}, countingLayer{bl[1], &ownRead}); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(s.BuildDir(), "export-test")
+	if err := os.MkdirAll(filepath.Join(root, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := baseRead
+	out, err := s.Add(counted, []string{"built:1"}, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.LayerSizes) != 2 || out.LayerSizes[0] != stored.LayerSizes[0] || out.LayerSizes[1] == 0 {
+		t.Errorf("the built image's layer sizes: %v", out.LayerSizes)
+	}
+	// Writing a blob the store holds reads nothing either.
+	if baseRead != before {
+		t.Errorf("%d bytes of the base layer were read", baseRead-before)
+	}
+	if ownRead == 0 {
+		t.Error("the build's own layer was never read")
+	}
+}
+
+func mustConfig(t *testing.T, img v1.Image) *v1.ConfigFile {
+	t.Helper()
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The layers go on again, with their diff_ids and history.
+	c := cfg.DeepCopy()
+	c.RootFS.DiffIDs, c.History = nil, nil
+	return c
 }

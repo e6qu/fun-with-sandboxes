@@ -41,7 +41,12 @@ func bindDir(mounts []mount.Mount) (string, func(), error) {
 }
 
 // applier unpacks layers into snapshot directories.
-type applier struct{ store content.Provider }
+type applier struct {
+	store content.Provider
+	// engine is the engine's image store, which holds the layers of its
+	// images unpacked apart.
+	engine *image.Store
+}
 
 func (a applier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mount.Mount, _ ...diff.ApplyOpt) (ocispec.Descriptor, error) {
 	defer slow(time.Now(), "applying layer %s of %d bytes", desc.Digest, desc.Size)
@@ -50,6 +55,21 @@ func (a applier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mo
 		return ocispec.Descriptor{}, err
 	}
 	defer done()
+	// A layer of an engine image is unpacked in the engine's store already,
+	// in the shape a delta takes: a clone of it is the layer applied.
+	if a.engine != nil && isDelta(root) {
+		if entries, err := os.ReadDir(root); err == nil && len(entries) == 0 && os.Remove(root) == nil {
+			diffID, size, ok, err := a.engine.CloneCachedLayer(desc.Digest.String(), root)
+			if ok && err == nil {
+				return ocispec.Descriptor{MediaType: ocispec.MediaTypeImageLayer, Size: size, Digest: digest.Digest(diffID)}, nil
+			}
+			// The snapshot's directory again, for the layer to unpack into.
+			os.RemoveAll(root)
+			if err := os.Mkdir(root, 0o755); err != nil {
+				return ocispec.Descriptor{}, err
+			}
+		}
+	}
 	ra, err := a.store.ReaderAt(ctx, desc)
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("open layer %s: %w", desc.Digest, err)
@@ -157,6 +177,9 @@ func (s comparer) Compare(ctx context.Context, lower, upper []mount.Mount, opts 
 	}
 	// The layer carries the modes and owners containers see, and reads
 	// only the files the step may have changed (settledSince).
+	// The trees behind BuildKit's views are the same as the views', and
+	// their files say when each last changed.
+	lowerDir, upperDir = behindView(lowerDir), behindView(upperDir)
 	dopts := image.DiffOptions{SourceDateEpoch: cfg.SourceDateEpoch, Settled: settledSince(lowerDir, upperDir)}
 	if kind == compression.Uncompressed {
 		dg := digest.SHA256.Digester()
