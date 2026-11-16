@@ -1485,6 +1485,19 @@ static int spawns(const posix_spawnattr_t *a) {
     return !(a && posix_spawnattr_getflags(a, &flags) == 0 && (flags & POSIX_SPAWN_SETEXEC));
 }
 
+// The paths a posix_spawn's file actions name, the directory the child
+// starts in and the files it opens, are the container's: they are mapped as
+// they are added, since the kernel carries the actions out. libuv, and so
+// Node.js, starts a child in a working directory this way.
+static int fws_spawn_addchdir(posix_spawn_file_actions_t *fa, const char *path) {
+    return posix_spawn_file_actions_addchdir_np(fa, MAP(path));
+}
+INTERPOSE(fws_spawn_addchdir, posix_spawn_file_actions_addchdir_np);
+static int fws_spawn_addopen(posix_spawn_file_actions_t *fa, int fd, const char *path, int oflag, mode_t mode) {
+    return posix_spawn_file_actions_addopen(fa, fd, MAPF(path, !(oflag & O_NOFOLLOW)), oflag, mode);
+}
+INTERPOSE(fws_spawn_addopen, posix_spawn_file_actions_addopen);
+
 static int fws_posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *a,
                            char *const argv[], char *const envp[]) {
     if (spawns(a) && pids_full()) {

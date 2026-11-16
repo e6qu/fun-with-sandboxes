@@ -663,6 +663,29 @@ func TestLibraryVariableIsHiddenAndKept(t *testing.T) {
 	}
 }
 
+// The paths of a posix_spawn's file actions are the container's: a child
+// started in a directory, with a file opened as its output, as Node.js
+// starts one, lands in the container's.
+func TestSpawnFileActionsNameTheContainersPaths(t *testing.T) {
+	root := containerRoot(t)
+	bin := filepath.Join(root, "bin", "spawnactions")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", bin, "testdata/spawnactions/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin)
+	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_ROOT=" + root}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("spawnactions: %v\n%s", err, out)
+	}
+	if b, err := os.ReadFile(filepath.Join(root, "made", "out")); err != nil || string(b) != "cwd=/made\n" {
+		t.Errorf("the child wrote %q, %v; want its working directory in the file the action opened", b, err)
+	}
+}
+
 // The container's / is a mount point to getattrlist and on the volume
 // mounted at / to statfs, as the host's is, so a walk up a file's parents
 // to its volume, and from a volume's mount point up, ends there.
