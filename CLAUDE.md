@@ -7,7 +7,9 @@ and test is in `CONTRIBUTING.md`.
 - **Always monitor CI.** After every push, watch the pull request's checks
   through to the end without being asked: read each failure, fix its root
   cause, and say what happened. A job that never got a runner or was
-  cancelled is re-run, not left. (Asked on 2026-11-16.)
+  cancelled is re-run, not left. After a merge, watch the run on `main`
+  the same way, to the end of its `publish` job: a red run on `main` is
+  fixed in the next pull request at once. (Asked on 2026-11-16.)
 - **One pull request open at a time**, large and chunky; fixes go into the
   open one. No fix or bug is deferred.
 - **Merging**, when asked to merge once CI is green: squash, a one-line
