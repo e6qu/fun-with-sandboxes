@@ -291,7 +291,7 @@ func TestWriteDiffAsksSettled(t *testing.T) {
 	for _, d := range []string{lower, upper} {
 		os.Chtimes(filepath.Join(d, "f"), time.Unix(1_600_000_000, 0), time.Unix(1_600_000_000, 0))
 	}
-	entries := func(settled func(l, u, ld, ud os.FileInfo) bool) []string {
+	entries := func(settled Settled) []string {
 		var buf bytes.Buffer
 		if err := WriteDiff(context.Background(), &buf, lower, upper, DiffOptions{Settled: settled}); err != nil {
 			t.Fatal(err)
@@ -310,8 +310,11 @@ func TestWriteDiffAsksSettled(t *testing.T) {
 		t.Errorf("without Settled the diff holds %v", got)
 	}
 	asked := false
-	if got := entries(func(l, u, ld, ud os.FileInfo) bool { asked = ld != nil && ud != nil; return true }); len(got) != 0 || !asked {
-		t.Errorf("with Settled the diff holds %v (asked with directories: %v)", got, asked)
+	if got := entries(func(rel string, l, u, ld, ud os.FileInfo) bool {
+		asked = rel == "/f" && ld != nil && ud != nil
+		return true
+	}); len(got) != 0 || !asked {
+		t.Errorf("with Settled the diff holds %v (asked with its path and directories: %v)", got, asked)
 	}
 }
 

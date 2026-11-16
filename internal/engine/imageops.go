@@ -114,7 +114,13 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 		return "", err
 	}
 	defer os.Remove(diff.Name())
-	err = image.Diff(ctx, baseRoot, dst, diff)
+	var settled image.Settled
+	if t, ok := c.born(); ok {
+		// dst is a clone of the root, whose files cloned from the image
+		// and unchanged since hold the image's content.
+		settled = settledRoot(c.root(), t)
+	}
+	err = image.WriteDiff(ctx, diff, baseRoot, dst, image.DiffOptions{Settled: settled})
 	if cerr := diff.Close(); err == nil {
 		err = cerr
 	}

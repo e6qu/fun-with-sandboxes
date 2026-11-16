@@ -361,6 +361,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err != nil {
 		return container.CreateResponse{}, fmt.Errorf("clone image root: %w", err)
 	}
+	if err := stampBorn(staged); err != nil {
+		return container.CreateResponse{}, err
+	}
 	st.mark("clone")
 
 	// node is the privileged container a nested engine's container on the
@@ -433,6 +436,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		}
 	}()
 	if err := os.Rename(stagedRoot, c.root()); err != nil {
+		return container.CreateResponse{}, err
+	}
+	if err := os.Rename(filepath.Join(staged, bornFile), c.bornPath()); err != nil {
 		return container.CreateResponse{}, err
 	}
 	st.mark("root")

@@ -72,7 +72,7 @@ func TestSettledSince(t *testing.T) {
 			return false
 		}
 		l, u := filepath.Join(lower, name), filepath.Join(upper, name)
-		return f(stat(l), stat(u), stat(filepath.Dir(l)), stat(filepath.Dir(u)))
+		return f("/"+name, stat(l), stat(u), stat(filepath.Dir(l)), stat(filepath.Dir(u)))
 	}
 	for _, c := range []struct {
 		lower, upper, name string
@@ -199,7 +199,7 @@ func TestBehindView(t *testing.T) {
 		return fi
 	}
 	for name, want := range map[string]bool{"etc/a": true, "etc/b": false} {
-		got := settled(stat(filepath.Join(parent, name)), stat(filepath.Join(child, name)), stat(filepath.Join(parent, "etc")), stat(filepath.Join(child, "etc")))
+		got := settled("/"+name, stat(filepath.Join(parent, name)), stat(filepath.Join(child, name)), stat(filepath.Join(parent, "etc")), stat(filepath.Join(child, "etc")))
 		if got != want {
 			t.Errorf("%s settled: %v, want %v", name, got, want)
 		}
