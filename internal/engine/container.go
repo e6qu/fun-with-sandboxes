@@ -105,6 +105,8 @@ type record struct {
 	Mounts     []mountRec `json:"mounts"`
 	State      stateRec   `json:"state"`
 	Links      []linkRec  `json:"links,omitempty"`
+	// Resolver is CreateOptions.Resolver.
+	Resolver *Resolver `json:"resolver,omitempty"`
 }
 
 type Container struct {
@@ -267,6 +269,18 @@ func closedChan() chan struct{} {
 type CreateOptions struct {
 	Name     string
 	Platform string
+	// Resolver, for a container without DNS settings of its own, puts
+	// search domains and options in its resolv.conf alone: the container
+	// library completes the names its stack answers with them, and other
+	// names go to the host's resolver as they would without. A pod's
+	// sandbox takes its pod's.
+	Resolver *Resolver
+}
+
+// Resolver is CreateOptions.Resolver.
+type Resolver struct {
+	Search  []string `json:"search,omitempty"`
+	Options []string `json:"options,omitempty"`
 }
 
 func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (container.CreateResponse, error) {
@@ -281,6 +295,11 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	}
 	if err := checkHostConfig(req.HostConfig); err != nil {
 		return container.CreateResponse{}, err
+	}
+	if r := opts.Resolver; r != nil {
+		if err := checkDNS(dnsSettings{Search: r.Search, Options: r.Options}); err != nil {
+			return container.CreateResponse{}, err
+		}
 	}
 	// A nested engine puts a container on the host's network mode on the
 	// privileged container's network (below); another refuses the mode.
@@ -476,14 +495,14 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			return container.CreateResponse{}, err
 		}
 	}
-	hostname, domain, extraHosts, hostAddress, dns := cfg.Hostname, cfg.Domainname, req.HostConfig.ExtraHosts, firstAddresses(address, networks), dnsOf(*req.HostConfig)
+	hostname, domain, extraHosts, hostAddress, dns := cfg.Hostname, cfg.Domainname, req.HostConfig.ExtraHosts, firstAddresses(address, networks), resolvOf(*req.HostConfig, opts.Resolver)
 	if req.HostConfig.NetworkMode == "none" {
 		hostAddress = nil
 	}
 	if net != nil {
 		// A container on another's network has its hostname and hosts, as
 		// it would its UTS namespace's files in Docker.
-		hostname, domain, extraHosts, hostAddress, dns = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks), dnsOf(net.rec.HostConfig)
+		hostname, domain, extraHosts, hostAddress, dns = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks), resolvOf(net.rec.HostConfig, net.rec.Resolver)
 		cfg.Hostname = hostname
 	}
 	if node != nil {
@@ -524,7 +543,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		Config: cfg, HostConfig: hc, Networks: networks,
 		Stack: stack, Service: service, Ports: ports, Mounts: mounts,
 		Address: address, RouterPort: routerPort, Links: links,
-		State: stateRec{Status: container.StateCreated},
+		State: stateRec{Status: container.StateCreated}, Resolver: opts.Resolver,
 	}
 	if err := c.save(); err != nil {
 		return container.CreateResponse{}, err

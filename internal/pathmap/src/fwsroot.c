@@ -5800,18 +5800,33 @@ static const char *members_text(void) {
 struct member {
     in_addr_t addr;
     const char *names, *names_end, *ports, *ports_end, *nets, *nets_end, *links, *links_end, *subs, *subs_end;
+    // An alias's line (package members, Alias) has, in place of an
+    // address, "=" and the name its names stand for.
+    const char *alias, *alias_end;
     unsigned short router;
     int foreign;
 };
 
-static const char *next_member(const char *p, struct member *m) {
+// next_line reads the next member's line at p, an alias's with alias set,
+// passing over the other kind, and returns where the line after starts.
+static const char *next_line(const char *p, struct member *m, int alias) {
     while (p && *p) {
         const char *nl = strchr(p, '\n');
         const char *end = nl ? nl : p + strlen(p);
         const char *t1 = memchr(p, '\t', (size_t)(end - p));
         const char *t2 = t1 ? memchr(t1 + 1, '\t', (size_t)(end - t1 - 1)) : NULL;
         const char *after;
-        if (t2 && parse_v4(p, &after, &m->addr) && after == t1) {
+        int ok = 0;
+        m->alias = m->alias_end = NULL;
+        if (t2 && alias) {
+            ok = *p == '=' && t1 > p + 1;
+            m->addr = 0;
+            m->alias = p + 1;
+            m->alias_end = t1;
+        } else if (t2) {
+            ok = parse_v4(p, &after, &m->addr) && after == t1;
+        }
+        if (ok) {
             const char *t3 = memchr(t2 + 1, '\t', (size_t)(end - t2 - 1));
             const char *t4 = t3 ? memchr(t3 + 1, '\t', (size_t)(end - t3 - 1)) : NULL;
             const char *t5 = t4 ? memchr(t4 + 1, '\t', (size_t)(end - t4 - 1)) : NULL;
@@ -5840,6 +5855,8 @@ static const char *next_member(const char *p, struct member *m) {
     }
     return NULL;
 }
+
+static const char *next_member(const char *p, struct member *m) { return next_line(p, m, 0); }
 
 static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 
@@ -6563,6 +6580,124 @@ static int router_addr(const char *name, int af, void *out) {
     return 0;
 }
 
+// member_alias finds the alias, an ExternalName Service's, that answers to
+// name among those the container sees, and copies the name it stands for
+// to out.
+static int member_alias(const char *name, char *out, size_t size) {
+    int found = 0;
+    pthread_mutex_lock(&members_lock);
+    struct member m, me;
+    const char *text = members_text();
+    int have_me = find_self(text, &me);
+    for (const char *p = text; (p = next_line(p, &m, 1));) {
+        if (sees(&m, &me, have_me) && answers(&m, name)) {
+            size_t n = (size_t)(m.alias_end - m.alias);
+            if (n < size) {
+                memcpy(out, m.alias, n);
+                out[n] = 0;
+                found = 1;
+            }
+            break;
+        }
+    }
+    pthread_mutex_unlock(&members_lock);
+    return found;
+}
+
+// stack_answers reports whether the container's stack answers to name:
+// a member, or an alias.
+static int stack_answers(const char *name) {
+    in_addr_t a;
+    char target[256];
+    return member_address(name, &a) != 0 || member_alias(name, target, sizeof target);
+}
+
+#define SEARCH_MAX 6
+#define NAME_MAX_LEN 253
+
+// resolv_search reads the container's /etc/resolv.conf as a resolver does:
+// the search domains of its last search or domain line, up to SEARCH_MAX,
+// into search, and its ndots option, 1 where it names none, into ndots.
+// It returns how many domains it read.
+static int resolv_search(char search[SEARCH_MAX][NAME_MAX_LEN + 1], int *ndots) {
+    *ndots = 1;
+    int fd = open(MAP("/etc/resolv.conf"), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    char b[8192];
+    ssize_t n = read(fd, b, sizeof b - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    b[n] = 0;
+    int ns = 0;
+    for (char *line = b, *next; line; line = next) {
+        next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        char *save, *key = strtok_r(line, " \t\r", &save);
+        if (!key) continue;
+        if (strcmp(key, "search") == 0 || strcmp(key, "domain") == 0) {
+            ns = 0;
+            for (char *d = strtok_r(NULL, " \t\r", &save); d && ns < SEARCH_MAX; d = strtok_r(NULL, " \t\r", &save)) {
+                size_t l = strlen(d);
+                if (l && d[l - 1] == '.') d[--l] = 0;
+                if (l == 0 || l > NAME_MAX_LEN) continue;
+                strlcpy(search[ns++], d, NAME_MAX_LEN + 1);
+            }
+        } else if (strcmp(key, "options") == 0) {
+            for (char *o = strtok_r(NULL, " \t\r", &save); o; o = strtok_r(NULL, " \t\r", &save)) {
+                unsigned long v;
+                const char *e;
+                if (strncmp(o, "ndots:", 6) == 0 && (e = num(o + 6, &v)) && !*e) *ndots = v > 15 ? 15 : (int)v;
+            }
+        }
+    }
+    return ns;
+}
+
+// cluster_name is the name a lookup of name asks the stack for, copied to
+// out where it is another: the first of the names the container's search
+// domains make of it, in the order its resolver tries them, that the stack
+// answers to, as a pod's search domains make a Service's short name its
+// namespace's; then followed through the aliases an ExternalName Service
+// gives, up to eight, as a resolver follows CNAME records. It is name
+// itself where the stack answers none of them.
+static const char *cluster_name(const char *name, char *out, size_t size) {
+    size_t len = strlen(name);
+    if (len == 0 || len > NAME_MAX_LEN || numeric_host(name)) return name;
+    char search[SEARCH_MAX][NAME_MAX_LEN + 1];
+    int ndots = 1, ns = 0, dots = 0;
+    int absolute = name[len - 1] == '.';
+    if (!absolute) ns = resolv_search(search, &ndots);
+    for (size_t i = 0; i < len; i++) dots += name[i] == '.';
+    int first = absolute || dots >= ndots;
+    const char *pick = NULL;
+    char cand[2 * NAME_MAX_LEN + 2];
+    if (first && stack_answers(name)) pick = name;
+    for (int i = 0; i < ns && !pick; i++) {
+        int k = snprintf(cand, sizeof cand, "%s.%s", name, search[i]);
+        if (k > 0 && (size_t)k <= NAME_MAX_LEN && (size_t)k < size && stack_answers(cand)) {
+            strlcpy(out, cand, size);
+            pick = out;
+        }
+    }
+    if (!pick && !first && stack_answers(name)) pick = name;
+    if (!pick) return name;
+    char target[NAME_MAX_LEN + 3];
+    for (int i = 0; i < 8 && member_alias(pick, target, sizeof target); i++) {
+        if (strlen(target) >= size) break;
+        strlcpy(out, target, size);
+        pick = out;
+    }
+    return pick;
+}
+
+// lookup_name is the name gethostbyname asks for: name where the
+// container's /etc/hosts lists it, else its cluster_name.
+static const char *lookup_name(const char *name, char *out, size_t size) {
+    struct in6_addr a;
+    if (!name || hosts_addr(name, AF_INET, &a) || hosts_addr(name, AF_INET6, &a)) return name;
+    return cluster_name(name, out, size);
+}
+
 // A name resolves as a container's resolver resolves it: to the addresses
 // its /etc/hosts lists it at, then a member's name to its member address,
 // as Docker's DNS resolves a container on the network, and any other name
@@ -6576,6 +6711,14 @@ static int fws_getaddrinfo(const char *node, const char *service, const struct a
     }
     int herr = hosts_addrinfo(node, service, hints, res);
     if (herr != EAI_NONAME) return herr;
+    // A short name the search domains complete, or an alias, is looked
+    // up as the name it is, in the hosts file too.
+    char cname[NAME_MAX_LEN + 3];
+    const char *asked = node;
+    if ((node = cluster_name(node, cname, sizeof cname)) != asked) {
+        herr = hosts_addrinfo(node, service, hints, res);
+        if (herr != EAI_NONAME) return herr;
+    }
     int found = member_address(node, &a);
     if (!found) {
         if (dns_via_router && *node && !numeric_host(node)) {
@@ -6700,6 +6843,8 @@ static struct hostent *router_hostent(const char *name, int af) {
 }
 
 static struct hostent *fws_gethostbyname(const char *name) {
+    char cname[NAME_MAX_LEN + 3];
+    name = lookup_name(name, cname, sizeof cname);
     int own = 0;
     struct hostent *h = name ? member_hostent4(name, &own) : NULL;
     if (own) return h;
@@ -6709,6 +6854,8 @@ static struct hostent *fws_gethostbyname(const char *name) {
 INTERPOSE(fws_gethostbyname, gethostbyname);
 
 static struct hostent *fws_gethostbyname2(const char *name, int af) {
+    char cname[NAME_MAX_LEN + 3];
+    name = lookup_name(name, cname, sizeof cname);
     struct in6_addr a6;
     int own = 0;
     struct hostent *h = af == AF_INET && name ? member_hostent4(name, &own) : NULL;

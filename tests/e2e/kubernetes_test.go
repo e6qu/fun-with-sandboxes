@@ -297,7 +297,9 @@ func TestKubernetesControlPlane(t *testing.T) {
 	// with no lines passes the pods no DNS servers, which the engine's
 	// containers cannot reach: they resolve names through the host's
 	// resolver. An empty --resolv-conf would not: the kubelet then gives
-	// each pod 127.0.0.1 and the search domain ".".
+	// each pod 127.0.0.1 and the search domain ".". The cluster's DNS
+	// settings give each pod its namespace's search domains, with which
+	// the container library completes a Service's short name.
 	// joinNode starts a node's kubelet, and fws-kube-proxy beside it,
 	// which keeps the node engine's services to the cluster's as
 	// kube-proxy keeps a node's; loads the images its pods run into the
@@ -310,6 +312,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 			"fws-kube-proxy --kubeconfig="+pkiDir+"kube-proxy.conf & "+
 				"exec kubelet --kubeconfig="+pkiDir+node+".conf --container-runtime-endpoint=unix://$FWS_ENGINE --hostname-override="+node+
 				" --cgroups-per-qos=false --enforce-node-allocatable= --fail-swap-on=false --eviction-hard='memory.available<10Mi' --resolv-conf=/dev/null"+
+				" --cluster-dns=10.96.0.10 --cluster-domain=cluster.local"+
 				" --register-with-taints=e2e/loading=true:NoSchedule")
 		mustKubectl("wait", "--for=create", "--timeout=2m", "node/"+node)
 		mustKubectl("wait", "--for=condition=Ready", "--timeout=2m", "node/"+node)
@@ -377,8 +380,15 @@ func TestKubernetesControlPlane(t *testing.T) {
 	mustKubectl("expose", "deployment/web", "--port=80", "--name=web")
 	clusterIP := mustKubectl("get", "service/web", "-o", "jsonpath={.spec.clusterIP}")
 	mustKubectl("expose", "deployment/web", "--port=80", "--name=web-external", "--external-ip=192.0.2.80", "--session-affinity=ClientIP")
+	// A Service's short name is its namespace's, as the pod's search
+	// domains complete it, though another namespace's Service of that
+	// name, which nothing serves, sorts first; and an ExternalName
+	// Service's name is an alias of the name it gives.
+	mustKubectl("create", "namespace", "a-decoy")
+	mustKubectl("create", "service", "clusterip", "web", "--namespace=a-decoy", "--tcp=80:80")
+	mustKubectl("create", "service", "externalname", "web-alias", "--external-name=web.default.svc.cluster.local")
 	for name, url := range map[string]string{"by-name": "http://web.default.svc.cluster.local/", "by-ip": "http://" + clusterIP + "/",
-		"by-external-ip": "http://192.0.2.80/"} {
+		"by-external-ip": "http://192.0.2.80/", "by-short-name": "http://web/", "by-alias": "http://web-alias/"} {
 		pod := "service-" + name
 		mustKubectl("run", pod, "--image=fws/toolbox:1", "--restart=OnFailure", "--", "fetch", url)
 		if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/"+pod); err != nil {
