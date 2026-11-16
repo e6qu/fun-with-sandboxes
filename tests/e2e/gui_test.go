@@ -151,7 +151,7 @@ exports.run = async () => {
   await editor.edit((e) => e.insert(new vscode.Position(1, 0), "edited in the editor\n"));
   if (!(await doc.save())) throw new Error("the document did not save");
   const terminal = vscode.window.createTerminal({ name: "fws", shellPath: "/bin/bash" });
-  terminal.sendText("echo typed in the terminal > /work/terminal.txt; hostname >> /work/terminal.txt");
+  terminal.sendText("echo typed in the terminal > /work/terminal.txt; uname -n >> /work/terminal.txt");
   for (let i = 0; i < 300 && !(fs.existsSync("/work/terminal.txt") && fs.readFileSync("/work/terminal.txt", "utf8").split("\n").length > 2); i++) {
     await new Promise((r) => setTimeout(r, 200));
   }
