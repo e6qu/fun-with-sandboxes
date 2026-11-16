@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // electronVersion is the Electron release the test runs, Electron's own
@@ -195,5 +197,84 @@ exports.run = async () => {
 	}
 	if t.Failed() {
 		t.Logf("Seatbelt refused VS Code:\n%s", sandboxDenials(t, "Code"))
+	}
+}
+
+// VS Code on the host, with Microsoft's Dev Containers extension, opens a
+// folder in a dev container of the engine's: the extension creates the
+// container through the Docker CLI, installs VS Code's server in it and
+// connects the window to it.
+func TestVSCodeDevContainersExtension(t *testing.T) {
+	dir := unzipped(t, "fws-e2e-vscode-host-", "https://update.code.visualstudio.com/latest/darwin-arm64/stable")
+	const app = "Visual Studio Code.app"
+	cli := filepath.Join(dir, app, "Contents", "Resources", "app", "bin", "code")
+	data, exts, work := filepath.Join(dir, "data"), filepath.Join(dir, "extensions"), filepath.Join(dir, "project")
+	if err := os.MkdirAll(filepath.Join(work, ".devcontainer"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, ".devcontainer", "devcontainer.json"), []byte(`{"name": "fws e2e", "image": "fws/base:1"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "README"), []byte("from the workspace\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code := func(args ...string) *exec.Cmd {
+		return exec.Command(cli, append([]string{"--user-data-dir", data, "--extensions-dir", exts}, args...)...)
+	}
+	if out, err := code("--install-extension", "ms-vscode-remote.remote-containers").CombinedOutput(); err != nil {
+		t.Fatalf("installing the Dev Containers extension: %v\n%s", err, out)
+	}
+
+	uri := "vscode-remote://dev-container+" + hex.EncodeToString([]byte(work)) + "/workspaces/project"
+	window := code("--new-window", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", "--disable-updates",
+		"--disable-telemetry", "--use-mock-keychain", "--wait", "--folder-uri", uri)
+	var output strings.Builder
+	window.Stdout, window.Stderr = &output, &output
+	if err := window.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		exec.Command("pkill", "-f", data).Run()
+		window.Wait()
+		if ids, _ := docker(t, "ps", "-aq", "--filter", "label=devcontainer.local_folder="+work); strings.TrimSpace(ids) != "" {
+			docker(t, append([]string{"rm", "-f", "-v"}, strings.Fields(ids)...)...)
+		}
+	}()
+
+	// The extension has made the container, and VS Code's server runs in
+	// it, when the server's own log there says it listens.
+	var id, server string
+	for deadline := time.Now().Add(4 * time.Minute); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
+		if id == "" {
+			ids, _ := docker(t, "ps", "-q", "--filter", "label=devcontainer.local_folder="+work)
+			id = strings.TrimSpace(ids)
+			continue
+		}
+		server, _ = docker(t, "exec", id, "/bin/sh", "-c", "cat /root/.vscode-server/.*.log /root/.vscode-server/*.log 2>/dev/null")
+		if strings.Contains(server, "Extension host agent listening") {
+			break
+		}
+	}
+	if id == "" || !strings.Contains(server, "Extension host agent listening") {
+		var logs strings.Builder
+		filepath.Walk(filepath.Join(data, "logs"), func(p string, fi os.FileInfo, err error) error {
+			if err == nil && fi.Mode().IsRegular() && (strings.Contains(p, "remote-containers") || strings.Contains(filepath.Base(p), "remoteContainers") || strings.Contains(filepath.Base(p), "Dev Containers")) {
+				b, _ := os.ReadFile(p)
+				if len(b) > 12000 {
+					b = b[len(b)-12000:]
+				}
+				fmt.Fprintf(&logs, "== %s\n%s\n", p, b)
+			}
+			return nil
+		})
+		var listing string
+		if id != "" {
+			listing, _ = docker(t, "exec", id, "/bin/sh", "-c", "exec 2>&1; ls -la /root /root/.vscode-server /root/.vscode-server/bin 2>&1 | head -60")
+		}
+		t.Fatalf("the Dev Containers extension did not bring VS Code's server up in a container (container %q).\nIts server's log:\n%s\nIn the container:\n%s\nVS Code printed:\n%s\nThe extension's logs:\n%s",
+			id, server, listing, output.String(), logs.String())
+	}
+	if out, err := docker(t, "exec", id, "cat", "/workspaces/project/README"); err != nil || out != "from the workspace\n" {
+		t.Errorf("the workspace in the container: %q, %v", out, err)
 	}
 }

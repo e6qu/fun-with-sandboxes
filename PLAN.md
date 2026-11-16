@@ -49,14 +49,15 @@ image of kind 0.31, until a newer one is asked for.
 One pull request open at a time.
 
 1. **Graphical applications and VS Code.** Merged in
-   [#67](https://github.com/e6qu/fun-with-sandboxes/pull/67): the Dev
+   [#67](https://github.com/e6qu/fun-with-sandboxes/pull/67) and
+   [#68](https://github.com/e6qu/fun-with-sandboxes/pull/68): the Dev
    Containers CLI against the engine, VS Code's server in a dev container,
    hardened-runtime programs loading the container library, and
-   `--security-opt seatbelt=gui`, with which Electron draws its window from
-   inside a container. Next: VS Code itself in a container, with its
-   extension host and integrated terminal; Chromium's own sandbox inside a
-   container's, so that `--no-sandbox` goes; VS Code's Dev Containers
-   extension end to end.
+   `--security-opt seatbelt=gui`, with which Electron and VS Code itself,
+   its extension host and integrated terminal, run inside a container.
+   Next: VS Code's Dev Containers extension on the host, opening a folder
+   in a dev container of the engine's; Chromium's own sandbox inside a
+   container's, so that `--no-sandbox` goes.
 2. **Starts and limits.** `fwsroot`'s cost to the loader cut by interposing
    fewer functions; per-process memory limits in the kernel if CI's jetsam
    experiment shows macOS enforces them; the engine's lock split where
