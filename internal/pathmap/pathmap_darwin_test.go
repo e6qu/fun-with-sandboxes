@@ -714,8 +714,8 @@ func TestHardenedProgramLoadsTheLibrary(t *testing.T) {
 	if f := flags(); !strings.Contains(f, "runtime") {
 		t.Fatalf("the probe was signed with flags %s, want the hardened runtime", f)
 	}
-	// A Mac with System Integrity Protection off, as CI's are, loads the
-	// library into a hardened program anyway; one with it on does not.
+	// Not every Mac keeps the library out of a hardened program: CI's
+	// load it, so what the test holds to is the signature.
 	if out := run(hard); out == "hostname=web\n" {
 		t.Log("this Mac loads libraries into programs with the hardened runtime")
 	}
