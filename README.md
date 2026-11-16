@@ -201,7 +201,8 @@ darwin tools, not `apt-get`.
 `--security-opt seatbelt=gui` grants a container the user's login session
 besides: the window server, pasteboard, Launch Services, fonts, input
 methods, preferences, audio and the GPU, which a graphical application
-such as an Electron one draws and listens with. Its windows open on the
+such as an Electron one draws and listens with; VS Code itself runs in one,
+with its extension host and integrated terminal. Its windows open on the
 user's desktop and it reads what the user copies; the keychain stays
 denied. A devcontainer asks for it with
 `"runArgs": ["--security-opt", "seatbelt=gui"]`, a Compose service with
