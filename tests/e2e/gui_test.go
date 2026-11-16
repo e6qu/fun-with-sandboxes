@@ -283,20 +283,29 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 		}
 	}
 	if id == "" || !strings.Contains(serverLog, "Extension host agent listening") {
+		// Every log of the window, the last of each: the extension's own,
+		// and the window's, where what the extension waits on shows.
 		var logs strings.Builder
 		filepath.Walk(filepath.Join(data, "logs"), func(p string, fi os.FileInfo, err error) error {
-			if err == nil && fi.Mode().IsRegular() && (strings.Contains(p, "remote-containers") || strings.Contains(filepath.Base(p), "remoteContainers") || strings.Contains(filepath.Base(p), "Dev Containers")) {
-				b, _ := os.ReadFile(p)
-				if len(b) > 12000 {
-					b = b[len(b)-12000:]
-				}
-				fmt.Fprintf(&logs, "== %s\n%s\n", p, b)
+			if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
+				return nil
 			}
+			keep := int64(4000)
+			if strings.Contains(p, "remote-containers") {
+				keep = 14000
+			}
+			b, _ := os.ReadFile(p)
+			if int64(len(b)) > keep {
+				b = b[int64(len(b))-keep:]
+			}
+			fmt.Fprintf(&logs, "== %s (%d bytes)\n%s\n", strings.TrimPrefix(p, data), fi.Size(), b)
 			return nil
 		})
 		var listing string
 		if id != "" {
-			listing, _ = docker(t, "exec", id, "/bin/sh", "-c", "exec 2>&1; ls -la /root /root/.vscode-server /root/.vscode-server/bin 2>&1 | head -60")
+			top, _ := docker(t, "top", id)
+			listing, _ = docker(t, "exec", id, "/bin/sh", "-c", "exec 2>&1; ls -la /root/.vscode-server /tmp /tmp/devcontainers-* | head -80")
+			listing = top + "\n" + listing
 		}
 		t.Fatalf("the Dev Containers extension did not bring VS Code's server up in a container (container %q).\nIts server's log:\n%s\nIn the container:\n%s\nVS Code printed:\n%s\nThe extension's logs:\n%s",
 			id, serverLog, listing, output.String(), logs.String())
