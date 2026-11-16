@@ -26,6 +26,11 @@ func devcontainer(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
+	if args[0] == "exec" {
+		// Its log, which a failure prints, tells what environment the CLI
+		// probed in the container and ran the command with.
+		args = append([]string{"exec", "--log-level", "trace"}, args[1:]...)
+	}
 	cmd := stacksOnTimeout(exec.CommandContext(ctx, "devcontainer", args...))
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -120,7 +125,10 @@ func TestDevcontainerUp(t *testing.T) {
 		t.Helper()
 		out, err := devcontainer(t, "exec", "--workspace-folder", dir, "sh", "-c", script)
 		if err != nil {
-			t.Fatal(err)
+			// What the CLI's probe of the user's environment saw.
+			plain, _ := docker(t, "exec", res.ContainerID, "/bin/sh", "-c", "printenv")
+			login, lerr := docker(t, "exec", res.ContainerID, "/bin/sh", "-c", "grep root /etc/passwd; bash -lic printenv")
+			t.Fatalf("%v\nthe container's environment:\n%s\na login shell's:\n%s%v", err, plain, login, lerr)
 		}
 		return out
 	}
@@ -238,7 +246,7 @@ func TestDevcontainerAppPort(t *testing.T) {
 	devcontainerUp(t, map[string]string{
 		"index.txt": "served from the workspace\n",
 		".devcontainer/devcontainer.json": `{
-  "image": "fws/python:1",
+  "image": "fws/python:3.14",
   "appPort": ["127.0.0.1:` + port + `:8000"],
   "postStartCommand": "nohup python3 -m http.server 8000 > /tmp/server.log 2>&1 &"
 }
@@ -268,12 +276,12 @@ func TestDevcontainerCompose(t *testing.T) {
 		"index.txt": "from the neighbour\n",
 		".devcontainer/compose.yaml": `services:
   dev:
-    image: fws/python:1
+    image: fws/python:3.14
     command: ["python3", "-c", "import time; time.sleep(600)"]
     volumes:
       - ..:/workspace
   web:
-    image: fws/python:1
+    image: fws/python:3.14
     working_dir: /srv
     command: ["python3", "-m", "http.server", "8000"]
     volumes:
@@ -346,7 +354,7 @@ func TestDevcontainerVSCodeServer(t *testing.T) {
 		t.Fatalf("fetching VS Code's server: %v\n%s", err, out)
 	}
 
-	dir, _ := devcontainerUp(t, map[string]string{
+	_, up := devcontainerUp(t, map[string]string{
 		".devcontainer/devcontainer.json": `{
   "image": "fws/base:1",
   "mounts": ["type=bind,source=` + server + `,target=/vscode-server"],
@@ -367,7 +375,7 @@ func TestDevcontainerVSCodeServer(t *testing.T) {
 		break
 	}
 	if len(version) != 40 {
-		log, _ := devcontainer(t, "exec", "--workspace-folder", dir, "cat", "/tmp/server.log")
+		log, _ := docker(t, "exec", up.ContainerID, "/bin/sh", "-c", "cat /tmp/server.log; ls -l /vscode-server/bin /vscode-server/node")
 		t.Fatalf("VS Code's server answered %q on the published port; its log:\n%s\nSeatbelt refused:\n%s", version, log, sandboxDenials(t, "node"))
 	}
 }

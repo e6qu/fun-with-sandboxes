@@ -126,6 +126,9 @@ var GUIMachServices = []string{
 	"com.apple.colorsync.useragent",
 	"com.apple.spindump",
 	"com.apple.ReportCrash",
+	// What a file's volume is, which AppKit asks of an application's own
+	// bundle as it starts.
+	"com.apple.DiskArbitration.diskarbitrationd",
 }
 
 // GUIReadPaths are host trees outside a container's root that hold what
@@ -168,6 +171,8 @@ var GUIIOKitClasses = []string{
 	"AudioAUUC",
 	"IOAudioControlUserClient",
 	"IOAudioEngineUserClient",
+	// A volume's properties, read with the file's.
+	"AppleAPFSUserClient",
 }
 
 type Volume struct {
@@ -480,6 +485,14 @@ func Render(s Spec) (string, error) {
 		}
 		w(")")
 		w("(allow iokit-get-properties)")
+		// The application hands the session's services the right to read
+		// its own files, as Launch Services asks of its bundle.
+		w("(allow file-issue-extension (require-all (extension-class \"com.apple.app-sandbox.read\") (require-any")
+		w("  (subpath %q)", s.Root)
+		for _, v := range s.Volumes {
+			w("  (subpath %q)", v.Path)
+		}
+		w(")))")
 		w("(allow user-preference-read)")
 		w("(allow file-read*")
 		for _, p := range GUIReadPaths {
