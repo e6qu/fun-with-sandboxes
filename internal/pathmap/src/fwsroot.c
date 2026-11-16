@@ -2586,11 +2586,14 @@ INTERPOSE(fws_proc_listchildpids, proc_listchildpids);
 #define MAX_IFACES 16
 #define RT_ROUNDUP(a) ((a) > 0 ? (1 + (((a) - 1) | (sizeof(uint32_t) - 1))) : sizeof(uint32_t))
 
-// An interface has an IPv4 address, and an IPv6 one where bits6 is not 0.
+// An interface has an IPv4 address where v4 is set, as on any network but
+// an IPv6-only one, and an IPv6 one where bits6 is not 0. addr is the
+// container's member address on an interface without IPv4, which its MAC
+// address is made from.
 struct iface {
     in_addr_t addr, mask;
     struct in6_addr addr6;
-    int bits6;
+    int bits6, v4;
 };
 static int own_ifaces(struct iface *out);
 
@@ -2757,7 +2760,7 @@ static int iflist(const int *name, void *old, size_t *oldlen) {
         unsigned short index = (unsigned short)(top + 1 + i);
         if (want && want != index) continue;
         more += eth_info(extra + more, mib[4] == NET_RT_IFLIST2 ? RTM_IFINFO2 : RTM_IFINFO, index, i, ifs[i].addr);
-        if (af == 0 || af == AF_INET) more += eth_addr(extra + more, index, &ifs[i]);
+        if ((af == 0 || af == AF_INET) && ifs[i].v4) more += eth_addr(extra + more, index, &ifs[i]);
         if ((af == 0 || af == AF_INET6) && ifs[i].bits6) more += eth_addr6(extra + more, index, &ifs[i]);
     }
     memcpy(buf + out, extra, more);
@@ -2807,6 +2810,10 @@ static int ifconf(struct ifconf *c) {
 // addresses.
 static int eth_ioctl(unsigned long req, struct ifreq *r, const struct iface *f) {
     struct sockaddr_in a;
+    if (!f->v4 && req != SIOCGIFFLAGS && req != SIOCGIFMTU) {
+        errno = EADDRNOTAVAIL;
+        return -1;
+    }
     switch (req) {
     case SIOCGIFFLAGS:
         r->ifr_flags = (short)(IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_SIMPLEX | IFF_MULTICAST);
@@ -6271,6 +6278,7 @@ static int own_ifaces(struct iface *out) {
                 struct iface f;
                 memset(&f, 0, sizeof f);
                 f.addr = member_on(&me, p, (size_t)(e - p), &f.mask);
+                f.v4 = !only6_on(&me, p, (size_t)(e - p));
                 int has6 = member_on6(&me, p, (size_t)(e - p), &f.addr6, &f.bits6);
                 // Networks without IPv4 subnets share the member address,
                 // on one interface while they give no more IPv6 ones.
@@ -6278,16 +6286,19 @@ static int own_ifaces(struct iface *out) {
                 while (i < n && !(out[i].addr == f.addr && (!has6 || !out[i].bits6))) i++;
                 if (i == n) {
                     out[n++] = f;
-                } else if (has6) {
-                    out[i].addr6 = f.addr6;
-                    out[i].bits6 = f.bits6;
+                } else {
+                    out[i].v4 |= f.v4;
+                    if (has6) {
+                        out[i].addr6 = f.addr6;
+                        out[i].bits6 = f.bits6;
+                    }
                 }
             }
             p = e + 1;
         }
     }
     pthread_mutex_unlock(&members_lock);
-    if (n == 0) out[n++] = (struct iface){own_address, htonl(MEMBER_MASK), IN6ADDR_ANY_INIT, 0};
+    if (n == 0) out[n++] = (struct iface){own_address, htonl(MEMBER_MASK), IN6ADDR_ANY_INIT, 0, 1};
     return n;
 }
 
