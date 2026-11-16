@@ -299,3 +299,11 @@ func TestGUIGrant(t *testing.T) {
 	gui.allowed("list", fonts)
 	gui.denied("list", "/Library/Keychains")
 }
+
+// A container opens a terminal of its own, as an editor's integrated
+// terminal does.
+func TestOwnTerminal(t *testing.T) {
+	root := probeRoot(t)
+	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root)})
+	e.allowed("pty", "/dev/ptmx")
+}

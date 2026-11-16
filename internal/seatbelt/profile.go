@@ -352,7 +352,9 @@ func Render(s Spec) (string, error) {
 	for _, f := range s.WriteFiles {
 		w("  (literal %q)", f)
 	}
-	for _, d := range []string{"/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty"} {
+	// /dev/ptmx is where a program opens a terminal of its own, as an
+	// editor's integrated terminal, tmux or script do.
+	for _, d := range []string{"/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty", "/dev/ptmx"} {
 		w("  (literal %q)", d)
 	}
 	w("  (regex #\"^/dev/fd/\")")
