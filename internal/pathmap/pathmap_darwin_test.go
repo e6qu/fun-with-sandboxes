@@ -697,11 +697,33 @@ func TestHardenedProgramLoadsTheLibrary(t *testing.T) {
 		}
 		return string(out)
 	}
+	flags := func() string {
+		t.Helper()
+		out, err := exec.Command("/usr/bin/codesign", "-d", "--verbose=4", hard).CombinedOutput()
+		if err != nil {
+			t.Fatalf("read the probe's signature: %v\n%s", err, out)
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if _, f, ok := strings.Cut(line, " flags="); ok {
+				return f
+			}
+		}
+		t.Fatalf("the probe's signature names no flags:\n%s", out)
+		return ""
+	}
+	if f := flags(); !strings.Contains(f, "runtime") {
+		t.Fatalf("the probe was signed with flags %s, want the hardened runtime", f)
+	}
+	// A Mac with System Integrity Protection off, as CI's are, loads the
+	// library into a hardened program anyway; one with it on does not.
 	if out := run(hard); out == "hostname=web\n" {
-		t.Fatalf("a program with the hardened runtime loaded the library unaided")
+		t.Log("this Mac loads libraries into programs with the hardened runtime")
 	}
 	if out := run(plain, "exec", hard); out != "hostname=web\n" {
 		t.Errorf("a hardened program a container process executed printed %q", out)
+	}
+	if f := flags(); strings.Contains(f, "runtime") || !strings.Contains(f, "adhoc") {
+		t.Errorf("the program's signature after carries flags %s, want an ad hoc one without the runtime", f)
 	}
 	if out := run(hard); out != "hostname=web\n" {
 		t.Errorf("the program, once made to load the library, printed %q", out)
