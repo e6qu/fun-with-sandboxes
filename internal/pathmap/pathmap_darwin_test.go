@@ -663,6 +663,104 @@ func TestLibraryVariableIsHiddenAndKept(t *testing.T) {
 	}
 }
 
+// The container's / is a mount point to getattrlist and on the volume
+// mounted at / to statfs, as the host's is, so a walk up a file's parents
+// to its volume, and from a volume's mount point up, ends there.
+func TestRootIsAMountPoint(t *testing.T) {
+	root := containerRoot(t)
+	bin := filepath.Join(root, "bin", "attr")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", bin, "testdata/attr/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "/", "/etc")
+	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_ROOT=" + root}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("attr: %v\n%s", err, out)
+	}
+	lines := strings.Split(string(out), "\n")
+	if len(lines) != 3 || lines[0] != "/ mountpoint=1 on=/" || !strings.HasPrefix(lines[1], "/etc mountpoint=0 on=/") {
+		t.Errorf("got %q, want / a mount point of the volume on / and /etc none", out)
+	}
+}
+
+// A program signed with the hardened runtime starts without the library,
+// as dyld drops the variable for it; one a container process executes is
+// made to load it first, and stays so.
+func TestHardenedProgramLoadsTheLibrary(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, hard := filepath.Join(dir, "plain"), filepath.Join(dir, "hard")
+	for _, bin := range []string{plain, hard} {
+		if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", bin, "testdata/hardened/main.c").CombinedOutput(); err != nil {
+			t.Fatalf("build the probe: %v\n%s", err, out)
+		}
+	}
+	if out, err := exec.Command("/usr/bin/codesign", "--force", "--sign", "-", "--options", "runtime", hard).CombinedOutput(); err != nil {
+		t.Fatalf("sign the probe: %v\n%s", err, out)
+	}
+	if err := os.Chmod(hard, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, "FWS_HOSTNAME=web"}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	flags := func() string {
+		t.Helper()
+		out, err := exec.Command("/usr/bin/codesign", "-d", "--verbose=4", hard).CombinedOutput()
+		if err != nil {
+			t.Fatalf("read the probe's signature: %v\n%s", err, out)
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if _, f, ok := strings.Cut(line, " flags="); ok {
+				return f
+			}
+		}
+		t.Fatalf("the probe's signature names no flags:\n%s", out)
+		return ""
+	}
+	if f := flags(); !strings.Contains(f, "runtime") {
+		t.Fatalf("the probe was signed with flags %s, want the hardened runtime", f)
+	}
+	// Not every Mac keeps the library out of a hardened program: CI's
+	// load it, so what the test holds to is the signature.
+	if out := run(hard); out == "hostname=web\n" {
+		t.Log("this Mac loads libraries into programs with the hardened runtime")
+	}
+	if out := run(plain, "exec", hard); out != "hostname=web\n" {
+		t.Errorf("a hardened program a container process executed printed %q", out)
+	}
+	if f := flags(); strings.Contains(f, "runtime") || !strings.Contains(f, "adhoc") {
+		t.Errorf("the program's signature after carries flags %s, want an ad hoc one without the runtime", f)
+	}
+	if out := run(hard); out != "hostname=web\n" {
+		t.Errorf("the program, once made to load the library, printed %q", out)
+	}
+	if st, err := os.Stat(hard); err != nil || st.Mode().Perm() != 0o555 {
+		t.Errorf("the program's mode after: %v, %v", st.Mode(), err)
+	}
+	if out, err := exec.Command("/usr/bin/codesign", "--verify", hard).CombinedOutput(); err != nil {
+		t.Errorf("the program's signature no longer verifies: %v\n%s", err, out)
+	}
+}
+
 // A ping in a container is answered for the addresses of its virtual
 // network, loopback, its own and a member's, by the library, and fails for
 // an outside host, which no ICMP packet of the container's reaches.

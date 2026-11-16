@@ -76,9 +76,14 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   - A path names the root's file when the root holds it, or its parent;
     any other path, such as `/dev` or the system frameworks, names the
     host's. Symbolic links resolve inside the container, as under chroot.
-  - Programs Apple signs, programs with the hardened runtime, statically
-    linked programs and ones making system calls without libSystem load
-    no library and see host paths, pids, ports and the host's network.
+  - Programs Apple signs, statically linked programs and ones making
+    system calls without libSystem load no library and see host paths,
+    pids, ports and the host's network. A program signed with the
+    hardened runtime, as vendors' macOS downloads are, is made to load it
+    when a container process executes it: its signature is replaced by an
+    ad hoc one without the runtime's flags, in the container's root or a
+    writable mount. On a read-only mount it stays as it is and loads
+    none.
     Catalog images carry their own `/bin/sh` and `/bin/nc` so `system()`,
     `popen()` and port checks keep the library.
   - The identity is presented, not enforced: every process runs as the

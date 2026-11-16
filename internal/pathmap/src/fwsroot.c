@@ -58,6 +58,7 @@
 #include <sys/shm.h>
 #include <sys/sysctl.h>
 #include <sys/param.h>
+#include "hardened.h"
 #include <sys/resource.h>
 #include <libproc.h>
 #include <sys/proc_info.h>
@@ -353,7 +354,21 @@ static void apply_iopolicy(void) {
 
 static void parse_shm(const char *v);
 
+// FWS_TRACE in a container's environment has the library write, to
+// standard error, the calls through which a program asks about files'
+// places: what it named, what that mapped to and what came back. It is how
+// a program that loses its way between the container's paths and the
+// host's is read.
+static int tracing;
+static void trace(const char *call, const char *path, const char *mapped, long extra, int r) {
+    if (!tracing) return;
+    int e = errno;
+    dprintf(2, "fws: %s %s -> %s [%lx] = %d\n", call, path ? path : "(null)", mapped ? mapped : "(null)", extra, r);
+    errno = e;
+}
+
 __attribute__((constructor)) static void fwsroot_init(void) {
+    tracing = getenv("FWS_TRACE") != NULL;
     for (size_t i = 0; kept_names[i]; i++) {
         const char *v = getenv(kept_names[i]);
         if (v) {
@@ -1000,6 +1015,7 @@ static int fws_stat(const char *path, struct stat *st) {
     const char *p = MAP(path);
     int r = stat(p, st);
     if (r == 0) own(st, p, -1, 0);
+    trace("stat", path, p, 0, r);
     return r;
 }
 INTERPOSE(fws_stat, stat);
@@ -1009,6 +1025,7 @@ static int fws_lstat(const char *path, struct stat *st) {
     const char *p = LMAP(path);
     int r = lstat(p, st);
     if (r == 0) own(st, p, -1, 1);
+    trace("lstat", path, p, 0, r);
     return r;
 }
 INTERPOSE(fws_lstat, lstat);
@@ -1078,10 +1095,45 @@ static int fws_fstatat64(int fd, const char *path, void *st, int flag) {
 }
 INTERPOSE(fws_fstatat64, fstatat64);
 
-static int fws_statfs(const char *path, struct statfs *st) { return statfs(MAP(path), st); }
+// is_root reports whether host path h is the container's root directory.
+static int is_root(const char *h) {
+    size_t n = strlen(h);
+    while (n > 1 && h[n - 1] == '/') n--;
+    size_t cn = strlen(croot);
+    return (n == rootlen && strncmp(h, root, n) == 0) || (n == cn && strncmp(h, croot, n) == 0);
+}
+
+// The container's / is on the volume mounted at /, as the host's is. Its
+// own directory is on the host's data volume, mounted elsewhere: a program
+// that finds a file's volume, then that mount point's parents, and theirs,
+// as Core Foundation does, would come back to / and to the data volume
+// without end.
+static int fws_statfs(const char *path, struct statfs *st) {
+    const char *m = MAP(path);
+    if (rootlen && m && is_root(m)) m = "/";
+    int r = statfs(m, st);
+    trace("statfs", path, m, 0, r);
+    return r;
+}
 INTERPOSE(fws_statfs, statfs);
+// The container's / answers getattrlist as the host's does when asked what
+// a volume's root tells apart: its parent, whether it is a mount point, its
+// volume. Core Foundation finds a file's volume by walking up its parents
+// until one is such a directory, and the root's own directory, deep in the
+// engine's state, is none: from it the walk goes on to /.., which is /
+// again. A request for the directory's own identity or path, as realpath
+// makes, is the root directory's still.
 static int fws_getattrlist(const char *path, void *attrs, void *buf, size_t size, unsigned int opts) {
-    return getattrlist(MAPF(path, !(opts & FSOPT_NOFOLLOW)), attrs, buf, size, opts);
+    const char *m = MAPF(path, !(opts & FSOPT_NOFOLLOW));
+    const struct attrlist *al = attrs;
+    if (rootlen && m && al && !(al->commonattr & ATTR_CMN_FULLPATH) &&
+        ((al->dirattr & ATTR_DIR_MOUNTSTATUS) || al->volattr || (al->commonattr & (ATTR_CMN_PARENTID | ATTR_CMN_PAROBJID))) &&
+        is_root(m)) {
+        m = "/";
+    }
+    int r = getattrlist(m, attrs, buf, size, opts);
+    trace("getattrlist", path, m, al ? ((long)al->commonattr << 32 | al->volattr << 16 | (al->dirattr & 0xffff)) : 0, r);
+    return r;
 }
 INTERPOSE(fws_getattrlist, getattrlist);
 static int fws_setattrlist(const char *path, void *attrs, void *buf, size_t size, unsigned int opts) {
@@ -1398,6 +1450,7 @@ static int fws_execve(const char *path, char *const argv[], char *const envp[]) 
     const char *p = MAP(path);
     char interp[PATH_MAX];
     char **sargv = script_argv(p, argv, interp);
+    fws_unharden(sargv ? interp : p);
     int r = sargv ? execve(interp, sargv, envp) : execve(p, argv, envp);
     free(sargv);
     free(env);
@@ -1424,6 +1477,7 @@ static int fws_posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_
     const char *p = MAP(path);
     char interp[PATH_MAX];
     char **sargv = script_argv(p, argv, interp);
+    fws_unharden(sargv ? interp : p);
     int r = sargv ? posix_spawn(pid, interp, fa, a, sargv, envp) : posix_spawn(pid, p, fa, a, argv, envp);
     free(sargv);
     free(env);
@@ -1487,6 +1541,7 @@ static char *fws_getcwd(char *buf, size_t size) {
 static char *fws_realpath(const char *path, char *resolved) {
     char *r = realpath(MAP(path), resolved);
     unmap(r, PATH_MAX);
+    trace("realpath", path, r, 0, r ? 0 : -1);
     return r;
 }
 INTERPOSE(fws_realpath, realpath);

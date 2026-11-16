@@ -64,6 +64,10 @@ func checkSecurity(hc *container.HostConfig) error {
 		case k == "no-new-privileges" && (v == "" || v == "true" || v == "false"):
 		case (k == "seccomp" || k == "apparmor") && v == "unconfined", k == "label" && v == "disable":
 			// Linux confinement this engine never applies.
+		case k == "seatbelt" && v == "gui":
+			// The user's login session, granted (guiGranted).
+		case k == "seatbelt":
+			return invalid("invalid --security-opt: %q: the grants are seatbelt=gui", o)
 		case k == "seccomp" || k == "apparmor" || k == "label":
 			return unsupported("security option %q is not supported: Seatbelt confines containers here", o)
 		default:
@@ -71,6 +75,18 @@ func checkSecurity(hc *container.HostConfig) error {
 		}
 	}
 	return nil
+}
+
+// guiGranted reports whether the container was created with
+// --security-opt seatbelt=gui, which grants it the user's login session
+// (seatbelt.Spec.GUI).
+func guiGranted(hc *container.HostConfig) bool {
+	for _, o := range hc.SecurityOpt {
+		if k, v, _ := strings.Cut(strings.Replace(o, ":", "=", 1), "="); k == "seatbelt" && v == "gui" {
+			return true
+		}
+	}
+	return false
 }
 
 // linuxCapabilities are capability names beyond Docker's default set.

@@ -29,3 +29,38 @@ func TestCapabilities(t *testing.T) {
 		}
 	}
 }
+
+// seatbelt=gui is the one grant --security-opt names; any other is refused.
+func TestSeatbeltSecurityOptions(t *testing.T) {
+	for opt, ok := range map[string]bool{"seatbelt=gui": true, "seatbelt:gui": true, "seatbelt=all": false, "seatbelt": false} {
+		hc := &container.HostConfig{SecurityOpt: []string{opt}}
+		if err := checkSecurity(hc); ok != (err == nil) {
+			t.Errorf("--security-opt %s: %v", opt, err)
+		}
+		if guiGranted(hc) != ok {
+			t.Errorf("--security-opt %s: granted %v", opt, guiGranted(hc))
+		}
+	}
+}
+
+// A PATH read inside a container and handed back names the same
+// directories as the container's own, and the engine's variables are its
+// own to set.
+func TestMapPathIsIdempotent(t *testing.T) {
+	const root = "/state/c/1/r"
+	once := mapPath(root, "/usr/bin:/bin:relative")
+	if once != root+"/usr/bin:"+root+"/bin" {
+		t.Fatalf("mapped PATH: %s", once)
+	}
+	if again := mapPath(root, once+":/opt/bin"); again != once+":"+root+"/opt/bin" {
+		t.Errorf("a mapped PATH mapped again: %s", again)
+	}
+	if other := mapPath(root, "/state/c/1/rest"); other != root+"/state/c/1/rest" {
+		t.Errorf("a directory that only starts like the root: %s", other)
+	}
+	for k, want := range map[string]bool{"FWS_UID": true, "DYLD_INSERT_LIBRARIES": true, "PATH": false, "SANDBOX_ROOT": false} {
+		if engineVariable(k) != want {
+			t.Errorf("engineVariable(%s) = %v", k, !want)
+		}
+	}
+}

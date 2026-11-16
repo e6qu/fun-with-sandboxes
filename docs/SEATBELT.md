@@ -225,6 +225,7 @@ operation family and then allows what the container owns:
 | Mach services | lookups of a fixed list of Apple services (`MachServices`), and registering and looking up the container's own under its IPC prefix |
 | IPC | POSIX shared memory and semaphores under the container's IPC prefix, and System V IPC, whose keys the container library keeps apart; `--ipc none` denies both, `--ipc host` leaves POSIX names open |
 | Signals and process information | processes in the same sandbox only; every process with `--pid host` |
+| The user's session | nothing, unless the container was created with `--security-opt seatbelt=gui`: then lookups of the window server, pasteboard, Launch Services, fonts, input methods, preferences, audio and GPU services (`GUIMachServices`), the IOKit user clients of surfaces, the GPU, displays and audio (`GUIIOKitClasses`), IOKit properties, preference reads, and the fonts, colour profiles and keyboard layouts under `/Library` (`GUIReadPaths`). The keychain's services stay denied |
 | IOKit and the rest | nothing: `(deny default)` keeps them denied |
 
 The engine applies the profile without `sandbox-exec`.
@@ -239,6 +240,11 @@ The engine applies the profile without `sandbox-exec`.
 - That matters because macOS strips `DYLD_INSERT_LIBRARIES` from programs
   Apple signs. With nothing in between, the container library (see
   [DESIGN](DESIGN.md)) reaches every container process.
+- dyld drops the variable for programs signed with the hardened runtime
+  too, as vendors' downloads are. The helper, and the library at every
+  exec, replace such a program's signature with an ad hoc one without the
+  runtime's flags before it starts (`internal/pathmap/src/hardened.h`),
+  where the container's profile lets them write the file.
 - A process may signal only processes of its own sandbox, and a process
   that enters a profile by itself is a sandbox of its own, as step 4 of the
   tutorial shows from the other side. So the main process's helper starts

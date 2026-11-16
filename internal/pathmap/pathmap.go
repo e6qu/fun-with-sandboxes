@@ -23,6 +23,11 @@ var source []byte
 //go:embed src/spawn.c
 var spawnSource []byte
 
+// hardenedSource is the header both include (src/hardened.h).
+//
+//go:embed src/hardened.h
+var hardenedSource []byte
+
 // HostnameVar names the hostname the library presents; package identity
 // names the user and group.
 const HostnameVar = "FWS_HOSTNAME"
@@ -158,6 +163,7 @@ func Build(dir string) (string, error) {
 	h := sha256.New()
 	h.Write(source)
 	h.Write(spawnSource)
+	h.Write(hardenedSource)
 	h.Write([]byte(strings.Join(extra, "\x00")))
 	out := filepath.Join(dir, "fwsroot-"+hex.EncodeToString(h.Sum(nil)[:8])+".dylib")
 	if _, err := os.Stat(out); err == nil {
@@ -173,6 +179,9 @@ func Build(dir string) (string, error) {
 	defer os.RemoveAll(work)
 	src := filepath.Join(work, "fwsroot.c")
 	if err := os.WriteFile(src, source, 0o644); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(work, "hardened.h"), hardenedSource, 0o644); err != nil {
 		return "", err
 	}
 	lib := filepath.Join(work, "fwsroot.dylib")

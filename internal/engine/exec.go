@@ -211,7 +211,10 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	go func() {
 		defer close(finished)
 		<-proc.Done()
-		proc.KillAll()
+		// What the command left running stays, as in Docker: a server an
+		// exec starts in the background, as a dev container's lifecycle
+		// commands do, outlives the exec and ends with the container.
+		// Output it still holds open is read for outputDrain, no longer.
 		proc.DrainIO(outputDrain)
 		if master != nil {
 			master.Close()
