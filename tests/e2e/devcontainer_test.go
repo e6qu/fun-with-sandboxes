@@ -381,3 +381,22 @@ func TestDevcontainerVSCodeServer(t *testing.T) {
 		t.Fatalf("VS Code's server answered %q on the published port; its log:\n%s\nSeatbelt refused:\n%s", version, log, sandboxDenials(t, "node"))
 	}
 }
+
+// What an exec leaves running in the background outlives it, as in Docker,
+// where a dev container's lifecycle commands start servers so, and ends
+// with the container.
+func TestExecLeavesItsBackgroundProcesses(t *testing.T) {
+	const name = "fws-e2e-exec-background"
+	mustDocker(t, "run", "-d", "--name", name, "fws/base:1", "sleep", "600")
+	defer docker(t, "rm", "-f", name)
+	mustDocker(t, "exec", name, "sh", "-c", "(sleep 4; echo late > /tmp/late) > /dev/null 2>&1 &")
+	var out string
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(500 * time.Millisecond) {
+		if out, _ = docker(t, "exec", name, "cat", "/tmp/late"); out != "" {
+			break
+		}
+	}
+	if out != "late\n" {
+		t.Errorf("the background process an exec left wrote %q", out)
+	}
+}

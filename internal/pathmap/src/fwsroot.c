@@ -1095,13 +1095,6 @@ static int fws_fstatat64(int fd, const char *path, void *st, int flag) {
 }
 INTERPOSE(fws_fstatat64, fstatat64);
 
-static int fws_statfs(const char *path, struct statfs *st) {
-    const char *m = MAP(path);
-    int r = statfs(m, st);
-    trace("statfs", path, m, 0, r);
-    return r;
-}
-INTERPOSE(fws_statfs, statfs);
 // is_root reports whether host path h is the container's root directory.
 static int is_root(const char *h) {
     size_t n = strlen(h);
@@ -1110,6 +1103,19 @@ static int is_root(const char *h) {
     return (n == rootlen && strncmp(h, root, n) == 0) || (n == cn && strncmp(h, croot, n) == 0);
 }
 
+// The container's / is on the volume mounted at /, as the host's is. Its
+// own directory is on the host's data volume, mounted elsewhere: a program
+// that finds a file's volume, then that mount point's parents, and theirs,
+// as Core Foundation does, would come back to / and to the data volume
+// without end.
+static int fws_statfs(const char *path, struct statfs *st) {
+    const char *m = MAP(path);
+    if (rootlen && m && is_root(m)) m = "/";
+    int r = statfs(m, st);
+    trace("statfs", path, m, 0, r);
+    return r;
+}
+INTERPOSE(fws_statfs, statfs);
 // The container's / answers getattrlist as the host's does when asked what
 // a volume's root tells apart: its parent, whether it is a mount point, its
 // volume. Core Foundation finds a file's volume by walking up its parents

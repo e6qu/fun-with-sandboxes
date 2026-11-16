@@ -663,8 +663,9 @@ func TestLibraryVariableIsHiddenAndKept(t *testing.T) {
 	}
 }
 
-// The container's / is a mount point to getattrlist, as the host's is, so
-// a walk up a file's parents to its volume ends there.
+// The container's / is a mount point to getattrlist and on the volume
+// mounted at / to statfs, as the host's is, so a walk up a file's parents
+// to its volume, and from a volume's mount point up, ends there.
 func TestRootIsAMountPoint(t *testing.T) {
 	root := containerRoot(t)
 	bin := filepath.Join(root, "bin", "attr")
@@ -681,8 +682,9 @@ func TestRootIsAMountPoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attr: %v\n%s", err, out)
 	}
-	if want := "/ mountpoint=1\n/etc mountpoint=0\n"; string(out) != want {
-		t.Errorf("got %q, want %q", out, want)
+	lines := strings.Split(string(out), "\n")
+	if len(lines) != 3 || lines[0] != "/ mountpoint=1 on=/" || !strings.HasPrefix(lines[1], "/etc mountpoint=0 on=/") {
+		t.Errorf("got %q, want / a mount point of the volume on / and /etc none", out)
 	}
 }
 

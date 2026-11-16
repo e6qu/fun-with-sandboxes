@@ -176,6 +176,11 @@ connection, never on a fixed sleep.
   - It keeps no thread-local state.
   - Each behaviour has a probe under `internal/pathmap/testdata`, run by
     `pathmap_darwin_test.go`.
+  - `FWS_TRACE=1` in a container's environment (`docker run -e`) has it
+    write to standard error what the program asked about files' places
+    (`stat`, `getattrlist`, `statfs`, `realpath`), what each path mapped to
+    and what came back: where a program loses its way between the
+    container's paths and the host's.
 - **The Docker API.** Answer as dockerd does, with the same status codes
   and error text, and add an end-to-end test that drives the change through
   the Docker CLI or Compose.
