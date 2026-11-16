@@ -5,7 +5,7 @@
 # then runs as a test case of its own.
 #
 # go test now and then fails a target with "context deadline exceeded" as
-# its time runs out, having found nothing (golang/go#48591): a run that
+# its time runs out, having found nothing: a run that
 # fails so, and wrote no input, counts as passed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
