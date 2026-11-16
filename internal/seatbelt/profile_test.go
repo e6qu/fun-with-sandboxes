@@ -309,3 +309,32 @@ func TestNoExecVolumeAndPathDenials(t *testing.T) {
 		t.Error("a relative masked path rendered")
 	}
 }
+
+// The user's session is granted, never held: without the grant a profile
+// names none of its services, and with it the keychain's stay unnamed.
+func TestGUIGrantNamesTheSessionsServices(t *testing.T) {
+	s := spec()
+	p, err := Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, no := range []string{"com.apple.windowserver.active", "com.apple.pasteboard.1", "iokit-open", "/Library/Fonts"} {
+		if strings.Contains(p, no) {
+			t.Errorf("a profile without the grant names %s", no)
+		}
+	}
+	s.GUI = true
+	if p, err = Render(s); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`(global-name "com.apple.windowserver.active")`, `(global-name "com.apple.pasteboard.1")`, `(iokit-user-client-class "IOSurfaceRootUserClient")`, `(subpath "/Library/Fonts")`} {
+		if !strings.Contains(p, want) {
+			t.Errorf("a profile with the grant lacks %s", want)
+		}
+	}
+	for _, no := range []string{"SecurityServer", "securityd", "keychain"} {
+		if strings.Contains(p, no) {
+			t.Errorf("a profile with the grant names %s", no)
+		}
+	}
+}

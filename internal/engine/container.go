@@ -1441,7 +1441,7 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	spec := seatbelt.Spec{
 		Root: c.root(), StateRoot: e.stateRoot(), ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
 		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath(), c.ioPolicyPath()},
-		Sockets: []string{e.pidsSocket(c)},
+		Sockets: []string{e.pidsSocket(c)}, GUI: guiGranted(&c.rec.HostConfig),
 	}
 	if c.rec.HostConfig.Privileged {
 		spec.Sockets = append(spec.Sockets, e.engineSocket(c))

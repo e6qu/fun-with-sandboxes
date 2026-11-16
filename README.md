@@ -191,6 +191,16 @@ see `images/postgres/entry` and `internal/sandboxenv`.
 | IPC | POSIX shared memory, semaphores and the Mach services it registers, under its own prefix; System V IPC, under keys of its own | other containers' names; all IPC with `--ipc none` |
 | Everything else | — | Seatbelt denies by default: IOKit, Mach registration, preferences, kernel control sockets |
 
+`--security-opt seatbelt=gui` grants a container the user's login session
+besides: the window server, pasteboard, Launch Services, fonts, input
+methods, preferences, audio and the GPU, which a graphical application
+such as an Electron one draws and listens with. Its windows open on the
+user's desktop and it reads what the user copies; the keychain stays
+denied. A devcontainer asks for it with
+`"runArgs": ["--security-opt", "seatbelt=gui"]`, a Compose service with
+`security_opt`. Chromium-based applications take `--no-sandbox`: their
+helpers cannot enter a sandbox of their own inside the container's.
+
 Each container runs under a supervisor that holds it to `--memory`,
 `--cpus`, `--cpu-quota` and `--pids-limit` without cgroups, and its
 processes start with its `--ulimit`s, `--cpu-shares` priority and

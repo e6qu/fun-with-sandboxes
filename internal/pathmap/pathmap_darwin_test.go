@@ -663,6 +663,57 @@ func TestLibraryVariableIsHiddenAndKept(t *testing.T) {
 	}
 }
 
+// A program signed with the hardened runtime starts without the library,
+// as dyld drops the variable for it; one a container process executes is
+// made to load it first, and stays so.
+func TestHardenedProgramLoadsTheLibrary(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, hard := filepath.Join(dir, "plain"), filepath.Join(dir, "hard")
+	for _, bin := range []string{plain, hard} {
+		if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", bin, "testdata/hardened/main.c").CombinedOutput(); err != nil {
+			t.Fatalf("build the probe: %v\n%s", err, out)
+		}
+	}
+	if out, err := exec.Command("/usr/bin/codesign", "--force", "--sign", "-", "--options", "runtime", hard).CombinedOutput(); err != nil {
+		t.Fatalf("sign the probe: %v\n%s", err, out)
+	}
+	if err := os.Chmod(hard, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, "FWS_HOSTNAME=web"}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	if out := run(hard); out == "hostname=web\n" {
+		t.Fatalf("a program with the hardened runtime loaded the library unaided")
+	}
+	if out := run(plain, "exec", hard); out != "hostname=web\n" {
+		t.Errorf("a hardened program a container process executed printed %q", out)
+	}
+	if out := run(hard); out != "hostname=web\n" {
+		t.Errorf("the program, once made to load the library, printed %q", out)
+	}
+	if st, err := os.Stat(hard); err != nil || st.Mode().Perm() != 0o555 {
+		t.Errorf("the program's mode after: %v, %v", st.Mode(), err)
+	}
+	if out, err := exec.Command("/usr/bin/codesign", "--verify", hard).CombinedOutput(); err != nil {
+		t.Errorf("the program's signature no longer verifies: %v\n%s", err, out)
+	}
+}
+
 // A ping in a container is answered for the addresses of its virtual
 // network, loopback, its own and a member's, by the library, and fails for
 // an outside host, which no ICMP packet of the container's reaches.

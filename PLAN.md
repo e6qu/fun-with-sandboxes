@@ -48,14 +48,16 @@ image of kind 0.31, until a newer one is asked for.
 
 One pull request open at a time.
 
-1. **Devcontainers.** The Dev Containers CLI and VS Code's Dev Containers
-   extension against the engine. In CI so far: `devcontainer up` on a
-   darwin image and on a Dockerfile with a local feature, lifecycle
-   commands, the workspace mount. Still to do: features from a registry,
-   port forwarding, VS Code's server running inside the container. Then a
-   whole graphical Electron application, VS Code itself, running in a
-   container: which needs the window server, pasteboard and GPU services a
-   container's profile denies today, granted per container.
+1. **Devcontainers and graphical applications.** In review,
+   [#67](https://github.com/e6qu/fun-with-sandboxes/pull/67): the Dev
+   Containers CLI against the engine (an image, a Dockerfile, a Compose
+   service, features of the workspace and from a registry, lifecycle
+   commands, `appPort`); VS Code's server in a container, as programs
+   with the hardened runtime now load the container library; and
+   `--security-opt seatbelt=gui`, which grants a container the user's
+   session so that an Electron application draws its window from inside
+   one. Still to do: VS Code's Dev Containers extension end to end, and
+   VS Code itself, with its extensions and terminal, in a container.
 2. **Starts and limits.** `fwsroot`'s cost to the loader cut by interposing
    fewer functions; per-process memory limits in the kernel if CI's jetsam
    experiment shows macOS enforces them; the engine's lock split where
@@ -69,9 +71,7 @@ One pull request open at a time.
 
 ## Open questions
 
-- Whether an Electron application can run under a Seatbelt profile that
-  still confines it: it needs WindowServer and other Mach services, and
-  Chromium sandboxes its own helpers, which a process already in a sandbox
-  cannot do the same way. Item 1 ends by finding out.
+- Whether Chromium's helpers can keep a sandbox of their own inside a
+  container's: today a Chromium-based application takes `--no-sandbox`.
 - Whether macOS enforces a jetsam limit an unprivileged parent sets: CI's
   `jetsam experiment` step prints the answer.

@@ -36,6 +36,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include "hardened.h"
 
 extern char **environ;
 
@@ -297,6 +298,8 @@ int main(int argc, char **argv) {
         snprintf(q, sizeof q, "set the QoS clamp %d", clamp);
         fail(q, strerror(err));
     }
+    // Under the container's profile by now, which bounds what it replaces.
+    fws_unharden(path);
     // With POSIX_SPAWN_SETEXEC, posix_spawn returns only on failure.
     err = posix_spawn(NULL, path, NULL, &attr, cmd, envp);
     fail(what, strerror(err));

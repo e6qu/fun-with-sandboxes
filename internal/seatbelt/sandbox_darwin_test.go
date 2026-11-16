@@ -280,3 +280,22 @@ func TestNoExecAndPathRules(t *testing.T) {
 	e.denied("write", filepath.Join(root, "masked", "g"))
 	e.allowed("write", filepath.Join(root, "elsewhere"))
 }
+
+// A container granted the user's session reads what the session's
+// services hand their clients, the fonts outside the system's tree among
+// it; one without the grant does not. The profile with the grant compiles,
+// which names every operation and filter it uses.
+func TestGUIGrant(t *testing.T) {
+	root := probeRoot(t)
+	const fonts = "/Library/Fonts"
+	if _, err := os.Stat(fonts); err != nil {
+		t.Skip(err)
+	}
+	plain := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root)})
+	plain.allowed("read", filepath.Join(root, "probe"))
+	plain.denied("list", fonts)
+	gui := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root), GUI: true})
+	gui.allowed("read", filepath.Join(root, "probe"))
+	gui.allowed("list", fonts)
+	gui.denied("list", "/Library/Keychains")
+}

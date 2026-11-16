@@ -368,6 +368,6 @@ func TestDevcontainerVSCodeServer(t *testing.T) {
 	}
 	if len(version) != 40 {
 		log, _ := devcontainer(t, "exec", "--workspace-folder", dir, "cat", "/tmp/server.log")
-		t.Fatalf("VS Code's server answered %q on the published port; its log:\n%s", version, log)
+		t.Fatalf("VS Code's server answered %q on the published port; its log:\n%s\nSeatbelt refused:\n%s", version, log, sandboxDenials(t, "node"))
 	}
 }

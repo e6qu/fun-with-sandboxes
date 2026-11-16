@@ -29,3 +29,16 @@ func TestCapabilities(t *testing.T) {
 		}
 	}
 }
+
+// seatbelt=gui is the one grant --security-opt names; any other is refused.
+func TestSeatbeltSecurityOptions(t *testing.T) {
+	for opt, ok := range map[string]bool{"seatbelt=gui": true, "seatbelt:gui": true, "seatbelt=all": false, "seatbelt": false} {
+		hc := &container.HostConfig{SecurityOpt: []string{opt}}
+		if err := checkSecurity(hc); ok != (err == nil) {
+			t.Errorf("--security-opt %s: %v", opt, err)
+		}
+		if guiGranted(hc) != ok {
+			t.Errorf("--security-opt %s: granted %v", opt, guiGranted(hc))
+		}
+	}
+}

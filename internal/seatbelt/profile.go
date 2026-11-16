@@ -65,6 +65,111 @@ var MachServices = []string{
 	"com.apple.trustd.agent",
 }
 
+// GUIMachServices are the services of the user's login session a container
+// granted the session (Spec.GUI) may look up besides: what AppKit and a
+// browser engine ask of the window server, Launch Services, the
+// pasteboard, fonts, input methods, preferences, audio and the GPU. The
+// keychain's stay out of reach.
+var GUIMachServices = []string{
+	"com.apple.windowserver.active",
+	"com.apple.CARenderServer",
+	"com.apple.dock.server",
+	"com.apple.dock.fullscreen",
+	"com.apple.window_proxies",
+	"com.apple.coreservices.launchservicesd",
+	"com.apple.CoreServices.coreservicesd",
+	"com.apple.coreservices.quarantine-resolver",
+	"com.apple.coreservices.appleevents",
+	"com.apple.coreservices.sharedfilelistd.xpc",
+	"com.apple.lsd.mapdb",
+	"com.apple.lsd.modifydb",
+	"com.apple.lsd.open",
+	"com.apple.pasteboard.1",
+	"com.apple.pbs.fetch_services",
+	"com.apple.fonts",
+	"com.apple.FontObjectsServer",
+	"com.apple.FontWorker",
+	"com.apple.cfprefsd.daemon",
+	"com.apple.cfprefsd.agent",
+	"com.apple.SystemConfiguration.configd",
+	"com.apple.SystemConfiguration.DNSConfiguration",
+	"com.apple.SystemConfiguration.NetworkInformation",
+	"com.apple.distributed_notifications@Uv3",
+	"com.apple.distributed_notifications@1v3",
+	"com.apple.tccd",
+	"com.apple.tccd.system",
+	"com.apple.tsm.uiserver",
+	"com.apple.inputmethodkit.launchagent",
+	"com.apple.inputmethodkit.launcher",
+	"com.apple.inputmethodkit.getxpcendpoint",
+	"com.apple.iohideventsystem",
+	"com.apple.touchbarserver.mig",
+	"com.apple.PowerManagement.control",
+	"com.apple.audio.audiohald",
+	"com.apple.audio.coreaudiod",
+	"com.apple.audio.AudioComponentRegistrar",
+	"com.apple.audio.SystemSoundServer-OSX",
+	"com.apple.gpumemd.source",
+	"com.apple.cvmsServ",
+	"com.apple.MTLCompilerService",
+	"com.apple.windowmanager.server",
+	"com.apple.backgroundtaskmanagementagent",
+	"com.apple.usernotifications.usernotificationservice",
+	"com.apple.UNCUserNotification",
+	"com.apple.system.opendirectoryd.api",
+	"com.apple.ocspd",
+	"com.apple.analyticsd",
+	"com.apple.decalog4.incoming",
+	"com.apple.ViewBridgeAuxiliary",
+	"com.apple.appkit.xpc.openAndSavePanelService",
+	"com.apple.colorsyncd",
+	"com.apple.colorsync.useragent",
+	"com.apple.spindump",
+	"com.apple.ReportCrash",
+}
+
+// GUIReadPaths are host trees outside a container's root that hold what
+// those services' clients read: fonts, colour profiles, keyboard layouts.
+var GUIReadPaths = []string{
+	"/Library/Fonts",
+	"/Library/ColorSync",
+	"/Library/Keyboard Layouts",
+	"/Library/Input Methods",
+	"/Library/Audio/Plug-Ins",
+	"/Library/GPUBundles",
+	"/Library/Preferences/.GlobalPreferences.plist",
+	"/Library/Preferences/com.apple.windowserver.displays.plist",
+}
+
+// GUIIOKitClasses are the IOKit user clients a container granted the
+// session opens: surfaces, the GPU (a virtual machine's too), displays,
+// power state and audio.
+var GUIIOKitClasses = []string{
+	"IOSurfaceRootUserClient",
+	"IOSurfaceSendRight",
+	"IOSurfaceAcceleratorClient",
+	"AGXDeviceUserClient",
+	"AGXSharedUserClient",
+	"AGXCommandQueue",
+	"IOGPUDeviceUserClient",
+	"IOAccelerator",
+	"IOAccelDevice2",
+	"IOAccelContext2",
+	"IOAccelSharedUserClient2",
+	"IOAccelSubmitter2",
+	"IOAccelerationUserClient",
+	"AppleParavirtDeviceUserClient",
+	"IOMobileFramebufferUserClient",
+	"IOFramebufferSharedUserClient",
+	"AppleGraphicsControlClient",
+	"AppleMGPUPowerControlClient",
+	"RootDomainUserClient",
+	"IOHIDParamUserClient",
+	"AudioAUUC",
+	"IOAudioControlUserClient",
+	"IOAudioEngineUserClient",
+}
+
 type Volume struct {
 	Path     string
 	ReadOnly bool
@@ -117,6 +222,11 @@ type Spec struct {
 	// ProcsSocket is where the container's shim answers it about its PID
 	// namespace (package pidns).
 	ProcsSocket string
+	// GUI grants the container the user's login session: the window
+	// server, pasteboard, fonts, input, audio and GPU a graphical
+	// application draws and listens with. Its windows are the user's
+	// windows, and it reads what the user copies.
+	GUI bool
 	// Sockets are other Unix sockets outside the root the container
 	// reaches, such as the API of the engine nested in it.
 	Sockets []string
@@ -358,11 +468,35 @@ func Render(s Spec) (string, error) {
 		w("(allow mach-register (global-name-prefix %q))", s.IPCPrefix)
 	}
 
+	if s.GUI {
+		w("(allow mach-lookup")
+		for _, m := range GUIMachServices {
+			w("  (global-name %q)", m)
+		}
+		w(")")
+		w("(allow iokit-open")
+		for _, c := range GUIIOKitClasses {
+			w("  (iokit-user-client-class %q)", c)
+		}
+		w(")")
+		w("(allow iokit-get-properties)")
+		w("(allow user-preference-read)")
+		w("(allow file-read*")
+		for _, p := range GUIReadPaths {
+			w("  (subpath %q)", p)
+		}
+		w(")")
+	}
+
 	switch s.IPC {
 	case IPCPrivate:
 		w("(deny ipc-posix-shm* ipc-posix-sem*)")
 		// Programs name POSIX IPC objects with or without a leading slash.
 		w("(allow ipc-posix-shm* ipc-posix-sem* (ipc-posix-name-prefix %q) (ipc-posix-name-prefix %q))", s.IPCPrefix, "/"+s.IPCPrefix)
+		if s.GUI {
+			// What the session's services share with their clients.
+			w("(allow ipc-posix-shm-read* (ipc-posix-name \"apple.shm.notification_center\") (ipc-posix-name-prefix \"apple.cfprefs.\") (ipc-posix-name \"com.apple.AppleDatabaseChanged\"))")
+		}
 	case IPCNone:
 		w("(deny ipc-posix-shm* ipc-posix-sem* ipc-sysv*)")
 	}

@@ -58,6 +58,7 @@
 #include <sys/shm.h>
 #include <sys/sysctl.h>
 #include <sys/param.h>
+#include "hardened.h"
 #include <sys/resource.h>
 #include <libproc.h>
 #include <sys/proc_info.h>
@@ -1398,6 +1399,7 @@ static int fws_execve(const char *path, char *const argv[], char *const envp[]) 
     const char *p = MAP(path);
     char interp[PATH_MAX];
     char **sargv = script_argv(p, argv, interp);
+    fws_unharden(sargv ? interp : p);
     int r = sargv ? execve(interp, sargv, envp) : execve(p, argv, envp);
     free(sargv);
     free(env);
@@ -1424,6 +1426,7 @@ static int fws_posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_
     const char *p = MAP(path);
     char interp[PATH_MAX];
     char **sargv = script_argv(p, argv, interp);
+    fws_unharden(sargv ? interp : p);
     int r = sargv ? posix_spawn(pid, interp, fa, a, sargv, envp) : posix_spawn(pid, p, fa, a, argv, envp);
     free(sargv);
     free(env);
