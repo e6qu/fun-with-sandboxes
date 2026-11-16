@@ -1489,10 +1489,20 @@ static int spawns(const posix_spawnattr_t *a) {
 // starts in and the files it opens, are the container's: they are mapped as
 // they are added, since the kernel carries the actions out. libuv, and so
 // Node.js, starts a child in a working directory this way.
-static int fws_spawn_addchdir(posix_spawn_file_actions_t *fa, const char *path) {
+// macOS 26 names the first posix_spawn_file_actions_addchdir and calls the
+// older name deprecated; programs built before it, libuv's among them, call
+// the older one, and the library stands in for both. The newer is bound
+// weakly, as no earlier macOS has it.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static int fws_spawn_addchdir_np(posix_spawn_file_actions_t *fa, const char *path) {
     return posix_spawn_file_actions_addchdir_np(fa, MAP(path));
 }
-INTERPOSE(fws_spawn_addchdir, posix_spawn_file_actions_addchdir_np);
+INTERPOSE(fws_spawn_addchdir_np, posix_spawn_file_actions_addchdir_np);
+#pragma clang diagnostic pop
+extern int spawn_addchdir(posix_spawn_file_actions_t *, const char *) __asm("_posix_spawn_file_actions_addchdir") __attribute__((weak_import));
+static int fws_spawn_addchdir(posix_spawn_file_actions_t *fa, const char *path) { return spawn_addchdir(fa, MAP(path)); }
+INTERPOSE(fws_spawn_addchdir, spawn_addchdir);
 static int fws_spawn_addopen(posix_spawn_file_actions_t *fa, int fd, const char *path, int oflag, mode_t mode) {
     return posix_spawn_file_actions_addopen(fa, fd, MAPF(path, !(oflag & O_NOFOLLOW)), oflag, mode);
 }
