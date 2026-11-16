@@ -192,7 +192,8 @@ func Build(dir string) (string, error) {
 	args := append([]string{"clang", "-dynamiclib", "-O2", "-Wall", "-Werror",
 		"-Wl,-U,_IORegisterForSystemPower", "-Wl,-U,_IONotificationPortCreate",
 		"-Wl,-U,_connect$NOCANCEL", "-Wl,-U,_sendto$NOCANCEL", "-Wl,-U,_sendmsg$NOCANCEL",
-		"-Wl,-U,_recvfrom$NOCANCEL", "-Wl,-U,_recvmsg$NOCANCEL", "-Wl,-U,_accept$NOCANCEL"}, archs()...)
+		"-Wl,-U,_recvfrom$NOCANCEL", "-Wl,-U,_recvmsg$NOCANCEL", "-Wl,-U,_accept$NOCANCEL",
+		"-Wl,-U,_posix_spawn_file_actions_addchdir"}, archs()...)
 	if err := clang(append(append(args, extra...), "-o", lib, src)); err != nil {
 		return "", err
 	}

@@ -121,18 +121,24 @@ func (e *Engine) Attach(ctx context.Context, ref string, opts AttachOptions, ope
 	}
 	e.publishContainer(c, events.ActionAttach, nil)
 	var detached atomic.Bool
+	// The client's input reaches the container once the attach is past the
+	// output stored before it: what the container answers that input with
+	// is then output the attach delivers, not output it skips as stored.
+	var feed func()
 	if opts.Stream && opts.Stdin && in != nil {
 		if tty {
 			in = escapable(in, keys)
 		}
-		go func() {
-			if detachedBy(e.feedStdin(ctx, c, in)) {
-				detached.Store(true)
-				cancel()
-			}
-		}()
+		feed = func() {
+			go func() {
+				if detachedBy(e.feedStdin(ctx, c, in)) {
+					detached.Store(true)
+					cancel()
+				}
+			}()
+		}
 	}
-	err = c.logs.followEntries(ctx, followOptions{follow: opts.Stream, done: runEnded, tail: tail, want: want}, out)
+	err = c.logs.followEntries(ctx, followOptions{follow: opts.Stream, done: runEnded, tail: tail, want: want, stored: feed}, out)
 	if detached.Load() {
 		e.publishContainer(c, events.ActionDetach, nil)
 		return nil

@@ -426,12 +426,21 @@ func TestDiskIOCounted(t *testing.T) {
 	const mib = 16
 	h := launch(t, []string{"diskwrite", strconv.Itoa(mib)}, nil)
 	h.waitLog("wrote")
-	st, err := h.client.State()
-	if err != nil {
-		t.Fatal(err)
+	// The kernel counts a write's bytes as they reach the disk, which can
+	// trail the write's return: on one run it had counted half of them
+	// when the program said it was done.
+	var written uint64
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		st, err := h.client.State()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if written = uint64(st.DiskWritten); written >= mib<<20 || time.Now().After(deadline) {
+			break
+		}
 	}
-	if st.DiskWritten < mib<<20 {
-		t.Fatalf("the container wrote %d bytes to disk by the shim's count, want at least %d", st.DiskWritten, mib<<20)
+	if written < mib<<20 {
+		t.Fatalf("the container wrote %d bytes to disk by the shim's count, want at least %d", written, mib<<20)
 	}
 }
 
