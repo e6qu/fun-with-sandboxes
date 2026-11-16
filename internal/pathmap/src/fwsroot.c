@@ -27,6 +27,7 @@
 // The host still decides every access, by the engine's user's rights.
 // IPV6_RECVPKTINFO and IPV6_PKTINFO name RFC 3542's options only with this.
 #define __APPLE_USE_RFC_3542
+#include <crt_externs.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -315,6 +316,9 @@ static void parse_network(const char *path, const char *address) {
 // The variables that make a process the container's, which a program that
 // clears or rebuilds its environment must not shed for its children, as
 // it cannot leave a chroot by doing so.
+// LOADED_NAME is the name DYLD_INSERT_LIBRARIES takes in a process's own
+// environment once the library is loaded, as long as that one.
+#define LOADED_NAME "FWS__INSERT_LIBRARIES"
 static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_DOMAINNAME", "FWS_SHM", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", "FWS_PIDS_SOCKET", "FWS_PIDNS", "FWS_PIDNSFILE", "FWS_PROCS", "FWS_DNS", NULL};
 static char *kept[sizeof kept_names / sizeof kept_names[0]];
 
@@ -452,6 +456,19 @@ __attribute__((constructor)) static void fwsroot_init(void) {
         }
         if (!realpath(root, croot)) {
             strcpy(croot, root);
+        }
+    }
+    // The variable that loaded the library takes another name in the
+    // environment: getenv hides it, and a program that lists its
+    // environment and then looks each variable up, as Node.js does to hand
+    // a worker thread a copy, must find every one it listed. The name
+    // changes where it stands, a name as long: the list keeps its length,
+    // which the Go runtime counts on to find what follows it. A program the
+    // process starts gets the variable back from kept (child_env).
+    if (kept[0]) {
+        // A library reaches the environment through _NSGetEnviron.
+        for (char **e = *_NSGetEnviron(); e && *e; e++) {
+            if (strncmp(*e, "DYLD_INSERT_LIBRARIES=", 22) == 0) memcpy(*e, LOADED_NAME, 21);
         }
     }
 }
@@ -1420,6 +1437,8 @@ static char **child_env(char *const envp[], char *ids) {
         // does before it executes itself again, gets it back: a container
         // process cannot leave the container's view.
         if (strcmp(envp[i], "DYLD_INSERT_LIBRARIES=") == 0) continue;
+        // What the variable became in this process (fwsroot_init).
+        if (strncmp(envp[i], LOADED_NAME "=", 22) == 0) continue;
         out[j++] = envp[i];
     }
     int a = snprintf(ids, 64, "FWS_UID=%u", fake_euid);

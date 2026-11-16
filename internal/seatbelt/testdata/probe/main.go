@@ -29,6 +29,12 @@ func run(op, arg string) error {
 	case "read":
 		_, err := os.ReadFile(arg)
 		return err
+	case "pty":
+		f, err := os.OpenFile(arg, os.O_RDWR, 0)
+		if err != nil {
+			return err
+		}
+		return f.Close()
 	case "list":
 		_, err := os.ReadDir(arg)
 		return err

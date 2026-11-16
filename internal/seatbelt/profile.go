@@ -129,6 +129,9 @@ var GUIMachServices = []string{
 	// What a file's volume is, which AppKit asks of an application's own
 	// bundle as it starts.
 	"com.apple.DiskArbitration.diskarbitrationd",
+	// Changes to the files a program watches, as an editor watches its
+	// workspace; without it libuv's watcher fails as if out of files.
+	"com.apple.FSEvents",
 }
 
 // GUIReadPaths are host trees outside a container's root that hold what
@@ -142,6 +145,8 @@ var GUIReadPaths = []string{
 	"/Library/GPUBundles",
 	"/Library/Preferences/.GlobalPreferences.plist",
 	"/Library/Preferences/com.apple.windowserver.displays.plist",
+	"/Library/Preferences/com.apple.networkd.plist",
+	"/Library/Managed Preferences",
 }
 
 // GUIIOKitClasses are the IOKit user clients a container granted the
@@ -173,6 +178,8 @@ var GUIIOKitClasses = []string{
 	"IOAudioEngineUserClient",
 	// A volume's properties, read with the file's.
 	"AppleAPFSUserClient",
+	// Video decoding, a virtual machine's.
+	"AppleVideoToolboxParavirtualizationUserClient",
 }
 
 type Volume struct {
@@ -345,7 +352,9 @@ func Render(s Spec) (string, error) {
 	for _, f := range s.WriteFiles {
 		w("  (literal %q)", f)
 	}
-	for _, d := range []string{"/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty"} {
+	// /dev/ptmx is where a program opens a terminal of its own, as an
+	// editor's integrated terminal, tmux or script do.
+	for _, d := range []string{"/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty", "/dev/ptmx"} {
 		w("  (literal %q)", d)
 	}
 	w("  (regex #\"^/dev/fd/\")")
@@ -522,6 +531,9 @@ func Render(s Spec) (string, error) {
 		w("(allow signal (target same-sandbox))")
 		w("(deny process-info*)")
 		w("(allow process-info* (target same-sandbox))")
+		// The name port of a process of its own, which a browser reads its
+		// helpers' memory and CPU use through.
+		w("(allow mach-task-name (target same-sandbox))")
 	}
 
 	// Last, so no earlier allowance of the root or a volume reaches them.

@@ -658,7 +658,7 @@ func TestLibraryVariableIsHiddenAndKept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reexec: %v\n%s", err, out)
 	}
-	if want := "hidden\nhostname=web\n"; string(out) != want {
+	if want := "hidden\nunlisted\nhostname=web\n"; string(out) != want {
 		t.Errorf("got %q, want %q", out, want)
 	}
 }
