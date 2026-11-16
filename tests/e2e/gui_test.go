@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -225,6 +226,32 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 		t.Fatalf("installing the Dev Containers extension: %v\n%s", err, out)
 	}
 
+	// The extension installs VS Code's server for Linux, whatever the
+	// container runs, into the volume it shares between dev containers,
+	// unless the server of the window's commit is there already: the test
+	// puts the macOS server there, where the extension looks.
+	product, err := os.ReadFile(filepath.Join(dir, app, "Contents", "Resources", "app", "product.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var build struct{ Commit string }
+	if err := json.Unmarshal(product, &build); err != nil || build.Commit == "" {
+		t.Fatalf("VS Code's product.json names no commit: %v", err)
+	}
+	seed := filepath.Join(dir, "seed")
+	server := filepath.Join(seed, "vscode-server", "bin", "linux-arm64", build.Commit)
+	if err := os.MkdirAll(server, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fetch := exec.Command("sh", "-c", `curl -fsSL --retry 3 -o "$1.zip" "https://update.code.visualstudio.com/commit:$2/server-darwin-arm64/stable" && tar -xf "$1.zip" --strip-components 1 -C "$1"; s=$?; rm -f "$1.zip"; exit $s`, "sh", server, build.Commit)
+	if out, err := fetch.CombinedOutput(); err != nil {
+		t.Fatalf("fetching VS Code's server: %v\n%s", err, out)
+	}
+	docker(t, "volume", "rm", "-f", "vscode")
+	mustDocker(t, "volume", "create", "vscode")
+	t.Cleanup(func() { docker(t, "volume", "rm", "-f", "vscode") })
+	mustDocker(t, "run", "--rm", "-v", "vscode:/vscode", "-v", seed+":/seed", "fws/base:1", "cp", "-R", "/seed/vscode-server", "/vscode/")
+
 	uri := "vscode-remote://dev-container+" + hex.EncodeToString([]byte(work)) + "/workspaces/project"
 	window := code("--new-window", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", "--disable-updates",
 		"--disable-telemetry", "--use-mock-keychain", "--wait", "--folder-uri", uri)
@@ -243,19 +270,19 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 
 	// The extension has made the container, and VS Code's server runs in
 	// it, when the server's own log there says it listens.
-	var id, server string
+	var id, serverLog string
 	for deadline := time.Now().Add(4 * time.Minute); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
 		if id == "" {
 			ids, _ := docker(t, "ps", "-q", "--filter", "label=devcontainer.local_folder="+work)
 			id = strings.TrimSpace(ids)
 			continue
 		}
-		server, _ = docker(t, "exec", id, "/bin/sh", "-c", "cat /root/.vscode-server/.*.log /root/.vscode-server/*.log 2>/dev/null")
-		if strings.Contains(server, "Extension host agent listening") {
+		serverLog, _ = docker(t, "exec", id, "/bin/sh", "-c", "cat /root/.vscode-server/.*.log /root/.vscode-server/*.log 2>/dev/null")
+		if strings.Contains(serverLog, "Extension host agent listening") {
 			break
 		}
 	}
-	if id == "" || !strings.Contains(server, "Extension host agent listening") {
+	if id == "" || !strings.Contains(serverLog, "Extension host agent listening") {
 		var logs strings.Builder
 		filepath.Walk(filepath.Join(data, "logs"), func(p string, fi os.FileInfo, err error) error {
 			if err == nil && fi.Mode().IsRegular() && (strings.Contains(p, "remote-containers") || strings.Contains(filepath.Base(p), "remoteContainers") || strings.Contains(filepath.Base(p), "Dev Containers")) {
@@ -272,7 +299,7 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 			listing, _ = docker(t, "exec", id, "/bin/sh", "-c", "exec 2>&1; ls -la /root /root/.vscode-server /root/.vscode-server/bin 2>&1 | head -60")
 		}
 		t.Fatalf("the Dev Containers extension did not bring VS Code's server up in a container (container %q).\nIts server's log:\n%s\nIn the container:\n%s\nVS Code printed:\n%s\nThe extension's logs:\n%s",
-			id, server, listing, output.String(), logs.String())
+			id, serverLog, listing, output.String(), logs.String())
 	}
 	if out, err := docker(t, "exec", id, "cat", "/workspaces/project/README"); err != nil || out != "from the workspace\n" {
 		t.Errorf("the workspace in the container: %q, %v", out, err)
