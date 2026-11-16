@@ -64,12 +64,16 @@ One pull request open at a time.
 2. **Starts and limits.** `fwsroot`'s cost to the loader cut by interposing
    fewer functions; per-process memory limits in the kernel if CI's jetsam
    experiment shows macOS enforces them; the engine's lock split where
-   `-debug` timings still show long holds; a fuzzer for the library's path
-   mapping.
-3. **Catalog upkeep.** November's PostgreSQL and MariaDB once their darwin
+   `-debug` timings still show long holds. The path mapping's fuzzer runs
+   in CI's macOS jobs.
+3. **Names and pods.** A DNS forwarder at each container's address, so
+   that `dig` and Go's pure resolver reach its servers; Network.framework's
+   lookups; IPv6-only networks' members seen across nodes, and kind's IPv6
+   and dual-stack clusters.
+4. **Catalog upkeep.** November's PostgreSQL and MariaDB once their darwin
    builds are cached; nixos-26.11; a newer Kubernetes and kind when asked
    for.
-4. **Shipping**, when asked for: signed and notarized releases, prebuilt C
+5. **Shipping**, when asked for: signed and notarized releases, prebuilt C
    parts, an installer, a `launchd` service.
 
 ## Open questions
