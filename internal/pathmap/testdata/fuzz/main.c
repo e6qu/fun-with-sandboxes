@@ -3,8 +3,10 @@
 // whose links climb out of it, loop, and name it and a directory beside it
 // by their host paths, beside a mount, under the sanitizers the build
 // names. A path the root holds maps into the root or the mount's source,
-// with no .. left and no link on its way that leads out of them; one it
-// does not hold maps to itself, resolved in the container, as the host's.
+// with no link on its way that leads out of them; one it does not hold
+// maps to itself, resolved in the container, as the host's. A .. stays
+// only past a component that names nothing, where resolution stops, as
+// the kernel's does.
 //
 //   fuzz SECONDS [SEED]
 //
@@ -140,10 +142,26 @@ static int lands(const char *q, char *out) {
     }
 }
 
-// dotdot reports whether path p holds a .. component.
-static int dotdot(const char *p) {
-    size_t n = strlen(p);
-    return strstr(p, "/../") || strncmp(p, "../", 3) == 0 || strcmp(p, "..") == 0 || (n >= 3 && strcmp(p + n - 3, "/..") == 0);
+// dotdot returns where path p's first .. component starts, at its
+// slash, or -1 where it holds none.
+static long dotdot(const char *p) {
+    for (const char *s = p; (s = strstr(s, "/..")); s++) {
+        if (s[3] == '/' || s[3] == 0) return s - p;
+    }
+    return -1;
+}
+
+// stops reports whether the kernel stops before path p's first ..: the
+// part before it names nothing on the host, as when resolution stopped at
+// a component the root lacks, which it leaves as it is. prefix, if not
+// NULL, goes before p's part.
+static int stops(const char *p, const char *prefix) {
+    long i = dotdot(p);
+    if (i < 0) return 1;
+    char part[PATH_MAX];
+    struct stat st;
+    snprintf(part, sizeof part, "%s%.*s", prefix ? prefix : "", (int)i, p);
+    return lstat(part, &st) != 0;
 }
 
 static const char *fault(const char *p, int follow, const char *q) {
@@ -151,10 +169,10 @@ static const char *fault(const char *p, int follow, const char *q) {
     int in_root_dir = under_dir(q, rootdir), in_mount = under_dir(q, msrc);
     if (!in_root_dir && !in_mount) {
         if (q[0] != '/') return "maps to a relative path";
-        if (dotdot(q)) return "keeps a .. in a path the root does not hold";
+        if (!stops(q, rootdir)) return "keeps a .. past a file the root holds";
         return NULL;
     }
-    if (dotdot(q + (in_root_dir ? strlen(rootdir) : strlen(msrc)))) return "keeps a .. in the root";
+    if (!stops(q, NULL)) return "keeps a .. past a file in the root";
     char dir[PATH_MAX], land[PATH_MAX];
     strlcpy(dir, q, sizeof dir);
     if (!follow) {
