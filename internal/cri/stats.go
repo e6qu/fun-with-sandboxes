@@ -147,11 +147,7 @@ func (s *Service) podSandboxStats(ctx context.Context, id string) (*runtimeapi.P
 		RssBytes:        &runtimeapi.UInt64Value{Value: mem},
 	}
 	linux.Process = &runtimeapi.ProcessUsage{Timestamp: now, ProcessCount: &runtimeapi.UInt64Value{Value: procs}}
-	names := make([]string, 0, len(pause.Networks))
-	for n := range pause.Networks {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names := sortedKeys(pause.Networks)
 	if len(names) > 0 {
 		network := &runtimeapi.NetworkUsage{Timestamp: now}
 		for i, n := range names {
@@ -209,4 +205,14 @@ func (s *Service) ListPodSandboxStats(ctx context.Context, req *runtimeapi.ListP
 		out = append(out, st)
 	}
 	return &runtimeapi.ListPodSandboxStatsResponse{Stats: out}, nil
+}
+
+// sortedKeys is m's keys in order.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
