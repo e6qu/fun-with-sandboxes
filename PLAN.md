@@ -48,16 +48,15 @@ image of kind 0.31, until a newer one is asked for.
 
 One pull request open at a time.
 
-1. **Devcontainers and graphical applications.** In review,
+1. **Graphical applications and VS Code.** Merged in
    [#67](https://github.com/e6qu/fun-with-sandboxes/pull/67): the Dev
-   Containers CLI against the engine (an image, a Dockerfile, a Compose
-   service, features of the workspace and from a registry, lifecycle
-   commands, `appPort`); VS Code's server in a container, as programs
-   with the hardened runtime now load the container library; and
-   `--security-opt seatbelt=gui`, which grants a container the user's
-   session so that an Electron application draws its window from inside
-   one. Still to do: VS Code's Dev Containers extension end to end, and
-   VS Code itself, with its extensions and terminal, in a container.
+   Containers CLI against the engine, VS Code's server in a dev container,
+   hardened-runtime programs loading the container library, and
+   `--security-opt seatbelt=gui`, with which Electron draws its window from
+   inside a container. Next: VS Code itself in a container, with its
+   extension host and integrated terminal; Chromium's own sandbox inside a
+   container's, so that `--no-sandbox` goes; VS Code's Dev Containers
+   extension end to end.
 2. **Starts and limits.** `fwsroot`'s cost to the loader cut by interposing
    fewer functions; per-process memory limits in the kernel if CI's jetsam
    experiment shows macOS enforces them; the engine's lock split where
