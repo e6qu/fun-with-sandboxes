@@ -377,7 +377,7 @@ func TestDevcontainerVSCodeServer(t *testing.T) {
 		break
 	}
 	if len(version) != 40 {
-		log, _ := docker(t, "exec", up.ContainerID, "/bin/sh", "-c", "cat /tmp/server.log; ls -l /vscode-server/bin /vscode-server/node")
+		log, _ := docker(t, "exec", up.ContainerID, "/bin/sh", "-c", "exec 2>&1; cat /tmp/server.log; ls -l /vscode-server/node; ps -ef; /vscode-server/node --version; echo node: $?; /vscode-server/bin/code-server --version; echo code-server: $?; cat /vscode-server/bin/code-server")
 		t.Fatalf("VS Code's server answered %q on the published port; its log:\n%s\nSeatbelt refused:\n%s", version, log, sandboxDenials(t, "node"))
 	}
 }

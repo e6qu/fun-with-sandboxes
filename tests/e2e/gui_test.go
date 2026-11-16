@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,6 +97,18 @@ app.whenReady().then(async () => {
 	}
 	if t.Failed() {
 		t.Logf("Seatbelt refused Electron:\n%s", sandboxDenials(t, "Electron"))
+		// Again, with the library telling what Electron asked about files'
+		// places: the last of it is where it lost its way.
+		_, terr := docker(t, "run", "--rm", "--security-opt", "seatbelt=gui", "-e", "FWS_TRACE=1", "-v", dir+":/app",
+			"fws/base:1", "/app/Electron.app/Contents/MacOS/Electron", "--no-sandbox", "/app/main.js")
+		var calls []string
+		for _, line := range strings.Split(fmt.Sprint(terr), "\n") {
+			if strings.HasPrefix(line, "fws: ") && !strings.Contains(line, "/Electron Framework.framework/") {
+				calls = append(calls, line)
+			}
+		}
+		t.Logf("%d calls traced; the first:\n%s", len(calls), strings.Join(calls[:min(len(calls), 60)], "\n"))
+		t.Logf("the last:\n%s", strings.Join(calls[max(0, len(calls)-260):], "\n"))
 		return
 	}
 	if b, err := exec.Command("pbpaste").Output(); err != nil || string(b) != "copied in a container" {

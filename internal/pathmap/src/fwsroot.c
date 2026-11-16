@@ -354,7 +354,21 @@ static void apply_iopolicy(void) {
 
 static void parse_shm(const char *v);
 
+// FWS_TRACE in a container's environment has the library write, to
+// standard error, the calls through which a program asks about files'
+// places: what it named, what that mapped to and what came back. It is how
+// a program that loses its way between the container's paths and the
+// host's is read.
+static int tracing;
+static void trace(const char *call, const char *path, const char *mapped, long extra, int r) {
+    if (!tracing) return;
+    int e = errno;
+    dprintf(2, "fws: %s %s -> %s [%lx] = %d\n", call, path ? path : "(null)", mapped ? mapped : "(null)", extra, r);
+    errno = e;
+}
+
 __attribute__((constructor)) static void fwsroot_init(void) {
+    tracing = getenv("FWS_TRACE") != NULL;
     for (size_t i = 0; kept_names[i]; i++) {
         const char *v = getenv(kept_names[i]);
         if (v) {
@@ -1001,6 +1015,7 @@ static int fws_stat(const char *path, struct stat *st) {
     const char *p = MAP(path);
     int r = stat(p, st);
     if (r == 0) own(st, p, -1, 0);
+    trace("stat", path, p, 0, r);
     return r;
 }
 INTERPOSE(fws_stat, stat);
@@ -1010,6 +1025,7 @@ static int fws_lstat(const char *path, struct stat *st) {
     const char *p = LMAP(path);
     int r = lstat(p, st);
     if (r == 0) own(st, p, -1, 1);
+    trace("lstat", path, p, 0, r);
     return r;
 }
 INTERPOSE(fws_lstat, lstat);
@@ -1079,7 +1095,12 @@ static int fws_fstatat64(int fd, const char *path, void *st, int flag) {
 }
 INTERPOSE(fws_fstatat64, fstatat64);
 
-static int fws_statfs(const char *path, struct statfs *st) { return statfs(MAP(path), st); }
+static int fws_statfs(const char *path, struct statfs *st) {
+    const char *m = MAP(path);
+    int r = statfs(m, st);
+    trace("statfs", path, m, 0, r);
+    return r;
+}
 INTERPOSE(fws_statfs, statfs);
 // is_root reports whether host path h is the container's root directory.
 static int is_root(const char *h) {
@@ -1104,7 +1125,9 @@ static int fws_getattrlist(const char *path, void *attrs, void *buf, size_t size
         is_root(m)) {
         m = "/";
     }
-    return getattrlist(m, attrs, buf, size, opts);
+    int r = getattrlist(m, attrs, buf, size, opts);
+    trace("getattrlist", path, m, al ? ((long)al->commonattr << 32 | al->volattr << 16 | (al->dirattr & 0xffff)) : 0, r);
+    return r;
 }
 INTERPOSE(fws_getattrlist, getattrlist);
 static int fws_setattrlist(const char *path, void *attrs, void *buf, size_t size, unsigned int opts) {
@@ -1512,6 +1535,7 @@ static char *fws_getcwd(char *buf, size_t size) {
 static char *fws_realpath(const char *path, char *resolved) {
     char *r = realpath(MAP(path), resolved);
     unmap(r, PATH_MAX);
+    trace("realpath", path, r, 0, r ? 0 : -1);
     return r;
 }
 INTERPOSE(fws_realpath, realpath);
