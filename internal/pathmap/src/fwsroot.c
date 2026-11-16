@@ -454,6 +454,12 @@ __attribute__((constructor)) static void fwsroot_init(void) {
             strcpy(croot, root);
         }
     }
+    // The variable that loaded the library leaves the environment: getenv
+    // hides it, and a program that lists its environment and then looks
+    // each variable up, as Node.js does to hand a worker thread a copy,
+    // must find every one it listed. A program the process starts gets it
+    // back from kept (child_env).
+    if (kept[0]) unsetenv("DYLD_INSERT_LIBRARIES");
 }
 
 // The host trees a container uses as they are: no image holds them, and
