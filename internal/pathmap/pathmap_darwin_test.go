@@ -663,6 +663,29 @@ func TestLibraryVariableIsHiddenAndKept(t *testing.T) {
 	}
 }
 
+// The container's / is a mount point to getattrlist, as the host's is, so
+// a walk up a file's parents to its volume ends there.
+func TestRootIsAMountPoint(t *testing.T) {
+	root := containerRoot(t)
+	bin := filepath.Join(root, "bin", "attr")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", bin, "testdata/attr/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	lib, err := Build(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "/", "/etc")
+	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_ROOT=" + root}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("attr: %v\n%s", err, out)
+	}
+	if want := "/ mountpoint=1\n/etc mountpoint=0\n"; string(out) != want {
+		t.Errorf("got %q, want %q", out, want)
+	}
+}
+
 // A program signed with the hardened runtime starts without the library,
 // as dyld drops the variable for it; one a container process executes is
 // made to load it first, and stays so.

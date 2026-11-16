@@ -243,12 +243,17 @@ func TestDevcontainerAppPort(t *testing.T) {
 	}
 	port := fmt.Sprint(l.Addr().(*net.TCPAddr).Port)
 	l.Close()
+	// The image's own command serves the workspace: overrideCommand keeps
+	// it, where the CLI would otherwise run a shell loop that sleeps.
 	devcontainerUp(t, map[string]string{
-		"index.txt": "served from the workspace\n",
+		"index.txt":                "served from the workspace\n",
+		".devcontainer/Dockerfile": "FROM fws/python:3.14\nCMD [\"python3\", \"-m\", \"http.server\", \"8000\", \"--directory\", \"/srv\"]\n",
 		".devcontainer/devcontainer.json": `{
-  "image": "fws/python:3.14",
-  "appPort": ["127.0.0.1:` + port + `:8000"],
-  "postStartCommand": "nohup python3 -m http.server 8000 > /tmp/server.log 2>&1 &"
+  "build": {"dockerfile": "Dockerfile"},
+  "overrideCommand": false,
+  "workspaceMount": "source=${localWorkspaceFolder},target=/srv,type=bind",
+  "workspaceFolder": "/srv",
+  "appPort": ["127.0.0.1:` + port + `:8000"]
 }
 `,
 	})
@@ -276,8 +281,8 @@ func TestDevcontainerCompose(t *testing.T) {
 		"index.txt": "from the neighbour\n",
 		".devcontainer/compose.yaml": `services:
   dev:
-    image: fws/python:3.14
-    command: ["python3", "-c", "import time; time.sleep(600)"]
+    image: fws/base:1
+    command: ["sleep", "600"]
     volumes:
       - ..:/workspace
   web:
@@ -308,15 +313,11 @@ func TestDevcontainerCompose(t *testing.T) {
 	if res.RemoteWorkspaceFolder != "/workspace" {
 		t.Errorf("devcontainer up: %+v", res)
 	}
-	script := `import urllib.request, time
-for i in range(100):
-    try:
-        print(urllib.request.urlopen("http://web:8000/index.txt").read().decode(), end="")
-        break
-    except OSError:
-        time.sleep(0.2)
-print(open("/tmp/created").read(), end="")`
-	out, err := devcontainer(t, "exec", "--workspace-folder", dir, "python3", "-c", script)
+	// The CLI keeps its record of the lifecycle commands it ran with the
+	// container's own mkdir and cat, so the service's image is one with
+	// the usual commands.
+	out, err := devcontainer(t, "exec", "--workspace-folder", dir, "sh", "-c",
+		"curl -fsS --retry 30 --retry-delay 1 --retry-all-errors http://web:8000/index.txt && cat /tmp/created")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +350,8 @@ func TestDevcontainerVSCodeServer(t *testing.T) {
 	if server, err = filepath.EvalSymlinks(server); err != nil {
 		t.Fatal(err)
 	}
-	fetch := exec.Command("sh", "-c", `curl -fsSL --retry 3 https://update.code.visualstudio.com/latest/server-darwin-arm64/stable | tar -xz --strip-components 1 -C "$1"`, "sh", server)
+	// The archive is a zip, whose files' modes tar reads only from a file.
+	fetch := exec.Command("sh", "-c", `curl -fsSL --retry 3 -o "$1.zip" https://update.code.visualstudio.com/latest/server-darwin-arm64/stable && tar -xf "$1.zip" --strip-components 1 -C "$1"; s=$?; rm -f "$1.zip"; exit $s`, "sh", server)
 	if out, err := fetch.CombinedOutput(); err != nil {
 		t.Fatalf("fetching VS Code's server: %v\n%s", err, out)
 	}

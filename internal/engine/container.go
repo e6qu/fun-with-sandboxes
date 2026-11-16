@@ -1301,6 +1301,29 @@ func envName(s string) string {
 	return string(b)
 }
 
+// mapPath maps the directories of a container's PATH into its root, as its
+// processes hold them. A directory mapped already stays: a client that
+// read PATH in the container and hands it back to an exec, as the Dev
+// Containers CLI does, names the same directories.
+func mapPath(root, path string) string {
+	var mapped []string
+	for _, dir := range filepath.SplitList(path) {
+		switch {
+		case dir == root || strings.HasPrefix(dir, root+"/"):
+			mapped = append(mapped, filepath.Clean(dir))
+		case strings.HasPrefix(dir, "/"):
+			mapped = append(mapped, filepath.Join(root, dir))
+		}
+	}
+	return strings.Join(mapped, ":")
+}
+
+// engineVariable reports whether the engine sets the variable named k for
+// every process of a container: the container library's and its own.
+func engineVariable(k string) bool {
+	return strings.HasPrefix(k, "FWS_") || k == "DYLD_INSERT_LIBRARIES"
+}
+
 // environment is the process environment: the image and container variables
 // with PATH mapped into the root, plus the variables through which the
 // service learns its root, its own ports and its peers' ports; net is the
@@ -1331,15 +1354,15 @@ func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []s
 		set(kv)
 	}
 	for _, kv := range extra {
+		// A client that reads a container's environment with printenv and
+		// hands it back to an exec, as the Dev Containers CLI does, hands
+		// back the engine's own variables too: the exec gets its own.
+		if k, _, _ := strings.Cut(kv, "="); engineVariable(k) {
+			continue
+		}
 		set(kv)
 	}
-	var mapped []string
-	for _, dir := range filepath.SplitList(vars["PATH"]) {
-		if strings.HasPrefix(dir, "/") {
-			mapped = append(mapped, filepath.Join(root, dir))
-		}
-	}
-	vars["PATH"] = strings.Join(mapped, ":")
+	vars["PATH"] = mapPath(root, vars["PATH"])
 	if h := vars["HOME"]; !strings.HasPrefix(h, root) {
 		vars["HOME"] = filepath.Join(root, h)
 	}

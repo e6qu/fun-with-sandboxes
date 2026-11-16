@@ -1081,8 +1081,23 @@ INTERPOSE(fws_fstatat64, fstatat64);
 
 static int fws_statfs(const char *path, struct statfs *st) { return statfs(MAP(path), st); }
 INTERPOSE(fws_statfs, statfs);
+// is_root reports whether host path h is the container's root directory.
+static int is_root(const char *h) {
+    size_t n = strlen(h);
+    while (n > 1 && h[n - 1] == '/') n--;
+    size_t cn = strlen(croot);
+    return (n == rootlen && strncmp(h, root, n) == 0) || (n == cn && strncmp(h, croot, n) == 0);
+}
+
+// The container's / answers getattrlist as the host's does: a volume's
+// root and a mount point. Core Foundation finds a file's volume by walking
+// up its parents until one is such a directory, and the root's own
+// directory, deep in the engine's state, is none: from it the walk goes on
+// to /.., which is / again.
 static int fws_getattrlist(const char *path, void *attrs, void *buf, size_t size, unsigned int opts) {
-    return getattrlist(MAPF(path, !(opts & FSOPT_NOFOLLOW)), attrs, buf, size, opts);
+    const char *m = MAPF(path, !(opts & FSOPT_NOFOLLOW));
+    if (rootlen && m && is_root(m)) m = "/";
+    return getattrlist(m, attrs, buf, size, opts);
 }
 INTERPOSE(fws_getattrlist, getattrlist);
 static int fws_setattrlist(const char *path, void *attrs, void *buf, size_t size, unsigned int opts) {
