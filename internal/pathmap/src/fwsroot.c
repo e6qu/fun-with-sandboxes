@@ -1089,14 +1089,21 @@ static int is_root(const char *h) {
     return (n == rootlen && strncmp(h, root, n) == 0) || (n == cn && strncmp(h, croot, n) == 0);
 }
 
-// The container's / answers getattrlist as the host's does: a volume's
-// root and a mount point. Core Foundation finds a file's volume by walking
-// up its parents until one is such a directory, and the root's own
-// directory, deep in the engine's state, is none: from it the walk goes on
-// to /.., which is / again.
+// The container's / answers getattrlist as the host's does when asked what
+// a volume's root tells apart: its parent, whether it is a mount point, its
+// volume. Core Foundation finds a file's volume by walking up its parents
+// until one is such a directory, and the root's own directory, deep in the
+// engine's state, is none: from it the walk goes on to /.., which is /
+// again. A request for the directory's own identity or path, as realpath
+// makes, is the root directory's still.
 static int fws_getattrlist(const char *path, void *attrs, void *buf, size_t size, unsigned int opts) {
     const char *m = MAPF(path, !(opts & FSOPT_NOFOLLOW));
-    if (rootlen && m && is_root(m)) m = "/";
+    const struct attrlist *al = attrs;
+    if (rootlen && m && al && !(al->commonattr & ATTR_CMN_FULLPATH) &&
+        ((al->dirattr & ATTR_DIR_MOUNTSTATUS) || al->volattr || (al->commonattr & (ATTR_CMN_PARENTID | ATTR_CMN_PAROBJID))) &&
+        is_root(m)) {
+        m = "/";
+    }
     return getattrlist(m, attrs, buf, size, opts);
 }
 INTERPOSE(fws_getattrlist, getattrlist);
