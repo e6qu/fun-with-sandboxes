@@ -260,17 +260,20 @@ func TestComposeServiceSettings(t *testing.T) {
 `,
 	})
 	p.must("up", "-d", "--wait")
+	// The segments are untracked: Python's resource tracker, a process of
+	// its own that outlives the probe as it would in Docker, complains on
+	// standard error of the segment whose creation failed.
 	const probe = `import ctypes, os, socket, errno
-from multiprocessing import shared_memory, resource_tracker
+from multiprocessing import shared_memory
 print("ppid", open("/tmp/ppid").read())
 print("groups", sorted(os.getgroups()))
 buf = ctypes.create_string_buffer(256)
 ctypes.CDLL(None).getdomainname(buf, 256)
 print("uts", socket.gethostname(), buf.value.decode())
 print("hosts", [l for l in open("/etc/hosts").read().splitlines() if "web" in l][0].split("\t")[1])
-first = shared_memory.SharedMemory(create=True, size=3 << 20)
+first = shared_memory.SharedMemory(create=True, size=3 << 20, track=False)
 try:
-    shared_memory.SharedMemory(create=True, size=2 << 20)
+    shared_memory.SharedMemory(create=True, size=2 << 20, track=False)
     print("shm", "fits")
 except OSError as e:
     print("shm", errno.errorcode[e.errno])
