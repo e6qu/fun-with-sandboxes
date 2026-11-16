@@ -138,3 +138,78 @@ func TestDNSSettings(t *testing.T) {
 		t.Errorf("a member's name with DNS settings of the container's own: %q", out)
 	}
 }
+
+// asyncPy resolves its argument's IPv4 addresses three ways and prints
+// each sorted: getaddrinfo; libinfo's getaddrinfo_async_start, whose
+// result arrives as a message on a Mach port, which CFNetwork uses; and
+// dns_sd's DNSServiceGetAddrInfo, which mDNSResponder serves.
+const asyncPy = `import ctypes, socket, sys
+name = sys.argv[1].encode()
+lib = ctypes.CDLL(None)
+print("getaddrinfo", sorted({a[4][0] for a in socket.getaddrinfo(sys.argv[1], 80, socket.AF_INET, socket.SOCK_STREAM)}))
+
+class addrinfo(ctypes.Structure):
+    pass
+addrinfo._fields_ = [("flags", ctypes.c_int), ("family", ctypes.c_int), ("socktype", ctypes.c_int), ("protocol", ctypes.c_int),
+    ("addrlen", ctypes.c_uint32), ("canonname", ctypes.c_char_p), ("addr", ctypes.c_void_p), ("next", ctypes.POINTER(addrinfo))]
+GaiCallback = ctypes.CFUNCTYPE(None, ctypes.c_int32, ctypes.POINTER(addrinfo), ctypes.c_void_p)
+found = set()
+def gai_done(status, res, ctx):
+    if status != 0:
+        found.add("error %d" % status)
+        return
+    a = res
+    while a:
+        found.add(socket.inet_ntop(socket.AF_INET, ctypes.string_at(a.contents.addr, 8)[4:8]))
+        a = a.contents.next
+    lib.freeaddrinfo(res)
+gai_cb = GaiCallback(gai_done)
+hints = addrinfo(family=socket.AF_INET, socktype=socket.SOCK_STREAM)
+port = ctypes.c_uint32()
+lib.getaddrinfo_async_start.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.c_char_p, ctypes.c_char_p, ctypes.POINTER(addrinfo), GaiCallback, ctypes.c_void_p]
+assert lib.getaddrinfo_async_start(ctypes.byref(port), name, b"80", ctypes.byref(hints), gai_cb, None) == 0
+buf = ctypes.create_string_buffer(4096)
+ctypes.memmove(buf, (ctypes.c_uint32 * 4)(0, 4096, 0, port.value), 16)
+MACH_RCV_MSG, MACH_RCV_TIMEOUT = 2, 0x100
+assert lib.mach_msg(buf, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, 4096, port.value, 60000, 0) == 0
+lib.getaddrinfo_async_handle_reply(buf)
+print("async", sorted(found))
+
+DnsCallback = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_int32, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p)
+answers = set()
+def dns_answer(ref, flags, iface, err, host, addr, ttl, ctx):
+    answers.add(socket.inet_ntop(socket.AF_INET, ctypes.string_at(addr, 8)[4:8]) if err == 0 else "error %d" % err)
+dns_cb = DnsCallback(dns_answer)
+ref = ctypes.c_void_p()
+lib.DNSServiceGetAddrInfo.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p, DnsCallback, ctypes.c_void_p]
+lib.DNSServiceProcessResult.argtypes = [ctypes.c_void_p]
+lib.DNSServiceRefDeallocate.argtypes = [ctypes.c_void_p]
+assert lib.DNSServiceGetAddrInfo(ctypes.byref(ref), 0, 0, 1, name, dns_cb, None) == 0
+assert lib.DNSServiceProcessResult(ref) == 0
+lib.DNSServiceRefDeallocate(ref)
+print("dns_sd", sorted(answers))
+`
+
+// The asynchronous lookups answer what getaddrinfo answers: a member of the
+// container's stack, and a name its hosts file lists.
+func TestAsyncLookups(t *testing.T) {
+	mustDocker(t, "network", "create", "e2e-async")
+	defer docker(t, "network", "rm", "e2e-async")
+	mustDocker(t, "run", "-d", "--name", "e2e-async-db", "--network", "e2e-async", "fws/python:3.14", "python3", "-c", "import time; time.sleep(600)")
+	defer docker(t, "rm", "-f", "e2e-async-db")
+	for name, want := range map[string]string{"e2e-async-db": "", "listed.fws-e2e.test": "192.0.2.90"} {
+		out := mustDocker(t, "run", "--rm", "--network", "e2e-async", "--add-host", "listed.fws-e2e.test:192.0.2.90", "fws/python:3.14", "python3", "-c", asyncPy, name)
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		if len(lines) != 3 {
+			t.Errorf("%s: %q", name, out)
+			continue
+		}
+		addrs := strings.TrimPrefix(lines[0], "getaddrinfo ")
+		if want != "" && addrs != "['"+want+"']" || strings.Contains(addrs, "error") || addrs == "[]" {
+			t.Errorf("%s through getaddrinfo: %s", name, addrs)
+		}
+		if lines[1] != "async "+addrs || lines[2] != "dns_sd "+addrs {
+			t.Errorf("%s: the asynchronous lookups differ from getaddrinfo's %s:\n%s", name, addrs, out)
+		}
+	}
+}

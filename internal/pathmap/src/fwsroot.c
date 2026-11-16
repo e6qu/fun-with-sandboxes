@@ -6876,3 +6876,5 @@ static struct hostent *fws_gethostbyname2(const char *name, int af) {
     return gethostbyname2(name, af);
 }
 INTERPOSE(fws_gethostbyname2, gethostbyname2);
+
+#include "resolve_async.h"

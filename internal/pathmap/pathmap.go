@@ -28,6 +28,12 @@ var spawnSource []byte
 //go:embed src/hardened.h
 var hardenedSource []byte
 
+// asyncSource is the library's asynchronous lookups, which it includes
+// (src/resolve_async.h).
+//
+//go:embed src/resolve_async.h
+var asyncSource []byte
+
 // HostnameVar names the hostname the library presents; package identity
 // names the user and group.
 const HostnameVar = "FWS_HOSTNAME"
@@ -164,6 +170,7 @@ func Build(dir string) (string, error) {
 	h.Write(source)
 	h.Write(spawnSource)
 	h.Write(hardenedSource)
+	h.Write(asyncSource)
 	h.Write([]byte(strings.Join(extra, "\x00")))
 	out := filepath.Join(dir, "fwsroot-"+hex.EncodeToString(h.Sum(nil)[:8])+".dylib")
 	if _, err := os.Stat(out); err == nil {
@@ -182,6 +189,9 @@ func Build(dir string) (string, error) {
 		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(work, "hardened.h"), hardenedSource, 0o644); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(work, "resolve_async.h"), asyncSource, 0o644); err != nil {
 		return "", err
 	}
 	lib := filepath.Join(work, "fwsroot.dylib")
