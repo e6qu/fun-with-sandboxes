@@ -164,8 +164,20 @@ static int stops(const char *p, const char *prefix) {
     return lstat(part, &st) != 0;
 }
 
+// through_host reports whether p passes through the link to the root's own
+// host path: the library takes a host path of the root or a mount's
+// source as the host's (host_side), where the host's kernel follows the
+// root's links as the host's, which the path checks do not hold to. Such
+// a path is mapped for the sanitizers alone.
+static int through_host(const char *p) {
+    for (const char *s = p; (s = strstr(s, "toroot")); s++) {
+        if ((s == p || s[-1] == '/') && (s[6] == '/' || s[6] == 0)) return 1;
+    }
+    return 0;
+}
+
 static const char *fault(const char *p, int follow, const char *q) {
-    if (q == p) return NULL;
+    if (q == p || through_host(p)) return NULL;
     int in_root_dir = under_dir(q, rootdir), in_mount = under_dir(q, msrc);
     if (!in_root_dir && !in_mount) {
         if (q[0] != '/') return "maps to a relative path";
