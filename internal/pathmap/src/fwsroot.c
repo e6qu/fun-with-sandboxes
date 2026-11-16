@@ -83,12 +83,18 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
+#ifdef FWS_FUZZ
+// The path mapping's fuzzer (testdata/fuzz) builds this file into a
+// program of its own, which keeps the host's functions.
+#define INTERPOSE(replacement, replacee) __attribute__((used)) static const void *interpose_##replacement = (const void *)&replacement
+#else
 #define INTERPOSE(replacement, replacee)                                              \
     __attribute__((used)) static struct {                                            \
         const void *a;                                                               \
         const void *b;                                                               \
     } interpose_##replacement __attribute__((section("__DATA,__interpose"))) = {     \
         (const void *)(unsigned long)&replacement, (const void *)(unsigned long)&replacee}
+#endif
 
 static char root[PATH_MAX];
 // root, resolved.

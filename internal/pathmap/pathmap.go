@@ -150,6 +150,17 @@ func PortsVar(ports map[string]int) (string, error) {
 	return "FWS_PORTS=" + strings.Join(entries, ","), nil
 }
 
+// weakSymbols are the linker's flags for the functions the library binds
+// weakly: the IOKit functions it stands in for, from whichever image
+// provides them, as it links no framework, and the socket calls'
+// cancellation-free variants, which no header declares.
+var weakSymbols = []string{
+	"-Wl,-U,_IORegisterForSystemPower", "-Wl,-U,_IONotificationPortCreate",
+	"-Wl,-U,_connect$NOCANCEL", "-Wl,-U,_sendto$NOCANCEL", "-Wl,-U,_sendmsg$NOCANCEL",
+	"-Wl,-U,_recvfrom$NOCANCEL", "-Wl,-U,_recvmsg$NOCANCEL", "-Wl,-U,_accept$NOCANCEL",
+	"-Wl,-U,_posix_spawn_file_actions_addchdir",
+}
+
 // archs are the architectures the library is built for, on Apple silicon:
 // Apple's own programs are arm64e.
 func archs() []string {
@@ -195,15 +206,7 @@ func Build(dir string) (string, error) {
 		return "", err
 	}
 	lib := filepath.Join(work, "fwsroot.dylib")
-	// The library binds the IOKit functions it stands in for weakly and
-	// from whichever image provides them: it links no framework. It binds
-	// the socket calls' cancellation-free variants weakly too, as no header
-	// declares them.
-	args := append([]string{"clang", "-dynamiclib", "-O2", "-Wall", "-Werror",
-		"-Wl,-U,_IORegisterForSystemPower", "-Wl,-U,_IONotificationPortCreate",
-		"-Wl,-U,_connect$NOCANCEL", "-Wl,-U,_sendto$NOCANCEL", "-Wl,-U,_sendmsg$NOCANCEL",
-		"-Wl,-U,_recvfrom$NOCANCEL", "-Wl,-U,_recvmsg$NOCANCEL", "-Wl,-U,_accept$NOCANCEL",
-		"-Wl,-U,_posix_spawn_file_actions_addchdir"}, archs()...)
+	args := append(append([]string{"clang", "-dynamiclib", "-O2", "-Wall", "-Werror"}, weakSymbols...), archs()...)
 	if err := clang(append(append(args, extra...), "-o", lib, src)); err != nil {
 		return "", err
 	}

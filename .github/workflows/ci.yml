@@ -91,6 +91,13 @@ jobs:
         env:
           FWS_CFLAGS: -fsanitize=undefined -fsanitize-trap=undefined -g
         run: go test -count=1 ./internal/pathmap ./internal/runtime ./internal/shim ./internal/seatbelt
+      # The path mapping's fuzzer (internal/pathmap/testdata/fuzz) for two
+      # minutes, under AddressSanitizer and UndefinedBehaviorSanitizer, from
+      # a seed it prints, which FWS_PATH_FUZZ_SEED replays.
+      - name: path mapping fuzzer
+        env:
+          FWS_PATH_FUZZ_SECONDS: "120"
+        run: go test -count=1 -v -run '^TestPathMappingFuzz$' ./internal/pathmap
       # Whether macOS enforces a fatal per-process memory limit an
       # unprivileged parent sets (TestJetsamLimitExperiment), printed.
       - name: jetsam experiment
