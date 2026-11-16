@@ -64,6 +64,9 @@ type followOptions struct {
 	// all of them.
 	tail int
 	want func(LogEntry) bool
+	// stored, where set, is called once the stored entries are passed:
+	// every entry written from then on is emitted.
+	stored func()
 }
 
 // followEntries calls fn for the stored entries that want accepts and, when following,
@@ -128,6 +131,9 @@ func (l *logStore) followEntries(ctx context.Context, o followOptions, fn func(L
 		}
 	} else if err := drain(fn); err != nil {
 		return err
+	}
+	if o.stored != nil {
+		o.stored()
 	}
 	if !o.follow {
 		return nil
