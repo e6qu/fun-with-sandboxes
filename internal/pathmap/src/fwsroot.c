@@ -607,12 +607,16 @@ static int linked(const char *p) {
 }
 
 #define MAXLINKS 32
+// A path no container holds, which a path whose links loop maps under.
+#define LOOP_PATH "/.fws-links-loop/loop"
 
 // resolve writes to out container path p with its symbolic links resolved
 // in the container, as the kernel resolves them under chroot: an absolute
 // target starts again at the container's /, and .. stops there. A link the
 // final component names is followed if follow is set. Resolution stops at
-// a component that does not exist, or that the host's trees hold.
+// a component that does not exist, or that the host's trees hold. It
+// returns -1 for a path that meets more than MAXLINKS links, as one that
+// loops does, and 0 for one too long.
 static int resolve(const char *p, int follow, char *out) {
     char rest[PATH_MAX], next[PATH_MAX], cur[PATH_MAX], h[PATH_MAX], target[PATH_MAX];
     size_t curlen = 0;
@@ -663,7 +667,7 @@ static int resolve(const char *p, int follow, char *out) {
             break;
         }
         if (++links > MAXLINKS) {
-            return 0;
+            return -1;
         }
         target[tn] = 0;
         // r is empty or starts with a slash.
@@ -727,7 +731,15 @@ static const char *fws_map(const char *p, char *buf, int follow) {
     }
     if (strstr(p, "/..") || linked(p)) {
         char c[PATH_MAX];
-        if (resolve(p, follow, c)) {
+        int r = resolve(p, follow, c);
+        if (r < 0) {
+            // Links that loop, where the kernel stops with ELOOP: the path
+            // goes into a directory the root does not hold, so that the call
+            // fails, with ENOENT, rather than let the host's kernel follow
+            // the root's links on the host before it stops.
+            return join(buf, PATH_MAX, root, LOOP_PATH, "") ? buf : p;
+        }
+        if (r) {
             const char *q = place(c, buf);
             if (q == c) {
                 strcpy(buf, c);

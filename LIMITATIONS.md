@@ -86,7 +86,9 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   `-w` behave as in Docker. Its limits:
   - A path names the root's file when the root holds it, or its parent;
     any other path, such as `/dev` or the system frameworks, names the
-    host's. Symbolic links resolve inside the container, as under chroot.
+    host's. Symbolic links resolve inside the container, as under chroot;
+    a path whose links loop fails with `ENOENT` where Linux gives
+    `ELOOP`.
   - Programs Apple signs, statically linked programs and ones making
     system calls without libSystem load no library and see host paths,
     pids, ports and the host's network. A program signed with the
