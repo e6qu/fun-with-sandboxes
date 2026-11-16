@@ -175,9 +175,13 @@ static const char *fault(const char *p, int follow, const char *q) {
     if (!stops(q, NULL)) return "keeps a .. past a file in the root";
     char dir[PATH_MAX], land[PATH_MAX];
     strlcpy(dir, q, sizeof dir);
+    // Without follow a link the final component names stays, so its
+    // directory is what must stay in: the root's or the mount source's
+    // own, where the path is one of them.
     if (!follow) {
         char *s = strrchr(dir, '/');
         if (s && s > dir) *s = 0;
+        if (!under_dir(dir, rootdir) && !under_dir(dir, msrc)) strlcpy(dir, q, sizeof dir);
     }
     if (lands(dir, land) && !under_dir(land, rootdir) && !under_dir(land, msrc)) return "leads out of the root through a link";
     return NULL;
