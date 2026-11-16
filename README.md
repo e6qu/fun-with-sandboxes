@@ -205,8 +205,11 @@ such as an Electron one draws and listens with. Its windows open on the
 user's desktop and it reads what the user copies; the keychain stays
 denied. A devcontainer asks for it with
 `"runArgs": ["--security-opt", "seatbelt=gui"]`, a Compose service with
-`security_opt`. Chromium-based applications take `--no-sandbox`: their
-helpers cannot enter a sandbox of their own inside the container's.
+`security_opt`. A graphical application runs as the engine's user
+(`--user "$(id -u):$(id -g)"`): the session's services learn who calls
+them from the kernel and refuse a process that calls itself root.
+Chromium-based applications take `--no-sandbox`: their helpers cannot
+enter a sandbox of their own inside the container's.
 
 Each container runs under a supervisor that holds it to `--memory`,
 `--cpus`, `--cpu-quota` and `--pids-limit` without cgroups, and its

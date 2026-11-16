@@ -87,8 +87,12 @@ app.whenReady().then(async () => {
 	}
 
 	// Chromium's helpers cannot enter a sandbox of their own from inside
-	// the container's, which confines them as it does the application.
-	out, err := docker(t, "run", "--rm", "--security-opt", "seatbelt=gui", "-v", dir+":/app",
+	// the container's, which confines them as it does the application. The
+	// application runs as the engine's user: the session's services tell
+	// who calls them from the kernel, and refuse a caller that names
+	// itself root, as a container's default user does.
+	user := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	out, err := docker(t, "run", "--rm", "--security-opt", "seatbelt=gui", "--user", user, "-v", dir+":/app",
 		"fws/base:1", "/app/Electron.app/Contents/MacOS/Electron", "--no-sandbox", "/app/main.js")
 	for _, want := range []string{"title drawn in fws text painted visible true", "captured true", "pasteboard copied in a container"} {
 		if !strings.Contains(out, want) {
@@ -99,7 +103,7 @@ app.whenReady().then(async () => {
 		t.Logf("Seatbelt refused Electron:\n%s", sandboxDenials(t, "Electron"))
 		// Again, with the library telling what Electron asked about files'
 		// places: the last of it is where it lost its way.
-		_, terr := docker(t, "run", "--rm", "--security-opt", "seatbelt=gui", "-e", "FWS_TRACE=1", "-v", dir+":/app",
+		_, terr := docker(t, "run", "--rm", "--security-opt", "seatbelt=gui", "--user", user, "-e", "FWS_TRACE=1", "-v", dir+":/app",
 			"fws/base:1", "/app/Electron.app/Contents/MacOS/Electron", "--no-sandbox", "/app/main.js")
 		var calls []string
 		for _, line := range strings.Split(fmt.Sprint(terr), "\n") {
