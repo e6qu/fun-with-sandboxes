@@ -180,11 +180,12 @@ while a:
     i = a.contents
     if i.addr and i.name.startswith(b"eth"):
         sa = i.addr.contents
-        raw = bytes(sa.data)
+        # A c_char array stops at its first NUL; the address's bytes do not.
+        raw = ctypes.string_at(i.addr, 28)
         if sa.family == socket.AF_INET:
-            found.append(socket.inet_ntop(socket.AF_INET, raw[2:6]))
+            found.append(socket.inet_ntop(socket.AF_INET, raw[4:8]))
         elif sa.family == socket.AF_INET6:
-            found.append(socket.inet_ntop(socket.AF_INET6, raw[6:22]))
+            found.append(socket.inet_ntop(socket.AF_INET6, raw[8:24]))
     a = i.next
 print("interfaces", sorted(found))
 print(sorted({a[4][0] for a in socket.getaddrinfo("e2e-net6-api", 8000, socket.AF_UNSPEC, socket.SOCK_STREAM)}))
