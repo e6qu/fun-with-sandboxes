@@ -395,7 +395,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 			out, _ := kubectl("logs", pod)
 			// What the pod's resolver reads, from a pod of the same
 			// namespace that still runs.
-			conf, _ := kubectl("exec", "deployment/web", "--", "cat", "/etc/resolv.conf")
+			conf, _ := kubectl("exec", "deployment/web", "--", "/bin/sh", "-c", "while IFS= read -r l; do echo \"$l\"; done < /etc/resolv.conf")
 			t.Errorf("a pod fetching the Service at %s: %v\n%s\na pod's resolv.conf:\n%s", url, err, out, conf)
 		} else if out := mustKubectl("logs", pod); out != "200 OK\n" {
 			t.Errorf("a pod fetching the Service at %s: %q", url, out)

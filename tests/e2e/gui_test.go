@@ -319,10 +319,38 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 			listing, _ = docker(t, "exec", id, "/bin/sh", "-c", "exec 2>&1; ls -la /root/.vscode-server /tmp /tmp/devcontainers-* | head -80")
 			listing = top + "\n" + listing
 		}
-		t.Fatalf("the Dev Containers extension did not bring VS Code's server up in a container (container %q).\nIts server's log:\n%s\nIn the container:\n%s\nVS Code printed:\n%s\nThe extension's logs:\n%s",
-			id, serverLog, listing, output.String(), logs.String())
+		t.Fatalf("the Dev Containers extension did not bring VS Code's server up in a container (container %q).\nIts server's log:\n%s\nIn the container:\n%s\nVS Code printed:\n%s\nThe extension's logs:\n%s\nThe extension's code, where it logs its last steps:\n%s",
+			id, serverLog, listing, output.String(), logs.String(), extensionCode(exts))
 	}
 	if out, err := docker(t, "exec", id, "cat", "/workspaces/project/README"); err != nil || out != "from the workspace\n" {
 		t.Errorf("the workspace in the container: %q, %v", out, err)
 	}
+}
+
+// extensionCode is the Dev Containers extension's own code around the
+// messages it logs as it launches its helper and probes the container's
+// environment, the steps its log ends with: what it does next, which the
+// log does not say.
+func extensionCode(exts string) string {
+	files, _ := filepath.Glob(filepath.Join(exts, "ms-vscode-remote.remote-containers-*", "dist", "*", "*.js"))
+	var out strings.Builder
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, mark := range []string{"Launching Dev Containers helper", "userEnvProbe parsed", "env-loginInteractiveShell", "readlink /proc/$pid/cwd"} {
+			for i, from := 0, 0; i < 3; i++ {
+				at := strings.Index(string(b[from:]), mark)
+				if at < 0 {
+					break
+				}
+				at += from
+				lo, hi := max(at-1500, 0), min(at+3000, len(b))
+				fmt.Fprintf(&out, "== %s at %d (%q):\n%s\n\n", filepath.Base(f), at, mark, b[lo:hi])
+				from = at + len(mark)
+			}
+		}
+	}
+	return out.String()
 }
