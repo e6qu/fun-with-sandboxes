@@ -393,7 +393,10 @@ func TestKubernetesControlPlane(t *testing.T) {
 		mustKubectl("run", pod, "--image=fws/toolbox:1", "--restart=OnFailure", "--", "fetch", url)
 		if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/"+pod); err != nil {
 			out, _ := kubectl("logs", pod)
-			t.Errorf("a pod fetching the Service at %s: %v\n%s", url, err, out)
+			// What the pod's resolver reads, from a pod of the same
+			// namespace that still runs.
+			conf, _ := kubectl("exec", "deployment/web", "--", "cat", "/etc/resolv.conf")
+			t.Errorf("a pod fetching the Service at %s: %v\n%s\na pod's resolv.conf:\n%s", url, err, out, conf)
 		} else if out := mustKubectl("logs", pod); out != "200 OK\n" {
 			t.Errorf("a pod fetching the Service at %s: %q", url, out)
 		}

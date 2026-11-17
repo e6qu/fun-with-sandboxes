@@ -299,8 +299,12 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 				return nil
 			}
 			keep := int64(4000)
-			if strings.Contains(p, "remote-containers") {
-				keep = 14000
+			switch {
+			case strings.Contains(p, "remoteContainers-"):
+				// The extension's trace, whole: each step it took.
+				keep = 1 << 20
+			case strings.Contains(p, "renderer"), strings.Contains(p, "exthost.log"):
+				keep = 12000
 			}
 			b, _ := os.ReadFile(p)
 			if int64(len(b)) > keep {
