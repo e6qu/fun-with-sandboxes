@@ -340,8 +340,8 @@ func extensionCode(exts string) string {
 		if err != nil {
 			continue
 		}
-		for _, mark := range []string{"p.stderr.on(\"data\"", "function sn(", "async function sn("} {
-			for i, from := 0, 0; i < 3; i++ {
+		for _, mark := range []string{"await rk(", ",rk(", "(rk(", "await MH(", "Not reconnecting"} {
+			for i, from := 0, 0; i < 6; i++ {
 				at := strings.Index(string(b[from:]), mark)
 				if at < 0 {
 					break
