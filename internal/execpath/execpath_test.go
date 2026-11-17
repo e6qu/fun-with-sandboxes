@@ -46,3 +46,40 @@ func TestFromWorkDir(t *testing.T) {
 		}
 	}
 }
+
+// A program reached through the container's own links, one onto a mount,
+// resolves as the container sees it: an absolute link from the container's
+// root, a mount's destination in its source, never the host's paths.
+func TestResolveThroughLinksAndMounts(t *testing.T) {
+	root, vol := t.TempDir(), t.TempDir()
+	os.MkdirAll(filepath.Join(vol, "server", "bin"), 0o755)
+	os.WriteFile(filepath.Join(vol, "server", "bin", "code-server"), []byte("#"), 0o755)
+	os.MkdirAll(filepath.Join(root, "root", ".server", "bin"), 0o755)
+	// The extension's link, absolute in the container, onto the volume.
+	os.Symlink("/vscode/server", filepath.Join(root, "root", ".server", "bin", "c1"))
+	// The engine's link for the mount, which names the volume on the host.
+	os.Symlink(vol, filepath.Join(root, "vscode"))
+	// A relative link in the root, and one that leaves the root by ..
+	os.MkdirAll(filepath.Join(root, "opt"), 0o755)
+	os.WriteFile(filepath.Join(root, "opt", "tool"), []byte("#"), 0o755)
+	os.Symlink("../opt", filepath.Join(root, "usr-opt"))
+	os.Symlink("../../../../../opt", filepath.Join(root, "deep"))
+	os.Symlink("loop", filepath.Join(root, "loop"))
+	env := []string{"FWS_MOUNTS=/vscode\t" + vol + "\n/other\t/nowhere", "PATH=/usr-opt"}
+	for argv0, want := range map[string]string{
+		"/root/.server/bin/c1/bin/code-server": filepath.Join(vol, "server", "bin", "code-server"),
+		"/vscode/server/bin/code-server":       filepath.Join(vol, "server", "bin", "code-server"),
+		"/usr-opt/tool":                        filepath.Join(root, "opt", "tool"),
+		"/deep/tool":                           filepath.Join(root, "opt", "tool"),
+		"tool":                                 filepath.Join(root, "opt", "tool"),
+	} {
+		if got, err := Resolve(root, argv0, env); err != nil || got != want {
+			t.Errorf("Resolve(%q) = %q, %v; want %q", argv0, got, err, want)
+		}
+	}
+	for _, argv0 := range []string{"/loop/tool", "/root/.server/bin/c1/bin/missing"} {
+		if got, err := Resolve(root, argv0, env); err == nil {
+			t.Errorf("Resolve(%q) = %q, want error", argv0, got)
+		}
+	}
+}
