@@ -209,6 +209,20 @@ func writeHostsFiles(root, hostname, domain string, addresses, extra, links []st
 			return err
 		}
 	}
+	// A Linux container always has /proc. Programs that look for their
+	// processes there, as the Dev Containers extension does before it
+	// starts VS Code's server, cd into it, and read /proc/self/ns/mnt,
+	// which the container library answers: they find no process listed,
+	// and carry on. An image's own /proc, or one of another kind, stays.
+	if !mounted["/proc"] {
+		if dir, err := rootfs.Join(root, "/proc"); err == nil {
+			if _, err := os.Lstat(dir); os.IsNotExist(err) {
+				if err := os.Mkdir(dir, 0o555); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return nil
 }
 

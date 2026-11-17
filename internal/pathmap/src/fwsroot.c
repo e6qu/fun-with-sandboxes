@@ -1219,9 +1219,45 @@ static int fws_symlink(const char *target, const char *path) {
 INTERPOSE(fws_symlink, symlink);
 static int fws_symlinkat(const char *target, int fd, const char *path) { return symlinkat(target, fd, AT_MAPF(fd, path, 0)); }
 INTERPOSE(fws_symlinkat, symlinkat);
-static ssize_t fws_readlink(const char *path, char *buf, size_t size) { return readlink(LMAP(path), buf, size); }
+// proc_mnt_ns answers readlink of /proc/self/ns/mnt, or of a process's
+// /proc/<pid>/ns/mnt, as Linux names a process's mount namespace: every
+// process of the container sees its root, one namespace, named after the
+// root's inode. Programs that compare namespaces to tell their container's
+// processes from others' read it, as the Dev Containers extension does
+// before it starts VS Code's server. It returns -2 for any other path.
+static ssize_t proc_mnt_ns(const char *path, char *buf, size_t size) {
+    if (!rootlen || !path || strncmp(path, "/proc/", 6) != 0) return -2;
+    const char *p = path + 6;
+    if (strncmp(p, "self/", 5) == 0) {
+        p += 5;
+    } else if (strncmp(p, "thread-self/", 12) == 0) {
+        p += 12;
+    } else {
+        unsigned long pid;
+        const char *e = num(p, &pid);
+        if (!e || e == p || *e != '/') return -2;
+        p = e + 1;
+    }
+    if (strcmp(p, "ns/mnt") != 0) return -2;
+    struct stat st;
+    if (stat(croot, &st) != 0) return -2;
+    char name[64];
+    int n = snprintf(name, sizeof name, "mnt:[%llu]", (unsigned long long)st.st_ino);
+    if (n < 0) return -2;
+    size_t k = (size_t)n < size ? (size_t)n : size;
+    memcpy(buf, name, k);
+    return (ssize_t)k;
+}
+
+static ssize_t fws_readlink(const char *path, char *buf, size_t size) {
+    ssize_t r = proc_mnt_ns(path, buf, size);
+    return r != -2 ? r : readlink(LMAP(path), buf, size);
+}
 INTERPOSE(fws_readlink, readlink);
-static ssize_t fws_readlinkat(int fd, const char *path, char *buf, size_t size) { return readlinkat(fd, AT_MAPF(fd, path, 0), buf, size); }
+static ssize_t fws_readlinkat(int fd, const char *path, char *buf, size_t size) {
+    ssize_t r = proc_mnt_ns(path, buf, size);
+    return r != -2 ? r : readlinkat(fd, AT_MAPF(fd, path, 0), buf, size);
+}
 INTERPOSE(fws_readlinkat, readlinkat);
 // A chmod sets the mode on disk, which then stands for the one extraction
 // recorded (MODE_XATTR).

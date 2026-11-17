@@ -159,3 +159,28 @@ func TestVolumesFrom(t *testing.T) {
 		t.Errorf("volumes from a missing container: %v", err)
 	}
 }
+
+// A container has /proc, as a Linux container has, and its processes read
+// one mount namespace in it, the container's, which another container's do
+// not share: what the Dev Containers extension reads to tell its
+// container's processes from others' before it starts VS Code's server.
+// docker diff leaves /proc out, as Docker's init layer does.
+func TestProcNamesTheContainersMountNamespace(t *testing.T) {
+	const script = `cd /proc && readlink /proc/self/ns/mnt && readlink /proc/$$/ns/mnt`
+	name := "e2e-proc-ns"
+	docker(t, "rm", "-f", name)
+	mustDocker(t, "run", "-d", "--name", name, "fws/base:1", "/bin/sh", "-c", "sleep 3600")
+	defer docker(t, "rm", "-f", name)
+	first := strings.Fields(mustDocker(t, "exec", name, "/bin/sh", "-c", script))
+	second := strings.Fields(mustDocker(t, "exec", name, "/bin/sh", "-c", script))
+	if len(first) != 2 || !strings.HasPrefix(first[0], "mnt:[") || first[0] != first[1] || len(second) != 2 || second[0] != first[0] {
+		t.Fatalf("a container's mount namespace, read twice: %q, %q", first, second)
+	}
+	other := strings.Fields(mustDocker(t, "run", "--rm", "fws/base:1", "/bin/sh", "-c", script))
+	if len(other) != 2 || other[0] == first[0] {
+		t.Errorf("another container's mount namespace: %q, beside %q", other, first)
+	}
+	if out := mustDocker(t, "diff", name); strings.Contains(out, "/proc") {
+		t.Errorf("docker diff lists /proc:\n%s", out)
+	}
+}

@@ -96,6 +96,11 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 		}
 	}()
 	baseRoot := e.images.Root(base.ID)
+	// The /proc create placed stays out of the image, as Docker's init
+	// layer keeps it out, unless the image had one, which stays as it was.
+	if _, err := os.Lstat(filepath.Join(baseRoot, "proc")); os.IsNotExist(err) {
+		os.Remove(filepath.Join(dst, "proc"))
+	}
 	for rel := range c.mountDests() {
 		p := filepath.Join(dst, rel)
 		if err := os.RemoveAll(p); err != nil {
