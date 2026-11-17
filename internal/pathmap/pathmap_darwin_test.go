@@ -1,6 +1,7 @@
 package pathmap
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
@@ -496,15 +498,27 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	dir, _ = filepath.EvalSymlinks(dir)
 	// The router gives the probe's UDP ports these flow ports, which its
-	// sandbox lets it reach.
-	flowPorts := []int{freePort(t, "udp"), freePort(t, "udp"), freePort(t, "udp")}
+	// sandbox lets it reach. They are bound here, before the probe's
+	// profile names them, and handed to the router as they are: a port
+	// found free and bound again later may be another test's by then, and
+	// the probe's datagrams lost.
+	var flowConns []*net.UDPConn
+	var flowPorts []int
+	for range 3 {
+		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		flowConns = append(flowConns, c)
+		flowPorts = append(flowPorts, c.LocalAddr().(*net.UDPAddr).Port)
+	}
 	var flows atomic.Int32
 	r, err := router.Listen("127.0.0.1:0", dir, func() (*net.UDPConn, error) {
 		i := flows.Add(1) - 1
-		if int(i) >= len(flowPorts) {
-			return nil, fmt.Errorf("flow port %d asked for, %d given", i+1, len(flowPorts))
+		if int(i) >= len(flowConns) {
+			return nil, fmt.Errorf("flow port %d asked for, %d given", i+1, len(flowConns))
 		}
-		return net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: flowPorts[i]})
+		return flowConns[i], nil
 	}, router.Network{})
 	if err != nil {
 		t.Fatal(err)
@@ -563,7 +577,11 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, dir, strconv.Itoa(rp), strconv.Itoa(flowPorts[0]), strconv.Itoa(flowPorts[1]), strconv.Itoa(flowPorts[2]), strconv.Itoa(published))
+	// The probe ends itself, saying so, if a step outlasts its watchdog;
+	// the deadline here outlasts that.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, dir, strconv.Itoa(rp), strconv.Itoa(flowPorts[0]), strconv.Itoa(flowPorts[1]), strconv.Itoa(flowPorts[2]), strconv.Itoa(published))
 	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, PortDirVar + "=" + dir, RouterVar + "=" + strconv.Itoa(rp),
 		NetworkVar + "=" + network, AddressVar + "=127.88.0.2", ports}
 	out, err := cmd.CombinedOutput()

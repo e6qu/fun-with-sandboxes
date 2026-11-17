@@ -12,6 +12,9 @@ and test is in `CONTRIBUTING.md`.
   fixed in the next pull request at once. (Asked on 2026-11-16.)
 - **One pull request open at a time**, large and chunky; fixes go into the
   open one. No fix or bug is deferred.
+- **Boy scout rule.** Fix every issue met on the way, related to the task or
+  not: a flaky test is a bug, fixed at its root, never re-run until it
+  passes and left. (Asked on 2026-11-17.)
 - **Merging**, when asked to merge once CI is green: squash, a one-line
   title of at most 80 characters, an empty body, no trailers.
 - **macOS is tested in CI.** A Linux machine cross-builds and vets only
