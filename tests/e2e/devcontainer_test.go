@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -237,12 +236,7 @@ func TestDevcontainerRegistryFeature(t *testing.T) {
 // appPort publishes a port of the dev container on the host, and the
 // container's server answers there.
 func TestDevcontainerAppPort(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := fmt.Sprint(l.Addr().(*net.TCPAddr).Port)
-	l.Close()
+	port := fmt.Sprint(freePort(t))
 	// The image's own command serves the workspace: overrideCommand keeps
 	// it, where the CLI would otherwise run a shell loop that sleeps.
 	devcontainerUp(t, map[string]string{
@@ -331,12 +325,7 @@ func TestDevcontainerCompose(t *testing.T) {
 // the workspace, listens on a port of the container that appPort
 // publishes, and answers there with the commit it was built from.
 func TestDevcontainerVSCodeServer(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := fmt.Sprint(l.Addr().(*net.TCPAddr).Port)
-	l.Close()
+	port := fmt.Sprint(freePort(t))
 
 	home, err := os.UserHomeDir()
 	if err != nil {

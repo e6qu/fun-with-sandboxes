@@ -883,12 +883,7 @@ func TestPublishUDPAndHostPortRanges(t *testing.T) {
 		}
 	}
 
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lo := l.Addr().(*net.TCPAddr).Port
-	l.Close()
+	lo := freePorts(t, 2)
 	span := fmt.Sprintf("127.0.0.1:%d-%d:8080", lo, lo+1)
 	for i := 0; i < 2; i++ {
 		box := fmt.Sprintf("fws-e2e-range-%d", i)

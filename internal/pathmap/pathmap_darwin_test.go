@@ -3,6 +3,7 @@ package pathmap
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"os"
 	"os/exec"
@@ -383,24 +384,37 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	}
 }
 
-// freePort returns a loopback port nothing listens on.
+// freePort returns a loopback port nothing listens on, for a probe that
+// binds it itself. It comes from below the ephemeral range (49152 up on
+// macOS), which the kernel hands out to every other test's sockets: one
+// from that range could be taken again before the probe binds it. Each
+// call takes the next port from a random start, so tests running together
+// pick different ones.
 func freePort(t *testing.T, network string) int {
 	t.Helper()
-	if network == "udp" {
-		c, err := net.ListenPacket("udp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
+	for range 1000 {
+		p := int(nextPort.Add(1))%(49152-20000) + 20000
+		var c interface{ Close() error }
+		var err error
+		if network == "udp" {
+			c, err = net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", p))
+		} else {
+			c, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
 		}
-		defer c.Close()
-		return c.LocalAddr().(*net.UDPAddr).Port
+		if err == nil {
+			c.Close()
+			return p
+		}
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	t.Fatalf("no free %s port", network)
+	return 0
 }
+
+var nextPort = func() *atomic.Int64 {
+	var n atomic.Int64
+	n.Store(int64(rand.IntN(49152 - 20000)))
+	return &n
+}()
 
 func TestProcessListingsHoldTheSandboxsOwn(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "ps")

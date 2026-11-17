@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -96,12 +95,7 @@ func TestCRIPodSandbox(t *testing.T) {
 	}()
 	dir := t.TempDir()
 	logs := filepath.Join(dir, "logs")
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostPort := l.Addr().(*net.TCPAddr).Port
-	l.Close()
+	hostPort := freePort(t)
 	pod := writeJSON(t, filepath.Join(dir, "pod.json"), map[string]any{
 		"metadata":      map[string]any{"name": "web", "namespace": "e2e", "uid": "e2e-cri-web", "attempt": 0},
 		"hostname":      "web",
@@ -258,12 +252,7 @@ func TestCRIPodSandbox(t *testing.T) {
 	if _, err := crictl(t, "exec", client, "/toolbox", "fetch", "http://127.0.0.1:1/"); err == nil {
 		t.Error("a streamed exec's exit status was lost")
 	}
-	fl, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	local := fl.Addr().(*net.TCPAddr).Port
-	fl.Close()
+	local := freePort(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	pf := exec.CommandContext(ctx, "crictl", "--runtime-endpoint", dockerHost, "port-forward", sandbox, strconv.Itoa(local)+":8080")

@@ -307,3 +307,25 @@ func TestOwnTerminal(t *testing.T) {
 	e := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root)})
 	e.allowed("pty", "/dev/ptmx")
 }
+
+// A container without the session's grant watches its own files, as a
+// file watcher, a dev server or an editor's server does: FSEvents, which
+// libuv's fs.watch uses for a directory, starts and reports a change.
+func TestWatchFiles(t *testing.T) {
+	root := probeRoot(t)
+	bin := filepath.Join(root, "watch")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-o", bin, "testdata/watch/main.c", "-framework", "CoreServices").CombinedOutput(); err != nil {
+		t.Fatalf("build watch: %v\n%s", err, out)
+	}
+	dir := filepath.Join(root, "w")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Render(Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("/usr/bin/sandbox-exec", "-p", p, bin, dir).CombinedOutput(); err != nil {
+		t.Fatalf("watching %s in a container: %v\n%s", dir, err, out)
+	}
+}
