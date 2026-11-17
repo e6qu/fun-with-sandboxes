@@ -340,7 +340,7 @@ func extensionCode(exts string) string {
 		if err != nil {
 			continue
 		}
-		for _, mark := range []string{"function rj(", "REMOTE_CONTAINERS_IPC", "mrpcExec:", "Launching Dev Containers helper", "userEnvProbe parsed"} {
+		for _, mark := range []string{"p.stderr.on(\"data\"", "function sn(", "async function sn("} {
 			for i, from := 0, 0; i < 3; i++ {
 				at := strings.Index(string(b[from:]), mark)
 				if at < 0 {
@@ -371,8 +371,8 @@ func helperChannel(t *testing.T, id string) string {
 	if err != nil {
 		return err.Error()
 	}
-	var out lockedBuffer
-	cmd.Stdout, cmd.Stderr = &out, &out
+	var out, errOut lockedBuffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Start(); err != nil {
 		return err.Error()
 	}
@@ -389,7 +389,7 @@ func helperChannel(t *testing.T, id string) string {
 		cmd.Process.Kill()
 		err = fmt.Errorf("still running 10s after its stdin closed")
 	}
-	return fmt.Sprintf("%q (exit: %v)", out.String(), err)
+	return fmt.Sprintf("stdout %q, stderr %q (exit: %v)", out.String(), errOut.String(), err)
 }
 
 // helperRun runs the extension's own helper script in the container as the
