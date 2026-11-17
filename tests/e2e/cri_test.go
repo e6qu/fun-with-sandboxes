@@ -82,14 +82,18 @@ func TestCRIPodSandbox(t *testing.T) {
 	// The runtime streams each container's lifecycle, which the kubelet's
 	// evented PLEG reads.
 	evCtx, evCancel := context.WithCancel(context.Background())
-	defer evCancel()
 	evCmd := exec.CommandContext(evCtx, "crictl", "--runtime-endpoint", dockerHost, "events", "-o", "json")
 	var evOut lockedBuffer
 	evCmd.Stdout = &evOut
 	if err := evCmd.Start(); err != nil {
+		evCancel()
 		t.Fatal(err)
 	}
-	defer evCmd.Wait()
+	// crictl events streams until it is stopped: stop it, then reap it.
+	defer func() {
+		evCancel()
+		evCmd.Wait()
+	}()
 	dir := t.TempDir()
 	logs := filepath.Join(dir, "logs")
 	l, err := net.Listen("tcp", "127.0.0.1:0")
