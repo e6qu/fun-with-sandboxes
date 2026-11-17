@@ -318,7 +318,7 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 		if id != "" {
 			top, _ := docker(t, "top", id)
 			listing, _ = docker(t, "exec", id, "/bin/sh", "-c", "exec 2>&1; ls -la /root/.vscode-server /tmp /tmp/devcontainers-* | head -80")
-			listing = top + "\n" + listing + "\nThe helper's channel, replayed with the container's node:\n" + helperChannel(t, id)
+			listing = top + "\n" + listing + "\nThe helper's channel, replayed with the container's node:\n" + helperChannel(t, id) + "\nThe extension's helper, run by hand:\n" + helperRun(t, id)
 		}
 		t.Fatalf("the Dev Containers extension did not bring VS Code's server up in a container (container %q).\nIts server's log:\n%s\nIn the container:\n%s\nVS Code printed:\n%s\nThe extension's logs:\n%s\nThe extension's code, where it logs its last steps:\n%s",
 			id, serverLog, listing, output.String(), logs.String(), extensionCode(exts))
@@ -390,4 +390,52 @@ func helperChannel(t *testing.T, id string) string {
 		err = fmt.Errorf("still running 10s after its stdin closed")
 	}
 	return fmt.Sprintf("%q (exit: %v)", out.String(), err)
+}
+
+// helperRun runs the extension's own helper script in the container as the
+// extension does, with an IPC socket of its own, its stdin held open for a
+// few seconds, and returns what it wrote, where a failure as it starts
+// shows; and the script's code around what it reads of the system.
+func helperRun(t *testing.T, id string) string {
+	t.Helper()
+	script, err := docker(t, "exec", id, "/bin/sh", "-c", "ls /tmp/vscode-remote-containers-server-*.js | head -1")
+	if err != nil || strings.TrimSpace(script) == "" {
+		return "no helper script: " + fmt.Sprint(err)
+	}
+	script = strings.TrimSpace(script)
+	cmd := exec.Command("docker", "exec", "-i", id, "/bin/sh", "-c",
+		"REMOTE_CONTAINERS_SOCKETS='[]' REMOTE_CONTAINERS_IPC=/tmp/fws-e2e-helper.sock /root/.vscode-server/bin/*/node '"+script+"'")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err.Error()
+	}
+	var out lockedBuffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		return err.Error()
+	}
+	time.Sleep(8 * time.Second)
+	stdin.Close()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		cmd.Process.Kill()
+		err = fmt.Errorf("still running 10s after its stdin closed")
+	}
+	code, _ := docker(t, "exec", id, "cat", script)
+	var marks strings.Builder
+	for _, mark := range []string{"/proc", "ready", "process.stdin", "execSync", "spawn("} {
+		for i, from := 0, 0; i < 4; i++ {
+			at := strings.Index(code[from:], mark)
+			if at < 0 {
+				break
+			}
+			at += from
+			fmt.Fprintf(&marks, "-- %q at %d: %s\n", mark, at, code[max(at-300, 0):min(at+500, len(code))])
+			from = at + len(mark)
+		}
+	}
+	return fmt.Sprintf("%q (exit: %v)\nIts code (%d bytes):\n%s", out.String(), err, len(code), marks.String())
 }
