@@ -105,8 +105,9 @@ const maxLinks = 40
 // from the container's root and .. never above it, and a path under a
 // mount's destination in the mount's source, as the container library maps
 // it. A link the engine places for a mount is never read: the mount is
-// found by its destination first. It reports false for a path whose links
-// loop.
+// found by its destination first. An absolute target the root does not
+// hold, and the host does, is the host's, as for the link the engine places
+// for docker-init. It reports false for a path whose links loop.
 func hostPath(root, p string, mounts []mount) (string, bool) {
 	rest := strings.Split(p, "/")
 	var done []string
@@ -137,6 +138,14 @@ func hostPath(root, p string, mounts []mount) (string, bool) {
 		}
 		done = done[:len(done)-1]
 		if strings.HasPrefix(target, "/") {
+			// A target the root does not hold is the host's, as the
+			// container library takes a path the root lacks: the links the
+			// engine places, for docker-init, name host paths.
+			if _, err := os.Lstat(hostOf(root, path.Clean(target), mounts)); err != nil {
+				if _, err := os.Lstat(target); err == nil {
+					return filepath.Join(append([]string{target}, rest...)...), true
+				}
+			}
 			done = nil
 		}
 		rest = append(strings.Split(target, "/"), rest...)

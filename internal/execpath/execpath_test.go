@@ -65,6 +65,11 @@ func TestResolveThroughLinksAndMounts(t *testing.T) {
 	os.Symlink("../opt", filepath.Join(root, "usr-opt"))
 	os.Symlink("../../../../../opt", filepath.Join(root, "deep"))
 	os.Symlink("loop", filepath.Join(root, "loop"))
+	// The engine's link for docker-init, to its own binary on the host.
+	engine := filepath.Join(t.TempDir(), "fwsd")
+	os.WriteFile(engine, []byte("#"), 0o755)
+	os.MkdirAll(filepath.Join(root, "sbin"), 0o755)
+	os.Symlink(engine, filepath.Join(root, "sbin", "docker-init"))
 	env := []string{"FWS_MOUNTS=/vscode\t" + vol + "\n/other\t/nowhere", "PATH=/usr-opt"}
 	for argv0, want := range map[string]string{
 		"/root/.server/bin/c1/bin/code-server": filepath.Join(vol, "server", "bin", "code-server"),
@@ -72,6 +77,7 @@ func TestResolveThroughLinksAndMounts(t *testing.T) {
 		"/usr-opt/tool":                        filepath.Join(root, "opt", "tool"),
 		"/deep/tool":                           filepath.Join(root, "opt", "tool"),
 		"tool":                                 filepath.Join(root, "opt", "tool"),
+		"/sbin/docker-init":                    engine,
 	} {
 		if got, err := Resolve(root, argv0, env); err != nil || got != want {
 			t.Errorf("Resolve(%q) = %q, %v; want %q", argv0, got, err, want)
