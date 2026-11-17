@@ -83,3 +83,24 @@ func TestResolveThroughLinksAndMounts(t *testing.T) {
 		}
 	}
 }
+
+// A working directory reached through a link onto a mount is the mount's,
+// and one not made yet is kept, to be made.
+func TestHostPath(t *testing.T) {
+	root, vol := t.TempDir(), t.TempDir()
+	os.MkdirAll(filepath.Join(vol, "server"), 0o755)
+	os.MkdirAll(filepath.Join(root, "root", "bin"), 0o755)
+	os.Symlink("/vscode/server", filepath.Join(root, "root", "bin", "c1"))
+	os.Symlink(vol, filepath.Join(root, "vscode"))
+	env := []string{"FWS_MOUNTS=/vscode\t" + vol}
+	for p, want := range map[string]string{
+		"/root/bin/c1":         filepath.Join(vol, "server"),
+		"/root/bin/c1/new/dir": filepath.Join(vol, "server", "new", "dir"),
+		"/work/new":            filepath.Join(root, "work", "new"),
+		"":                     root,
+	} {
+		if got := HostPath(root, p, env); got != want {
+			t.Errorf("HostPath(%q) = %q, want %q", p, got, want)
+		}
+	}
+}

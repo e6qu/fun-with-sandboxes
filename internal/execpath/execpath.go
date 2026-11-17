@@ -59,6 +59,17 @@ func Resolve(root, argv0 string, env []string) (string, error) {
 	return "", fmt.Errorf("exec: %q: executable file not found in $PATH", argv0)
 }
 
+// HostPath is the host path of container path p, as the container's
+// processes reach it: through its links and onto its mounts, which env's
+// FWS_MOUNTS lists. Components that do not exist are kept as given, so
+// the path may be made. Links that loop leave p in the root as given.
+func HostPath(root, p string, env []string) string {
+	if h, ok := hostPath(root, path.Clean("/"+p), mountsOf(env)); ok {
+		return h
+	}
+	return filepath.Join(root, path.Clean("/"+p))
+}
+
 // mount is a mount's destination in the container and its source on the
 // host.
 type mount struct{ dest, src string }
