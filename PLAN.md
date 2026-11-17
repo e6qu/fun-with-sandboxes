@@ -55,12 +55,11 @@ One pull request open at a time.
    hardened-runtime programs loading the container library, and
    `--security-opt seatbelt=gui`, with which Electron and VS Code itself,
    its extension host and integrated terminal, run inside a container.
-   Next: VS Code's Dev Containers extension on the host, opening a folder
-   in a dev container of the engine's. It installs a Linux server; with
-   the macOS one put where it looks it starts its helper in the container
-   and then waits, for what its trace log has still to say
-   ([LIMITATIONS](LIMITATIONS.md)). Then Chromium's own sandbox inside a
-   container's, so that `--no-sandbox` goes.
+   In #70: VS Code's Dev Containers extension on the host opens a folder
+   in a dev container of the engine's, with the macOS server put where it
+   looks for the Linux one it installs ([LIMITATIONS](LIMITATIONS.md)).
+   Next: Chromium's own sandbox inside a container's, so that
+   `--no-sandbox` goes.
 2. **Starts and limits.** `fwsroot`'s cost to the loader cut by interposing
    fewer functions; per-process memory limits in the kernel if CI's jetsam
    experiment shows macOS enforces them; the engine's lock split where

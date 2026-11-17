@@ -277,21 +277,27 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 		}
 	}()
 
-	// The extension has made the container, and VS Code's server runs in
-	// it, when the server's own log there says it listens.
+	// The extension has made the container, and the window works in it,
+	// when VS Code's server there listens and has launched the window's
+	// extension host, which it does once the window has connected through
+	// the extension's forwarded port. The extension copies the server's
+	// output into its own log, on the host.
 	var id, serverLog string
+	up := func() bool {
+		return strings.Contains(serverLog, "Extension host agent listening") && strings.Contains(serverLog, "Launched Extension Host Process")
+	}
 	for deadline := time.Now().Add(4 * time.Minute); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
 		if id == "" {
 			ids, _ := docker(t, "ps", "-q", "--filter", "label=devcontainer.local_folder="+work)
 			id = strings.TrimSpace(ids)
 			continue
 		}
-		serverLog, _ = docker(t, "exec", id, "/bin/sh", "-c", "cat /root/.vscode-server/.*.log /root/.vscode-server/*.log 2>/dev/null")
-		if strings.Contains(serverLog, "Extension host agent listening") {
+		serverLog = extensionLog(data)
+		if up() {
 			break
 		}
 	}
-	if id == "" || !strings.Contains(serverLog, "Extension host agent listening") {
+	if id == "" || !up() {
 		// Every log of the window, the last of each: the extension's own,
 		// and the window's, where what the extension waits on shows.
 		var logs strings.Builder
@@ -320,12 +326,29 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 			listing, _ = docker(t, "exec", id, "/bin/sh", "-c", "exec 2>&1; ls -la /root/.vscode-server /tmp /tmp/devcontainers-* | head -80")
 			listing = top + "\n" + listing + "\nThe helper's channel, replayed with the container's node:\n" + helperChannel(t, id) + "\nThe extension's helper, run by hand:\n" + helperRun(t, id)
 		}
-		t.Fatalf("the Dev Containers extension did not bring VS Code's server up in a container (container %q).\nIts server's log:\n%s\nIn the container:\n%s\nVS Code printed:\n%s\nThe extension's logs:\n%s\nThe extension's code, where it logs its last steps:\n%s",
-			id, serverLog, listing, output.String(), logs.String(), extensionCode(exts))
+		t.Fatalf("the Dev Containers extension did not bring VS Code's server up in a container (container %q).\nIn the container:\n%s\nVS Code printed:\n%s\nThe extension's logs:\n%s\nThe extension's code, where it logs its last steps:\n%s",
+			id, listing, output.String(), logs.String(), extensionCode(exts))
 	}
 	if out, err := docker(t, "exec", id, "cat", "/workspaces/project/README"); err != nil || out != "from the workspace\n" {
 		t.Errorf("the workspace in the container: %q, %v", out, err)
 	}
+}
+
+// extensionLog is the Dev Containers extension's log in the window's logs
+// under the user data directory data: the last one, by its name's time.
+func extensionLog(data string) string {
+	var last string
+	filepath.Walk(filepath.Join(data, "logs"), func(p string, fi os.FileInfo, err error) error {
+		if err == nil && fi.Mode().IsRegular() && strings.HasPrefix(fi.Name(), "remoteContainers-") && fi.Name() > filepath.Base(last) {
+			last = p
+		}
+		return nil
+	})
+	if last == "" {
+		return ""
+	}
+	b, _ := os.ReadFile(last)
+	return string(b)
 }
 
 // extensionCode is the Dev Containers extension's own code around the

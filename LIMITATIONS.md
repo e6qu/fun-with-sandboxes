@@ -38,8 +38,10 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   for Linux whatever the container runs, which no darwin container can
   run. With the macOS server of the window's commit put where the
   extension looks (`/vscode/vscode-server/bin/linux-arm64/<commit>` in its
-  `vscode` volume) it skips the install and starts its helper in the
-  container, and goes no further yet: *not built yet*.
+  `vscode` volume) it skips the install, starts that server in the
+  container and connects the window to it. Seeding the volume by hand is
+  the only way yet: *not built yet* is the engine putting the macOS server
+  there itself.
 - **Catalog images are built by Nix**, mostly from source rather than the
   vendors' binaries; MongoDB and Vault are the vendors' own macOS builds.
 - **Catalog images differ from upstream's where Linux parts are missing.**
