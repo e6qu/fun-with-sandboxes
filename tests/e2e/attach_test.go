@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -261,5 +262,62 @@ func TestExecDetachKeys(t *testing.T) {
 	}
 	if got := strings.TrimSpace(eventsSince(t, name, "exec_detach", since)); got != "exec_detach" {
 		t.Fatalf("exec_detach events %q", got)
+	}
+}
+
+// A shell in docker exec -i runs a command line it reads from its stdin,
+// and the program that line starts reads the rest of the exec's stdin and
+// writes the exec's stdout, as the Dev Containers extension holds an RPC
+// with its helper: what the client writes after the program starts
+// reaches it, and its answers come back while the exec runs.
+func TestExecShellHandsItsStdioToAChild(t *testing.T) {
+	name := "e2e-exec-child-stdio"
+	docker(t, "rm", "-f", name)
+	mustDocker(t, "run", "-d", "--name", name, "fws/python:3.14", "python3", "-c", "import time; time.sleep(3600)")
+	defer docker(t, "rm", "-f", name)
+	cmd := exec.Command("docker", "exec", "-i", name, "/bin/sh")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out lockedBuffer
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Process.Kill()
+	io.WriteString(stdin, `set -e ; echo -n MARK >&2 ; python3 -u -c 'import os, sys
+os.write(1, b"started\n")
+while True:
+    d = os.read(0, 4096)
+    if not d:
+        break
+    os.write(1, b"echo:" + d)' ; exit
+`)
+	wait := func(want string) bool {
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			if strings.Contains(out.String(), want) {
+				return true
+			}
+		}
+		return false
+	}
+	if !wait("started\n") {
+		t.Fatalf("the child never wrote to the exec's stdout: %q", out.String())
+	}
+	io.WriteString(stdin, "ping\n")
+	if !wait("echo:ping\n") {
+		t.Fatalf("what the client wrote after the child started did not reach it, or its answer did not come back: %q", out.String())
+	}
+	stdin.Close()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("the exec ended with %v: %q", err, out.String())
+		}
+	case <-time.After(20 * time.Second):
+		t.Errorf("the exec ran on after its stdin closed: %q", out.String())
 	}
 }

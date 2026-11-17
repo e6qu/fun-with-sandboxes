@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -317,7 +318,7 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 		if id != "" {
 			top, _ := docker(t, "top", id)
 			listing, _ = docker(t, "exec", id, "/bin/sh", "-c", "exec 2>&1; ls -la /root/.vscode-server /tmp /tmp/devcontainers-* | head -80")
-			listing = top + "\n" + listing
+			listing = top + "\n" + listing + "\nThe helper's channel, replayed with the container's node:\n" + helperChannel(t, id)
 		}
 		t.Fatalf("the Dev Containers extension did not bring VS Code's server up in a container (container %q).\nIts server's log:\n%s\nIn the container:\n%s\nVS Code printed:\n%s\nThe extension's logs:\n%s\nThe extension's code, where it logs its last steps:\n%s",
 			id, serverLog, listing, output.String(), logs.String(), extensionCode(exts))
@@ -353,4 +354,40 @@ func extensionCode(exts string) string {
 		}
 	}
 	return out.String()
+}
+
+// helperChannel replays how the Dev Containers extension talks to its
+// helper: a shell in docker exec -i that it writes a command line to, which
+// marks its start on stderr and runs node, whose stdin and stdout, the
+// shell's own, then carry the extension's RPC. It returns what came back.
+func helperChannel(t *testing.T, id string) string {
+	t.Helper()
+	node, err := docker(t, "exec", id, "/bin/sh", "-c", "ls /root/.vscode-server/bin/*/node | head -1")
+	if err != nil {
+		return "no node: " + err.Error()
+	}
+	cmd := exec.Command("docker", "exec", "-i", id, "/bin/sh")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err.Error()
+	}
+	var out lockedBuffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		return err.Error()
+	}
+	fmt.Fprintf(stdin, "set -e ; echo -n MARK >&2 ; '%s' -e 'process.stdout.write(\"started\\n\"); process.stdin.on(\"data\", d => process.stdout.write(\"echo:\" + d))' ; exit\n", strings.TrimSpace(node))
+	time.Sleep(5 * time.Second)
+	io.WriteString(stdin, "ping\n")
+	time.Sleep(5 * time.Second)
+	stdin.Close()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		cmd.Process.Kill()
+		err = fmt.Errorf("still running 10s after its stdin closed")
+	}
+	return fmt.Sprintf("%q (exit: %v)", out.String(), err)
 }
