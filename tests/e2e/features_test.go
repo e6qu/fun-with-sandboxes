@@ -227,8 +227,17 @@ func TestTopAndStats(t *testing.T) {
 		t.Fatalf("docker top lists the engine's own process:\n%s", out)
 	}
 
-	out = mustDocker(t, "stats", "--no-stream", "--format", "{{.Name}}|{{.MemUsage}}|{{.PIDs}}|{{.CPUPerc}}", "toptest")
-	f := strings.Split(strings.TrimSpace(out), "|")
+	// The server is the container's one process, but for its health
+	// check's while one runs, as Docker counts them too: a sample taken
+	// during one is taken again.
+	var f []string
+	for range 10 {
+		out = mustDocker(t, "stats", "--no-stream", "--format", "{{.Name}}|{{.MemUsage}}|{{.PIDs}}|{{.CPUPerc}}", "toptest")
+		if f = strings.Split(strings.TrimSpace(out), "|"); len(f) == 4 && f[2] == "1" {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	if len(f) != 4 || f[0] != "toptest" || f[2] != "1" || strings.HasPrefix(f[1], "0B") || !strings.HasSuffix(f[3], "%") {
 		t.Fatalf("docker stats: %q", out)
 	}
