@@ -339,7 +339,7 @@ func extensionCode(exts string) string {
 		if err != nil {
 			continue
 		}
-		for _, mark := range []string{"Launching Dev Containers helper", "userEnvProbe parsed", "env-loginInteractiveShell", "readlink /proc/$pid/cwd"} {
+		for _, mark := range []string{"function rj(", "REMOTE_CONTAINERS_IPC", "mrpcExec:", "Launching Dev Containers helper", "userEnvProbe parsed"} {
 			for i, from := 0, 0; i < 3; i++ {
 				at := strings.Index(string(b[from:]), mark)
 				if at < 0 {

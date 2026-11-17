@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/moby/moby/api/types/container"
@@ -54,6 +55,25 @@ func resolvOf(hc container.HostConfig, r *Resolver) dnsSettings {
 		d.Search, d.Options = r.Search, r.Options
 	}
 	return d
+}
+
+// resolverSearch is the search domains and ndots option settings d give a
+// container's resolver, which its stack's egress proxy completes a short
+// name with as the container would: none where d names no search domain,
+// as the host's are no business of the stack's names.
+func resolverSearch(d dnsSettings) ([]string, int) {
+	if len(d.Search) == 0 || (len(d.Search) == 1 && d.Search[0] == ".") {
+		return nil, 0
+	}
+	ndots := 1
+	for _, o := range d.Options {
+		if v, ok := strings.CutPrefix(o, "ndots:"); ok {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				ndots = min(n, 15)
+			}
+		}
+	}
+	return d.Search, ndots
 }
 
 // set reports whether the container has DNS settings of its own: its

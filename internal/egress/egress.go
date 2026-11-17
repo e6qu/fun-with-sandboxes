@@ -277,9 +277,11 @@ func (p *Proxy) dial(ctx context.Context, client, addr string) (net.Conn, error)
 		return nil, err
 	}
 	if p.policy.Members != "" && client != "" {
-		// A name that stands for another, as an ExternalName Service's
-		// does, is reached as that name.
-		host = members.Unalias(p.members(), client, strings.Trim(host, "[]"))
+		// A short name is completed with the client's search domains, as
+		// its resolver would; a name that stands for another, as an
+		// ExternalName Service's does, is reached as that name.
+		ms := p.members()
+		host = members.Unalias(ms, client, members.Complete(ms, client, strings.Trim(host, "[]")))
 		if c, ok, err := p.member(ctx, client, host, port); ok {
 			return c, err
 		}

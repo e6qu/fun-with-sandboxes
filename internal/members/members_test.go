@@ -238,3 +238,41 @@ func TestAlias(t *testing.T) {
 		}
 	}
 }
+
+// A member's search domains survive the file, beside a member without, and
+// complete a short name as its resolver would: its namespace's Service
+// first, though another's of the same short name comes first in the file.
+func TestSearchCompletes(t *testing.T) {
+	in := []Member{
+		{Address: "10.96.0.20", Names: []string{"web.a-decoy.svc.cluster.local", "web.a-decoy", "web"}, Networks: []string{"pods"}, Foreign: true, Stack: ServicesStack},
+		{Address: "10.96.0.10", Names: []string{"web.default.svc.cluster.local", "web.default", "web"}, Networks: []string{"pods"}, Foreign: true, Stack: ServicesStack},
+		{Alias: "web.default.svc.cluster.local", Names: []string{"web-alias.default.svc.cluster.local", "web-alias"}, Networks: []string{"pods"}, Foreign: true, Stack: ServicesStack},
+		{Address: "127.88.0.2", Names: []string{"client"}, Networks: []string{"pods"}, Search: []string{"default.svc.cluster.local", "svc.cluster.local", "cluster.local"}, Ndots: 5},
+		{Address: "127.88.0.3", Names: []string{"plain"}, Networks: []string{"pods"}},
+	}
+	ms := Parse(Format(in))
+	if len(ms) != len(in) {
+		t.Fatalf("parsed %d members of %d:\n%s", len(ms), len(in), Format(in))
+	}
+	if got := ms[3]; got.Ndots != 5 || strings.Join(got.Search, " ") != "default.svc.cluster.local svc.cluster.local cluster.local" {
+		t.Errorf("the client's search: %v ndots %d", got.Search, got.Ndots)
+	}
+	if got := ms[4]; got.Search != nil || got.Ndots != 0 {
+		t.Errorf("a member without search domains: %v ndots %d", got.Search, got.Ndots)
+	}
+	for _, c := range []struct{ self, host, want string }{
+		{"127.88.0.2", "web", "web.default.svc.cluster.local"},
+		{"127.88.0.2", "web.a-decoy", "web.a-decoy.svc.cluster.local"},
+		{"127.88.0.2", "web.a-decoy.svc.cluster.local.", "web.a-decoy.svc.cluster.local."},
+		{"127.88.0.2", "web-alias", "web-alias.default.svc.cluster.local"},
+		{"127.88.0.2", "example.com", "example.com"},
+		{"127.88.0.3", "web", "web"},
+	} {
+		if got := Complete(ms, c.self, c.host); got != c.want {
+			t.Errorf("%s completes %q to %q, want %q", c.self, c.host, got, c.want)
+		}
+	}
+	if got := Unalias(ms, "127.88.0.2", Complete(ms, "127.88.0.2", "web-alias")); got != "web.default.svc.cluster.local" {
+		t.Errorf("web-alias stands for %q", got)
+	}
+}
