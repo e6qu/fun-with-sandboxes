@@ -14,7 +14,12 @@ func main() {
 		select {}
 	}
 	if len(os.Args) > 1 && os.Args[1] == "child" {
-		err := exec.Command(os.Args[0]).Run()
+		// argv[0] is the container's path; the executable's own path is
+		// the host's.
+		self, err := os.Executable()
+		if err == nil {
+			err = exec.Command(self).Run()
+		}
 		fmt.Println("child:", err)
 		return
 	}
