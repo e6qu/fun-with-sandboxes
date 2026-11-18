@@ -58,6 +58,10 @@ type Limits struct {
 	// and of what it starts, so the container yields the CPU, and the disk,
 	// to the user's interactive work.
 	QoSClamp QoSClamp `json:",omitempty"`
+	// MemoryMiB, when set, is the fatal memory limit the kernel holds the
+	// process to, its physical footprint in MiB, as jetsam does: past it
+	// the kernel kills the process, and its exit says why.
+	MemoryMiB int `json:",omitempty"`
 }
 
 // QoSClamp is a process's quality-of-service clamp, as
