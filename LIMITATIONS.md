@@ -284,14 +284,17 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
 ## Resources and identity
 
 Limits are enforced by the container's supervisor, `fws-shim`, every
-100 ms, or by the spawn helper, not by the kernel
-([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
+100 ms, or by the spawn helper and the kernel's per-process limits, not
+by a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 
-- **`--memory`** caps the processes' summed physical footprint; past it
-  the largest is killed and the container reports `OOMKilled`. An
-  allocation never fails first, and a burst can overshoot. `--memory-swap`
-  may only equal the limit (or be -1). `--memory-reservation`,
-  swappiness and `--oom-kill-disable` are refused.
+- **`--memory`** caps each process's physical footprint in the kernel
+  (jetsam's fatal limit, at once) and the processes' sum in the shim
+  (every 100 ms); past either the process, or the largest, is killed and
+  the container reports `OOMKilled`. An allocation never fails first, and
+  several processes together can overshoot the sum between two samples.
+  `--memory-swap` may only equal the limit (or be -1).
+  `--memory-reservation`, swappiness and `--oom-kill-disable` are
+  refused.
 - **`--cpus` and `--cpu-quota`** stop the processes with `SIGSTOP` over
   quota, so a parent sees its children stop and continue.
   `--cpu-shares` sets the nice value, and since only root lowers one,
@@ -361,7 +364,12 @@ Limits are enforced by the container's supervisor, `fws-shim`, every
 - **`docker pause` uses `SIGSTOP`**, not a cgroup freezer; connections
   to a paused container are still accepted and wait.
 - **`docker update` changes restart policies and limits**, live for a
-  running container, except its block I/O weight.
+  running container, except its block I/O weight and a raise of its
+  memory limit: the kernel holds each running process to the limit it
+  started under, which no process may raise, so a raise is refused until
+  the container is stopped. Lowering the limit, or setting one where
+  there was none, holds at once through the shim. Kubernetes' in-place
+  resize of a pod's memory upward fails the same way.
 - **Live restore needs `fwsd -live-restore`.** Without it the engine
   stops its containers when it stops, and ends any a crash left running.
 - **`docker top` and `docker stats` read the host's `ps`**, so commands

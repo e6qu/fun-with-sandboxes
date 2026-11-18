@@ -224,7 +224,17 @@ same knobs, each enforced by a real mechanism or refused:
   - `--memory`: the sum of the processes' physical footprints, which counts
     compressed and swapped-out memory, so `--memory-swap` may only equal it;
     past the limit the largest process is killed, as the kernel OOM killer
-    picks one in a cgroup, and the container reports `OOMKilled`.
+    picks one in a cgroup, and the container reports `OOMKilled`. The
+    kernel also holds each process to the whole limit at once: the spawn
+    helper sets jetsam's fatal footprint limit
+    (`posix_spawnattr_setjetsam_ext`, in MiB) as it executes the command
+    and the exec anchor, the one time an unprivileged process may set it,
+    and what they start keeps it. The shim watches each exit with
+    `NOTE_EXIT_DETAIL`, whose `NOTE_EXIT_MEMORY` says the kernel killed the
+    process at its limit, and counts that kill as an OOM kill. No process
+    may change a running process's limit, not even its own
+    (`memorystatus_control` is refused), so `docker update` refuses to
+    raise a running container's memory limit.
   - `--cpus` / `--cpu-quota`: the processes' CPU time against the quota; a
     run over it stops them with `SIGSTOP` until the quota has paid it back,
     and the throttled periods and time show in `docker stats`.
