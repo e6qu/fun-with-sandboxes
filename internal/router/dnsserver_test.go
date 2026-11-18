@@ -1,6 +1,8 @@
 package router
 
 import (
+	"encoding/binary"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -137,4 +139,101 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// DNS over TCP reaches the router as a DNSStream request: its stack's
+// names it answers itself, and any other query it passes on over TCP.
+func TestRouterServesDNSOverTCP(t *testing.T) {
+	file := filepath.Join(portDir(t), "network")
+	ms := []members.Member{
+		{Address: "127.88.0.2", Names: []string{"app"}, Networks: []string{"net"}},
+		{Address: "127.88.0.3", Names: []string{"db"}, Networks: []string{"net"}},
+	}
+	if err := os.WriteFile(file, members.Format(ms), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// An upstream server that answers over TCP alone.
+	ul, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ul.Close()
+	go func() {
+		for {
+			c, err := ul.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				var l [2]byte
+				if _, err := io.ReadFull(c, l[:]); err != nil {
+					return
+				}
+				q := make([]byte, binary.BigEndian.Uint16(l[:]))
+				if _, err := io.ReadFull(c, q); err != nil {
+					return
+				}
+				var m dnsmessage.Message
+				if m.Unpack(q) != nil || len(m.Questions) != 1 {
+					return
+				}
+				m.Response = true
+				h := dnsmessage.ResourceHeader{Name: m.Questions[0].Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60}
+				m.Answers = []dnsmessage.Resource{{Header: h, Body: &dnsmessage.AResource{A: [4]byte{192, 0, 2, 30}}}}
+				b, _ := m.Pack()
+				c.Write(append(binary.BigEndian.AppendUint16(nil, uint16(len(b))), b...))
+			}()
+		}
+	}()
+	r, err := Listen("127.0.0.1:0", portDir(t), listenFlow, Network{File: file, Address: "127.88.0.2", Internet: true, Upstream: []netip.Addr{netip.MustParseAddr("127.0.0.1")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.upstreamPort = ul.Addr().(*net.TCPAddr).Port
+
+	c, err := net.Dial("tcp", r.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := c.Write([]byte{DNSStream}); err != nil {
+		t.Fatal(err)
+	}
+	var ok [1]byte
+	if _, err := io.ReadFull(c, ok[:]); err != nil || ok[0] != Connected {
+		t.Fatalf("DNSStream: %v, %v", ok, err)
+	}
+	ask := func(name string) dnsmessage.Message {
+		t.Helper()
+		q, _ := (&dnsmessage.Message{
+			Header:    dnsmessage.Header{ID: 77, RecursionDesired: true},
+			Questions: []dnsmessage.Question{{Name: dnsmessage.MustNewName(name), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}},
+		}).Pack()
+		if _, err := c.Write(append(binary.BigEndian.AppendUint16(nil, uint16(len(q))), q...)); err != nil {
+			t.Fatal(err)
+		}
+		var l [2]byte
+		if _, err := io.ReadFull(c, l[:]); err != nil {
+			t.Fatal(err)
+		}
+		b := make([]byte, binary.BigEndian.Uint16(l[:]))
+		if _, err := io.ReadFull(c, b); err != nil {
+			t.Fatal(err)
+		}
+		var m dnsmessage.Message
+		if err := m.Unpack(b); err != nil || m.ID != 77 {
+			t.Fatalf("%s: %v, ID %d", name, err, m.ID)
+		}
+		return m
+	}
+	// Two queries on one connection, as a resolver may send.
+	if m := ask("db."); !equalStrings(answerAddrs(m), []string{"127.88.0.3"}) {
+		t.Errorf("db over TCP: %s %v", m.RCode, answerAddrs(m))
+	}
+	if m := ask("www.test."); !equalStrings(answerAddrs(m), []string{"192.0.2.30"}) {
+		t.Errorf("www.test over TCP: %s %v", m.RCode, answerAddrs(m))
+	}
 }

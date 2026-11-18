@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"encoding/binary"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -30,6 +31,13 @@ const dnsTTL = 5
 // dnsForwardTimeout bounds one forwarded query to one server.
 const dnsForwardTimeout = 5 * time.Second
 
+// DNSStream is the router request that carries DNS over TCP (serveDNSStream).
+const DNSStream = 7
+
+// dnsStreamIdle is how long a DNS connection waits for its next query, as
+// a server closes an idle one.
+const dnsStreamIdle = 30 * time.Second
+
 // serveDNS answers the queries that arrive on u until it closes.
 func (r *Router) serveDNS(u *net.UDPConn) {
 	buf := make([]byte, 65535)
@@ -40,15 +48,42 @@ func (r *Router) serveDNS(u *net.UDPConn) {
 		}
 		q := append([]byte(nil), buf[:n]...)
 		go func() {
-			if a := r.answerDNS(q); a != nil {
+			if a := r.answerDNS(q, false); a != nil {
 				u.WriteToUDPAddrPort(a, from)
 			}
 		}()
 	}
 }
 
-// answerDNS is the answer to query q, or nil to send none.
-func (r *Router) answerDNS(q []byte) []byte {
+// serveDNSStream answers the queries a DNS connection carries, each after
+// its length in two bytes, until it ends or idles.
+func (r *Router) serveDNSStream(c net.Conn) {
+	if _, err := c.Write([]byte{Connected}); err != nil {
+		return
+	}
+	for {
+		c.SetReadDeadline(time.Now().Add(dnsStreamIdle))
+		var l [2]byte
+		if _, err := io.ReadFull(c, l[:]); err != nil {
+			return
+		}
+		q := make([]byte, binary.BigEndian.Uint16(l[:]))
+		if _, err := io.ReadFull(c, q); err != nil {
+			return
+		}
+		a := r.answerDNS(q, true)
+		if a == nil {
+			return
+		}
+		if _, err := c.Write(append(binary.BigEndian.AppendUint16(nil, uint16(len(a))), a...)); err != nil {
+			return
+		}
+	}
+}
+
+// answerDNS is the answer to query q, or nil to send none; one that came
+// over TCP goes on over TCP, whose answers are not cut short.
+func (r *Router) answerDNS(q []byte, tcp bool) []byte {
 	var p dnsmessage.Parser
 	h, err := p.Start(q)
 	if err != nil || h.Response {
@@ -64,7 +99,7 @@ func (r *Router) answerDNS(q []byte) []byte {
 		}
 	}
 	if r.net.Internet && len(r.net.Upstream) > 0 {
-		if a := forwardDNS(q, h.ID, r.net.Upstream, r.dnsPort()); a != nil {
+		if a := forwardDNS(q, h.ID, r.net.Upstream, r.dnsPort(), tcp); a != nil {
 			return a
 		}
 		return dnsReply(h, qs, dnsmessage.RCodeServerFailure, nil)
@@ -142,11 +177,18 @@ func dnsReply(h dnsmessage.Header, qs []dnsmessage.Question, rc dnsmessage.RCode
 }
 
 // forwardDNS passes query q, whose ID is id, to each server in turn, over
-// UDP, and returns the first answer that carries the ID, as it came.
-func forwardDNS(q []byte, id uint16, servers []netip.Addr, port int) []byte {
+// UDP or TCP, and returns the first answer that carries the ID, as it came.
+func forwardDNS(q []byte, id uint16, servers []netip.Addr, port int, tcp bool) []byte {
 	for _, s := range servers {
 		ctx, cancel := context.WithTimeout(context.Background(), dnsForwardTimeout)
-		a, err := exchangeRaw(ctx, netip.AddrPortFrom(s, uint16(port)).String(), q, id)
+		addr := netip.AddrPortFrom(s, uint16(port)).String()
+		var a []byte
+		var err error
+		if tcp {
+			a, err = exchangeRawTCP(ctx, addr, q, id)
+		} else {
+			a, err = exchangeRaw(ctx, addr, q, id)
+		}
 		cancel()
 		if err == nil {
 			return a
@@ -180,4 +222,32 @@ func exchangeRaw(ctx context.Context, addr string, q []byte, id uint16) ([]byte,
 			return append([]byte(nil), buf[:n]...), nil
 		}
 	}
+}
+
+// exchangeRawTCP sends q to addr over TCP and returns its answer.
+func exchangeRawTCP(ctx context.Context, addr string, q []byte, id uint16) ([]byte, error) {
+	var d net.Dialer
+	c, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		c.SetDeadline(dl)
+	}
+	if _, err := c.Write(append(binary.BigEndian.AppendUint16(nil, uint16(len(q))), q...)); err != nil {
+		return nil, err
+	}
+	var l [2]byte
+	if _, err := io.ReadFull(c, l[:]); err != nil {
+		return nil, err
+	}
+	b := make([]byte, binary.BigEndian.Uint16(l[:]))
+	if _, err := io.ReadFull(c, b); err != nil {
+		return nil, err
+	}
+	if len(b) < 2 || binary.BigEndian.Uint16(b) != id {
+		return nil, errAnswer
+	}
+	return b, nil
 }
