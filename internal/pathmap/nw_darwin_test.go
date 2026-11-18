@@ -1,6 +1,7 @@
 package pathmap
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -50,9 +51,10 @@ func TestNetworkFrameworkReachesMembers(t *testing.T) {
 	run := func(host, port string) string {
 		cmd := exec.Command(probe, host, port)
 		cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, NetworkVar + "=" + network, AddressVar + "=127.88.0.2"}
+		start := time.Now()
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Errorf("%s: %v\n%s", host, err, out)
+			t.Errorf("%s: %v\n%s%s", host, err, out, crashReport(t, "nwprobe", start))
 		}
 		return strings.TrimSpace(string(out))
 	}
@@ -79,4 +81,67 @@ func TestNetworkFrameworkReachesMembers(t *testing.T) {
 	if out := run("localhost", "1"); !strings.HasPrefix(out, "waiting") && !strings.HasPrefix(out, "failed") {
 		t.Errorf("localhost: %q, want the host's refusal", out)
 	}
+}
+
+// crashReport is the start of the newest report macOS wrote of a crash of
+// program since start, which says where it crashed, or "".
+func crashReport(t *testing.T, program string, start time.Time) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(home, "Library/Logs/DiagnosticReports")
+	var newest string
+	var when time.Time
+	for i := 0; i < 20 && newest == ""; i++ {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			info, err := e.Info()
+			if err == nil && strings.HasPrefix(e.Name(), program) && info.ModTime().After(start) && info.ModTime().After(when) {
+				newest, when = filepath.Join(dir, e.Name()), info.ModTime()
+			}
+		}
+		if newest == "" {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	if newest == "" {
+		return ""
+	}
+	b, err := os.ReadFile(newest)
+	if err != nil {
+		return ""
+	}
+	// A report is a line of JSON, its header, and then a document of
+	// JSON that holds each thread's frames.
+	_, body, _ := strings.Cut(string(b), "\n")
+	var r struct {
+		FaultingThread int `json:"faultingThread"`
+		Exception      any `json:"exception"`
+		Threads        []struct {
+			Frames []struct {
+				ImageIndex  int    `json:"imageIndex"`
+				ImageOffset int    `json:"imageOffset"`
+				Symbol      string `json:"symbol"`
+			} `json:"frames"`
+		} `json:"threads"`
+		UsedImages []struct {
+			Name string `json:"name"`
+		} `json:"usedImages"`
+	}
+	if err := json.Unmarshal([]byte(body), &r); err != nil || r.FaultingThread >= len(r.Threads) {
+		return fmt.Sprintf("\n%s (%v):\n%.4000s", newest, err, b)
+	}
+	var lines []string
+	for i, f := range r.Threads[r.FaultingThread].Frames {
+		if i == 30 {
+			break
+		}
+		image := "?"
+		if f.ImageIndex < len(r.UsedImages) {
+			image = r.UsedImages[f.ImageIndex].Name
+		}
+		lines = append(lines, fmt.Sprintf("  %2d %s %s +%#x", i, image, f.Symbol, f.ImageOffset))
+	}
+	return fmt.Sprintf("\n%s: exception %v, thread %d:\n%s", newest, r.Exception, r.FaultingThread, strings.Join(lines, "\n"))
 }

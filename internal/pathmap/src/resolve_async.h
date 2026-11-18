@@ -508,9 +508,11 @@ struct nw_lookup {
     uint32_t protocols;
 };
 
-// A result of the library's own. The slots are reused in turn: one
-// Network.framework still holds once NW_RESULTS others came after it
-// reads as a later one.
+// A result of the library's own: an Objective-C object, as the client's
+// are, which Network.framework retains and releases as it does those, of
+// a class the library makes at run time, whose indexed ivars hold the
+// result. The library holds one of each of the last NW_RESULTS it made,
+// in turn.
 struct nw_result {
     char name[256];
     struct sockaddr_storage sa;
@@ -522,14 +524,53 @@ struct nw_result {
 #define NW_ADDRS 16
 static pthread_mutex_t nw_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct nw_lookup nw_lookups[NW_LOOKUPS];
-static struct nw_result nw_results[NW_RESULTS];
+static void *nw_objs[NW_RESULTS];
 static unsigned nw_next, nw_gen;
 
-// nw_own reports whether r is one of the library's results.
+// The Objective-C runtime's functions, from a process that loaded it, as
+// one that uses Network.framework has: the library links none.
+static struct {
+    void *cls;
+    void *(*create)(void *cls, size_t extra);
+    void *(*ivars)(void *obj);
+    void (*release)(void *obj);
+} nw_objc;
+static pthread_once_t nw_objc_once = PTHREAD_ONCE_INIT;
+
+static void nw_objc_load(void) {
+    void *(*get_class)(const char *) = (void *(*)(const char *))dlsym(RTLD_DEFAULT, "objc_getClass");
+    void *(*allocate)(void *, const char *, size_t) = (void *(*)(void *, const char *, size_t))dlsym(RTLD_DEFAULT, "objc_allocateClassPair");
+    void (*register_class)(void *) = (void (*)(void *))dlsym(RTLD_DEFAULT, "objc_registerClassPair");
+    nw_objc.create = (void *(*)(void *, size_t))dlsym(RTLD_DEFAULT, "class_createInstance");
+    nw_objc.ivars = (void *(*)(void *))dlsym(RTLD_DEFAULT, "object_getIndexedIvars");
+    nw_objc.release = (void (*)(void *))dlsym(RTLD_DEFAULT, "objc_release");
+    if (!get_class || !allocate || !register_class || !nw_objc.create || !nw_objc.ivars || !nw_objc.release) return;
+    void *root = get_class("NSObject");
+    void *cls = root ? allocate(root, "FWSDNSSDResult", 0) : NULL;
+    if (cls) {
+        register_class(cls);
+    } else {
+        cls = get_class("FWSDNSSDResult");
+    }
+    nw_objc.cls = cls;
+}
+
+// nw_objc_ready reports whether the library can make results of its own.
+static int nw_objc_ready(void) {
+    pthread_once(&nw_objc_once, nw_objc_load);
+    return nw_objc.cls != NULL;
+}
+
+// nw_own is r's contents when r is one of the results the library holds.
 static struct nw_result *nw_own(fws_dnssd_result_t r) {
-    uintptr_t p = (uintptr_t)r, b = (uintptr_t)nw_results;
-    if (p < b || p >= b + sizeof nw_results || (p - b) % sizeof nw_results[0]) return NULL;
-    return (struct nw_result *)r;
+    if (!r || !nw_objc.cls) return NULL;
+    struct nw_result *o = NULL;
+    pthread_mutex_lock(&nw_lock);
+    for (int i = 0; i < NW_RESULTS && !o; i++) {
+        if (nw_objs[i] == (void *)r) o = nw_objc.ivars(r);
+    }
+    pthread_mutex_unlock(&nw_lock);
+    return o;
 }
 
 // nw_lookup_of is gai's slot, or with take, a fresh one; nw_lock is held.
@@ -625,14 +666,20 @@ struct nw_job {
     struct sockaddr_storage addrs[NW_ADDRS];
 };
 
-// nw_take puts a result in the next slot; nw_lock is held.
+// nw_take makes a result and holds it in the next slot, or reports NULL;
+// nw_lock is held.
 static fws_dnssd_result_t nw_take(const char *name, int type, int negative, const struct sockaddr_storage *sa) {
-    struct nw_result *r = &nw_results[nw_next++ % NW_RESULTS];
+    void *obj = nw_objc.create(nw_objc.cls, sizeof(struct nw_result));
+    if (!obj) return NULL;
+    struct nw_result *r = nw_objc.ivars(obj);
     strlcpy(r->name, name, sizeof r->name);
     r->type = type;
     r->negative = negative;
     r->sa = *sa;
-    return (fws_dnssd_result_t)r;
+    void **slot = &nw_objs[nw_next++ % NW_RESULTS];
+    if (*slot) nw_objc.release(*slot);
+    *slot = obj;
+    return (fws_dnssd_result_t)obj;
 }
 
 // nw_deliver hands a job's results to its lookup's handler, on the
@@ -647,7 +694,7 @@ static void nw_deliver(void *arg) {
     fws_dnssd_event_handler_t events = handler && l->events ? Block_copy(l->events) : NULL;
     if (handler) {
         struct sockaddr_storage none = {0};
-        results[n++] = nw_take(j->name, NW_RESULT_SERVICE_BINDING, j->found ? NW_NEGATIVE_NO_DATA : NW_NEGATIVE_NO_NAME, &none);
+        if ((results[n] = nw_take(j->name, NW_RESULT_SERVICE_BINDING, j->found ? NW_NEGATIVE_NO_DATA : NW_NEGATIVE_NO_NAME, &none))) n++;
         static const int families[] = {AF_INET6, AF_INET};
         for (int f = 0; f < 2; f++) {
             int fam = families[f];
@@ -655,14 +702,14 @@ static void nw_deliver(void *arg) {
             int any = 0;
             for (int i = 0; i < j->n; i++) {
                 if (j->addrs[i].ss_family != fam) continue;
-                results[n++] = nw_take(j->name, NW_RESULT_ADD, 0, &j->addrs[i]);
+                if ((results[n] = nw_take(j->name, NW_RESULT_ADD, 0, &j->addrs[i]))) n++;
                 any = 1;
             }
             if (!any) {
                 struct sockaddr_storage empty = {0};
                 empty.ss_family = (sa_family_t)fam;
                 empty.ss_len = fam == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
-                results[n++] = nw_take(j->name, NW_RESULT_NO_ADDRESS, j->found ? NW_NEGATIVE_NO_DATA : NW_NEGATIVE_NO_NAME, &empty);
+                if ((results[n] = nw_take(j->name, NW_RESULT_NO_ADDRESS, j->found ? NW_NEGATIVE_NO_DATA : NW_NEGATIVE_NO_NAME, &empty))) n++;
             }
         }
     }
@@ -707,7 +754,7 @@ static void nw_resolve(void *arg) {
 // fws_dnssd_activate starts the library's lookup in the client's place,
 // for a lookup whose name, queue and handler it has.
 static void fws_dnssd_activate(fws_dnssd_gai_t gai) {
-    struct nw_job *j = nw_resolving ? NULL : calloc(1, sizeof *j);
+    struct nw_job *j = nw_resolving || !nw_objc_ready() ? NULL : calloc(1, sizeof *j);
     pthread_mutex_lock(&nw_lock);
     struct nw_lookup *l = j ? nw_lookup_of(gai, 0) : NULL;
     if (!l || !l->name[0] || !l->queue || !l->handler) {
