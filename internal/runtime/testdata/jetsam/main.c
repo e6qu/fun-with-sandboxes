@@ -1,27 +1,23 @@
 // jetsam asks what macOS lets an unprivileged process do with the jetsam
-// memory limits of itself and its children, which the engine's --memory
-// would rest on. Each line it prints answers one question:
+// memory limits of its children, which the engine's --memory rests on. A
+// "hog" touches up to 512 MiB in 16 MiB steps; under a fatal 64 MiB limit
+// the kernel kills it. Each line answers one question by how a hog ended:
 //
-//   kill:      a child spawned with a fatal 64 MiB limit touches up to 512
-//              MiB in 16 MiB steps; is it killed?
-//   spawned:   the limit the child reads back on itself;
-//   fork:      the limit of a child that child forks;
-//   exec:      after that fork child executes a program;
-//   spawn:     of a program the child posix_spawns without attributes;
-//   setexec:   after the child replaces itself through posix_spawn's
-//              POSIX_SPAWN_SETEXEC, without attributes;
-//   setexec+:  after an unlimited process replaces itself through
-//              POSIX_SPAWN_SETEXEC with a 96 MiB limit;
-//   self-set:  whether an unlimited process may set its own limit;
-//   self-raise: whether a limited one may raise its own, from 64 to 128 MiB;
-//   self-lower: or lower it, from 64 to 48 MiB;
-//   child-set: whether a parent may set a running child's limit;
+//   kill:      a hog spawned with the limit;
+//   fork:      a hog forked by a process spawned with the limit;
+//   exec:      a hog executed by such a fork;
+//   spawn:     a hog such a process posix_spawns without attributes;
+//   setexec:   a hog such a process replaces itself with through
+//              posix_spawn's POSIX_SPAWN_SETEXEC, without attributes;
+//   setexec+:  a hog an unlimited process replaces itself with through
+//              POSIX_SPAWN_SETEXEC with the limit, as the spawn helper would;
+//   control:   whether memorystatus_control reads a process's own limit;
 //   exit-parent: what kqueue's NOTE_EXIT_DETAIL tells the parent of a
 //              process killed at its limit (NOTE_EXIT_MEMORY is 0x20000);
 //   exit-other: and what it tells a process that is not its parent.
 //
-// A limit reads as active/inactive MiB, each with F when fatal, or -1 for
-// none.
+// A hog the kernel kills at the limit ends "killed by signal 9"; one that
+// holds no limit ends "exited 0".
 #include <errno.h>
 #include <signal.h>
 #include <spawn.h>
@@ -42,48 +38,18 @@ extern char **environ;
 // spawn_private.h and kern_memorystatus.h, which the SDK does not ship.
 int posix_spawnattr_setjetsam_ext(posix_spawnattr_t *attr, short flags, int priority, int memlimit_active, int memlimit_inactive);
 int memorystatus_control(uint32_t command, int32_t pid, uint32_t flags, void *buffer, size_t buffersize);
-typedef struct {
-    int32_t memlimit_active;
-    uint32_t memlimit_active_attr;
-    int32_t memlimit_inactive;
-    uint32_t memlimit_inactive_attr;
-} memlimit_properties;
 enum {
     JETSAM_SET = 0x8000,
     MEMLIMIT_ACTIVE_FATAL = 0x04,
     MEMLIMIT_INACTIVE_FATAL = 0x08,
     PRIORITY_DEFAULT = 180,
-    CMD_SET_MEMLIMIT_PROPERTIES = 7,
     CMD_GET_MEMLIMIT_PROPERTIES = 8,
-    MEMLIMIT_ATTR_FATAL = 0x1,
     LIMIT_MIB = 64,
     STEP_MIB = 16,
     MAX_MIB = 512,
 };
 
 static char *self;
-
-static void limits(char *out, size_t n, pid_t pid) {
-    memlimit_properties p;
-    memset(&p, 0, sizeof p);
-    if (memorystatus_control(CMD_GET_MEMLIMIT_PROPERTIES, pid, 0, &p, sizeof p) != 0) {
-        snprintf(out, n, "unreadable (%s)", strerror(errno));
-        return;
-    }
-    snprintf(out, n, "%d%s/%d%s", p.memlimit_active, p.memlimit_active_attr & MEMLIMIT_ATTR_FATAL ? "F" : "",
-             p.memlimit_inactive, p.memlimit_inactive_attr & MEMLIMIT_ATTR_FATAL ? "F" : "");
-}
-
-static void report(const char *what) {
-    char l[128];
-    limits(l, sizeof l, 0);
-    printf("%s: %s\n", what, l);
-}
-
-static int set(pid_t pid, int mib) {
-    memlimit_properties p = {mib, MEMLIMIT_ATTR_FATAL, mib, MEMLIMIT_ATTR_FATAL};
-    return memorystatus_control(CMD_SET_MEMLIMIT_PROPERTIES, pid, 0, &p, sizeof p) == 0 ? 0 : errno;
-}
 
 static void attrs(posix_spawnattr_t *a, short flags, int mib) {
     posix_spawnattr_init(a);
@@ -102,9 +68,19 @@ static int wait_for(pid_t pid) {
     return ws;
 }
 
-// run starts this program with mode as a child, with a fatal limit of mib
-// MiB unless mib is 0, and waits for it.
-static int run(const char *mode, int mib) {
+static void ended(const char *what, int ws) {
+    if (ws < 0) {
+        printf("%s: not started\n", what);
+    } else if (WIFSIGNALED(ws)) {
+        printf("%s: killed by signal %d\n", what, WTERMSIG(ws));
+    } else {
+        printf("%s: exited %d\n", what, WEXITSTATUS(ws));
+    }
+}
+
+// start starts this program with mode as a child, with a fatal limit of
+// mib MiB unless mib is 0, and reports its pid, or -1.
+static pid_t start(const char *mode, int mib) {
     posix_spawnattr_t a;
     attrs(&a, 0, mib);
     char *argv[] = {self, (char *)mode, NULL};
@@ -116,7 +92,33 @@ static int run(const char *mode, int mib) {
         printf("%s: posix_spawn: %s\n", mode, strerror(err));
         return -1;
     }
-    return wait_for(pid);
+    return pid;
+}
+
+static int run(const char *mode, int mib) {
+    pid_t pid = start(mode, mib);
+    return pid < 0 ? -1 : wait_for(pid);
+}
+
+static int hog(void) {
+    for (int mib = STEP_MIB; mib <= MAX_MIB; mib += STEP_MIB) {
+        char *p = malloc((size_t)STEP_MIB << 20);
+        if (!p) return 2;
+        memset(p, 1, (size_t)STEP_MIB << 20);
+    }
+    return 0;
+}
+
+// setexec replaces this process with a hog through POSIX_SPAWN_SETEXEC,
+// with a limit of mib MiB unless mib is 0.
+static int setexec(int mib) {
+    posix_spawnattr_t a;
+    attrs(&a, POSIX_SPAWN_SETEXEC, mib);
+    char *argv[] = {self, "hog", NULL};
+    fflush(stdout);
+    int err = posix_spawn(NULL, self, NULL, &a, argv, environ);
+    printf("setexec: posix_spawn: %s\n", strerror(err));
+    return 3;
 }
 
 // watch waits for pid's exit through kqueue, asking for its detail, and
@@ -142,58 +144,6 @@ static void watch(const char *what, pid_t pid) {
     close(kq);
 }
 
-static int hog(void) {
-    for (int mib = STEP_MIB; mib <= MAX_MIB; mib += STEP_MIB) {
-        char *p = malloc((size_t)STEP_MIB << 20);
-        if (!p) return 2;
-        memset(p, 1, (size_t)STEP_MIB << 20);
-    }
-    return 0;
-}
-
-// tree runs in a child spawned with a limit: it reports its own, a fork's,
-// an exec's and a plain spawn's, and then replaces itself.
-static int tree(void) {
-    report("spawned");
-    fflush(stdout);
-    pid_t pid = fork();
-    if (pid == 0) {
-        report("fork");
-        fflush(stdout);
-        char *argv[] = {self, "report-exec", NULL};
-        execv(self, argv);
-        _exit(127);
-    }
-    wait_for(pid);
-    run("report-spawn", 0);
-    posix_spawnattr_t a;
-    attrs(&a, POSIX_SPAWN_SETEXEC, 0);
-    char *argv[] = {self, "report-setexec", NULL};
-    fflush(stdout);
-    int err = posix_spawn(NULL, self, NULL, &a, argv, environ);
-    printf("setexec: posix_spawn: %s\n", strerror(err));
-    return 1;
-}
-
-// setexec replaces this unlimited process with a 96 MiB one.
-static int setexec(void) {
-    posix_spawnattr_t a;
-    attrs(&a, POSIX_SPAWN_SETEXEC, 96);
-    char *argv[] = {self, "report-setexec+", NULL};
-    fflush(stdout);
-    int err = posix_spawn(NULL, self, NULL, &a, argv, environ);
-    printf("setexec+: posix_spawn: %s\n", strerror(err));
-    return 1;
-}
-
-static int self_set(const char *what, int mib) {
-    int err = set(0, mib);
-    char l[128];
-    limits(l, sizeof l, 0);
-    printf("%s: %s, now %s\n", what, err ? strerror(err) : "allowed", l);
-    return 0;
-}
-
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     self = argv[0];
@@ -204,67 +154,54 @@ int main(int argc, char **argv) {
             sleep(1);
             return hog();
         }
+        // The children of a process spawned with the limit.
+        if (strcmp(m, "fork") == 0) {
+            pid_t pid = fork();
+            if (pid == 0) _exit(hog());
+            ended("fork", wait_for(pid));
+            return 0;
+        }
+        if (strcmp(m, "exec") == 0) {
+            pid_t pid = fork();
+            if (pid == 0) {
+                char *hargv[] = {self, "hog", NULL};
+                execv(self, hargv);
+                _exit(127);
+            }
+            ended("exec", wait_for(pid));
+            return 0;
+        }
+        if (strcmp(m, "spawn") == 0) {
+            ended("spawn", run("hog", 0));
+            return 0;
+        }
+        if (strcmp(m, "setexec") == 0) return setexec(0);
+        if (strcmp(m, "setexec+") == 0) return setexec(LIMIT_MIB);
         if (strcmp(m, "hogwrap") == 0) {
-            // Starts a late hog with a limit, tells its pid on descriptor
+            // Starts a late hog with the limit, tells its pid on descriptor
             // 3, and waits for it.
-            posix_spawnattr_t a;
-            attrs(&a, 0, LIMIT_MIB);
-            char *hargv[] = {self, "hog-late", NULL};
-            pid_t pid;
-            if (posix_spawn(&pid, self, NULL, &a, hargv, environ) != 0) return 1;
+            pid_t pid = start("hog-late", LIMIT_MIB);
+            if (pid < 0) return 1;
             write(3, &pid, sizeof pid);
             close(3);
             wait_for(pid);
             return 0;
         }
-        if (strcmp(m, "tree") == 0) return tree();
-        if (strcmp(m, "setexec") == 0) return setexec();
-        if (strncmp(m, "report-", 7) == 0) {
-            report(m + 7);
-            return 0;
-        }
-        if (strcmp(m, "self-set") == 0) return self_set(m, 80);
-        if (strcmp(m, "self-raise") == 0) return self_set(m, 128);
-        if (strcmp(m, "self-lower") == 0) return self_set(m, 48);
-        if (strcmp(m, "sleep") == 0) {
-            sleep(5);
-            return 0;
-        }
         return 2;
     }
 
-    int ws = run("hog", LIMIT_MIB);
-    if (ws < 0) {
-        printf("result: macOS refused the spawn\n");
-        return 0;
-    }
-    if (WIFSIGNALED(ws)) {
-        printf("kill: killed by signal %d\n", WTERMSIG(ws));
-    } else {
-        printf("kill: exited %d\n", WEXITSTATUS(ws));
-    }
-    run("tree", LIMIT_MIB);
-    run("setexec", 0);
-    run("self-set", 0);
-    run("self-raise", LIMIT_MIB);
-    run("self-lower", LIMIT_MIB);
+    ended("kill", run("hog", LIMIT_MIB));
+    run("fork", LIMIT_MIB);
+    run("exec", LIMIT_MIB);
+    run("spawn", LIMIT_MIB);
+    ended("setexec", run("setexec", LIMIT_MIB));
+    ended("setexec+", run("setexec+", 0));
+    char buf[16];
+    printf("control: %s\n", memorystatus_control(CMD_GET_MEMLIMIT_PROPERTIES, getpid(), 0, buf, sizeof buf) == 0 ? "allowed" : strerror(errno));
 
-    posix_spawnattr_t a;
-    attrs(&a, 0, LIMIT_MIB);
-    char *sargv[] = {self, "sleep", NULL};
-    pid_t pid;
-    if (posix_spawn(&pid, self, NULL, &a, sargv, environ) == 0) {
-        int err = set(pid, 128);
-        char l[128];
-        limits(l, sizeof l, pid);
-        printf("child-set: %s, now %s\n", err ? strerror(err) : "allowed", l);
-        kill(pid, SIGKILL);
-        wait_for(pid);
-    }
     // The parent of a process killed at its limit watches it exit.
-    attrs(&a, 0, LIMIT_MIB);
-    char *hargv[] = {self, "hog-late", NULL};
-    if (posix_spawn(&pid, self, NULL, &a, hargv, environ) == 0) {
+    pid_t pid = start("hog-late", LIMIT_MIB);
+    if (pid > 0) {
         watch("exit-parent", pid);
         wait_for(pid);
     }
