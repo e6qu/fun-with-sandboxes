@@ -41,6 +41,10 @@ func containerLimits(r container.Resources) (runtime.Limits, shim.Resources, err
 			return l, s, invalid("Minimum memory limit allowed is 6MB")
 		}
 		s.Memory = r.Memory
+		// The kernel holds each process to the whole limit, so no one
+		// process outgrows it between two of the shim's samples; the shim
+		// holds their sum to it.
+		l.MemoryMiB = int((r.Memory + 1<<20 - 1) >> 20)
 	}
 	switch {
 	case r.MemorySwap == 0, r.MemorySwap == -1:

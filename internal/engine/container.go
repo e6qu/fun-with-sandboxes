@@ -1488,7 +1488,7 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	}
 	spec := seatbelt.Spec{
 		Root: c.root(), StateRoot: e.stateRoot(), ReadOnlyRoot: c.rec.HostConfig.ReadonlyRootfs,
-		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath(), c.ioPolicyPath()},
+		IPC: ipc, IPCPrefix: prefix, Libraries: []string{lib}, ReadFiles: []string{c.pidsPath(), c.ioPolicyPath(), c.memoryPath()},
 		Sockets: []string{e.pidsSocket(c)}, GUI: guiGranted(&c.rec.HostConfig),
 	}
 	if c.rec.HostConfig.Privileged {
@@ -1627,6 +1627,11 @@ func (c *Container) start(e *Engine) error {
 		return err
 	}
 	if err := c.writePidsLimit(c.rec.HostConfig.PidsLimit); err != nil {
+		return err
+	}
+	if l, _, err := containerLimits(c.rec.HostConfig.Resources); err != nil {
+		return err
+	} else if err := c.writeMemoryLimit(l.MemoryMiB); err != nil {
 		return err
 	}
 	if owner, err := e.shmOwner(c); err != nil {

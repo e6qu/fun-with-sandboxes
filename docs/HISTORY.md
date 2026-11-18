@@ -155,10 +155,16 @@ each lands in pull requests with tests on the macOS runner.
      container using the most of it, memory or bytes written, one at a
      time, and resume them once it is normal (normal pressure, 4 GiB
      free).
-   - Per-container memory limits move from a 100 ms poll to the kernel
-     where macOS lets an unprivileged process set one on its children
-     (`posix_spawnattr_setjetsam_ext`, a footprint limit), and stay polled
-     where it does not.
+   - Done: per-process memory limits in the kernel. CI's jetsam
+     experiment showed macOS kills an unprivileged parent's child at the
+     fatal footprint limit the parent sets with
+     `posix_spawnattr_setjetsam_ext`, that it keeps the limit across no
+     fork and no exec, and that no process may read or change a limit
+     afterwards. The spawn helper, the container library and the helper
+     binary's `fws-memexec` role set the container's memory limit on every
+     program a container starts, the shim counts the kernel's kills
+     (`NOTE_EXIT_MEMORY`) as OOM kills and still holds the sum, and
+     `docker update` refuses to raise a running container's limit.
 4. **Scale without cliffs.**
    - Done: event-driven process tracking. A supervisor follows its
      container's processes by the kernel's fork, exec and exit events on

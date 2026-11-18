@@ -89,6 +89,12 @@ func (e *Engine) Update(ref string, req container.UpdateConfig) (container.Updat
 	r, u := c.rec.HostConfig.Resources, req.Resources
 	running := c.task != nil && c.rec.State.Status == container.StateRunning
 	if u.Memory != 0 {
+		// The kernel holds each running process to the limit it started
+		// under, which no process may raise: a running process would be
+		// killed short of the raised limit.
+		if running && r.Memory > 0 && (u.Memory < 0 || u.Memory > r.Memory) {
+			return container.UpdateResponse{}, unsupported("raising the memory limit of a running container is not supported: the kernel holds each of its processes to the limit it started under; stop the container, update it and start it again")
+		}
 		r.Memory = u.Memory
 	}
 	if u.MemorySwap != 0 {
@@ -141,6 +147,11 @@ func (e *Engine) Update(ref string, req container.UpdateConfig) (container.Updat
 		}
 	}
 	if err := c.writePidsLimit(r.PidsLimit); err != nil {
+		return container.UpdateResponse{}, err
+	}
+	// The programs the container's processes start from now on get the
+	// limit as it stands; a process already running keeps its own.
+	if err := c.writeMemoryLimit(limits.MemoryMiB); err != nil {
 		return container.UpdateResponse{}, err
 	}
 	// macOS lets a process set only its own disk I/O policy, so a new

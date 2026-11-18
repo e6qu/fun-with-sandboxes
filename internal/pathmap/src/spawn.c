@@ -4,11 +4,14 @@
 // program reaches its exec in a millisecond, where the Go helper's runtime
 // took several, and every container start waits for it.
 //
-//   fws-spawn [-t] [-n nice] [-i iopolicy] [-q clamp] [-r resource:soft:hard]...
+//   fws-spawn [-t] [-n nice] [-i iopolicy] [-q clamp] [-m MiB] [-r resource:soft:hard]...
 //             -N nproc -c compiled [-p profile] -L library [-a anchor]
 //             -- path argv0 [arg]...
 //
-// -t makes standard input the controlling terminal; -q is the QoS clamp
+// -t makes standard input the controlling terminal; -m is the fatal
+// memory limit, in MiB of physical footprint, the kernel holds the command
+// and the anchor to (jetsam's, set as the helper executes them, the one
+// time an unprivileged process may set it); -q is the QoS clamp
 // (POSIX_SPAWN_PROC_CLAMP_*) every thread of the command and of what it
 // starts runs under, which the helper sets by executing the command with
 // posix_spawn's POSIX_SPAWN_SETEXEC, the one exec that takes it; -N is the fork
@@ -42,6 +45,21 @@ extern char **environ;
 
 int setiopolicy_np(int iotype, int scope, int policy);
 int posix_spawnattr_set_qos_clamp_np(posix_spawnattr_t *attr, uint64_t clamp);
+// spawn_private.h, which the SDK does not ship.
+int posix_spawnattr_setjetsam_ext(posix_spawnattr_t *attr, short flags, int priority, int memlimit_active, int memlimit_inactive);
+enum {
+    jetsamSet = 0x8000,
+    jetsamActiveFatal = 0x04,
+    jetsamInactiveFatal = 0x08,
+    // JETSAM_PRIORITY_DEFAULT, a process's band when no one sets it.
+    jetsamPriorityDefault = 180,
+};
+
+// memoryLimit gives attr a fatal memory limit of mib MiB, active or not.
+static int memoryLimit(posix_spawnattr_t *attr, int mib) {
+    return posix_spawnattr_setjetsam_ext(attr, (short)(jetsamSet | jetsamActiveFatal | jetsamInactiveFatal),
+                                         jetsamPriorityDefault, mib, mib);
+}
 
 #ifndef POSIX_SPAWN_SETEXEC
 #define POSIX_SPAWN_SETEXEC 0x0040
@@ -142,8 +160,9 @@ static void forkCeiling(unsigned long long ceiling) {
 }
 
 // startAnchor starts the anchor through a child that exits at once, so the
-// anchor is no child of the main process this one becomes.
-static void startAnchor(const char *anchor) {
+// anchor is no child of the main process this one becomes. It executes
+// with the memory limit, mib MiB unless 0, as the command does.
+static void startAnchor(const char *anchor, int mib) {
     char mainpid[32];
     snprintf(mainpid, sizeof mainpid, "%d", (int)getpid());
     if (fcntl(anchorFD, F_SETFD, FD_CLOEXEC) != 0) failErrno("start the exec anchor");
@@ -157,6 +176,15 @@ static void startAnchor(const char *anchor) {
         if (null < 0 || dup2(null, 0) < 0 || dup2(null, 1) < 0 || dup2(null, 2) < 0 || dup2(anchorFD, 3) < 0) _exit(1);
         char *argv[] = {"fws-anchor", mainpid, NULL};
         char *envp[] = {"FWS_ROLE=anchor", NULL};
+        if (mib > 0) {
+            posix_spawnattr_t attr;
+            if (posix_spawnattr_init(&attr) != 0 || posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETEXEC) != 0 ||
+                memoryLimit(&attr, mib) != 0) {
+                _exit(1);
+            }
+            posix_spawn(NULL, anchor, NULL, &attr, argv, envp);
+            _exit(127);
+        }
         execve(anchor, argv, envp);
         _exit(127);
     }
@@ -172,7 +200,7 @@ int main(int argc, char **argv) {
     int tty = 0, i = 1;
     const char *compiled = NULL, *text = NULL, *anchor = NULL, *library = NULL;
     unsigned long long ceiling = 0;
-    int nice = 0, haveNice = 0, iopolicy = 0, haveIO = 0, clamp = 0;
+    int nice = 0, haveNice = 0, iopolicy = 0, haveIO = 0, clamp = 0, mib = 0;
     struct { int res; struct rlimit rl; } limits[16];
     int nlimits = 0;
     for (; i < argc; i++) {
@@ -193,6 +221,8 @@ int main(int argc, char **argv) {
             iopolicy = atoi(v), haveIO = 1;
         } else if (strcmp(a, "-q") == 0) {
             clamp = atoi(v);
+        } else if (strcmp(a, "-m") == 0) {
+            mib = atoi(v);
         } else if (strcmp(a, "-N") == 0) {
             ceiling = strtoull(v, NULL, 10);
         } else if (strcmp(a, "-c") == 0) {
@@ -257,7 +287,7 @@ int main(int argc, char **argv) {
     }
 
     fcntl(statusFD, F_SETFD, FD_CLOEXEC);
-    if (anchor) startAnchor(anchor);
+    if (anchor) startAnchor(anchor, mib);
     size_t n = 0;
     while (environ[n]) n++;
     char **envp = calloc(n + 3, sizeof *envp);
@@ -297,6 +327,11 @@ int main(int argc, char **argv) {
         char q[64];
         snprintf(q, sizeof q, "set the QoS clamp %d", clamp);
         fail(q, strerror(err));
+    }
+    if (mib > 0 && (err = memoryLimit(&attr, mib)) != 0) {
+        char m[64];
+        snprintf(m, sizeof m, "set the memory limit %d MiB", mib);
+        fail(m, strerror(err));
     }
     // Under the container's profile by now, which bounds what it replaces.
     fws_unharden(path);

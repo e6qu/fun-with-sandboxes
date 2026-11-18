@@ -35,6 +35,13 @@ func runInit(args []string) int {
 	signals := make(chan os.Signal, 32)
 	signal.Notify(signals)
 	cmd := exec.Command(args[0], args[1:]...)
+	// The command executes held to the container's memory limit, which
+	// the kernel keeps across no exec of this one.
+	if mib := containerMemoryMiB(os.Environ()); mib > 0 && cmd.Err == nil {
+		if path, argv, env, err := memoryLimited(cmd.Path, args, os.Environ(), mib); err == nil {
+			cmd = &exec.Cmd{Path: path, Args: argv, Env: env}
+		}
+	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if _, err := unix.IoctlGetTermios(0, unix.TIOCGETA); err == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Foreground: true, Ctty: 0}

@@ -135,6 +135,10 @@ static char pids_socket[sizeof(((struct sockaddr_un *)0)->sun_path)];
 // beside its pids limit's: a tier of sys/resource.h's IOPOL_*, which the
 // engine writes as an update changes the container's block I/O weight.
 static char iopolicy_path[PATH_MAX];
+// The file of the container's memory limit (pathmap.MemoryFile), beside
+// its pids limit's: MiB, or "max" for none, which the library gives each
+// program a container process starts or executes as the kernel's limit.
+static char memory_path[PATH_MAX];
 
 struct mount {
     char *dest, *src;
@@ -362,6 +366,49 @@ static void apply_iopolicy(void) {
     errno = e;
 }
 
+// memory_mib is the container's memory limit in MiB, or 0 for none.
+static int memory_mib(void) {
+    if (!memory_path[0]) return 0;
+    int e = errno;
+    int fd = open(memory_path, O_RDONLY | O_CLOEXEC);
+    unsigned long mib = 0;
+    if (fd >= 0) {
+        char b[24];
+        ssize_t n = read(fd, b, sizeof b - 1);
+        close(fd);
+        if (n > 0) {
+            b[n] = 0;
+            if (!num(b, &mib) || mib > INT_MAX) mib = 0;
+        }
+    }
+    errno = e;
+    return (int)mib;
+}
+
+// spawn_private.h, which the SDK does not ship.
+int posix_spawnattr_setjetsam_ext(posix_spawnattr_t *attr, short flags, int priority, int memlimit_active, int memlimit_inactive);
+
+// limit_memory gives a posix_spawn's attributes the container's memory
+// limit, the fatal footprint limit jetsam holds the program to. A parent
+// may set it only as it starts or executes a program, and nothing changes
+// it after, so the library sets it on every program the container's
+// processes start, the limit as it stands. *a is the caller's attributes,
+// which keep it, or none, and then own, which the library initializes and
+// the caller destroys. It returns the attributes to start with.
+static const posix_spawnattr_t *limit_memory(const posix_spawnattr_t *a, posix_spawnattr_t *own, int *owned) {
+    *owned = 0;
+    int mib = memory_mib();
+    if (mib <= 0) return a;
+    if (!a) {
+        if (posix_spawnattr_init(own) != 0) return a;
+        *owned = 1;
+        a = own;
+    }
+    // JETSAM_SET with fatal active and inactive limits, in the default band.
+    posix_spawnattr_setjetsam_ext((posix_spawnattr_t *)a, (short)(0x8000 | 0x04 | 0x08), 180, mib, mib);
+    return a;
+}
+
 static void parse_shm(const char *v);
 
 // FWS_TRACE in a container's environment has the library write, to
@@ -429,6 +476,8 @@ __attribute__((constructor)) static void fwsroot_init(void) {
         const char *slash = strrchr(pids_path, '/');
         int n = snprintf(iopolicy_path, sizeof iopolicy_path, "%.*s/iopolicy", (int)(slash - pids_path), pids_path);
         if (n < 0 || (size_t)n >= sizeof iopolicy_path) iopolicy_path[0] = 0;
+        n = snprintf(memory_path, sizeof memory_path, "%.*s/memory.max", (int)(slash - pids_path), pids_path);
+        if (n < 0 || (size_t)n >= sizeof memory_path) memory_path[0] = 0;
     }
     apply_iopolicy();
     const char *ps = getenv("FWS_PIDS_SOCKET");
@@ -1524,7 +1573,22 @@ static int fws_execve(const char *path, char *const argv[], char *const envp[]) 
     char interp[PATH_MAX];
     char **sargv = script_argv(p, argv, interp);
     fws_unharden(sargv ? interp : p);
-    int r = sargv ? execve(interp, sargv, envp) : execve(p, argv, envp);
+    int r;
+    if (memory_mib() > 0) {
+        // An exec takes no limit; posix_spawn's POSIX_SPAWN_SETEXEC, the
+        // same exec otherwise, does.
+        posix_spawnattr_t a;
+        int owned = 0;
+        if (posix_spawnattr_init(&a) == 0 && posix_spawnattr_setflags(&a, POSIX_SPAWN_SETEXEC) == 0) {
+            limit_memory(&a, NULL, &owned);
+            int err = sargv ? posix_spawn(NULL, interp, NULL, &a, sargv, envp) : posix_spawn(NULL, p, NULL, &a, argv, envp);
+            posix_spawnattr_destroy(&a);
+            errno = err;
+        }
+        r = -1;
+    } else {
+        r = sargv ? execve(interp, sargv, envp) : execve(p, argv, envp);
+    }
     free(sargv);
     free(env);
     return r;
@@ -1574,7 +1638,11 @@ static int fws_posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_
     char interp[PATH_MAX];
     char **sargv = script_argv(p, argv, interp);
     fws_unharden(sargv ? interp : p);
+    posix_spawnattr_t own;
+    int owned;
+    a = limit_memory(a, &own, &owned);
     int r = sargv ? posix_spawn(pid, interp, fa, a, sargv, envp) : posix_spawn(pid, p, fa, a, argv, envp);
+    if (owned) posix_spawnattr_destroy(&own);
     free(sargv);
     free(env);
     return r;
@@ -1597,7 +1665,11 @@ static int fws_posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file
     }
     char ids[64];
     char **env = child_env(envp, ids);
+    posix_spawnattr_t own;
+    int owned;
+    a = limit_memory(a, &own, &owned);
     int r = posix_spawnp(pid, file, fa, a, argv, env ? env : envp);
+    if (owned) posix_spawnattr_destroy(&own);
     free(env);
     return r;
 }

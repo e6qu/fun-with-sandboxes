@@ -63,6 +63,12 @@ const PidsVar = "FWS_PIDS"
 // process or as the process forks.
 const IOPolicyFile = "iopolicy"
 
+// MemoryFile names the file, beside the pids limit's, of the container's
+// memory limit in MiB, or "max" for none, which the engine rewrites as an
+// update lowers it: the library sets it as the kernel's limit, jetsam's,
+// on each program a container process starts or executes.
+const MemoryFile = "memory.max"
+
 // PidsSocketVar names the socket the container's supervisor answers on with
 // how many processes the container runs, which the library compares with
 // the limit before a fork.

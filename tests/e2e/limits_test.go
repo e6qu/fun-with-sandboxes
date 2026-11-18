@@ -32,8 +32,19 @@ func TestMemoryLimit(t *testing.T) {
 		t.Fatalf("the container's state reads %q, want an OOM kill", s)
 	}
 	// Under the limit the same program runs.
-	if out := mustDocker(t, "run", "--rm", "-d", "--memory", "256m", "fws/toolbox:1", "alloc", "16"); out == "" {
+	id := strings.TrimSpace(mustDocker(t, "run", "--rm", "-d", "--memory", "256m", "fws/toolbox:1", "alloc", "16"))
+	if id == "" {
 		t.Fatal("no container ID")
+	}
+	defer docker(t, "rm", "-f", id)
+	// The kernel holds each running process to the limit it started
+	// under, so a running container's limit may be lowered, not raised.
+	if _, err := docker(t, "update", "--memory", "512m", id); err == nil || !strings.Contains(err.Error(), "raising the memory limit of a running container is not supported") {
+		t.Fatalf("raising a running container's memory limit: %v", err)
+	}
+	mustDocker(t, "update", "--memory", "128m", id)
+	if s := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.Memory}}", id)); s != "134217728" {
+		t.Fatalf("the memory limit after lowering it reads %s", s)
 	}
 }
 

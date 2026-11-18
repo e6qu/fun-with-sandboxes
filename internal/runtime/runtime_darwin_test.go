@@ -410,3 +410,98 @@ func withTestLibrary(t testing.TB, s Spec) Spec {
 	s.Profile.Libraries = append(s.Profile.Libraries, lib)
 	return s
 }
+
+// The kernel holds a container's process to its memory limit, and so the
+// processes it starts and the execs its anchor starts, with nothing
+// watching them: past it they are killed.
+func TestMemoryLimitInTheKernel(t *testing.T) {
+	state, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(state, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", filepath.Join(root, "hog"), "testdata/hog/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build hog: %v\n%s", err, out)
+	}
+	dir, err := os.MkdirTemp("/tmp", "fws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "anchor")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ul := l.(*net.UnixListener)
+	ul.SetUnlinkOnClose(false)
+	lf, err := ul.File()
+	ul.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	spec := func(argv ...string) (Spec, *syncBuffer) {
+		n++
+		out := &syncBuffer{}
+		return withTestLibrary(t, Spec{
+			// The library maps the container's paths, its children's
+			// among them, under the root the engine names.
+			Root: root, Argv: argv, Env: []string{"PATH=/", "SANDBOX_ROOT=" + root},
+			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)},
+			ProfilePath: filepath.Join(state, fmt.Sprintf("profile-%d.sb", n)), Stdout: out, Stderr: out,
+			Limits: Limits{MemoryMiB: 64},
+		}), out
+	}
+	// The main process, which starts the anchor, holds.
+	ms, _ := spec("/hog", "hold")
+	ms.AnchorListener = lf
+	main, err := Start(ms)
+	lf.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { main.KillAll() })
+
+	hs, out := spec("/hog")
+	if p := runToEnd(t, hs); p.ExitCode() != 128+int(syscall.SIGKILL) {
+		t.Errorf("a process at its limit: exit %d, %q", p.ExitCode(), out.String())
+	}
+	es, out := spec("/hog")
+	es.Anchor = sock
+	if p := runToEnd(t, es); p.ExitCode() != 128+int(syscall.SIGKILL) {
+		t.Errorf("an exec at its limit: exit %d, %q", p.ExitCode(), out.String())
+	}
+	// The kernel keeps the limit across no fork and no exec, so a process
+	// gives each program it starts the limit its container's file holds
+	// (pathmap.MemoryFile), through posix_spawn and through fork and exec
+	// alike, whether or not it runs under one itself.
+	limits := filepath.Join(state, "limits")
+	if err := os.MkdirAll(limits, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(limits, "pids.max"), []byte("max\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(limits, "memory.max"), []byte("64\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, how := range []string{"spawn", "forkexec"} {
+		fs, out := spec("/hog", how)
+		fs.Limits = Limits{}
+		fs.Env = append(fs.Env, "FWS_PIDS="+filepath.Join(limits, "pids.max"))
+		fs.Profile.ReadFiles = []string{filepath.Join(limits, "pids.max"), filepath.Join(limits, "memory.max")}
+		if p := runToEnd(t, fs); strings.TrimSpace(out.String()) != "child: killed by signal 9" {
+			t.Errorf("a child started by %s under the container's memory file: exit %d, %q, want it killed", how, p.ExitCode(), out.String())
+		}
+	}
+	// Without a limit the same process runs on.
+	ns, out := spec("/hog")
+	ns.Limits = Limits{}
+	if p := runToEnd(t, ns); p.ExitCode() != 0 || !strings.Contains(out.String(), "survived") {
+		t.Errorf("a process without a limit: exit %d, %q", p.ExitCode(), out.String())
+	}
+}

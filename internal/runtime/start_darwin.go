@@ -44,6 +44,9 @@ func spawnArgs(s Spec, path string, argv []string, compiled string, ceiling uint
 	if s.Limits.QoSClamp != QoSNone {
 		args = append(args, "-q", strconv.Itoa(int(s.Limits.QoSClamp)))
 	}
+	if s.Limits.MemoryMiB > 0 {
+		args = append(args, "-m", strconv.Itoa(s.Limits.MemoryMiB))
+	}
 	for _, r := range s.Limits.Rlimits {
 		args = append(args, "-r", fmt.Sprintf("%d:%d:%d", r.Resource, r.Cur, r.Max))
 	}
@@ -157,7 +160,7 @@ func Start(s Spec) (*Process, error) {
 		}
 	}
 	if s.Anchor != "" {
-		req := anchorRequest{Path: exe, Argv: argv, Env: withLibrary(s.Env, s.Library), Dir: wd, TTY: s.TTY != nil}
+		req := anchorRequest{Path: exe, Argv: argv, Env: withLibrary(s.Env, s.Library), Dir: wd, TTY: s.TTY != nil, MemoryMiB: s.Limits.MemoryMiB}
 		pid, dec, conn, err := startInAnchor(s.Anchor, req, stdio)
 		closeAll(childEnds)
 		if err != nil {

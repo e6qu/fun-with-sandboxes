@@ -60,11 +60,12 @@ One pull request open at a time.
    looks for the Linux one it installs ([LIMITATIONS](LIMITATIONS.md)).
    Next: Chromium's own sandbox inside a container's, so that
    `--no-sandbox` goes.
-2. **Starts and limits.** `fwsroot`'s cost to the loader cut by interposing
-   fewer functions; per-process memory limits in the kernel if CI's jetsam
-   experiment shows macOS enforces them; the engine's lock split where
-   `-debug` timings still show long holds. The path mapping's fuzzer runs
-   in CI's macOS jobs.
+2. **Starts and limits.** In #71: per-process memory limits in the
+   kernel, jetsam's, which CI's experiment showed macOS enforces. Then
+   `fwsroot`'s cost to the loader cut by interposing fewer functions. The
+   engine's lock needs no split yet: a sharded e2e run's `-debug` log
+   shows five waits over 100 ms, the longest 557 ms, all behind a
+   create.
 3. **Names and pods.** A DNS forwarder at each container's address, so
    that `dig` and Go's pure resolver reach its servers; Network.framework's
    lookups; IPv6-only networks' members seen across nodes, and kind's IPv6
@@ -79,5 +80,3 @@ One pull request open at a time.
 
 - Whether Chromium's helpers can keep a sandbox of their own inside a
   container's: today a Chromium-based application takes `--no-sandbox`.
-- Whether macOS enforces a jetsam limit an unprivileged parent sets: CI's
-  `jetsam experiment` step prints the answer.

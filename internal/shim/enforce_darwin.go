@@ -140,9 +140,17 @@ func (e *enforcer) watchLocked(pid int) error {
 	if e.kq < 0 {
 		return nil
 	}
-	ev := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_CLEAR, Fflags: unix.NOTE_FORK | unix.NOTE_EXEC | unix.NOTE_EXIT}
+	// NOTE_EXIT_DETAIL has the exit say whether the kernel killed the
+	// process at its memory limit, which it tells any process watching.
+	ev := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_CLEAR, Fflags: unix.NOTE_FORK | unix.NOTE_EXEC | unix.NOTE_EXIT | unix.NOTE_EXIT_DETAIL}
 	_, err := unix.Kevent(e.kq, []unix.Kevent_t{ev}, nil, nil)
 	return err
+}
+
+// killedAtLimit reports whether a process's exit event says the kernel
+// killed it at its memory limit (runtime.Limits.MemoryMiB).
+func killedAtLimit(ev unix.Kevent_t) bool {
+	return ev.Fflags&unix.NOTE_EXIT_DETAIL != 0 && ev.Data&unix.NOTE_EXIT_DETAIL_MASK == unix.NOTE_EXIT_MEMORY
 }
 
 // followLocked admits the children of the given members, and theirs, as
@@ -225,6 +233,22 @@ func (e *enforcer) close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.kq >= 0 {
+		// The loop may end before it reads the main process's exit, which
+		// ends the container: whether the kernel killed it at its memory
+		// limit is in that event.
+		events := make([]unix.Kevent_t, 16)
+		for {
+			n, _ := unix.Kevent(e.kq, nil, events, &unix.Timespec{})
+			for _, ev := range events[:max(n, 0)] {
+				if ev.Filter == unix.EVFILT_PROC && ev.Fflags&unix.NOTE_EXIT != 0 && killedAtLimit(ev) {
+					e.oom = true
+					e.oomKills++
+				}
+			}
+			if n < len(events) {
+				break
+			}
+		}
 		unix.Close(e.kq)
 		e.kq = -1
 	}
@@ -276,6 +300,10 @@ func (e *enforcer) loop() {
 				}
 			}
 			if exited {
+				if killedAtLimit(ev) {
+					e.oom = true
+					e.oomKills++
+				}
 				e.removeLocked(pid)
 			}
 		}

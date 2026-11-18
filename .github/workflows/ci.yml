@@ -98,9 +98,11 @@ jobs:
         env:
           FWS_PATH_FUZZ_SECONDS: "120"
         run: go test -count=1 -v -run '^TestPathMappingFuzz$' ./internal/pathmap
-      # Whether macOS enforces a fatal per-process memory limit an
-      # unprivileged parent sets (TestJetsamLimitExperiment), printed.
+      # What macOS lets an unprivileged process do with its children's
+      # jetsam memory limits (TestJetsamLimitExperiment), printed even when
+      # an earlier step failed.
       - name: jetsam experiment
+        if: ${{ !cancelled() }}
         run: go test -v -count=1 -run TestJetsamLimitExperiment ./internal/runtime
       # What a container's processes pay for each system call the path
       # library interposes, beside the same call made natively.
