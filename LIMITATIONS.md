@@ -346,7 +346,9 @@ by a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   and so `URLSession`, reaches the names the container's `/etc/hosts` and
   its stack answer, through a stand-in for the private dnssd client it
   resolves with, and connects to them through `connectx`, which the
-  library routes as it does `connect`; the names a container with DNS
+  library routes as it does `connect`, though the remote endpoint it
+  reports is the host port or router the connection went through; the
+  names a container with DNS
   settings of its own resolves through its router still go to the host's
   resolver there (*not built yet*). A program that sends
   DNS itself (`dig`, Go's pure resolver) to a server outside the
