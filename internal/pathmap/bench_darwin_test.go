@@ -43,7 +43,18 @@ func BenchmarkCalls(b *testing.B) {
 	// many interposes every function fwsroot does, each with a stub that
 	// only jumps to it: the loader's cost of fwsroot's interposing alone,
 	// apart from what its initializer does.
-	interposers["many"] = manyInterposer(b)
+	syms := interposed(b)
+	interposers["many"] = interposer(b, "many", syms)
+	// many-N interpose an eighth of them each, in fwsroot.c's order: which
+	// of fwsroot's functions its cost to a start comes from.
+	const groups = 8
+	var groupModes []string
+	for g := range groups {
+		name := fmt.Sprintf("many-%d", g)
+		lo, hi := g*len(syms)/groups, (g+1)*len(syms)/groups
+		interposers[name] = interposer(b, name, syms[lo:hi])
+		groupModes = append(groupModes, name)
+	}
 	for _, op := range []string{"getpid", "getuid", "open", "stat", "stat-missing", "fstat", "pread", "readdir", "socket", "spawn", "started"} {
 		// empty inserts a library that does nothing: what the loader costs.
 		// bare inserts fwsroot without a container's variables: what its
@@ -52,18 +63,22 @@ func BenchmarkCalls(b *testing.B) {
 		if op == "spawn" || op == "started" {
 			modes = append(modes, "one", "few", "many")
 		}
+		if op == "spawn" {
+			modes = append(modes, groupModes...)
+		}
 		for _, mode := range modes {
 			b.Run(op+"/"+mode, func(b *testing.B) {
 				dir, env := root, []string(nil)
 				switch mode {
-				case "one", "few", "many":
-					env = []string{"DYLD_INSERT_LIBRARIES=" + interposers[mode]}
+				case "native":
 				case "empty":
 					env = []string{"DYLD_INSERT_LIBRARIES=" + empty}
 				case "bare":
 					env = []string{"DYLD_INSERT_LIBRARIES=" + lib}
 				case "fwsroot":
 					dir, env = "", []string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_ROOT=" + root}
+				default:
+					env = []string{"DYLD_INSERT_LIBRARIES=" + interposers[mode]}
 				}
 				run := func(n int) float64 {
 					cmd := exec.Command(bin, op, strconv.Itoa(n), dir)
@@ -118,10 +133,9 @@ func interposed(tb testing.TB) []string {
 	return syms
 }
 
-// manyInterposer builds a library that interposes every function fwsroot
-// does with a stub that jumps to the function, and returns its path.
-func manyInterposer(tb testing.TB) string {
-	syms := interposed(tb)
+// interposer builds a library that interposes each of syms with a stub
+// that jumps to it, and returns its path.
+func interposer(tb testing.TB, name string, syms []string) string {
 	var asm strings.Builder
 	asm.WriteString(".text\n")
 	for i, s := range syms {
@@ -132,13 +146,13 @@ func manyInterposer(tb testing.TB) string {
 		fmt.Fprintf(&asm, ".quad stub_%d\n.quad \"_%s\"\n", i, s)
 	}
 	dir := tb.TempDir()
-	src, lib := filepath.Join(dir, "many.s"), filepath.Join(dir, "many.dylib")
+	src, lib := filepath.Join(dir, name+".s"), filepath.Join(dir, name+".dylib")
 	if err := os.WriteFile(src, []byte(asm.String()), 0o644); err != nil {
 		tb.Fatal(err)
 	}
 	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-dynamiclib", "-Wl,-undefined,dynamic_lookup", "-o", lib, src).CombinedOutput(); err != nil {
-		tb.Fatalf("build the many library: %v\n%s", err, out)
+		tb.Fatalf("build the %s library: %v\n%s", name, err, out)
 	}
-	tb.Logf("many interposes %d functions", len(syms))
+	tb.Logf("%s interposes %s", name, strings.Join(syms, " "))
 	return lib
 }
