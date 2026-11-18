@@ -466,14 +466,6 @@ func TestMemoryLimitInTheKernel(t *testing.T) {
 	}
 	t.Cleanup(func() { main.KillAll() })
 
-	// What a process with the limit starts keeps it, through posix_spawn
-	// and through fork and exec alike.
-	for _, how := range []string{"spawn", "forkexec"} {
-		cs, out := spec("/hog", how)
-		if p := runToEnd(t, cs); strings.TrimSpace(out.String()) != "child: killed by signal 9" {
-			t.Errorf("a child started by %s under a limit: exit %d, %q, want it killed", how, p.ExitCode(), out.String())
-		}
-	}
 	hs, out := spec("/hog")
 	if p := runToEnd(t, hs); p.ExitCode() != 128+int(syscall.SIGKILL) {
 		t.Errorf("a process at its limit: exit %d, %q", p.ExitCode(), out.String())
@@ -483,8 +475,10 @@ func TestMemoryLimitInTheKernel(t *testing.T) {
 	if p := runToEnd(t, es); p.ExitCode() != 128+int(syscall.SIGKILL) {
 		t.Errorf("an exec at its limit: exit %d, %q", p.ExitCode(), out.String())
 	}
-	// A process started without the limit gives the programs it starts
-	// the one its container's file holds (pathmap.MemoryFile).
+	// The kernel keeps the limit across no fork and no exec, so a process
+	// gives each program it starts the limit its container's file holds
+	// (pathmap.MemoryFile), through posix_spawn and through fork and exec
+	// alike, whether or not it runs under one itself.
 	limits := filepath.Join(state, "limits")
 	if err := os.MkdirAll(limits, 0o755); err != nil {
 		t.Fatal(err)
