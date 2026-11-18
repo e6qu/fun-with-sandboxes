@@ -104,6 +104,12 @@ jobs:
       - name: jetsam experiment
         if: ${{ !cancelled() }}
         run: go test -v -count=1 -run TestJetsamLimitExperiment ./internal/runtime
+      # Which resolver functions a connection Network.framework makes by
+      # name calls (TestNetworkFrameworkExperiment), printed even when an
+      # earlier step failed.
+      - name: Network.framework experiment
+        if: ${{ !cancelled() }}
+        run: go test -v -count=1 -run TestNetworkFrameworkExperiment ./internal/pathmap
       # What a container's processes pay for each system call the path
       # library interposes, beside the same call made natively.
       - name: system calls through the path library
