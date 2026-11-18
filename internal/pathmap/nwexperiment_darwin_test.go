@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -37,7 +38,32 @@ func TestNetworkFrameworkExperiment(t *testing.T) {
 	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-framework", "Network", "-o", probe, "testdata/nwprobe/main.c").CombinedOutput(); err != nil {
 		t.Fatalf("build the probe: %v\n%s", err, out)
 	}
-	out, err := exec.Command(probe, append([]string{"exists"}, nwCandidates...)...).CombinedOutput()
+	// Every dnssd_ function the dnssd client library exports, from the
+	// SDK's stub and from the loader's own view of the library, joins the
+	// candidates.
+	candidates := append([]string(nil), nwCandidates...)
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		seen[c] = true
+	}
+	var listings []string
+	if sdk, err := exec.Command("/usr/bin/xcrun", "--show-sdk-path").Output(); err == nil {
+		if b, err := os.ReadFile(filepath.Join(strings.TrimSpace(string(sdk)), "usr/lib/system/libsystem_dnssd.tbd")); err == nil {
+			listings = append(listings, string(b))
+		}
+	}
+	if b, err := exec.Command("/usr/bin/dyld_info", "-exports", "/usr/lib/system/libsystem_dnssd.dylib").Output(); err == nil {
+		listings = append(listings, string(b))
+	}
+	for _, l := range listings {
+		for _, m := range regexp.MustCompile(`_?(dnssd_[A-Za-z0-9_]+)`).FindAllStringSubmatch(l, -1) {
+			if !seen[m[1]] {
+				seen[m[1]] = true
+				candidates = append(candidates, m[1])
+			}
+		}
+	}
+	out, err := exec.Command(probe, append([]string{"exists"}, candidates...)...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("exists: %v\n%s", err, out)
 	}
@@ -47,7 +73,7 @@ func TestNetworkFrameworkExperiment(t *testing.T) {
 			exported = append(exported, name)
 		}
 	}
-	t.Logf("Network.framework experiment, exported:\n%s", out)
+	t.Logf("Network.framework experiment, %d candidates, exported:\n%s", len(candidates), strings.Join(exported, "\n"))
 
 	// A tracer: each stub writes its function's name to stderr, then jumps
 	// to the function with the caller's registers and stack as they were.
@@ -102,6 +128,6 @@ func TestNetworkFrameworkExperiment(t *testing.T) {
 			hits = append(hits, fmt.Sprintf("%s x%d", n, c))
 		}
 		sort.Strings(hits)
-		t.Logf("Network.framework experiment, %s: %s\ncalled: %s", host, strings.Join(other, " | "), strings.Join(hits, ", "))
+		t.Logf("Network.framework experiment, %s: %s\ncalled:\n%s", host, strings.Join(other, " | "), strings.Join(hits, "\n"))
 	}
 }
