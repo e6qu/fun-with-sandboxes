@@ -342,8 +342,13 @@ by a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   container with `--dns`, `--dns-search` or `--dns-option` resolves the
   names its `/etc/hosts` and its stack do not answer through its router,
   which needs internet access. `getaddrinfo_async_start` and
-  `DNSServiceGetAddrInfo` answer as `getaddrinfo` does; Network.framework
-  still uses the host's resolver (*not built yet*). A program that sends
+  `DNSServiceGetAddrInfo` answer as `getaddrinfo` does. Network.framework,
+  and so `URLSession`, reaches the names the container's `/etc/hosts` and
+  its stack answer, through a stand-in for the private dnssd client it
+  resolves with, and connects to them through `connectx`, which the
+  library routes as it does `connect`; the names a container with DNS
+  settings of its own resolves through its router still go to the host's
+  resolver there (*not built yet*). A program that sends
   DNS itself (`dig`, Go's pure resolver) to a server outside the
   machine, over UDP or TCP, at an IPv4 or IPv6 address, reaches the
   router instead, which answers the A and AAAA

@@ -4880,6 +4880,26 @@ static int connect_dir(int dir, int fd, const struct sockaddr *sa, socklen_t giv
     return r;
 }
 
+// unbind_if lets go of the interface fd is bound to, as Network.framework
+// binds its sockets to the one its path takes: a connection the library
+// sends to loopback instead must leave it.
+static void unbind_if(int fd) {
+    unsigned int i = 0;
+    socklen_t n = sizeof i;
+    int e = errno;
+    if (getsockopt(fd, IPPROTO_IP, IP_BOUND_IF, &i, &n) == 0 && i) {
+        i = 0;
+        setsockopt(fd, IPPROTO_IP, IP_BOUND_IF, &i, sizeof i);
+    }
+    i = 0;
+    n = sizeof i;
+    if (getsockopt(fd, IPPROTO_IPV6, IPV6_BOUND_IF, &i, &n) == 0 && i) {
+        i = 0;
+        setsockopt(fd, IPPROTO_IPV6, IPV6_BOUND_IF, &i, sizeof i);
+    }
+    errno = e;
+}
+
 // route connects fd through the router at loopback port router to the
 // container port port of the member at addr, and reports whether it did:
 // at once, as a connection to loopback is made, whether or not fd blocks.
@@ -4890,6 +4910,7 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
     if (v6 && !(state_of(fd) & NET_V6) && to_ipv4(fd, SOCK_STREAM) == -1) {
         return -1;
     }
+    unbind_if(fd);
     int fl = fcntl(fd, F_GETFL);
     if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
@@ -5070,6 +5091,7 @@ static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
     if (sa && !to) {
         return -1;
     }
+    if (to != sa && dir == -1) unbind_if(fd);
     return dir == -1 ? connect(fd, to, len) : connect_dir(dir, fd, sa, given, to, len);
 }
 INTERPOSE(fws_connect, connect);
@@ -5096,9 +5118,75 @@ static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len
     if (sa && !to) {
         return -1;
     }
+    if (to != sa && dir == -1) unbind_if(fd);
     return dir == -1 ? connect_nocancel(fd, to, len) : connect_dir(dir, fd, sa, given, to, len);
 }
 INTERPOSE(fws_connect_nocancel, connect_nocancel);
+
+// connectx_data sends the data a connectx caller passes with its
+// connection, once fd is connected through the library, and reports how
+// much went in *len, as connectx does: none while the connection is in
+// progress, which the caller then sends itself.
+static int connectx_data(int fd, int r, const struct iovec *iov, unsigned int iovcnt, size_t *len) {
+    int e = errno;
+    if (len) *len = 0;
+    if (r == 0 && iov && iovcnt && len) {
+        ssize_t n = writev(fd, iov, (int)iovcnt);
+        if (n > 0) *len = (size_t)n;
+    }
+    errno = e;
+    return r;
+}
+
+// connectx, through which Network.framework connects, reaches a
+// container's addresses as connect does. A connection the library makes
+// itself leaves out the source address and interface the caller asked
+// for: it goes to a router on loopback.
+static int fws_connectx(int fd, const sa_endpoints_t *ep, sae_associd_t aid, unsigned int flags, const struct iovec *iov,
+                        unsigned int iovcnt, size_t *len, sae_connid_t *cid) {
+    const struct sockaddr *dst = ep ? ep->sae_dstaddr : NULL;
+    if (!dst) {
+        return connectx(fd, ep, aid, flags, iov, iovcnt, len, cid);
+    }
+    socklen_t dlen = ep->sae_dstaddrlen;
+    if (icmp_fd(fd)) {
+        return connectx_data(fd, icmp_connect(fd, dst, dlen), iov, iovcnt, len);
+    }
+    if (relay_bind(fd, dst, dlen) != 0) {
+        return -1;
+    }
+    if (dgram_unix(fd)) {
+        return connectx_data(fd, dgram_connect(fd, dst, dlen), iov, iovcnt, len);
+    }
+    int rr;
+    if (routed(fd, dst, dlen, &rr)) {
+        return connectx_data(fd, rr, iov, iovcnt, len);
+    }
+    struct sockaddr_storage b;
+    int dir = -1;
+    socklen_t l = dlen;
+    const struct sockaddr *to = remote(fd, dst, &l, &b, &dir);
+    if (!to) {
+        return -1;
+    }
+    if (dir != -1) {
+        return connectx_data(fd, connect_dir(dir, fd, dst, dlen, to, l), iov, iovcnt, len);
+    }
+    if (to == dst && l == dlen) {
+        return connectx(fd, ep, aid, flags, iov, iovcnt, len, cid);
+    }
+    sa_endpoints_t e = *ep;
+    e.sae_dstaddr = to;
+    e.sae_dstaddrlen = l;
+    if (e.sae_srcaddr && e.sae_srcaddr->sa_family != to->sa_family) {
+        e.sae_srcaddr = NULL;
+        e.sae_srcaddrlen = 0;
+    }
+    unbind_if(fd);
+    e.sae_srcif = 0;
+    return connectx(fd, &e, aid, flags, iov, iovcnt, len, cid);
+}
+INTERPOSE(fws_connectx, connectx);
 
 // A UDP socket on a port without a host port is a Unix datagram one, whose
 // datagrams the router relays with a header: the destination, as reach

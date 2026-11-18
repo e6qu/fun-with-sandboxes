@@ -429,3 +429,215 @@ static void fws_DNSServiceRefDeallocate(DNSServiceRef sdRef) {
     dns_release(j);
 }
 INTERPOSE(fws_DNSServiceRefDeallocate, DNSServiceRefDeallocate);
+
+// Network.framework resolves through libsystem_dnssd's private client,
+// dnssd_getaddrinfo, which asks mDNSResponder and hands each address back
+// as a result object Network.framework reads through the client's getters
+// (testdata/nwprobe, which TestNetworkFrameworkExperiment traced). A name
+// the container answers from its hosts file or its stack is asked of
+// mDNSResponder as localhost instead, whose answers come at once, and the
+// lookup's results stand for the container's addresses: the getters give
+// a result's address as the container's, of the same family, and its
+// hostname as the name asked, and a result of a family the container has
+// no address in is left out. Names the container's router resolves, for
+// a container with DNS settings of its own, go to the host's resolver.
+typedef struct fws_dnssd_gai *fws_dnssd_gai_t;
+typedef struct fws_dnssd_result *fws_dnssd_result_t;
+typedef void (^fws_dnssd_result_handler_t)(fws_dnssd_result_t *results, size_t count);
+extern void dnssd_getaddrinfo_set_hostname(fws_dnssd_gai_t gai, const char *hostname) __attribute__((weak_import));
+extern void dnssd_getaddrinfo_set_result_handler(fws_dnssd_gai_t gai, fws_dnssd_result_handler_t handler) __attribute__((weak_import));
+extern void dnssd_getaddrinfo_invalidate(fws_dnssd_gai_t gai) __attribute__((weak_import));
+extern const struct sockaddr *dnssd_getaddrinfo_result_get_address(fws_dnssd_result_t r) __attribute__((weak_import));
+extern const char *dnssd_getaddrinfo_result_get_hostname(fws_dnssd_result_t r) __attribute__((weak_import));
+extern const char *dnssd_getaddrinfo_result_get_actual_hostname(fws_dnssd_result_t r) __attribute__((weak_import));
+extern uint32_t dnssd_getaddrinfo_result_get_interface_index(fws_dnssd_result_t r) __attribute__((weak_import));
+
+// A lookup of a name the container answers, and its addresses.
+struct nw_lookup {
+    fws_dnssd_gai_t gai;
+    char name[256];
+    int has4, has6;
+    in_addr_t a4;
+    struct in6_addr a6;
+};
+
+// A result that stands for one of the container's addresses. The slots
+// are reused in turn: a result Network.framework still holds once
+// NW_RESULTS others came after it reads as mDNSResponder's.
+struct nw_result {
+    fws_dnssd_result_t r;
+    char name[256];
+    struct sockaddr_storage sa;
+};
+
+#define NW_LOOKUPS 64
+#define NW_RESULTS 256
+static pthread_mutex_t nw_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct nw_lookup nw_lookups[NW_LOOKUPS];
+static struct nw_result nw_results[NW_RESULTS];
+static unsigned nw_next;
+
+// nw_addresses finds the addresses the container answers name with
+// itself, from its hosts file or its stack, as fws_getaddrinfo does, and
+// reports whether it has any.
+static int nw_addresses(const char *name, struct nw_lookup *l) {
+    char n[256], c[NAME_MAX_LEN + 3];
+    size_t len = name ? strlen(name) : 0;
+    if (len == 0 || len >= sizeof n) return 0;
+    memcpy(n, name, len + 1);
+    if (n[len - 1] == '.') n[len - 1] = 0;
+    if (!*n || numeric_host(n)) return 0;
+    for (int pass = 0; pass < 2; pass++) {
+        l->has4 = hosts_addr(n, AF_INET, &l->a4);
+        l->has6 = hosts_addr(n, AF_INET6, &l->a6);
+        if (l->has4 || l->has6) return 1;
+        const char *cn = cluster_name(n, c, sizeof c);
+        if (cn == n) break;
+        strlcpy(n, cn, sizeof n);
+    }
+    l->has4 = member_address(n, &l->a4) == 1;
+    l->has6 = member_address6(n, &l->a6);
+    return l->has4 || l->has6;
+}
+
+// nw_lookup_of is gai's slot, or with take, a free one; nw_lock is held.
+static struct nw_lookup *nw_lookup_of(fws_dnssd_gai_t gai, int take) {
+    struct nw_lookup *free_slot = NULL;
+    for (int i = 0; i < NW_LOOKUPS; i++) {
+        if (nw_lookups[i].gai == gai) return &nw_lookups[i];
+        if (!nw_lookups[i].gai && !free_slot) free_slot = &nw_lookups[i];
+    }
+    return take ? free_slot : NULL;
+}
+
+// nw_result_of is the stand-in result r has, or NULL; nw_lock is held.
+static struct nw_result *nw_result_of(fws_dnssd_result_t r) {
+    for (int i = 0; i < NW_RESULTS; i++) {
+        if (nw_results[i].r == r) return &nw_results[i];
+    }
+    return NULL;
+}
+
+static void fws_dnssd_set_hostname(fws_dnssd_gai_t gai, const char *hostname) {
+    struct nw_lookup l = {gai};
+    int own = nw_addresses(hostname, &l);
+    pthread_mutex_lock(&nw_lock);
+    struct nw_lookup *slot = nw_lookup_of(gai, own);
+    if (own && slot) {
+        strlcpy(l.name, hostname, sizeof l.name);
+        *slot = l;
+    } else {
+        // A name the container does not answer, or one more lookup than
+        // there are slots for, is the host's.
+        if (slot) slot->gai = NULL;
+        own = 0;
+    }
+    pthread_mutex_unlock(&nw_lock);
+    dnssd_getaddrinfo_set_hostname(gai, own ? "localhost" : hostname);
+}
+INTERPOSE(fws_dnssd_set_hostname, dnssd_getaddrinfo_set_hostname);
+
+static void fws_dnssd_invalidate(fws_dnssd_gai_t gai) {
+    pthread_mutex_lock(&nw_lock);
+    struct nw_lookup *slot = nw_lookup_of(gai, 0);
+    if (slot) slot->gai = NULL;
+    pthread_mutex_unlock(&nw_lock);
+    dnssd_getaddrinfo_invalidate(gai);
+}
+INTERPOSE(fws_dnssd_invalidate, dnssd_getaddrinfo_invalidate);
+
+// nw_deliver passes a lookup's results to its handler: as they are for a
+// name the host answers, each forgetting what it stood for before, as a
+// result object freed may come again at the same address; for one the
+// container answers, those of the families it has addresses in, which
+// then stand for its addresses.
+static void nw_deliver(fws_dnssd_gai_t gai, fws_dnssd_result_handler_t handler, fws_dnssd_result_t *results, size_t count) {
+    fws_dnssd_result_t *kept = count ? malloc(count * sizeof *kept) : NULL;
+    size_t n = 0;
+    pthread_mutex_lock(&nw_lock);
+    struct nw_lookup *slot = nw_lookup_of(gai, 0), l = {0};
+    if (slot) l = *slot;
+    for (size_t i = 0; i < count; i++) {
+        struct nw_result *e = nw_result_of(results[i]);
+        if (e) e->r = NULL;
+        if (!slot || !kept) continue;
+        const struct sockaddr *sa = dnssd_getaddrinfo_result_get_address(results[i]);
+        struct sockaddr_storage ss = {0};
+        if (!sa) {
+            kept[n++] = results[i];
+            continue;
+        }
+        if (sa->sa_family == AF_INET && l.has4 && sa->sa_len >= sizeof(struct sockaddr_in) && sa->sa_len <= sizeof ss) {
+            memcpy(&ss, sa, sa->sa_len);
+            ((struct sockaddr_in *)&ss)->sin_addr.s_addr = l.a4;
+        } else if (sa->sa_family == AF_INET6 && l.has6 && sa->sa_len >= sizeof(struct sockaddr_in6) && sa->sa_len <= sizeof ss) {
+            memcpy(&ss, sa, sa->sa_len);
+            ((struct sockaddr_in6 *)&ss)->sin6_addr = l.a6;
+            ((struct sockaddr_in6 *)&ss)->sin6_scope_id = 0;
+        } else {
+            continue;
+        }
+        e = &nw_results[nw_next++ % NW_RESULTS];
+        e->r = results[i];
+        strlcpy(e->name, l.name, sizeof e->name);
+        e->sa = ss;
+        kept[n++] = results[i];
+    }
+    pthread_mutex_unlock(&nw_lock);
+    if (!slot || !kept) {
+        handler(results, count);
+    } else if (n) {
+        handler(kept, n);
+    }
+    free(kept);
+}
+
+static void fws_dnssd_set_result_handler(fws_dnssd_gai_t gai, fws_dnssd_result_handler_t handler) {
+    if (!handler) {
+        dnssd_getaddrinfo_set_result_handler(gai, handler);
+        return;
+    }
+    // The client copies the handler, and with it the caller's, which this
+    // one holds.
+    dnssd_getaddrinfo_set_result_handler(gai, ^(fws_dnssd_result_t *results, size_t count) {
+        nw_deliver(gai, handler, results, count);
+    });
+}
+INTERPOSE(fws_dnssd_set_result_handler, dnssd_getaddrinfo_set_result_handler);
+
+static const struct sockaddr *fws_dnssd_result_get_address(fws_dnssd_result_t r) {
+    pthread_mutex_lock(&nw_lock);
+    struct nw_result *e = nw_result_of(r);
+    const struct sockaddr *sa = e ? (const struct sockaddr *)&e->sa : NULL;
+    pthread_mutex_unlock(&nw_lock);
+    return sa ? sa : dnssd_getaddrinfo_result_get_address(r);
+}
+INTERPOSE(fws_dnssd_result_get_address, dnssd_getaddrinfo_result_get_address);
+
+static const char *fws_dnssd_result_get_hostname(fws_dnssd_result_t r) {
+    pthread_mutex_lock(&nw_lock);
+    struct nw_result *e = nw_result_of(r);
+    const char *name = e ? e->name : NULL;
+    pthread_mutex_unlock(&nw_lock);
+    return name ? name : dnssd_getaddrinfo_result_get_hostname(r);
+}
+INTERPOSE(fws_dnssd_result_get_hostname, dnssd_getaddrinfo_result_get_hostname);
+
+static const char *fws_dnssd_result_get_actual_hostname(fws_dnssd_result_t r) {
+    pthread_mutex_lock(&nw_lock);
+    struct nw_result *e = nw_result_of(r);
+    const char *name = e ? e->name : NULL;
+    pthread_mutex_unlock(&nw_lock);
+    return name ? name : dnssd_getaddrinfo_result_get_actual_hostname(r);
+}
+INTERPOSE(fws_dnssd_result_get_actual_hostname, dnssd_getaddrinfo_result_get_actual_hostname);
+
+// A stand-in result came on no interface of the host's: localhost's come
+// on loopback, which would scope the connection to it.
+static uint32_t fws_dnssd_result_get_interface_index(fws_dnssd_result_t r) {
+    pthread_mutex_lock(&nw_lock);
+    int own = nw_result_of(r) != NULL;
+    pthread_mutex_unlock(&nw_lock);
+    return own ? 0 : dnssd_getaddrinfo_result_get_interface_index(r);
+}
+INTERPOSE(fws_dnssd_result_get_interface_index, dnssd_getaddrinfo_result_get_interface_index);
