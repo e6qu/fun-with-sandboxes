@@ -15,7 +15,10 @@
 //   self-set:  whether an unlimited process may set its own limit;
 //   self-raise: whether a limited one may raise its own, from 64 to 128 MiB;
 //   self-lower: or lower it, from 64 to 48 MiB;
-//   child-set: whether a parent may set a running child's limit.
+//   child-set: whether a parent may set a running child's limit;
+//   exit-parent: what kqueue's NOTE_EXIT_DETAIL tells the parent of a
+//              process killed at its limit (NOTE_EXIT_MEMORY is 0x20000);
+//   exit-other: and what it tells a process that is not its parent.
 //
 // A limit reads as active/inactive MiB, each with F when fatal, or -1 for
 // none.
@@ -26,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/event.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -115,6 +119,29 @@ static int run(const char *mode, int mib) {
     return wait_for(pid);
 }
 
+// watch waits for pid's exit through kqueue, asking for its detail, and
+// prints what the event carries.
+static void watch(const char *what, pid_t pid) {
+    int kq = kqueue();
+    struct kevent ev;
+    EV_SET(&ev, pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT | NOTE_EXIT_DETAIL, 0, NULL);
+    if (kevent(kq, &ev, 1, NULL, 0, NULL) != 0) {
+        printf("%s: kevent: %s\n", what, strerror(errno));
+        close(kq);
+        return;
+    }
+    struct kevent got;
+    struct timespec ts = {30, 0};
+    int n = kevent(kq, NULL, 0, &got, 1, &ts);
+    if (n == 1) {
+        printf("%s: fflags 0x%x data 0x%lx, memory %s\n", what, got.fflags, (long)got.data,
+               (got.fflags & NOTE_EXIT_DETAIL) && (got.data & NOTE_EXIT_DETAIL_MASK) == NOTE_EXIT_MEMORY ? "yes" : "no");
+    } else {
+        printf("%s: no event (%d)\n", what, n);
+    }
+    close(kq);
+}
+
 static int hog(void) {
     for (int mib = STEP_MIB; mib <= MAX_MIB; mib += STEP_MIB) {
         char *p = malloc((size_t)STEP_MIB << 20);
@@ -173,6 +200,23 @@ int main(int argc, char **argv) {
     if (argc > 1) {
         const char *m = argv[1];
         if (strcmp(m, "hog") == 0) return hog();
+        if (strcmp(m, "hog-late") == 0) {
+            sleep(1);
+            return hog();
+        }
+        if (strcmp(m, "hogwrap") == 0) {
+            // Starts a late hog with a limit, tells its pid on descriptor
+            // 3, and waits for it.
+            posix_spawnattr_t a;
+            attrs(&a, 0, LIMIT_MIB);
+            char *hargv[] = {self, "hog-late", NULL};
+            pid_t pid;
+            if (posix_spawn(&pid, self, NULL, &a, hargv, environ) != 0) return 1;
+            write(3, &pid, sizeof pid);
+            close(3);
+            wait_for(pid);
+            return 0;
+        }
         if (strcmp(m, "tree") == 0) return tree();
         if (strcmp(m, "setexec") == 0) return setexec();
         if (strncmp(m, "report-", 7) == 0) {
@@ -216,6 +260,27 @@ int main(int argc, char **argv) {
         printf("child-set: %s, now %s\n", err ? strerror(err) : "allowed", l);
         kill(pid, SIGKILL);
         wait_for(pid);
+    }
+    // The parent of a process killed at its limit watches it exit.
+    attrs(&a, 0, LIMIT_MIB);
+    char *hargv[] = {self, "hog-late", NULL};
+    if (posix_spawn(&pid, self, NULL, &a, hargv, environ) == 0) {
+        watch("exit-parent", pid);
+        wait_for(pid);
+    }
+    // A process that is not its parent does.
+    int fds[2];
+    if (pipe(fds) == 0) {
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        posix_spawn_file_actions_adddup2(&fa, fds[1], 3);
+        char *wargv[] = {self, "hogwrap", NULL};
+        pid_t wrap, hogpid;
+        if (posix_spawn(&wrap, self, &fa, NULL, wargv, environ) == 0) {
+            close(fds[1]);
+            if (read(fds[0], &hogpid, sizeof hogpid) == sizeof hogpid) watch("exit-other", hogpid);
+            wait_for(wrap);
+        }
     }
     printf("result: done\n");
     return 0;
