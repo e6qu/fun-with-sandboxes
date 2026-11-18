@@ -2,10 +2,12 @@ package pathmap
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -45,16 +47,6 @@ func BenchmarkCalls(b *testing.B) {
 	// apart from what its initializer does.
 	syms := interposed(b)
 	interposers["many"] = interposer(b, "many", syms)
-	// many-N interpose an eighth of them each, in fwsroot.c's order: which
-	// of fwsroot's functions its cost to a start comes from.
-	const groups = 8
-	var groupModes []string
-	for g := range groups {
-		name := fmt.Sprintf("many-%d", g)
-		lo, hi := g*len(syms)/groups, (g+1)*len(syms)/groups
-		interposers[name] = interposer(b, name, syms[lo:hi])
-		groupModes = append(groupModes, name)
-	}
 	for _, op := range []string{"getpid", "getuid", "open", "stat", "stat-missing", "fstat", "pread", "readdir", "socket", "spawn", "started"} {
 		// empty inserts a library that does nothing: what the loader costs.
 		// bare inserts fwsroot without a container's variables: what its
@@ -62,9 +54,6 @@ func BenchmarkCalls(b *testing.B) {
 		modes := []string{"native", "empty", "bare", "fwsroot"}
 		if op == "spawn" || op == "started" {
 			modes = append(modes, "one", "few", "many")
-		}
-		if op == "spawn" {
-			modes = append(modes, groupModes...)
 		}
 		for _, mode := range modes {
 			b.Run(op+"/"+mode, func(b *testing.B) {
@@ -155,4 +144,70 @@ func interposer(tb testing.TB, name string, syms []string) string {
 	}
 	tb.Logf("%s interposes %s", name, strings.Join(syms, " "))
 	return lib
+}
+
+// BenchmarkStartCost times how long a process takes to reach main under
+// each library, and under libraries that interpose each eighth of
+// fwsroot's functions, in fwsroot.c's order: what each part of fwsroot's
+// interposing costs a container's every process start. A CI runner's
+// speed drifts more than these differ, so each round starts each case once,
+// in a shuffled order, and each case's median over the rounds is printed.
+func BenchmarkStartCost(b *testing.B) {
+	root := containerRoot(b)
+	bin := filepath.Join(root, "bin", "bench")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-O2", "-Wall", "-Werror", "-o", bin, "testdata/bench/main.c").CombinedOutput(); err != nil {
+		b.Fatalf("build the benchmark: %v\n%s", err, out)
+	}
+	lib, err := Build(b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+	empty := filepath.Join(b.TempDir(), "empty.dylib")
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-dynamiclib", "-o", empty, "testdata/empty/empty.c").CombinedOutput(); err != nil {
+		b.Fatalf("build the empty library: %v\n%s", err, out)
+	}
+	syms := interposed(b)
+	type mode struct {
+		name string
+		env  []string
+	}
+	modes := []mode{
+		{"native", nil},
+		{"empty", []string{"DYLD_INSERT_LIBRARIES=" + empty}},
+		{"many", []string{"DYLD_INSERT_LIBRARIES=" + interposer(b, "many", syms)}},
+		{"fwsroot", []string{"DYLD_INSERT_LIBRARIES=" + lib, "SANDBOX_ROOT=" + root}},
+	}
+	const groups = 8
+	for g := range groups {
+		name := fmt.Sprintf("many-%d", g)
+		part := syms[g*len(syms)/groups : (g+1)*len(syms)/groups]
+		modes = append(modes, mode{name, []string{"DYLD_INSERT_LIBRARIES=" + interposer(b, name, part)}})
+		fmt.Printf("%s: %s\n", name, strings.Join(part, " "))
+	}
+	const rounds = 25
+	times := map[string][]float64{}
+	for range b.N {
+		for range rounds {
+			order := slices.Clone(modes)
+			rand.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
+			for _, m := range order {
+				cmd := exec.Command(bin, "started", "1", root)
+				cmd.Env = m.env
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					b.Fatalf("%s: %v\n%s", m.name, err, out)
+				}
+				ns, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+				if err != nil {
+					b.Fatalf("%s printed %q", m.name, out)
+				}
+				times[m.name] = append(times[m.name], ns)
+			}
+		}
+	}
+	for _, m := range modes {
+		t := slices.Clone(times[m.name])
+		slices.Sort(t)
+		fmt.Printf("start cost %-8s median %6.2f ms, quartiles %6.2f-%6.2f ms\n", m.name, t[len(t)/2]/1e6, t[len(t)/4]/1e6, t[3*len(t)/4]/1e6)
+	}
 }
