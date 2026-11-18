@@ -448,7 +448,9 @@ func TestMemoryLimitInTheKernel(t *testing.T) {
 		n++
 		out := &syncBuffer{}
 		return withTestLibrary(t, Spec{
-			Root: root, Argv: argv, Env: []string{"PATH=/"},
+			// The library maps the container's paths, its children's
+			// among them, under the root the engine names.
+			Root: root, Argv: argv, Env: []string{"PATH=/", "SANDBOX_ROOT=" + root},
 			Profile:     seatbelt.Spec{Root: root, StateRoot: state, IPCPrefix: seatbelt.IPCPrefixFor(root)},
 			ProfilePath: filepath.Join(state, fmt.Sprintf("profile-%d.sb", n)), Stdout: out, Stderr: out,
 			Limits: Limits{MemoryMiB: 64},
