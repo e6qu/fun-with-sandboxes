@@ -63,6 +63,11 @@ var MachServices = []string{
 	"com.apple.diagnosticd",
 	"com.apple.trustd",
 	"com.apple.trustd.agent",
+	// Changes to the files a program watches, as a dev server or an
+	// editor's server watches its workspace; without it libuv's watcher
+	// fails as if out of files. fseventsd sends a sandboxed client only
+	// the events of paths it may read.
+	"com.apple.FSEvents",
 }
 
 // GUIMachServices are the services of the user's login session a container
@@ -129,9 +134,6 @@ var GUIMachServices = []string{
 	// What a file's volume is, which AppKit asks of an application's own
 	// bundle as it starts.
 	"com.apple.DiskArbitration.diskarbitrationd",
-	// Changes to the files a program watches, as an editor watches its
-	// workspace; without it libuv's watcher fails as if out of files.
-	"com.apple.FSEvents",
 }
 
 // GUIReadPaths are host trees outside a container's root that hold what

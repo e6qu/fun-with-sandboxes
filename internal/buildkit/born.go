@@ -76,7 +76,7 @@ func readBorn(dir string) (at time.Time, parent string, ok bool) {
 // directory and need not change the file. It returns nil, so that every
 // such file's content is compared, where the stamps say nothing of the
 // pair.
-func settledSince(lower, upper string) func(l, u, lowerDir, upperDir os.FileInfo) bool {
+func settledSince(lower, upper string) image.Settled {
 	upperBorn, src, ok := readBorn(upper)
 	if !ok {
 		return nil
@@ -96,16 +96,8 @@ func settledSince(lower, upper string) func(l, u, lowerDir, upperDir os.FileInfo
 		}
 		lowerBorn = at
 	}
-	return func(l, u, lowerDir, upperDir os.FileInfo) bool {
-		return before(u, upperBorn) && before(upperDir, upperBorn) && before(l, lowerBorn) && before(lowerDir, lowerBorn)
+	return func(_ string, l, u, lowerDir, upperDir os.FileInfo) bool {
+		return image.ChangedBefore(u, upperBorn) && image.ChangedBefore(upperDir, upperBorn) &&
+			image.ChangedBefore(l, lowerBorn) && image.ChangedBefore(lowerDir, lowerBorn)
 	}
-}
-
-// before reports whether fi's inode last changed strictly before t.
-func before(fi os.FileInfo, t time.Time) bool {
-	if fi == nil {
-		return false
-	}
-	c := image.ChangeTime(fi)
-	return !c.IsZero() && c.Before(t)
 }

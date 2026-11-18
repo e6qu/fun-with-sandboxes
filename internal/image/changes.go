@@ -20,11 +20,26 @@ import (
 type DiffOptions struct {
 	// SourceDateEpoch caps the modification times the layer carries.
 	SourceDateEpoch *time.Time
-	// Settled, when set, reports whether a regular file of upper whose
-	// size, mode and modification time equal its counterpart's in lower
-	// holds the same content too, without reading either: lowerDir and
-	// upperDir are the directories that hold the two files.
-	Settled func(lower, upper, lowerDir, upperDir os.FileInfo) bool
+	// Settled, when set, reports whether the regular file rel of upper,
+	// whose size, mode and modification time equal its counterpart's in
+	// lower, holds the same content too, without reading either: lowerDir
+	// and upperDir are the directories that hold the two files.
+	Settled Settled
+}
+
+// Settled is DiffOptions.Settled's test; rel is the file's path from the
+// trees' roots, with a leading slash.
+type Settled func(rel string, lower, upper, lowerDir, upperDir os.FileInfo) bool
+
+// ChangedBefore reports whether fi's inode last changed strictly before t:
+// a file written, renamed, linked or chmodded since has a later change
+// time, which no unprivileged call can set back.
+func ChangedBefore(fi os.FileInfo, t time.Time) bool {
+	if fi == nil {
+		return false
+	}
+	c := ChangeTime(fi)
+	return !c.IsZero() && c.Before(t)
 }
 
 // WriteDiff writes the changes from lower to upper as an uncompressed OCI
@@ -77,7 +92,7 @@ func WriteDiff(ctx context.Context, w io.Writer, lower, upper string, o DiffOpti
 // as a change: the mode and owner a container sees (see WriteDiff) count,
 // and a file whose size and modification time match reads as unchanged
 // without a look at its content where settled says so.
-func Changes(ctx context.Context, lower, upper string, settled func(lower, upper, lowerDir, upperDir os.FileInfo) bool, fn fs.ChangeFunc) error {
+func Changes(ctx context.Context, lower, upper string, settled Settled, fn fs.ChangeFunc) error {
 	ufi, err := os.Lstat(upper)
 	if err != nil {
 		return err
@@ -95,7 +110,7 @@ func Changes(ctx context.Context, lower, upper string, settled func(lower, upper
 type differ struct {
 	ctx          context.Context
 	lower, upper string
-	settled      func(lower, upper, lowerDir, upperDir os.FileInfo) bool
+	settled      Settled
 	fn           fs.ChangeFunc
 }
 
@@ -213,7 +228,7 @@ func (d *differ) same(p string, lfi, ufi, lowerDir, upperDir os.FileInfo) (bool,
 	// continuity takes it.
 	case ufi.ModTime().Nanosecond() != 0, ufi.Size() == 0:
 		return true, nil
-	case d.settled != nil && d.settled(lfi, ufi, lowerDir, upperDir):
+	case d.settled != nil && d.settled(p, lfi, ufi, lowerDir, upperDir):
 		return true, nil
 	}
 	return sameContent(lp, up)

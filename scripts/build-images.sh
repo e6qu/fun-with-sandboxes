@@ -21,6 +21,10 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 # A runner's resolver drops a lookup now and then, and Nix retries a
 # download within a fraction of a second, so a failure to reach a cache is
 # tried again after a pause; any other failure, such as a build's, is not.
+# A Nix that finds no network as it starts skips the binary cache and
+# builds from source what Hydra built, down to the bootstrap tools, whose
+# sources' mirrors move: that run is tried again too, once the network is
+# back, so that it substitutes as it should.
 retry_net() {
   local err attempt
   err=$(mktemp)
@@ -33,7 +37,7 @@ retry_net() {
       rm -f "$err"
       return 0
     fi
-    if [ "$attempt" -lt 3 ] && grep -qE 'Could not resolve host|unable to download|Connection reset|timed out' "$err"; then
+    if [ "$attempt" -lt 3 ] && grep -qE "Could not resolve host|unable to download|Connection reset|timed out|you don't have Internet access|cannot download .* from any mirror" "$err"; then
       echo "retrying after a network failure: $*" >&2
       sleep $((attempt * 15))
       continue

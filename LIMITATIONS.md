@@ -25,10 +25,12 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   size and what a prune reports reclaimed count more than the disk gave
   up. A layer with a hard link into a lower layer is unpacked for each
   image that holds it rather than shared.
-- **`docker commit`, `docker diff` and `docker ps -s` read files** whose
+- **`docker commit`, `docker diff` and `docker ps -s` read a file** whose
   size and whole-second modification time match the image's, to tell
-  whether they changed: slow on a large image (*not built yet*: a stamp
-  of when the container's root was cloned would spare the read).
+  whether it changed, only where it, or its directory, changed after the
+  container was created: a stamp of when its root was cloned spares the
+  rest. A container created by an earlier engine has no stamp, and each
+  such file of it is read.
 - **VS Code's Dev Containers extension installs a Linux server.** The Dev
   Containers CLI works (`devcontainer up`, `exec`), and VS Code's macOS
   server runs in a dev container. The extension itself creates the
@@ -36,8 +38,10 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   for Linux whatever the container runs, which no darwin container can
   run. With the macOS server of the window's commit put where the
   extension looks (`/vscode/vscode-server/bin/linux-arm64/<commit>` in its
-  `vscode` volume) it skips the install and starts its helper in the
-  container, and goes no further yet: *not built yet*.
+  `vscode` volume) it skips the install, starts that server in the
+  container and connects the window to it. Seeding the volume by hand is
+  the only way yet: *not built yet* is the engine putting the macOS server
+  there itself.
 - **Catalog images are built by Nix**, mostly from source rather than the
   vendors' binaries; MongoDB and Vault are the vendors' own macOS builds.
 - **Catalog images differ from upstream's where Linux parts are missing.**
@@ -84,7 +88,11 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   `-w` behave as in Docker. Its limits:
   - A path names the root's file when the root holds it, or its parent;
     any other path, such as `/dev` or the system frameworks, names the
-    host's. Symbolic links resolve inside the container, as under chroot.
+    host's. A container's `/proc` is an empty directory: no process is
+    listed there, and `/proc/self/ns/mnt` names the container's one mount
+    namespace. Symbolic links resolve inside the container, as under chroot;
+    a path whose links loop fails with `ENOENT` where Linux gives
+    `ELOOP`.
   - Programs Apple signs, statically linked programs and ones making
     system calls without libSystem load no library and see host paths,
     pids, ports and the host's network. A program signed with the
@@ -176,8 +184,7 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
     takes an address of each family from the first subnet with room, or
     the one holding the address it names. On an IPv6-only network
     (`enable_ipv4: false`) members hold, report and resolve to IPv6
-    addresses only, but a container's interface list still shows its
-    member address in `127.88.0.0/16` beside the IPv6 one, and pods of
+    addresses only, and its interface lists the IPv6 one alone; pods of
     other nodes do not see its members (*not built yet*). There is no
     link-local IPv6 address.
   - A container keeps its addresses while it exists, where Docker frees
@@ -243,12 +250,13 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
 - **The kubelet applies no Linux settings.** A darwin node sends the
   runtime no Linux resources or security context, so `resources.limits`
   and `securityContext.runAsUser` take no effect.
-- **The CRI does not serve** `CheckpointContainer`,
-  `GetContainerEvents`, the metrics RPCs or `UpdatePodSandboxResources`,
-  (*not built yet*). It drops a pod's DNS settings, which the kubelet
-  sends for every pod: their servers name cluster DNS, a Service the
-  container's router cannot reach, and the library answers cluster
-  names from the stack's members.
+- **The CRI refuses checkpoints**: macOS cannot save a running
+  process's state. `UpdatePodSandboxResources` changes nothing, as
+  containerd's does not: the engine limits each container. Pod metrics
+  count CPU time in whole seconds. A pod's search domains and options go
+  into its `resolv.conf`, and the library completes the cluster names it
+  answers with them; its DNS servers, which name cluster DNS, go unused,
+  and other names resolve through the host's resolver.
 - **Pod networks are IPv4.** A pod takes its node's pod network address;
   other nodes' pods reach it through the routers, and the host's engine
   does not route to it. A dual-stack pod CIDR's IPv4 subnet alone is
@@ -260,10 +268,10 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   clients on the node's loopback count as one client, and a UDP flow a
   pod's router opened before its Service gained affinity keeps none.
   SCTP ports are not served: macOS has no SCTP. An `ExternalName`
-  Service's name is an alias the egress proxy follows, but the container
-  library does not resolve it (*not built yet*). A Service's short name
-  answers in every namespace. Changes arrive within the proxy's poll, a
-  second by default.
+  Service's name is an alias of the name it gives, as a CNAME record is.
+  A Service's short name answers in every namespace, its own namespace's
+  first in a pod, whose search domains name it. Changes arrive within the
+  proxy's poll, a second by default.
 - **kind runs on `fws/kind-node` only.** Nodes run no systemd or
   containerd: `ctr` supports `images import`, `tag` and `ls`, and
   `journalctl` reads the node's logs. `containerdConfigPatches` and IPv6
@@ -325,12 +333,12 @@ Limits are enforced by the container's supervisor, `fws-shim`, every
   The UTS namespace comes with the network; the user and cgroup
   namespaces cannot be shared, as containers have none. `generate kube`,
   `play kube`, checkpoints and quadlets are not served.
-- **DNS settings reach `getaddrinfo` and `gethostbyname` alone.** A
+- **DNS settings reach the libc resolver alone.** A
   container with `--dns`, `--dns-search` or `--dns-option` resolves the
   names its `/etc/hosts` and its stack do not answer through its router,
-  which needs internet access. Asynchronous lookups
-  (`getaddrinfo_async_start`, `DNSServiceGetAddrInfo`, Network.framework)
-  still use the host's resolver, and a program that sends DNS itself
+  which needs internet access. `getaddrinfo_async_start` and
+  `DNSServiceGetAddrInfo` answer as `getaddrinfo` does; Network.framework
+  still uses the host's resolver, and a program that sends DNS itself
   (`dig`, Go's pure resolver) cannot reach the servers (*not built
   yet*). Of the options, `ndots`, `timeout` and `attempts` take effect.
   A server in the stack, or a Service, cannot serve.

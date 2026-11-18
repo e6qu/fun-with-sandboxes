@@ -55,6 +55,12 @@ type Member struct {
 	// an IPv6 subnet and no IPv4 one of its own is not one of them: its
 	// members reach one another over IPv4 at their member addresses.
 	Only6 []string
+	// Search is the search domains the member's resolver completes a name
+	// with, and Ndots how many dots a name needs to be tried as it is
+	// first, as its resolv.conf names them: the stack's egress proxy
+	// completes the names a client asks it for as the client would.
+	Search []string
+	Ndots  int
 	// Block is the host ports of a foreign member's stack where no
 	// allocator of the reader's engine knows that stack, as for a pod of
 	// another node: a datagram to the member is sent from a free port of
@@ -222,7 +228,7 @@ func Format(ms []Member) []byte {
 			address = "=" + m.Alias
 		}
 		fmt.Fprintf(&b, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s", address, strings.Join(m.Names, " "), strings.Join(ports, ","), m.Router, strings.Join(m.Networks, " "), foreign, m.Stack, strings.Join(links, " "))
-		if len(m.Subnets) > 0 || len(m.Only6) > 0 || !m.Block.IsZero() {
+		if len(m.Subnets) > 0 || len(m.Only6) > 0 || !m.Block.IsZero() || len(m.Search) > 0 {
 			subnets := make([]string, len(m.Subnets), len(m.Subnets)+len(m.Only6))
 			for i, s := range m.Subnets {
 				subnets[i] = s.Network + "=" + s.Address.String()
@@ -233,8 +239,16 @@ func Format(ms []Member) []byte {
 			}
 			fmt.Fprintf(&b, "\t%s", strings.Join(subnets, " "))
 		}
-		if !m.Block.IsZero() {
-			fmt.Fprintf(&b, "\t%s", m.Block)
+		if !m.Block.IsZero() || len(m.Search) > 0 {
+			b.WriteByte('\t')
+			if !m.Block.IsZero() {
+				b.WriteString(m.Block.String())
+			}
+		}
+		if len(m.Search) > 0 {
+			// An eleventh field, which the container library, reading its
+			// own resolv.conf, passes over.
+			fmt.Fprintf(&b, "\tndots:%d %s", m.Ndots, strings.Join(m.Search, " "))
 		}
 		b.WriteByte('\n')
 	}
@@ -246,7 +260,7 @@ func Parse(b []byte) []Member {
 	var out []Member
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) < 6 || len(f) > 10 || f[0] == "" || f[0] == "=" {
+		if len(f) < 6 || len(f) > 11 || f[0] == "" || f[0] == "=" {
 			continue
 		}
 		m := Member{Address: f[0], Names: strings.Fields(f[1]), Ports: map[string]int{}, Networks: strings.Fields(f[4]), Foreign: f[5] == "1"}
@@ -256,8 +270,17 @@ func Parse(b []byte) []Member {
 		if len(f) >= 7 {
 			m.Stack = f[6]
 		}
-		if len(f) == 10 {
+		if len(f) >= 10 && f[9] != "" {
 			m.Block = parseBlock(f[9])
+		}
+		if len(f) == 11 {
+			for _, t := range strings.Fields(f[10]) {
+				if v, ok := strings.CutPrefix(t, "ndots:"); ok {
+					m.Ndots, _ = strconv.Atoi(v)
+				} else {
+					m.Search = append(m.Search, t)
+				}
+			}
 		}
 		if len(f) >= 9 {
 			for _, t := range strings.Fields(f[8]) {
@@ -376,6 +399,33 @@ func Lookup(ms []Member, self, host string) (Member, bool) {
 		}
 	}
 	return Member{}, false
+}
+
+// Complete is the name host stands for as the member at self resolves it,
+// before aliases: the first of the names its search domains make of host,
+// in the order its resolver tries them, that a member it sees answers to,
+// as Lookup finds them; host where none does. A name with a final dot, or
+// as many dots as the member's ndots, is tried as it is first.
+func Complete(ms []Member, self, host string) string {
+	me, ok := Find(ms, self)
+	if !ok || me.Address != self || len(me.Search) == 0 || strings.HasSuffix(host, ".") || host == "" {
+		return host
+	}
+	answers := func(name string) bool {
+		_, ok := Lookup(ms, self, name)
+		return ok
+	}
+	ndots := max(me.Ndots, 1)
+	first := strings.Count(host, ".") >= ndots
+	if first && answers(host) {
+		return host
+	}
+	for _, d := range me.Search {
+		if name := host + "." + strings.TrimSuffix(d, "."); answers(name) {
+			return name
+		}
+	}
+	return host
 }
 
 // maxAliases is how many aliases a name is followed through, as a

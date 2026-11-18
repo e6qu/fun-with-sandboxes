@@ -15,6 +15,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,16 @@
 #include <unistd.h>
 
 int sandbox_init(const char *profile, uint64_t flags, char **err);
+
+// watchdog ends the probe, saying so, once it has run a minute, which its steps take seconds of: the
+// steps before it are printed, a line each, so the one it stopped in shows.
+static void *watchdog(void *arg) {
+    (void)arg;
+    sleep(60);
+    printf("watchdog=the probe ran 60s\n");
+    fflush(stdout);
+    _exit(0);
+}
 
 static const char *addr(const struct sockaddr_storage *a) {
     static char out[80];
@@ -88,6 +99,9 @@ int main(int argc, char **argv) {
              "(allow network-bind (local unix-socket (subpath \"%s\")) (local ip \"localhost:%s\"))"
              "(allow network-outbound (remote unix-socket (subpath \"%s\")) (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
              argv[1], argv[6], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]);
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    pthread_t w;
+    pthread_create(&w, NULL, watchdog, NULL);
     char *err = NULL;
     if (sandbox_init(profile, 0, &err) != 0) {
         fprintf(stderr, "sandbox_init: %s\n", err);

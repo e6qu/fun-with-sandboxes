@@ -20,6 +20,7 @@ import (
 
 	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
 	"github.com/e6qu/fun-with-sandboxes/internal/pathmap"
+	"github.com/e6qu/fun-with-sandboxes/internal/procs"
 	"github.com/e6qu/fun-with-sandboxes/internal/roles"
 	"github.com/e6qu/fun-with-sandboxes/internal/runtime"
 	"github.com/e6qu/fun-with-sandboxes/internal/seatbelt"
@@ -307,7 +308,12 @@ func TestDaemonLauncher(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the supervisor's members %v miss daemon %d; logged %q", st.Members, pid, h.logs())
+			// What the supervisor goes by to find a daemon launchd holds:
+			// its group, its parent, and the process macOS holds
+			// responsible for it.
+			d, alive := procs.Find(pid)
+			t.Fatalf("the supervisor's members %v miss daemon %d (alive %v, ppid %d, pgid %d, start %d, responsible %d; main %d) after %d scans; logged %q",
+				st.Members, pid, alive, d.PPID, d.PGID, d.Start, libsystem.ResponsiblePID(pid), st.Pid, st.Scans, h.logs())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

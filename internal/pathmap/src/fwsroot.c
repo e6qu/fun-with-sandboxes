@@ -83,12 +83,18 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
+#ifdef FWS_FUZZ
+// The path mapping's fuzzer (testdata/fuzz) builds this file into a
+// program of its own, which keeps the host's functions.
+#define INTERPOSE(replacement, replacee) __attribute__((used)) static const void *interpose_##replacement = (const void *)&replacement
+#else
 #define INTERPOSE(replacement, replacee)                                              \
     __attribute__((used)) static struct {                                            \
         const void *a;                                                               \
         const void *b;                                                               \
     } interpose_##replacement __attribute__((section("__DATA,__interpose"))) = {     \
         (const void *)(unsigned long)&replacement, (const void *)(unsigned long)&replacee}
+#endif
 
 static char root[PATH_MAX];
 // root, resolved.
@@ -601,12 +607,16 @@ static int linked(const char *p) {
 }
 
 #define MAXLINKS 32
+// A path no container holds, which a path whose links loop maps under.
+#define LOOP_PATH "/.fws-links-loop/loop"
 
 // resolve writes to out container path p with its symbolic links resolved
 // in the container, as the kernel resolves them under chroot: an absolute
 // target starts again at the container's /, and .. stops there. A link the
 // final component names is followed if follow is set. Resolution stops at
-// a component that does not exist, or that the host's trees hold.
+// a component that does not exist, or that the host's trees hold. It
+// returns -1 for a path that meets more than MAXLINKS links, as one that
+// loops does, and 0 for one too long.
 static int resolve(const char *p, int follow, char *out) {
     char rest[PATH_MAX], next[PATH_MAX], cur[PATH_MAX], h[PATH_MAX], target[PATH_MAX];
     size_t curlen = 0;
@@ -657,7 +667,7 @@ static int resolve(const char *p, int follow, char *out) {
             break;
         }
         if (++links > MAXLINKS) {
-            return 0;
+            return -1;
         }
         target[tn] = 0;
         // r is empty or starts with a slash.
@@ -721,7 +731,15 @@ static const char *fws_map(const char *p, char *buf, int follow) {
     }
     if (strstr(p, "/..") || linked(p)) {
         char c[PATH_MAX];
-        if (resolve(p, follow, c)) {
+        int r = resolve(p, follow, c);
+        if (r < 0) {
+            // Links that loop, where the kernel stops with ELOOP: the path
+            // goes into a directory the root does not hold, so that the call
+            // fails, with ENOENT, rather than let the host's kernel follow
+            // the root's links on the host before it stops.
+            return join(buf, PATH_MAX, root, LOOP_PATH, "") ? buf : p;
+        }
+        if (r) {
             const char *q = place(c, buf);
             if (q == c) {
                 strcpy(buf, c);
@@ -1201,9 +1219,45 @@ static int fws_symlink(const char *target, const char *path) {
 INTERPOSE(fws_symlink, symlink);
 static int fws_symlinkat(const char *target, int fd, const char *path) { return symlinkat(target, fd, AT_MAPF(fd, path, 0)); }
 INTERPOSE(fws_symlinkat, symlinkat);
-static ssize_t fws_readlink(const char *path, char *buf, size_t size) { return readlink(LMAP(path), buf, size); }
+// proc_mnt_ns answers readlink of /proc/self/ns/mnt, or of a process's
+// /proc/<pid>/ns/mnt, as Linux names a process's mount namespace: every
+// process of the container sees its root, one namespace, named after the
+// root's inode. Programs that compare namespaces to tell their container's
+// processes from others' read it, as the Dev Containers extension does
+// before it starts VS Code's server. It returns -2 for any other path.
+static ssize_t proc_mnt_ns(const char *path, char *buf, size_t size) {
+    if (!rootlen || !path || strncmp(path, "/proc/", 6) != 0) return -2;
+    const char *p = path + 6;
+    if (strncmp(p, "self/", 5) == 0) {
+        p += 5;
+    } else if (strncmp(p, "thread-self/", 12) == 0) {
+        p += 12;
+    } else {
+        unsigned long pid;
+        const char *e = num(p, &pid);
+        if (!e || e == p || *e != '/') return -2;
+        p = e + 1;
+    }
+    if (strcmp(p, "ns/mnt") != 0) return -2;
+    struct stat st;
+    if (stat(croot, &st) != 0) return -2;
+    char name[64];
+    int n = snprintf(name, sizeof name, "mnt:[%llu]", (unsigned long long)st.st_ino);
+    if (n < 0) return -2;
+    size_t k = (size_t)n < size ? (size_t)n : size;
+    memcpy(buf, name, k);
+    return (ssize_t)k;
+}
+
+static ssize_t fws_readlink(const char *path, char *buf, size_t size) {
+    ssize_t r = proc_mnt_ns(path, buf, size);
+    return r != -2 ? r : readlink(LMAP(path), buf, size);
+}
 INTERPOSE(fws_readlink, readlink);
-static ssize_t fws_readlinkat(int fd, const char *path, char *buf, size_t size) { return readlinkat(fd, AT_MAPF(fd, path, 0), buf, size); }
+static ssize_t fws_readlinkat(int fd, const char *path, char *buf, size_t size) {
+    ssize_t r = proc_mnt_ns(path, buf, size);
+    return r != -2 ? r : readlinkat(fd, AT_MAPF(fd, path, 0), buf, size);
+}
 INTERPOSE(fws_readlinkat, readlinkat);
 // A chmod sets the mode on disk, which then stands for the one extraction
 // recorded (MODE_XATTR).
@@ -2586,11 +2640,14 @@ INTERPOSE(fws_proc_listchildpids, proc_listchildpids);
 #define MAX_IFACES 16
 #define RT_ROUNDUP(a) ((a) > 0 ? (1 + (((a) - 1) | (sizeof(uint32_t) - 1))) : sizeof(uint32_t))
 
-// An interface has an IPv4 address, and an IPv6 one where bits6 is not 0.
+// An interface has an IPv4 address where v4 is set, as on any network but
+// an IPv6-only one, and an IPv6 one where bits6 is not 0. addr is the
+// container's member address on an interface without IPv4, which its MAC
+// address is made from.
 struct iface {
     in_addr_t addr, mask;
     struct in6_addr addr6;
-    int bits6;
+    int bits6, v4;
 };
 static int own_ifaces(struct iface *out);
 
@@ -2757,7 +2814,7 @@ static int iflist(const int *name, void *old, size_t *oldlen) {
         unsigned short index = (unsigned short)(top + 1 + i);
         if (want && want != index) continue;
         more += eth_info(extra + more, mib[4] == NET_RT_IFLIST2 ? RTM_IFINFO2 : RTM_IFINFO, index, i, ifs[i].addr);
-        if (af == 0 || af == AF_INET) more += eth_addr(extra + more, index, &ifs[i]);
+        if ((af == 0 || af == AF_INET) && ifs[i].v4) more += eth_addr(extra + more, index, &ifs[i]);
         if ((af == 0 || af == AF_INET6) && ifs[i].bits6) more += eth_addr6(extra + more, index, &ifs[i]);
     }
     memcpy(buf + out, extra, more);
@@ -2807,6 +2864,10 @@ static int ifconf(struct ifconf *c) {
 // addresses.
 static int eth_ioctl(unsigned long req, struct ifreq *r, const struct iface *f) {
     struct sockaddr_in a;
+    if (!f->v4 && req != SIOCGIFFLAGS && req != SIOCGIFMTU) {
+        errno = EADDRNOTAVAIL;
+        return -1;
+    }
     switch (req) {
     case SIOCGIFFLAGS:
         r->ifr_flags = (short)(IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_SIMPLEX | IFF_MULTICAST);
@@ -5800,18 +5861,33 @@ static const char *members_text(void) {
 struct member {
     in_addr_t addr;
     const char *names, *names_end, *ports, *ports_end, *nets, *nets_end, *links, *links_end, *subs, *subs_end;
+    // An alias's line (package members, Alias) has, in place of an
+    // address, "=" and the name its names stand for.
+    const char *alias, *alias_end;
     unsigned short router;
     int foreign;
 };
 
-static const char *next_member(const char *p, struct member *m) {
+// next_line reads the next member's line at p, an alias's with alias set,
+// passing over the other kind, and returns where the line after starts.
+static const char *next_line(const char *p, struct member *m, int alias) {
     while (p && *p) {
         const char *nl = strchr(p, '\n');
         const char *end = nl ? nl : p + strlen(p);
         const char *t1 = memchr(p, '\t', (size_t)(end - p));
         const char *t2 = t1 ? memchr(t1 + 1, '\t', (size_t)(end - t1 - 1)) : NULL;
         const char *after;
-        if (t2 && parse_v4(p, &after, &m->addr) && after == t1) {
+        int ok = 0;
+        m->alias = m->alias_end = NULL;
+        if (t2 && alias) {
+            ok = *p == '=' && t1 > p + 1;
+            m->addr = 0;
+            m->alias = p + 1;
+            m->alias_end = t1;
+        } else if (t2) {
+            ok = parse_v4(p, &after, &m->addr) && after == t1;
+        }
+        if (ok) {
             const char *t3 = memchr(t2 + 1, '\t', (size_t)(end - t2 - 1));
             const char *t4 = t3 ? memchr(t3 + 1, '\t', (size_t)(end - t3 - 1)) : NULL;
             const char *t5 = t4 ? memchr(t4 + 1, '\t', (size_t)(end - t4 - 1)) : NULL;
@@ -5840,6 +5916,8 @@ static const char *next_member(const char *p, struct member *m) {
     }
     return NULL;
 }
+
+static const char *next_member(const char *p, struct member *m) { return next_line(p, m, 0); }
 
 static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 
@@ -6254,6 +6332,7 @@ static int own_ifaces(struct iface *out) {
                 struct iface f;
                 memset(&f, 0, sizeof f);
                 f.addr = member_on(&me, p, (size_t)(e - p), &f.mask);
+                f.v4 = !only6_on(&me, p, (size_t)(e - p));
                 int has6 = member_on6(&me, p, (size_t)(e - p), &f.addr6, &f.bits6);
                 // Networks without IPv4 subnets share the member address,
                 // on one interface while they give no more IPv6 ones.
@@ -6261,16 +6340,19 @@ static int own_ifaces(struct iface *out) {
                 while (i < n && !(out[i].addr == f.addr && (!has6 || !out[i].bits6))) i++;
                 if (i == n) {
                     out[n++] = f;
-                } else if (has6) {
-                    out[i].addr6 = f.addr6;
-                    out[i].bits6 = f.bits6;
+                } else {
+                    out[i].v4 |= f.v4;
+                    if (has6) {
+                        out[i].addr6 = f.addr6;
+                        out[i].bits6 = f.bits6;
+                    }
                 }
             }
             p = e + 1;
         }
     }
     pthread_mutex_unlock(&members_lock);
-    if (n == 0) out[n++] = (struct iface){own_address, htonl(MEMBER_MASK), IN6ADDR_ANY_INIT, 0};
+    if (n == 0) out[n++] = (struct iface){own_address, htonl(MEMBER_MASK), IN6ADDR_ANY_INIT, 0, 1};
     return n;
 }
 
@@ -6563,6 +6645,124 @@ static int router_addr(const char *name, int af, void *out) {
     return 0;
 }
 
+// member_alias finds the alias, an ExternalName Service's, that answers to
+// name among those the container sees, and copies the name it stands for
+// to out.
+static int member_alias(const char *name, char *out, size_t size) {
+    int found = 0;
+    pthread_mutex_lock(&members_lock);
+    struct member m, me;
+    const char *text = members_text();
+    int have_me = find_self(text, &me);
+    for (const char *p = text; (p = next_line(p, &m, 1));) {
+        if (sees(&m, &me, have_me) && answers(&m, name)) {
+            size_t n = (size_t)(m.alias_end - m.alias);
+            if (n < size) {
+                memcpy(out, m.alias, n);
+                out[n] = 0;
+                found = 1;
+            }
+            break;
+        }
+    }
+    pthread_mutex_unlock(&members_lock);
+    return found;
+}
+
+// stack_answers reports whether the container's stack answers to name:
+// a member, or an alias.
+static int stack_answers(const char *name) {
+    in_addr_t a;
+    char target[256];
+    return member_address(name, &a) != 0 || member_alias(name, target, sizeof target);
+}
+
+#define SEARCH_MAX 6
+#define NAME_MAX_LEN 253
+
+// resolv_search reads the container's /etc/resolv.conf as a resolver does:
+// the search domains of its last search or domain line, up to SEARCH_MAX,
+// into search, and its ndots option, 1 where it names none, into ndots.
+// It returns how many domains it read.
+static int resolv_search(char search[SEARCH_MAX][NAME_MAX_LEN + 1], int *ndots) {
+    *ndots = 1;
+    int fd = open(MAP("/etc/resolv.conf"), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    char b[8192];
+    ssize_t n = read(fd, b, sizeof b - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    b[n] = 0;
+    int ns = 0;
+    for (char *line = b, *next; line; line = next) {
+        next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        char *save, *key = strtok_r(line, " \t\r", &save);
+        if (!key) continue;
+        if (strcmp(key, "search") == 0 || strcmp(key, "domain") == 0) {
+            ns = 0;
+            for (char *d = strtok_r(NULL, " \t\r", &save); d && ns < SEARCH_MAX; d = strtok_r(NULL, " \t\r", &save)) {
+                size_t l = strlen(d);
+                if (l && d[l - 1] == '.') d[--l] = 0;
+                if (l == 0 || l > NAME_MAX_LEN) continue;
+                strlcpy(search[ns++], d, NAME_MAX_LEN + 1);
+            }
+        } else if (strcmp(key, "options") == 0) {
+            for (char *o = strtok_r(NULL, " \t\r", &save); o; o = strtok_r(NULL, " \t\r", &save)) {
+                unsigned long v;
+                const char *e;
+                if (strncmp(o, "ndots:", 6) == 0 && (e = num(o + 6, &v)) && !*e) *ndots = v > 15 ? 15 : (int)v;
+            }
+        }
+    }
+    return ns;
+}
+
+// cluster_name is the name a lookup of name asks the stack for, copied to
+// out where it is another: the first of the names the container's search
+// domains make of it, in the order its resolver tries them, that the stack
+// answers to, as a pod's search domains make a Service's short name its
+// namespace's; then followed through the aliases an ExternalName Service
+// gives, up to eight, as a resolver follows CNAME records. It is name
+// itself where the stack answers none of them.
+static const char *cluster_name(const char *name, char *out, size_t size) {
+    size_t len = strlen(name);
+    if (len == 0 || len > NAME_MAX_LEN || numeric_host(name)) return name;
+    char search[SEARCH_MAX][NAME_MAX_LEN + 1];
+    int ndots = 1, ns = 0, dots = 0;
+    int absolute = name[len - 1] == '.';
+    if (!absolute) ns = resolv_search(search, &ndots);
+    for (size_t i = 0; i < len; i++) dots += name[i] == '.';
+    int first = absolute || dots >= ndots;
+    const char *pick = NULL;
+    char cand[2 * NAME_MAX_LEN + 2];
+    if (first && stack_answers(name)) pick = name;
+    for (int i = 0; i < ns && !pick; i++) {
+        int k = snprintf(cand, sizeof cand, "%s.%s", name, search[i]);
+        if (k > 0 && (size_t)k <= NAME_MAX_LEN && (size_t)k < size && stack_answers(cand)) {
+            strlcpy(out, cand, size);
+            pick = out;
+        }
+    }
+    if (!pick && !first && stack_answers(name)) pick = name;
+    if (!pick) return name;
+    char target[NAME_MAX_LEN + 3];
+    for (int i = 0; i < 8 && member_alias(pick, target, sizeof target); i++) {
+        if (strlen(target) >= size) break;
+        strlcpy(out, target, size);
+        pick = out;
+    }
+    return pick;
+}
+
+// lookup_name is the name gethostbyname asks for: name where the
+// container's /etc/hosts lists it, else its cluster_name.
+static const char *lookup_name(const char *name, char *out, size_t size) {
+    struct in6_addr a;
+    if (!name || hosts_addr(name, AF_INET, &a) || hosts_addr(name, AF_INET6, &a)) return name;
+    return cluster_name(name, out, size);
+}
+
 // A name resolves as a container's resolver resolves it: to the addresses
 // its /etc/hosts lists it at, then a member's name to its member address,
 // as Docker's DNS resolves a container on the network, and any other name
@@ -6576,6 +6776,14 @@ static int fws_getaddrinfo(const char *node, const char *service, const struct a
     }
     int herr = hosts_addrinfo(node, service, hints, res);
     if (herr != EAI_NONAME) return herr;
+    // A short name the search domains complete, or an alias, is looked
+    // up as the name it is, in the hosts file too.
+    char cname[NAME_MAX_LEN + 3];
+    const char *asked = node;
+    if ((node = cluster_name(node, cname, sizeof cname)) != asked) {
+        herr = hosts_addrinfo(node, service, hints, res);
+        if (herr != EAI_NONAME) return herr;
+    }
     int found = member_address(node, &a);
     if (!found) {
         if (dns_via_router && *node && !numeric_host(node)) {
@@ -6700,6 +6908,8 @@ static struct hostent *router_hostent(const char *name, int af) {
 }
 
 static struct hostent *fws_gethostbyname(const char *name) {
+    char cname[NAME_MAX_LEN + 3];
+    name = lookup_name(name, cname, sizeof cname);
     int own = 0;
     struct hostent *h = name ? member_hostent4(name, &own) : NULL;
     if (own) return h;
@@ -6709,6 +6919,8 @@ static struct hostent *fws_gethostbyname(const char *name) {
 INTERPOSE(fws_gethostbyname, gethostbyname);
 
 static struct hostent *fws_gethostbyname2(const char *name, int af) {
+    char cname[NAME_MAX_LEN + 3];
+    name = lookup_name(name, cname, sizeof cname);
     struct in6_addr a6;
     int own = 0;
     struct hostent *h = af == AF_INET && name ? member_hostent4(name, &own) : NULL;
@@ -6718,3 +6930,5 @@ static struct hostent *fws_gethostbyname2(const char *name, int af) {
     return gethostbyname2(name, af);
 }
 INTERPOSE(fws_gethostbyname2, gethostbyname2);
+
+#include "resolve_async.h"

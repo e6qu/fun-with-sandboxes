@@ -78,14 +78,20 @@ func (s *Service) RunPodSandbox(ctx context.Context, req *runtimeapi.RunPodSandb
 			config["Hostname"] = cfg.Hostname
 		}
 	}
-	// The pod's DNS servers, search domains and options go unused: the
-	// container library answers cluster names, Services' among them, from
-	// its stack's members, and other names through the host's resolver.
-	// The engine honours DNS settings of a container's own through its
-	// router, outside its sandbox, which reaches neither cluster DNS, a
-	// Service, nor, on an engine nested in a kubelet's privileged
-	// container, any DNS server: that engine refuses them. A pod on the
-	// node's network has the node's ports.
+	// The pod's search domains and options go to its resolv.conf, with
+	// which the container library completes the cluster names it answers
+	// from the stack's members, Services' among them, as a pod's resolver
+	// completes them through cluster DNS: a Service's short name is its
+	// namespace's. Its servers, which name cluster DNS, go unused: other
+	// names resolve through the host's resolver. The engine's DNS settings
+	// would send lookups through the container's router, outside its
+	// sandbox, which reaches neither cluster DNS, a Service, nor, on an
+	// engine nested in a kubelet's privileged container, any DNS server. A
+	// pod on the node's network has the node's ports and resolv.conf.
+	var resolver *engine.Resolver
+	if d := cfg.GetDnsConfig(); d != nil && !sc.HostNetwork && (len(d.Searches) > 0 || len(d.Options) > 0) {
+		resolver = &engine.Resolver{Search: d.Searches, Options: d.Options}
+	}
 	exposed := map[string]struct{}{}
 	bindings := map[string][]map[string]string{}
 	for _, pm := range cfg.PortMappings {
@@ -104,7 +110,7 @@ func (s *Service) RunPodSandbox(ctx context.Context, req *runtimeapi.RunPodSandb
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	name := fmt.Sprintf("k8s_POD_%s_%s_%s_%d", m.Name, m.Namespace, m.Uid, m.Attempt)
-	res, err := s.e.Create(engine.CreateOptions{Name: name}, create)
+	res, err := s.e.Create(engine.CreateOptions{Name: name, Resolver: resolver}, create)
 	if err != nil {
 		return nil, grpcError(err)
 	}

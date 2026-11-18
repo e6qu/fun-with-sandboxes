@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/containerd/continuity/fs"
 	"github.com/moby/moby/api/types/build"
@@ -21,6 +23,63 @@ import (
 // has set up its mounts: the state Docker's init layer holds, which docker
 // diff and a container's size leave out.
 func (c *Container) initDir() string { return filepath.Join(c.dir, "init") }
+
+// bornFile records, by its modification time, when create finished
+// cloning the container's root and its init from the image's root: a file
+// of either whose inode, and whose directory's, last changed before then
+// is still the image's, unread. A container made before the engine wrote
+// it has none, and each file of the same size and time is read instead.
+const bornFile = "born"
+
+func (c *Container) bornPath() string { return filepath.Join(c.dir, bornFile) }
+
+// stampBorn writes the born stamp into dir once the clones are complete.
+func stampBorn(dir string) error {
+	return os.WriteFile(filepath.Join(dir, bornFile), nil, 0o600)
+}
+
+// born is when the container's clones were complete.
+func (c *Container) born() (time.Time, bool) {
+	fi, err := os.Stat(c.bornPath())
+	if err != nil {
+		return time.Time{}, false
+	}
+	return fi.ModTime(), true
+}
+
+// settledClones is image.Changes' settled test for two trees each cloned
+// from the image's root before t, the container's init and root: a file
+// neither changed since holds the image's content in both.
+func settledClones(t time.Time) image.Settled {
+	return func(_ string, l, u, ld, ud os.FileInfo) bool {
+		return image.ChangedBefore(l, t) && image.ChangedBefore(ld, t) &&
+			image.ChangedBefore(u, t) && image.ChangedBefore(ud, t)
+	}
+}
+
+// settledRoot is image.Changes' settled test for a diff from the image's
+// root, which does not change, to a tree that holds root's files: a file
+// root cloned from the image before t and has not changed since, in a
+// directory that has not either, holds the image's content.
+func settledRoot(root string, t time.Time) image.Settled {
+	return func(rel string, _, _, _, _ os.FileInfo) bool {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		fi, err := os.Lstat(p)
+		if err != nil || !image.ChangedBefore(fi, t) {
+			return false
+		}
+		di, err := os.Lstat(filepath.Dir(p))
+		return err == nil && image.ChangedBefore(di, t)
+	}
+}
+
+// settled is the test for a diff of the container's init and root.
+func (c *Container) settled() image.Settled {
+	if t, ok := c.born(); ok {
+		return settledClones(t)
+	}
+	return nil
+}
 
 var errNoInit = errors.New("the container predates this engine's record of its initial root; recreate it")
 
@@ -38,7 +97,7 @@ func (e *Engine) Changes(ctx context.Context, ref string) ([]container.Filesyste
 	out := []container.FilesystemChange{}
 	// image.Changes, unlike continuity's, sees a chown or chmod the
 	// container library recorded beside a file.
-	err = image.Changes(ctx, c.initDir(), c.root(), nil, func(k fs.ChangeKind, p string, _ os.FileInfo, err error) error {
+	err = image.Changes(ctx, c.initDir(), c.root(), c.settled(), func(k fs.ChangeKind, p string, _ os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -65,8 +124,26 @@ func (c *Container) sizeRw(ctx context.Context) (int64, error) {
 	if _, err := os.Stat(c.initDir()); err != nil {
 		return 0, unsupported("container size: %v", errNoInit)
 	}
-	u, err := fs.DiffUsage(ctx, c.initDir(), c.root())
-	return u.Size, err
+	// Each inode counts once, however many links to it changed, by the
+	// blocks it holds, as continuity's DiffUsage counts.
+	var size int64
+	seen := map[uint64]bool{}
+	err := image.Changes(ctx, c.initDir(), c.root(), c.settled(), func(k fs.ChangeKind, _ string, fi os.FileInfo, err error) error {
+		if err != nil || (k != fs.ChangeKindAdd && k != fs.ChangeKindModify) {
+			return err
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok {
+			size += fi.Size()
+			return nil
+		}
+		if !seen[uint64(st.Ino)] {
+			seen[uint64(st.Ino)] = true
+			size += st.Blocks * 512
+		}
+		return nil
+	})
+	return size, err
 }
 
 // Usage is what docker system df reports, in API 1.51's shape.

@@ -227,8 +227,17 @@ func TestTopAndStats(t *testing.T) {
 		t.Fatalf("docker top lists the engine's own process:\n%s", out)
 	}
 
-	out = mustDocker(t, "stats", "--no-stream", "--format", "{{.Name}}|{{.MemUsage}}|{{.PIDs}}|{{.CPUPerc}}", "toptest")
-	f := strings.Split(strings.TrimSpace(out), "|")
+	// The server is the container's one process, but for its health
+	// check's while one runs, as Docker counts them too: a sample taken
+	// during one is taken again.
+	var f []string
+	for range 10 {
+		out = mustDocker(t, "stats", "--no-stream", "--format", "{{.Name}}|{{.MemUsage}}|{{.PIDs}}|{{.CPUPerc}}", "toptest")
+		if f = strings.Split(strings.TrimSpace(out), "|"); len(f) == 4 && f[2] == "1" {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	if len(f) != 4 || f[0] != "toptest" || f[2] != "1" || strings.HasPrefix(f[1], "0B") || !strings.HasSuffix(f[3], "%") {
 		t.Fatalf("docker stats: %q", out)
 	}
@@ -874,12 +883,7 @@ func TestPublishUDPAndHostPortRanges(t *testing.T) {
 		}
 	}
 
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lo := l.Addr().(*net.TCPAddr).Port
-	l.Close()
+	lo := freePorts(t, 2)
 	span := fmt.Sprintf("127.0.0.1:%d-%d:8080", lo, lo+1)
 	for i := 0; i < 2; i++ {
 		box := fmt.Sprintf("fws-e2e-range-%d", i)

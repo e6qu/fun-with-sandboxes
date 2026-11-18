@@ -67,6 +67,11 @@ func serve(ctx context.Context, grpcServer *grpc.Server, conn net.Conn) {
 }
 
 func grpcClientConn(ctx context.Context, conn net.Conn, opts map[string][]string) (context.Context, *grpc.ClientConn, error) {
+	// The session has its one connection, which gRPC cannot dial again:
+	// once it fails, as when the client hangs up, the session is over, not
+	// left to fail its health checks for seconds after.
+	ctx, cancel := context.WithCancelCause(ctx)
+	conn = &sessionConn{Conn: conn, cancel: cancel}
 	var dialCount atomic.Int64
 	dialer := grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
 		if c := dialCount.Add(1); c > 1 {
@@ -95,13 +100,27 @@ func grpcClientConn(ctx context.Context, conn net.Conn, opts map[string][]string
 	//nolint:staticcheck // ignore SA1019 NewClient is preferred but has different behavior
 	cc, err := grpc.DialContext(ctx, "localhost", dialOpts...)
 	if err != nil {
+		cancel(err)
 		return ctx, nil, errors.Wrap(err, "failed to create grpc client")
 	}
 
-	ctx, cancel := context.WithCancelCause(ctx)
 	go monitorHealth(ctx, conn, cc, cancel, healthCheckConfigFromHeaders(http.Header(opts)))
 
 	return ctx, cc, nil
+}
+
+// sessionConn ends its session when a read from it fails.
+type sessionConn struct {
+	net.Conn
+	cancel context.CancelCauseFunc
+}
+
+func (c *sessionConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if err != nil {
+		c.cancel(errors.Wrap(err, "session connection closed"))
+	}
+	return n, err
 }
 
 func monitorHealth(ctx context.Context, conn net.Conn, cc *grpc.ClientConn, cancelConn func(error), cfg healthCheckConfig) {

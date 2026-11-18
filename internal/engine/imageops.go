@@ -96,6 +96,11 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 		}
 	}()
 	baseRoot := e.images.Root(base.ID)
+	// The /proc create placed stays out of the image, as Docker's init
+	// layer keeps it out, unless the image had one, which stays as it was.
+	if _, err := os.Lstat(filepath.Join(baseRoot, "proc")); os.IsNotExist(err) {
+		os.Remove(filepath.Join(dst, "proc"))
+	}
 	for rel := range c.mountDests() {
 		p := filepath.Join(dst, rel)
 		if err := os.RemoveAll(p); err != nil {
@@ -114,7 +119,13 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 		return "", err
 	}
 	defer os.Remove(diff.Name())
-	err = image.Diff(ctx, baseRoot, dst, diff)
+	var settled image.Settled
+	if t, ok := c.born(); ok {
+		// dst is a clone of the root, whose files cloned from the image
+		// and unchanged since hold the image's content.
+		settled = settledRoot(c.root(), t)
+	}
+	err = image.WriteDiff(ctx, diff, baseRoot, dst, image.DiffOptions{Settled: settled})
 	if cerr := diff.Close(); err == nil {
 		err = cerr
 	}

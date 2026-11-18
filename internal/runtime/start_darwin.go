@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -105,7 +103,9 @@ func Start(s Spec) (*Process, error) {
 	if err := os.WriteFile(s.ProfilePath, []byte(text), 0o600); err != nil {
 		return nil, err
 	}
-	wd := filepath.Join(s.Root, path.Clean("/"+s.WorkDir))
+	// The working directory, as the container reaches it: through its
+	// links and onto its mounts, as a client's own link to a volume leads.
+	wd := execpath.HostPath(s.Root, s.WorkDir, s.Env)
 	if err := os.MkdirAll(wd, 0o755); err != nil {
 		return nil, err
 	}

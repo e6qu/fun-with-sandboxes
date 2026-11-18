@@ -146,8 +146,9 @@ func (e *enforcer) watchLocked(pid int) error {
 }
 
 // followLocked admits the children of the given members, and theirs, as
-// members. It reports false when one ended before it was watched, as what
-// it started may then have gone to launchd.
+// members. It reports false when one ended before it was watched, or
+// before its children were read, as what it started may then have gone to
+// launchd.
 func (e *enforcer) followLocked(parents []int) bool {
 	whole := true
 	var added []int
@@ -157,6 +158,15 @@ func (e *enforcer) followLocked(parents []int) bool {
 		kids, err := procs.Children(ppid)
 		if err != nil {
 			continue
+		}
+		// A forker that ended before its children were read left them to
+		// launchd, where its list no longer holds them: the process table
+		// is read whole for them, as its exit may come in a later batch of
+		// events, without its fork.
+		if m, ok := e.members[ppid]; ok {
+			if p, alive := procs.Find(ppid); !alive || p.Start != m.start {
+				whole = false
+			}
 		}
 		for _, p := range kids {
 			if _, ok := e.members[p.PID]; ok {

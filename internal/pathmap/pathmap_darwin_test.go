@@ -1,7 +1,9 @@
 package pathmap
 
 import (
+	"context"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"os"
 	"os/exec"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
@@ -381,24 +384,37 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	}
 }
 
-// freePort returns a loopback port nothing listens on.
+// freePort returns a loopback port nothing listens on, for a probe that
+// binds it itself. It comes from below the ephemeral range (49152 up on
+// macOS), which the kernel hands out to every other test's sockets: one
+// from that range could be taken again before the probe binds it. Each
+// call takes the next port from a random start, so tests running together
+// pick different ones.
 func freePort(t *testing.T, network string) int {
 	t.Helper()
-	if network == "udp" {
-		c, err := net.ListenPacket("udp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
+	for range 1000 {
+		p := int(nextPort.Add(1))%(49152-20000) + 20000
+		var c interface{ Close() error }
+		var err error
+		if network == "udp" {
+			c, err = net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", p))
+		} else {
+			c, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
 		}
-		defer c.Close()
-		return c.LocalAddr().(*net.UDPAddr).Port
+		if err == nil {
+			c.Close()
+			return p
+		}
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	t.Fatalf("no free %s port", network)
+	return 0
 }
+
+var nextPort = func() *atomic.Int64 {
+	var n atomic.Int64
+	n.Store(int64(rand.IntN(49152 - 20000)))
+	return &n
+}()
 
 func TestProcessListingsHoldTheSandboxsOwn(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "ps")
@@ -496,15 +512,27 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	dir, _ = filepath.EvalSymlinks(dir)
 	// The router gives the probe's UDP ports these flow ports, which its
-	// sandbox lets it reach.
-	flowPorts := []int{freePort(t, "udp"), freePort(t, "udp"), freePort(t, "udp")}
+	// sandbox lets it reach. They are bound here, before the probe's
+	// profile names them, and handed to the router as they are: a port
+	// found free and bound again later may be another test's by then, and
+	// the probe's datagrams lost.
+	var flowConns []*net.UDPConn
+	var flowPorts []int
+	for range 3 {
+		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		flowConns = append(flowConns, c)
+		flowPorts = append(flowPorts, c.LocalAddr().(*net.UDPAddr).Port)
+	}
 	var flows atomic.Int32
 	r, err := router.Listen("127.0.0.1:0", dir, func() (*net.UDPConn, error) {
 		i := flows.Add(1) - 1
-		if int(i) >= len(flowPorts) {
-			return nil, fmt.Errorf("flow port %d asked for, %d given", i+1, len(flowPorts))
+		if int(i) >= len(flowConns) {
+			return nil, fmt.Errorf("flow port %d asked for, %d given", i+1, len(flowConns))
 		}
-		return net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: flowPorts[i]})
+		return flowConns[i], nil
 	}, router.Network{})
 	if err != nil {
 		t.Fatal(err)
@@ -563,7 +591,11 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, dir, strconv.Itoa(rp), strconv.Itoa(flowPorts[0]), strconv.Itoa(flowPorts[1]), strconv.Itoa(flowPorts[2]), strconv.Itoa(published))
+	// The probe ends itself, saying so, if a step outlasts its watchdog;
+	// the deadline here outlasts that.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, dir, strconv.Itoa(rp), strconv.Itoa(flowPorts[0]), strconv.Itoa(flowPorts[1]), strconv.Itoa(flowPorts[2]), strconv.Itoa(published))
 	cmd.Env = []string{"DYLD_INSERT_LIBRARIES=" + lib, PortDirVar + "=" + dir, RouterVar + "=" + strconv.Itoa(rp),
 		NetworkVar + "=" + network, AddressVar + "=127.88.0.2", ports}
 	out, err := cmd.CombinedOutput()

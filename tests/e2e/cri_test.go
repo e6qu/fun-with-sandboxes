@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -16,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -78,14 +78,24 @@ func TestCRIPodSandbox(t *testing.T) {
 	if out := mustCrictl(t, "info"); !strings.Contains(out, `"RuntimeReady"`) {
 		t.Errorf("crictl info:\n%s", out)
 	}
-	dir := t.TempDir()
-	logs := filepath.Join(dir, "logs")
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
+	// The runtime streams each container's lifecycle, which the kubelet's
+	// evented PLEG reads.
+	evCtx, evCancel := context.WithCancel(context.Background())
+	evCmd := exec.CommandContext(evCtx, "crictl", "--runtime-endpoint", dockerHost, "events", "-o", "json")
+	var evOut lockedBuffer
+	evCmd.Stdout = &evOut
+	if err := evCmd.Start(); err != nil {
+		evCancel()
 		t.Fatal(err)
 	}
-	hostPort := l.Addr().(*net.TCPAddr).Port
-	l.Close()
+	// crictl events streams until it is stopped: stop it, then reap it.
+	defer func() {
+		evCancel()
+		evCmd.Wait()
+	}()
+	dir := t.TempDir()
+	logs := filepath.Join(dir, "logs")
+	hostPort := freePort(t)
 	pod := writeJSON(t, filepath.Join(dir, "pod.json"), map[string]any{
 		"metadata":      map[string]any{"name": "web", "namespace": "e2e", "uid": "e2e-cri-web", "attempt": 0},
 		"hostname":      "web",
@@ -242,12 +252,7 @@ func TestCRIPodSandbox(t *testing.T) {
 	if _, err := crictl(t, "exec", client, "/toolbox", "fetch", "http://127.0.0.1:1/"); err == nil {
 		t.Error("a streamed exec's exit status was lost")
 	}
-	fl, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	local := fl.Addr().(*net.TCPAddr).Port
-	fl.Close()
+	local := freePort(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	pf := exec.CommandContext(ctx, "crictl", "--runtime-endpoint", dockerHost, "port-forward", sandbox, strconv.Itoa(local)+":8080")
@@ -322,6 +327,16 @@ func TestCRIPodSandbox(t *testing.T) {
 	if out := mustCrictl(t, "statsp", "-o", "json", sandbox); !strings.Contains(out, `"processCount"`) {
 		t.Errorf("crictl statsp:\n%s", out)
 	}
+	// The metrics the kubelet reads from the runtime in place of cAdvisor.
+	if out := mustCrictl(t, "metricdescs", "-o", "json"); !strings.Contains(out, "container_memory_working_set_bytes") {
+		t.Errorf("crictl metricdescs:\n%s", out)
+	}
+	if out := mustCrictl(t, "metricsp", "-o", "json"); !strings.Contains(out, sandbox) || !strings.Contains(out, web) || !strings.Contains(out, "container_network_receive_bytes_total") {
+		t.Errorf("crictl metricsp:\n%s", out)
+	}
+	if out, err := crictl(t, "checkpoint", "--export", filepath.Join(dir, "web.tar"), web); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("crictl checkpoint: %v\n%s", err, out)
+	}
 
 	mustCrictl(t, "stopp", sandbox)
 	mustCrictl(t, "rmp", sandbox)
@@ -331,6 +346,40 @@ func TestCRIPodSandbox(t *testing.T) {
 	if out := mustDocker(t, "ps", "-a", "--format", "{{.Names}}"); strings.Contains(out, "k8s_") {
 		t.Errorf("the engine still holds the pod's containers:\n%s", out)
 	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(time.Second) {
+		out := evOut.String()
+		missing := ""
+		for _, want := range []string{"CONTAINER_CREATED_EVENT", "CONTAINER_STARTED_EVENT", "CONTAINER_STOPPED_EVENT", "CONTAINER_DELETED_EVENT", web} {
+			if !strings.Contains(out, want) {
+				missing = want
+			}
+		}
+		if missing == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("crictl events lacks %s:\n%s", missing, out)
+			break
+		}
+	}
+}
+
+// lockedBuffer is a buffer a command writes while a test reads it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // A CRI client pulls with the credentials it is given, lists, inspects
