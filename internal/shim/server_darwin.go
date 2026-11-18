@@ -199,7 +199,7 @@ func (s *server) run(report func(Ready)) (int, error) {
 			traffic.AddEndpoint(os.Getpid(), uint16(c.LocalAddr().(*net.UDPAddr).Port))
 			return c, nil
 		}
-		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir, flow, router.Network{File: cfg.NetworkFile, Address: cfg.Address, DialFlow: dialFlow, Internet: cfg.Internet, DNS: cfg.DNS})
+		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir, flow, router.Network{File: cfg.NetworkFile, Address: cfg.Address, DialFlow: dialFlow, Internet: cfg.Internet, DNS: cfg.DNS, Upstream: cfg.Upstream})
 		if err != nil {
 			closeProxies()
 			report(Ready{Error: err.Error()})

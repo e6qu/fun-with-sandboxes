@@ -45,7 +45,11 @@ type Config struct {
 	// DNS is how the container resolves names outside its stack when its
 	// engine gave it DNS servers, search domains or options of its own:
 	// its router resolves them so (router.Resolve).
-	DNS      *router.DNS `json:",omitempty"`
+	DNS *router.DNS `json:",omitempty"`
+	// Upstream are the servers of the container's /etc/resolv.conf, to
+	// which its router passes on the DNS queries its processes send that
+	// its stack does not answer (router.Network.Upstream).
+	Upstream []netip.Addr `json:",omitempty"`
 	ExitPath string
 	// Tag is the environment entry every process of the container starts
 	// with.

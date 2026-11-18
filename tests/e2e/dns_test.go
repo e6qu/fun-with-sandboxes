@@ -213,3 +213,72 @@ func TestAsyncLookups(t *testing.T) {
 		}
 	}
 }
+
+// dnsPy asks the first server of the container's resolv.conf for its
+// argument's A records itself, as dig does: one query in a datagram from
+// an unconnected socket, whose answer must come from the server asked. It
+// prints the answer's code and its addresses, sorted.
+const dnsPy = `import socket, struct, sys
+ns = [l.split()[1] for l in open('/etc/resolv.conf') if l.startswith('nameserver')][0]
+q = struct.pack('>HHHHHH', 0x1234, 0x0100, 1, 0, 0, 0)
+q += b''.join(bytes([len(p)]) + p.encode() for p in sys.argv[1].split('.')) + b'\0' + struct.pack('>HH', 1, 1)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(20)
+s.sendto(q, (ns, 53))
+r, src = s.recvfrom(4096)
+if src != (ns, 53):
+    print('answer from', src, 'not', ns)
+    sys.exit()
+an = struct.unpack('>H', r[6:8])[0]
+i = 12
+while r[i]:
+    i += r[i] + 1
+i += 5
+out = []
+for _ in range(an):
+    if r[i] & 0xc0 == 0xc0:
+        i += 2
+    else:
+        while r[i]:
+            i += r[i] + 1
+        i += 1
+    t, c, ttl, l = struct.unpack('>HHIH', r[i:i+10])
+    i += 10
+    if t == 1:
+        out.append(socket.inet_ntoa(r[i:i+4]))
+    i += l
+print(r[3] & 15, sorted(out))
+`
+
+// A program that sends DNS itself, to its resolv.conf's server, has its
+// container's router answer: its stack's names by the router, others
+// through the container's servers, given internet access.
+func TestDNSQueries(t *testing.T) {
+	mustDocker(t, "network", "create", "e2e-dnsq")
+	defer docker(t, "network", "rm", "e2e-dnsq")
+	mustDocker(t, "run", "-d", "--name", "e2e-dnsq-db", "--network", "e2e-dnsq", "--network-alias", "database", "fws/python:3.14", "python3", "-c", "import time; time.sleep(600)")
+	defer docker(t, "rm", "-f", "e2e-dnsq-db")
+	db := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", "e2e-dnsq-db"))
+	for _, name := range []string{"e2e-dnsq-db", "database"} {
+		if out := mustDocker(t, "run", "--rm", "--network", "e2e-dnsq", "fws/python:3.14", "python3", "-c", dnsPy, name); out != "0 ['"+db+"']\n" {
+			t.Errorf("%s: %q, want its address %s", name, out, db)
+		}
+	}
+
+	server, ok := serveDNS(t, map[string]netip.Addr{"only.fws-e2e.test.": netip.MustParseAddr("192.0.2.78")})
+	if !ok {
+		return
+	}
+	if out := mustDocker(t, "run", "--rm", "--dns", server, "fws/python:3.14", "python3", "-c", dnsPy, "only.fws-e2e.test"); out != "0 ['192.0.2.78']\n" {
+		t.Errorf("only.fws-e2e.test through the container's server: %q", out)
+	}
+	if out := mustDocker(t, "run", "--rm", "--dns", server, "fws/python:3.14", "python3", "-c", dnsPy, "missing.fws-e2e.test"); out != "3 []\n" {
+		t.Errorf("missing.fws-e2e.test: %q, want NXDOMAIN", out)
+	}
+	// Without internet access, what the stack does not answer is refused.
+	mustDocker(t, "network", "create", "--internal", "e2e-dnsq-internal")
+	defer docker(t, "network", "rm", "e2e-dnsq-internal")
+	if out := mustDocker(t, "run", "--rm", "--network", "e2e-dnsq-internal", "--dns", server, "fws/python:3.14", "python3", "-c", dnsPy, "only.fws-e2e.test"); out != "5 []\n" {
+		t.Errorf("only.fws-e2e.test without internet access: %q, want REFUSED", out)
+	}
+}

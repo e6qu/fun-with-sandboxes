@@ -69,8 +69,10 @@ One pull request open at a time.
    ([DESIGN §9](docs/DESIGN.md#9-runtime-launch-sequence)). The engine's
    lock needs no split yet: a sharded e2e run's `-debug` log shows five
    waits over 100 ms, the longest 557 ms, all behind a create.
-3. **Names and pods.** A DNS forwarder at each container's address, so
-   that `dig` and Go's pure resolver reach its servers; Network.framework's
+3. **Names and pods.** In #72: the router answers DNS over UDP, so that
+   `dig` and Go's pure resolver reach the stack's names and the
+   container's servers; next, DNS over TCP and to IPv6 servers;
+   Network.framework's
    lookups; IPv6-only networks' members seen across nodes, and kind's IPv6
    and dual-stack clusters.
 4. **Catalog upkeep.** November's PostgreSQL and MariaDB once their darwin

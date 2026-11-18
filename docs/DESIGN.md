@@ -403,7 +403,13 @@ same knobs, each enforced by a real mechanism or refused:
   root where a socket of that path is. The library resolves names in `getaddrinfo` and `gethostbyname`
   as a resolver does: from the container's `/etc/hosts` first, which the
   host's resolver never reads, then from those names, and then as the host
-  does; it connects to a member's address through the host port
+  does. A datagram to port 53 of a server outside the machine, a query a
+  program sends itself, goes to the container's router instead, which
+  answers DNS on UDP at its own port: the A and AAAA questions for names
+  the stack answers, as the library resolves them, by itself, and any
+  other query passed on to the servers of the container's `resolv.conf`,
+  given internet access, refused without; the library presents the
+  answer as from the server asked. It connects to a member's address through the host port
   behind its port, refuses a port the member does not expose, and reports
   a peer's host port as its member address and port. A TCP listener on a
   container port that has no host port becomes a Unix socket, in the same
