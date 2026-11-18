@@ -165,6 +165,11 @@ each lands in pull requests with tests on the macOS runner.
      program a container starts, the shim counts the kernel's kills
      (`NOTE_EXIT_MEMORY`) as OOM kills and still holds the sum, and
      `docker update` refuses to raise a running container's limit.
+   - Done: the container library's cost to a start, measured part by part
+     (`BenchmarkStartCost`, interleaved rounds, as a CI runner's speed
+     drifts more than the parts differ): any inserted library costs about
+     3.5 ms, and `fwsroot`'s interposing about 4 ms more, evenly over its
+     160 functions, so no few of them are worth cutting.
 4. **Scale without cliffs.**
    - Done: event-driven process tracking. A supervisor follows its
      container's processes by the kernel's fork, exec and exit events on

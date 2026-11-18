@@ -1030,6 +1030,16 @@ mounts, and record the container. On start:
 sandbox, through its anchor, with its root and environment, and with pipes
 or a pty (`creack/pty`).
 
+What the container library costs each process start, the time to reach
+`main` (`BenchmarkStartCost`, CI's macOS 26 runner, medians of interleaved
+rounds): about 3.4 ms natively, 7 ms with any library inserted, which
+keeps the loader from its prebuilt launch, and about 4 ms more for the
+library's interposing, some 25 µs for each of its 160 functions. The cost
+does not depend on which functions: each eighth of them, the most widely
+bound (`read`, `write`, `close`) or the rarest (`proc_*`), costs alike. A
+start is cheaper only with fewer functions interposed, that is with fewer
+of the container's features.
+
 ---
 
 ## 10. Go implementation

@@ -60,12 +60,15 @@ One pull request open at a time.
    looks for the Linux one it installs ([LIMITATIONS](LIMITATIONS.md)).
    Next: Chromium's own sandbox inside a container's, so that
    `--no-sandbox` goes.
-2. **Starts and limits.** In #71: per-process memory limits in the
-   kernel, jetsam's, which CI's experiment showed macOS enforces. Then
-   `fwsroot`'s cost to the loader cut by interposing fewer functions. The
-   engine's lock needs no split yet: a sharded e2e run's `-debug` log
-   shows five waits over 100 ms, the longest 557 ms, all behind a
-   create.
+2. **Starts and limits.** Merged in
+   [#71](https://github.com/e6qu/fun-with-sandboxes/pull/71): per-process
+   memory limits in the kernel, jetsam's, which CI's experiment showed
+   macOS enforces. In #72: `fwsroot`'s cost to a start measured part by
+   part (`BenchmarkStartCost`): about 4 ms of interposing, some 25 µs a
+   function, spread evenly over its 160, so no part of it is cheap to cut
+   ([DESIGN §9](docs/DESIGN.md#9-runtime-launch-sequence)). The engine's
+   lock needs no split yet: a sharded e2e run's `-debug` log shows five
+   waits over 100 ms, the longest 557 ms, all behind a create.
 3. **Names and pods.** A DNS forwarder at each container's address, so
    that `dig` and Go's pure resolver reach its servers; Network.framework's
    lookups; IPv6-only networks' members seen across nodes, and kind's IPv6
