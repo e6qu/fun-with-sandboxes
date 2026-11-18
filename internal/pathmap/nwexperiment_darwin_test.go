@@ -55,6 +55,12 @@ func TestNetworkFrameworkExperiment(t *testing.T) {
 	if b, err := exec.Command("/usr/bin/dyld_info", "-exports", "/usr/lib/system/libsystem_dnssd.dylib").Output(); err == nil {
 		listings = append(listings, string(b))
 	}
+	// The library's own export trie, as the loader mapped it.
+	if b, err := exec.Command(probe, "exports", "libsystem_dnssd").CombinedOutput(); err == nil {
+		listings = append(listings, string(b))
+	} else {
+		t.Logf("exports of libsystem_dnssd: %v\n%s", err, b)
+	}
 	for _, l := range listings {
 		for _, m := range regexp.MustCompile(`_?(dnssd_[A-Za-z0-9_]+)`).FindAllStringSubmatch(l, -1) {
 			if !seen[m[1]] {
