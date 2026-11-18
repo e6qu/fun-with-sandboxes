@@ -24,6 +24,22 @@ var nwCandidates = []string{
 	"dnssd_getaddrinfo_invalidate", "dnssd_getaddrinfo_result_get_ip_address", "dnssd_getaddrinfo_result_get_hostname",
 	"dnssd_getaddrinfo_result_get_actual_hostname", "dnssd_getaddrinfo_result_get_type", "dnssd_getaddrinfo_result_get_interface_index",
 	"xpc_connection_create_mach_service", "bootstrap_look_up", "connect", "connectx",
+	// The rest of the dnssd client mDNSResponder's sources declare
+	// (dnssd_private.h), which the SDK's stub leaves out.
+	"dnssd_retain", "dnssd_release", "dnssd_getaddrinfo_set_flags", "dnssd_getaddrinfo_set_interface_index",
+	"dnssd_getaddrinfo_set_protocols", "dnssd_getaddrinfo_set_service_scheme", "dnssd_getaddrinfo_set_delegate_pid",
+	"dnssd_getaddrinfo_set_delegate_uuid", "dnssd_getaddrinfo_set_delegate_audit_token", "dnssd_getaddrinfo_set_account_id",
+	"dnssd_getaddrinfo_set_need_encrypted_query", "dnssd_getaddrinfo_set_fallback_config", "dnssd_getaddrinfo_set_resolver_uuids",
+	"dnssd_getaddrinfo_set_use_failover", "dnssd_getaddrinfo_set_prohibit_encrypted_dns", "dnssd_getaddrinfo_set_log_privacy_level",
+	"dnssd_getaddrinfo_set_need_authenticated_results", "dnssd_getaddrinfo_set_validation_data",
+	"dnssd_getaddrinfo_result_get_address", "dnssd_getaddrinfo_result_get_protocol", "dnssd_getaddrinfo_result_get_service_data",
+	"dnssd_getaddrinfo_result_get_tracker_hostname", "dnssd_getaddrinfo_result_get_tracker_owner",
+	"dnssd_getaddrinfo_result_get_tracker_is_approved", "dnssd_getaddrinfo_result_get_authentication_tag",
+	"dnssd_getaddrinfo_result_get_validation_data", "dnssd_getaddrinfo_result_is_from_cache",
+	"dnssd_getaddrinfo_result_get_extended_dns_error", "dnssd_getaddrinfo_result_get_provider_name",
+	"dnssd_getaddrinfo_result_get_ech_config", "dnssd_getaddrinfo_result_get_svcb", "dnssd_getaddrinfo_result_get_negative_reason",
+	"dnssd_getaddrinfo_result_get_ttl", "dnssd_getaddrinfo_result_get_svcb_alpn_values",
+	"dnssd_getaddrinfo_result_enumerate_alpn_values", "dnssd_getaddrinfo_result_get_doh_uri", "dnssd_getaddrinfo_result_get_port",
 }
 
 // An experiment rather than a check of the library: which of nwCandidates
@@ -56,11 +72,9 @@ func TestNetworkFrameworkExperiment(t *testing.T) {
 		listings = append(listings, string(b))
 	}
 	// The library's own export trie, as the loader mapped it.
-	if b, err := exec.Command(probe, "exports", "libsystem_dnssd").CombinedOutput(); err == nil {
-		listings = append(listings, string(b))
-	} else {
-		t.Logf("exports of libsystem_dnssd: %v\n%s", err, b)
-	}
+	b, err := exec.Command(probe, "exports", "libsystem_dnssd").CombinedOutput()
+	listings = append(listings, string(b))
+	t.Logf("Network.framework experiment, libsystem_dnssd's export trie (%v), %d bytes:\n%.2000s", err, len(b), b)
 	for _, l := range listings {
 		for _, m := range regexp.MustCompile(`_?(dnssd_[A-Za-z0-9_]+)`).FindAllStringSubmatch(l, -1) {
 			if !seen[m[1]] {
