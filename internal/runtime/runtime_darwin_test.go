@@ -420,7 +420,7 @@ func TestMemoryLimitInTheKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join(state, "root")
-	if out, err := exec.Command("go", "build", "-o", filepath.Join(root, "hog"), "./testdata/hog").CombinedOutput(); err != nil {
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", filepath.Join(root, "hog"), "testdata/hog/main.c").CombinedOutput(); err != nil {
 		t.Fatalf("build hog: %v\n%s", err, out)
 	}
 	dir, err := os.MkdirTemp("/tmp", "fws")
@@ -461,9 +461,13 @@ func TestMemoryLimitInTheKernel(t *testing.T) {
 	}
 	t.Cleanup(func() { main.KillAll() })
 
-	cs, out := spec("/hog", "child")
-	if p := runToEnd(t, cs); strings.TrimSpace(out.String()) != "child: signal: killed" {
-		t.Errorf("a child of a process with a limit: exit %d, %q, want it killed", p.ExitCode(), out.String())
+	// What a process with the limit starts keeps it, through posix_spawn
+	// and through fork and exec alike.
+	for _, how := range []string{"spawn", "forkexec"} {
+		cs, out := spec("/hog", how)
+		if p := runToEnd(t, cs); strings.TrimSpace(out.String()) != "child: killed by signal 9" {
+			t.Errorf("a child started by %s under a limit: exit %d, %q, want it killed", how, p.ExitCode(), out.String())
+		}
 	}
 	hs, out := spec("/hog")
 	if p := runToEnd(t, hs); p.ExitCode() != 128+int(syscall.SIGKILL) {
@@ -473,6 +477,27 @@ func TestMemoryLimitInTheKernel(t *testing.T) {
 	es.Anchor = sock
 	if p := runToEnd(t, es); p.ExitCode() != 128+int(syscall.SIGKILL) {
 		t.Errorf("an exec at its limit: exit %d, %q", p.ExitCode(), out.String())
+	}
+	// A process started without the limit gives the programs it starts
+	// the one its container's file holds (pathmap.MemoryFile).
+	limits := filepath.Join(state, "limits")
+	if err := os.MkdirAll(limits, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(limits, "pids.max"), []byte("max\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(limits, "memory.max"), []byte("64\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, how := range []string{"spawn", "forkexec"} {
+		fs, out := spec("/hog", how)
+		fs.Limits = Limits{}
+		fs.Env = append(fs.Env, "FWS_PIDS="+filepath.Join(limits, "pids.max"))
+		fs.Profile.ReadFiles = []string{filepath.Join(limits, "pids.max"), filepath.Join(limits, "memory.max")}
+		if p := runToEnd(t, fs); strings.TrimSpace(out.String()) != "child: killed by signal 9" {
+			t.Errorf("a child started by %s under the container's memory file: exit %d, %q, want it killed", how, p.ExitCode(), out.String())
+		}
 	}
 	// Without a limit the same process runs on.
 	ns, out := spec("/hog")

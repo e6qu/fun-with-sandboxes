@@ -149,6 +149,11 @@ func (e *Engine) Update(ref string, req container.UpdateConfig) (container.Updat
 	if err := c.writePidsLimit(r.PidsLimit); err != nil {
 		return container.UpdateResponse{}, err
 	}
+	// The programs the container's processes start from now on get the
+	// limit as it stands; a process already running keeps its own.
+	if err := c.writeMemoryLimit(limits.MemoryMiB); err != nil {
+		return container.UpdateResponse{}, err
+	}
 	// macOS lets a process set only its own disk I/O policy, so a new
 	// weight reaches the processes the container starts from now on, execs
 	// and forks alike, through the file the container library reads as
