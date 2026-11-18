@@ -404,14 +404,14 @@ same knobs, each enforced by a real mechanism or refused:
   as a resolver does: from the container's `/etc/hosts` first, which the
   host's resolver never reads, then from those names, and then as the host
   does. Network.framework resolves through libsystem_dnssd's private
-  client, `dnssd_getaddrinfo`, and reads each address from a result
-  object: for a name the container answers, the library asks
-  mDNSResponder for `localhost` instead and has the result's getters give
-  the container's address of its family and the name asked, leaving out
-  the families the container has no address in; it then connects with
-  `connectx`, which the library routes as `connect`, unbinding a socket
-  from the interface Network.framework bound it to where its connection
-  goes to loopback instead. A datagram or connection to port 53 of a server outside the
+  client, `dnssd_getaddrinfo`, which asks mDNSResponder over XPC, out of a
+  container's reach, and reads each address from a result object: the
+  library takes the lookup's name, queue and handler, never activates it,
+  resolves the name as `getaddrinfo` does in the container, and hands the
+  handler results of its own, which its getters answer for. Network.framework
+  then connects with `connectx`, which the library routes as `connect`,
+  unbinding a socket from the interface Network.framework bound it to
+  where its connection goes to loopback instead. A datagram or connection to port 53 of a server outside the
   machine, IPv4 or IPv6, a query a program sends itself, goes to the
   container's router instead, which answers DNS on UDP at its own port
   and over TCP through it (a `DNSStream` request): the A and AAAA questions for names

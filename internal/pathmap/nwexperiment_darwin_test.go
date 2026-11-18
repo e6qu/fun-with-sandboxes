@@ -127,6 +127,22 @@ func TestNetworkFrameworkExperiment(t *testing.T) {
 	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-dynamiclib", "-O2", "-Wl,-undefined,dynamic_lookup", "-o", lib, src, hit).CombinedOutput(); err != nil {
 		t.Fatalf("build the tracer: %v\n%s", err, out)
 	}
+	// What the client hands Network.framework: each result's type,
+	// protocol, interface and negative reason, and each event, which the
+	// container library's stand-in answers in its place.
+	results := filepath.Join(dir, "results.dylib")
+	if err := os.WriteFile(filepath.Join(dir, "results.c"), []byte(nwResultsSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-dynamiclib", "-O2", "-Wl,-undefined,dynamic_lookup", "-o", results, filepath.Join(dir, "results.c")).CombinedOutput(); err != nil {
+		t.Fatalf("build the result printer: %v\n%s", err, out)
+	}
+	for _, host := range []string{"one.one.one.one", "localhost", "nothing-answers.invalid"} {
+		cmd := exec.Command(probe, host, "80")
+		cmd.Env = append(os.Environ(), "DYLD_INSERT_LIBRARIES="+results)
+		out, err := cmd.CombinedOutput()
+		t.Logf("Network.framework experiment, %s, the client's results (%v):\n%s", host, err, out)
+	}
 	for _, host := range []string{"one.one.one.one", "localhost"} {
 		cmd := exec.Command(probe, host, "80")
 		cmd.Env = append(os.Environ(), "DYLD_INSERT_LIBRARIES="+lib)
@@ -151,3 +167,51 @@ func TestNetworkFrameworkExperiment(t *testing.T) {
 		t.Logf("Network.framework experiment, %s: %s\ncalled:\n%s", host, strings.Join(other, " | "), strings.Join(hits, "\n"))
 	}
 }
+
+// nwResultsSource prints what the dnssd client hands its caller's
+// handlers: each result's fields, as numbers, and each event.
+const nwResultsSource = `#include <Block.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <sys/socket.h>
+typedef void *gai_t, *res_t;
+typedef void (^result_handler_t)(res_t *results, size_t count);
+typedef void (^event_handler_t)(int event, int error);
+extern void dnssd_getaddrinfo_set_result_handler(gai_t, result_handler_t);
+extern void dnssd_getaddrinfo_set_event_handler(gai_t, event_handler_t);
+extern const struct sockaddr *dnssd_getaddrinfo_result_get_address(res_t);
+extern int dnssd_getaddrinfo_result_get_type(res_t);
+extern int dnssd_getaddrinfo_result_get_protocol(res_t);
+extern uint32_t dnssd_getaddrinfo_result_get_interface_index(res_t);
+extern int dnssd_getaddrinfo_result_get_negative_reason(res_t);
+static void set_result_handler(gai_t g, result_handler_t h) {
+    if (!h) {
+        dnssd_getaddrinfo_set_result_handler(g, h);
+        return;
+    }
+    dnssd_getaddrinfo_set_result_handler(g, ^(res_t *rs, size_t n) {
+        for (size_t i = 0; i < n; i++) {
+            const struct sockaddr *sa = dnssd_getaddrinfo_result_get_address(rs[i]);
+            fprintf(stderr, "result type=%d protocol=%d interface=%u negative=%d family=%d len=%d\n",
+                    dnssd_getaddrinfo_result_get_type(rs[i]), dnssd_getaddrinfo_result_get_protocol(rs[i]),
+                    dnssd_getaddrinfo_result_get_interface_index(rs[i]), dnssd_getaddrinfo_result_get_negative_reason(rs[i]),
+                    sa ? sa->sa_family : -1, sa ? sa->sa_len : -1);
+        }
+        h(rs, n);
+    });
+}
+static void set_event_handler(gai_t g, event_handler_t h) {
+    if (!h) {
+        dnssd_getaddrinfo_set_event_handler(g, h);
+        return;
+    }
+    dnssd_getaddrinfo_set_event_handler(g, ^(int event, int error) {
+        fprintf(stderr, "event %d error %d\n", event, error);
+        h(event, error);
+    });
+}
+__attribute__((used, section("__DATA,__interpose"))) static const void *interpose[] = {
+    (const void *)set_result_handler, (const void *)dnssd_getaddrinfo_set_result_handler,
+    (const void *)set_event_handler, (const void *)dnssd_getaddrinfo_set_event_handler,
+};
+`
