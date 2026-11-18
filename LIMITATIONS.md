@@ -338,15 +338,21 @@ by a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   The UTS namespace comes with the network; the user and cgroup
   namespaces cannot be shared, as containers have none. `generate kube`,
   `play kube`, checkpoints and quadlets are not served.
-- **DNS settings reach the libc resolver alone.** A
+- **DNS goes through the container's router.** A
   container with `--dns`, `--dns-search` or `--dns-option` resolves the
   names its `/etc/hosts` and its stack do not answer through its router,
   which needs internet access. `getaddrinfo_async_start` and
   `DNSServiceGetAddrInfo` answer as `getaddrinfo` does; Network.framework
-  still uses the host's resolver, and a program that sends DNS itself
-  (`dig`, Go's pure resolver) cannot reach the servers (*not built
-  yet*). Of the options, `ndots`, `timeout` and `attempts` take effect.
-  A server in the stack, or a Service, cannot serve.
+  still uses the host's resolver (*not built yet*). A program that sends
+  DNS itself (`dig`, Go's pure resolver) over UDP to a server outside the
+  machine reaches the router instead, which answers the A and AAAA
+  questions for its stack's names and passes every other query to the
+  servers of the container's `resolv.conf`, given internet access, and
+  refuses it without; the answer comes as from the server asked, though
+  `dig @server` is answered by the container's servers. DNS over TCP and
+  to an IPv6 server cannot reach them (*not built yet*). Of the options,
+  `ndots`, `timeout` and `attempts` take effect. A server in the stack,
+  or a Service, cannot serve.
 - **Settings without a macOS counterpart are refused**:
   - DNS settings in an engine nested in a privileged container, and a
     DNS server on loopback;

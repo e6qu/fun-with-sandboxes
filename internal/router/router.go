@@ -156,6 +156,12 @@ type Router struct {
 	// relays are the relays to other stacks' members' UDP ports.
 	relays       map[relayKey]*net.UDPConn
 	relayClosers []io.Closer
+
+	// dns answers DNS on UDP at the router's own address (serveDNS).
+	dns *net.UDPConn
+	// upstreamPort is the upstream servers' port when a test serves
+	// elsewhere than 53.
+	upstreamPort int
 }
 
 // Network locates the router's container among its stack's members: the
@@ -172,6 +178,10 @@ type Network struct {
 	// its engine gave it DNS servers, search domains or options of its
 	// own; the router then answers its Resolve requests, given Internet.
 	DNS *DNS
+	// Upstream are the servers of the container's /etc/resolv.conf, to
+	// which the router passes on the DNS queries its stack does not
+	// answer, given Internet (serveDNS).
+	Upstream []netip.Addr `json:",omitempty"`
 }
 
 // Listen starts a router on addr for the port directory dir; flow opens a
@@ -196,6 +206,13 @@ func Listen(addr, dir string, flow func() (*net.UDPConn, error), nw Network) (*R
 	ux.SetReadBuffer(4 * maxDatagram)
 	ux.SetWriteBuffer(2 * maxDatagram)
 	r := &Router{l: l, dir: dir, key: key, net: nw, relays: map[relayKey]*net.UDPConn{}, cs: map[net.Conn]struct{}{}, ux: ux, flow: flow, flows: map[int]*net.UDPConn{}}
+	// DNS on UDP at the same address as the router's TCP port.
+	if ta, ok := l.Addr().(*net.TCPAddr); ok {
+		if u, err := net.ListenUDP("udp", &net.UDPAddr{IP: ta.IP, Port: ta.Port}); err == nil {
+			r.dns = u
+			go r.serveDNS(u)
+		}
+	}
 	go r.serve()
 	go r.fromContainer()
 	return r, nil
@@ -303,6 +320,9 @@ func (r *Router) Close() error {
 	}
 	r.mu.Unlock()
 	r.ux.Close()
+	if r.dns != nil {
+		r.dns.Close()
+	}
 	r.umu.Lock()
 	for _, c := range r.flows {
 		c.Close()

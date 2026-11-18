@@ -3481,6 +3481,10 @@ static unsigned char net_own[NET_FDS];
 static unsigned short net_port[NET_FDS];
 static in_addr_t net_peer[NET_FDS];
 static unsigned short net_dport[NET_FDS];
+// For a UDP socket that sent to port 53 of a server outside the machine:
+// the server, whose replies come from the container's router, which
+// answers DNS in its place (dns_server).
+static in_addr_t net_dns[NET_FDS];
 // The control messages a UDP socket on a port without a host port asks
 // for: the kernel sees a Unix datagram socket, which has no IP options, so
 // the library keeps them and writes the messages itself.
@@ -3991,6 +3995,20 @@ static int bound_v6(int type, unsigned short port) {
     return r == -1 && e == EADDRINUSE;
 }
 
+// dns_server reports whether a datagram of type to v4, port port, is a DNS
+// query to a server outside the machine, which the container's router
+// answers (package router's serveDNS): programs that send DNS themselves,
+// as dig and Go's pure resolver do, ask the servers of the container's
+// resolv.conf. It remembers the server for fd, as which the router's
+// replies are presented.
+static int dns_server(int fd, int type, in_addr_t v4, unsigned short port) {
+    if (type != SOCK_DGRAM || port != 53 || !router_port || member_block(v4) || v4_local(v4) || v4 == htonl(INADDR_ANY)) {
+        return 0;
+    }
+    if (fd >= 0 && fd < NET_FDS) net_dns[fd] = v4;
+    return 1;
+}
+
 // remote returns the address a connection or datagram to sa reaches, in
 // out, converting fd first where an IPv4 address goes through an IPv6
 // socket, or NULL with errno set where nothing listens.
@@ -4055,7 +4073,12 @@ static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_
     }
     in_addr_t ra;
     unsigned short rp;
-    if (reach(type, v4, port, &ra, &rp) == -1) {
+    if (dns_server(fd, type, v4, port)) {
+        // A DNS server outside the machine, which Seatbelt keeps the
+        // container from: the container's router answers in its place.
+        ra = htonl(INADDR_LOOPBACK);
+        rp = router_port;
+    } else if (reach(type, v4, port, &ra, &rp) == -1) {
         return NULL;
     }
     struct sockaddr_in b = v4_addr(ra, rp);
@@ -4145,7 +4168,12 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
         struct sockaddr_in *a = (struct sockaddr_in *)&v;
         unsigned short c = v4_local(a->sin_addr.s_addr) ? container_port(type, ntohs(a->sin_port)) : 0;
         in_addr_t ma;
-        if (c) {
+        if (!own && type == SOCK_DGRAM && router_port && a->sin_addr.s_addr == htonl(INADDR_LOOPBACK) && ntohs(a->sin_port) == router_port &&
+            fd >= 0 && fd < NET_FDS && net_dns[fd]) {
+            // The router's DNS answer comes as from the server asked.
+            a->sin_addr.s_addr = net_dns[fd];
+            a->sin_port = htons(53);
+        } else if (c) {
             a->sin_port = htons(c);
         } else if (!own && type == SOCK_DGRAM && a->sin_addr.s_addr == htonl(INADDR_LOOPBACK) && flow_of(ntohs(a->sin_port), &ma, &c)) {
             // A flow port is the UDP port of the member it relays for.
@@ -5727,6 +5755,7 @@ static void forget(int fd) {
     set_state(fd, 0);
     if (fd >= 0 && fd < NET_FDS) {
         net_cmsg[fd] = 0;
+        net_dns[fd] = 0;
         set_name(unix_names, fd, NULL);
         set_name(unix_peers, fd, NULL);
         set_peer(fd, NULL);

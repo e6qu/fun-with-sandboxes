@@ -1702,12 +1702,14 @@ func (c *Container) start(e *Engine) error {
 		}
 		cfg.Address = c.rec.Address
 		cfg.Internet = e.hasEgress(c)
-		if d := dnsOf(c.rec.HostConfig); d.set() {
-			rc, err := containerResolvConf(d)
-			if err != nil {
-				return err
-			}
-			dns := router.ParseResolvConf([]byte(rc))
+		d := dnsOf(c.rec.HostConfig)
+		rc, err := containerResolvConf(d)
+		if err != nil {
+			return err
+		}
+		dns := router.ParseResolvConf([]byte(rc))
+		cfg.Upstream = dns.Servers
+		if d.set() {
 			cfg.DNS = &dns
 		}
 	}
