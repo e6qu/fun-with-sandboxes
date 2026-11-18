@@ -1,8 +1,11 @@
 package pathmap
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,19 +40,23 @@ func BenchmarkCalls(b *testing.B) {
 		}
 		interposers[name] = lib
 	}
+	// many interposes every function fwsroot does, each with a stub that
+	// only jumps to it: the loader's cost of fwsroot's interposing alone,
+	// apart from what its initializer does.
+	interposers["many"] = manyInterposer(b)
 	for _, op := range []string{"getpid", "getuid", "open", "stat", "stat-missing", "fstat", "pread", "readdir", "socket", "spawn", "started"} {
 		// empty inserts a library that does nothing: what the loader costs.
 		// bare inserts fwsroot without a container's variables: what its
 		// interposing costs the loader, beside what it does for a container.
 		modes := []string{"native", "empty", "bare", "fwsroot"}
 		if op == "spawn" || op == "started" {
-			modes = append(modes, "one", "few")
+			modes = append(modes, "one", "few", "many")
 		}
 		for _, mode := range modes {
 			b.Run(op+"/"+mode, func(b *testing.B) {
 				dir, env := root, []string(nil)
 				switch mode {
-				case "one", "few":
+				case "one", "few", "many":
 					env = []string{"DYLD_INSERT_LIBRARIES=" + interposers[mode]}
 				case "empty":
 					env = []string{"DYLD_INSERT_LIBRARIES=" + empty}
@@ -84,4 +91,54 @@ func BenchmarkCalls(b *testing.B) {
 			})
 		}
 	}
+}
+
+// interposed lists the symbols fwsroot interposes, as its INTERPOSE lines
+// name them, with the names its __asm labels give.
+func interposed(tb testing.TB) []string {
+	src, err := os.ReadFile("src/fwsroot.c")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	labels := map[string]string{}
+	for _, m := range regexp.MustCompile(`(\w+)\([^;]*\)\s*__asm\("_([^"]+)"\)`).FindAllStringSubmatch(string(src), -1) {
+		labels[m[1]] = m[2]
+	}
+	var syms []string
+	for _, m := range regexp.MustCompile(`(?m)^INTERPOSE\(\w+,\s*(\w+)\);`).FindAllStringSubmatch(string(src), -1) {
+		name := m[1]
+		if l, ok := labels[name]; ok {
+			name = l
+		}
+		syms = append(syms, name)
+	}
+	if len(syms) < 100 {
+		tb.Fatalf("found %d interposed functions in fwsroot.c", len(syms))
+	}
+	return syms
+}
+
+// manyInterposer builds a library that interposes every function fwsroot
+// does with a stub that jumps to the function, and returns its path.
+func manyInterposer(tb testing.TB) string {
+	syms := interposed(tb)
+	var asm strings.Builder
+	asm.WriteString(".text\n")
+	for i, s := range syms {
+		fmt.Fprintf(&asm, ".weak_reference \"_%s\"\n.p2align 2\nstub_%d:\n\tb \"_%s\"\n", s, i, s)
+	}
+	asm.WriteString(".section __DATA,__interpose\n.p2align 3\n")
+	for i, s := range syms {
+		fmt.Fprintf(&asm, ".quad stub_%d\n.quad \"_%s\"\n", i, s)
+	}
+	dir := tb.TempDir()
+	src, lib := filepath.Join(dir, "many.s"), filepath.Join(dir, "many.dylib")
+	if err := os.WriteFile(src, []byte(asm.String()), 0o644); err != nil {
+		tb.Fatal(err)
+	}
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-dynamiclib", "-Wl,-undefined,dynamic_lookup", "-o", lib, src).CombinedOutput(); err != nil {
+		tb.Fatalf("build the many library: %v\n%s", err, out)
+	}
+	tb.Logf("many interposes %d functions", len(syms))
+	return lib
 }
