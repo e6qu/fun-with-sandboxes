@@ -30,7 +30,9 @@ except (socket.gaierror, socket.herror) as e:
 func serveDNS(t *testing.T, records map[string]netip.Addr) (string, bool) {
 	t.Helper()
 	addr := hostAddress(t)
-	pc, err := net.ListenPacket("udp4", net.JoinHostPort(addr, "53"))
+	// macOS lets a process without root bind a port below 1024 only on
+	// the wildcard address.
+	pc, err := net.ListenPacket("udp4", ":53")
 	if err != nil {
 		t.Logf("no DNS server of the test's own: %v", err)
 		return "", false
@@ -265,20 +267,18 @@ func TestDNSQueries(t *testing.T) {
 		}
 	}
 
-	server, ok := serveDNS(t, map[string]netip.Addr{"only.fws-e2e.test.": netip.MustParseAddr("192.0.2.78")})
-	if !ok {
-		return
+	// Other names go on to the container's servers: a public one, as
+	// TestDNSSettings uses, since a test's own server on port 53 needs root.
+	if out := mustDocker(t, "run", "--rm", "--dns", "1.1.1.1", "fws/python:3.14", "python3", "-c", dnsPy, "one.one.one.one"); out != "0 ['1.0.0.1', '1.1.1.1']\n" {
+		t.Errorf("one.one.one.one through 1.1.1.1: %q", out)
 	}
-	if out := mustDocker(t, "run", "--rm", "--dns", server, "fws/python:3.14", "python3", "-c", dnsPy, "only.fws-e2e.test"); out != "0 ['192.0.2.78']\n" {
-		t.Errorf("only.fws-e2e.test through the container's server: %q", out)
-	}
-	if out := mustDocker(t, "run", "--rm", "--dns", server, "fws/python:3.14", "python3", "-c", dnsPy, "missing.fws-e2e.test"); out != "3 []\n" {
-		t.Errorf("missing.fws-e2e.test: %q, want NXDOMAIN", out)
+	if out := mustDocker(t, "run", "--rm", "--dns", "1.1.1.1", "fws/python:3.14", "python3", "-c", dnsPy, "missing.fws-e2e.invalid"); out != "3 []\n" {
+		t.Errorf("missing.fws-e2e.invalid: %q, want NXDOMAIN", out)
 	}
 	// Without internet access, what the stack does not answer is refused.
 	mustDocker(t, "network", "create", "--internal", "e2e-dnsq-internal")
 	defer docker(t, "network", "rm", "e2e-dnsq-internal")
-	if out := mustDocker(t, "run", "--rm", "--network", "e2e-dnsq-internal", "--dns", server, "fws/python:3.14", "python3", "-c", dnsPy, "only.fws-e2e.test"); out != "5 []\n" {
-		t.Errorf("only.fws-e2e.test without internet access: %q, want REFUSED", out)
+	if out := mustDocker(t, "run", "--rm", "--network", "e2e-dnsq-internal", "--dns", "1.1.1.1", "fws/python:3.14", "python3", "-c", dnsPy, "one.one.one.one"); out != "5 []\n" {
+		t.Errorf("one.one.one.one without internet access: %q, want REFUSED", out)
 	}
 }
