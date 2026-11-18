@@ -64,6 +64,9 @@ import (
 //     without an answer within EchoTimeout is Refused.
 //   - Resolve: a name to resolve through the container's DNS servers
 //     (resolve.go).
+//   - DNSStream: DNS over TCP, as a program sends it to port 53 of a
+//     server outside the machine: Connected, then each query, after its
+//     length in two bytes, has its answer so (dnsserver.go).
 const (
 	Stream      = 1
 	StreamRelay = 2
@@ -437,6 +440,9 @@ func (r *Router) join(c net.Conn) {
 		return
 	case Resolve:
 		r.resolve(c)
+		return
+	case DNSStream:
+		r.serveDNSStream(c)
 		return
 	case StreamRelay:
 		var addr netip.Addr

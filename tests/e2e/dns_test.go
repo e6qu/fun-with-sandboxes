@@ -217,18 +217,38 @@ func TestAsyncLookups(t *testing.T) {
 }
 
 // dnsPy asks the first server of the container's resolv.conf for its
-// argument's A records itself, as dig does: one query in a datagram from
-// an unconnected socket, whose answer must come from the server asked. It
-// prints the answer's code and its addresses, sorted.
+// argument's A records itself, as dig does: by default one query in a
+// datagram from an unconnected socket, whose answer must come from the
+// server asked; with "tcp", over a TCP connection to the server, as a
+// resolver retries a truncated answer. An IPv6 server is asked over IPv6.
+// It prints the answer's code and its addresses, sorted.
 const dnsPy = `import socket, struct, sys
 ns = [l.split()[1] for l in open('/etc/resolv.conf') if l.startswith('nameserver')][0]
+fam = socket.AF_INET6 if ':' in ns else socket.AF_INET
 q = struct.pack('>HHHHHH', 0x1234, 0x0100, 1, 0, 0, 0)
 q += b''.join(bytes([len(p)]) + p.encode() for p in sys.argv[1].split('.')) + b'\0' + struct.pack('>HH', 1, 1)
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.settimeout(20)
-s.sendto(q, (ns, 53))
-r, src = s.recvfrom(4096)
-if src != (ns, 53):
+if len(sys.argv) > 2 and sys.argv[2] == 'tcp':
+    s = socket.socket(fam, socket.SOCK_STREAM)
+    s.settimeout(20)
+    s.connect((ns, 53))
+    peer = s.getpeername()
+    s.sendall(struct.pack('>H', len(q)) + q)
+    def take(n):
+        b = b''
+        while len(b) < n:
+            c = s.recv(n - len(b))
+            if not c:
+                raise SystemExit('closed')
+            b += c
+        return b
+    r = take(struct.unpack('>H', take(2))[0])
+    src = peer
+else:
+    s = socket.socket(fam, socket.SOCK_DGRAM)
+    s.settimeout(20)
+    s.sendto(q, (ns, 53))
+    r, src = s.recvfrom(4096)
+if tuple(src[:2]) != (ns, 53):
     print('answer from', src, 'not', ns)
     sys.exit()
 an = struct.unpack('>H', r[6:8])[0]
@@ -265,6 +285,20 @@ func TestDNSQueries(t *testing.T) {
 		if out := mustDocker(t, "run", "--rm", "--network", "e2e-dnsq", "fws/python:3.14", "python3", "-c", dnsPy, name); out != "0 ['"+db+"']\n" {
 			t.Errorf("%s: %q, want its address %s", name, out, db)
 		}
+	}
+
+	// Over TCP, as a resolver retries a truncated answer, and to a server
+	// at an IPv6 address, over UDP and TCP: the router answers each.
+	if out := mustDocker(t, "run", "--rm", "--network", "e2e-dnsq", "fws/python:3.14", "python3", "-c", dnsPy, "e2e-dnsq-db", "tcp"); out != "0 ['"+db+"']\n" {
+		t.Errorf("e2e-dnsq-db over TCP: %q, want its address %s", out, db)
+	}
+	for _, how := range []string{"udp", "tcp"} {
+		if out := mustDocker(t, "run", "--rm", "--network", "e2e-dnsq", "--dns", "2606:4700:4700::1111", "fws/python:3.14", "python3", "-c", dnsPy, "e2e-dnsq-db", how); out != "0 ['"+db+"']\n" {
+			t.Errorf("e2e-dnsq-db from an IPv6 server over %s: %q, want its address %s", how, out, db)
+		}
+	}
+	if out := mustDocker(t, "run", "--rm", "--dns", "1.1.1.1", "fws/python:3.14", "python3", "-c", dnsPy, "one.one.one.one", "tcp"); out != "0 ['1.0.0.1', '1.1.1.1']\n" {
+		t.Errorf("one.one.one.one through 1.1.1.1 over TCP: %q", out)
 	}
 
 	// Other names go on to the container's servers: a public one, as

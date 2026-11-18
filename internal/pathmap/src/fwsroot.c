@@ -3485,6 +3485,37 @@ static unsigned short net_dport[NET_FDS];
 // the server, whose replies come from the container's router, which
 // answers DNS in its place (dns_server).
 static in_addr_t net_dns[NET_FDS];
+// The same for a server at an IPv6 address, which the IPv4 socket in the
+// IPv6 one's place presents the router's answers as; allocated as one is
+// first asked.
+static struct in6_addr *net_dns6;
+
+// dns6_set remembers v6 as the IPv6 DNS server fd asked, or forgets it.
+static void dns6_set(int fd, const struct in6_addr *v6) {
+    if (fd < 0 || fd >= NET_FDS) return;
+    if (!net_dns6) {
+        if (!v6) return;
+        net_dns6 = calloc(NET_FDS, sizeof *net_dns6);
+        if (!net_dns6) return;
+    }
+    if (v6) {
+        net_dns6[fd] = *v6;
+    } else {
+        memset(&net_dns6[fd], 0, sizeof net_dns6[fd]);
+    }
+}
+
+// dns6_of is the IPv6 DNS server fd asked, or NULL.
+static const struct in6_addr *dns6_of(int fd) {
+    if (!net_dns6 || fd < 0 || fd >= NET_FDS || IN6_IS_ADDR_UNSPECIFIED(&net_dns6[fd])) return NULL;
+    return &net_dns6[fd];
+}
+
+// dns_v6 reports whether an IPv6 address may be a DNS server outside the
+// machine, which the router answers in place of.
+static int dns_v6(const struct in6_addr *a) {
+    return !IN6_IS_ADDR_LOOPBACK(a) && !IN6_IS_ADDR_UNSPECIFIED(a) && !IN6_IS_ADDR_LINKLOCAL(a) && !IN6_IS_ADDR_V4MAPPED(a) && !IN6_IS_ADDR_MULTICAST(a);
+}
 // The control messages a UDP socket on a port without a host port asks
 // for: the kernel sees a Unix datagram socket, which has no IP options, so
 // the library keeps them and writes the messages itself.
@@ -3835,6 +3866,9 @@ static int nflows;
 // so every port, 65535 too, is a port.
 #define ROUTER_STREAM 1
 #define ROUTER_STREAM_RELAY 2
+// DNS over TCP to the router, which answers it in place of a server
+// outside the machine (package router's DNSStream).
+#define ROUTER_DNS 7
 #define ROUTER_FLOW 3
 #define ROUTER_FLOW_RELAY 4
 #define ROUTER_ECHO 5
@@ -4006,6 +4040,7 @@ static int dns_server(int fd, int type, in_addr_t v4, unsigned short port) {
         return 0;
     }
     if (fd >= 0 && fd < NET_FDS) net_dns[fd] = v4;
+    dns6_set(fd, NULL);
     return 1;
 }
 
@@ -4049,6 +4084,18 @@ static const struct sockaddr *remote(int fd, const struct sockaddr *sa, socklen_
             if (!v4 || (!(state_of(fd) & NET_V6) && to_ipv4(fd, type) == -1)) {
                 return sa;
             }
+        } else if (type == SOCK_DGRAM && port == 53 && router_port && dns_v6(&a->sin6_addr)) {
+            // A DNS query to a server at an IPv6 address outside the
+            // machine goes to the router, through the IPv4 socket in the
+            // IPv6 one's place, and its answers come as from the server.
+            if (!(state_of(fd) & NET_V6) && to_ipv4(fd, type) == -1) {
+                return NULL;
+            }
+            dns6_set(fd, &a->sin6_addr);
+            struct sockaddr_in b = v4_addr(htonl(INADDR_LOOPBACK), router_port);
+            memcpy(out, &b, sizeof b);
+            *len = sizeof b;
+            return (const struct sockaddr *)out;
         } else {
             unsigned short h = host_port(type, port);
             if (!h || !(IN6_IS_ADDR_LOOPBACK(&a->sin6_addr) || IN6_IS_ADDR_UNSPECIFIED(&a->sin6_addr))) {
@@ -4129,6 +4176,21 @@ static void present(int fd, const struct sockaddr_storage *k, socklen_t kn, stru
         return;
     }
     unsigned char st = state_of(fd);
+    const struct in6_addr *d6 = own ? NULL : dns6_of(fd);
+    if (d6 && ((st & NET_ROUTED) || (k->ss_family == AF_INET && ((const struct sockaddr_in *)k)->sin_addr.s_addr == htonl(INADDR_LOOPBACK) &&
+                                     ntohs(((const struct sockaddr_in *)k)->sin_port) == router_port))) {
+        // The router's DNS answer comes as from the IPv6 server asked.
+        struct sockaddr_in6 b;
+        memset(&b, 0, sizeof b);
+        b.sin6_len = sizeof b;
+        b.sin6_family = AF_INET6;
+        b.sin6_port = htons(53);
+        b.sin6_addr = *d6;
+        socklen_t n = *outlen < (socklen_t)sizeof b ? *outlen : (socklen_t)sizeof b;
+        memcpy(out, &b, n);
+        *outlen = sizeof b;
+        return;
+    }
     if ((st & NET_UNIX) && k->ss_family == AF_UNIX) {
         // A listener on a port without a host port, or a connection it
         // accepted, whose client is where the router saw it.
@@ -4822,7 +4884,8 @@ static int connect_dir(int dir, int fd, const struct sockaddr *sa, socklen_t giv
 // container port port of the member at addr, and reports whether it did:
 // at once, as a connection to loopback is made, whether or not fd blocks.
 // With foreign set, the router is the container's own, which relays to
-// another stack's member.
+// another stack's member; with foreign 2, it answers DNS over TCP in
+// place of the server at addr.
 static int route(int fd, in_addr_t addr, unsigned short router, unsigned short port, int v6, int foreign) {
     if (v6 && !(state_of(fd) & NET_V6) && to_ipv4(fd, SOCK_STREAM) == -1) {
         return -1;
@@ -4832,7 +4895,10 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
     struct sockaddr_in r = v4_addr(htonl(INADDR_LOOPBACK), router);
     unsigned char req[1 + RELAY_KEY + 6] = {ROUTER_STREAM, (unsigned char)(port >> 8), (unsigned char)port}, ans = 1;
     size_t n = 3;
-    if (foreign) {
+    if (foreign == 2) {
+        req[0] = ROUTER_DNS;
+        n = 1;
+    } else if (foreign) {
         const unsigned char *key = relay_key();
         if (!key) {
             if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl);
@@ -4888,6 +4954,12 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
             a = htonl(INADDR_LOOPBACK);
         } else if (member6(&s6->sin6_addr) && port && v6_target(&s6->sin6_addr, &a) == 1) {
             p6 = 1;
+        } else if (port == 53 && router_port && dns_v6(&s6->sin6_addr)) {
+            // DNS over TCP to a server at an IPv6 address outside the
+            // machine: the router answers in its place.
+            *r = route(fd, htonl(INADDR_LOOPBACK), router_port, 53, 1, 2);
+            if (*r == 0) dns6_set(fd, &s6->sin6_addr);
+            return 1;
         } else {
             return 0;
         }
@@ -4896,6 +4968,13 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
     }
     if (!port) {
         return 0;
+    }
+    if (port == 53 && router_port && !member_block(a) && !v4_local(a) && !own_addr(a) && a != htonl(INADDR_ANY)) {
+        // DNS over TCP to a server outside the machine, which Seatbelt
+        // keeps the container from: the router answers in its place.
+        *r = route(fd, a, router_port, 53, v6, 2);
+        if (*r == 0) dns6_set(fd, NULL);
+        return 1;
     }
     if (member_block(a) && !own_addr(a)) {
         int member;
@@ -5756,6 +5835,7 @@ static void forget(int fd) {
     if (fd >= 0 && fd < NET_FDS) {
         net_cmsg[fd] = 0;
         net_dns[fd] = 0;
+        dns6_set(fd, NULL);
         set_name(unix_names, fd, NULL);
         set_name(unix_peers, fd, NULL);
         set_peer(fd, NULL);
