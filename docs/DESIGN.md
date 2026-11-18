@@ -225,11 +225,19 @@ same knobs, each enforced by a real mechanism or refused:
     compressed and swapped-out memory, so `--memory-swap` may only equal it;
     past the limit the largest process is killed, as the kernel OOM killer
     picks one in a cgroup, and the container reports `OOMKilled`. The
-    kernel also holds each process to the whole limit at once: the spawn
-    helper sets jetsam's fatal footprint limit
-    (`posix_spawnattr_setjetsam_ext`, in MiB) as it executes the command
-    and the exec anchor, the one time an unprivileged process may set it,
-    and what they start keeps it. The shim watches each exit with
+    kernel also holds each program to the whole limit at once: jetsam's
+    fatal footprint limit (`posix_spawnattr_setjetsam_ext`, in MiB), which
+    a process may set only on a program it starts or executes, and which
+    the kernel keeps across no fork and no exec. So it is set on every
+    program: the spawn helper sets it as it executes the command and the
+    exec anchor; the container library sets it on each `posix_spawn` and
+    executes each `execve` through `posix_spawn`'s `POSIX_SPAWN_SETEXEC`
+    with it, reading the limit from the container's `memory.max` beside
+    `pids.max`; and the anchor and `docker-init`, Go programs the library
+    does not reach, start their programs through the helper binary's
+    `fws-memexec` role, which executes them with it. A process forked
+    without an exec runs without it, held by the shim's sum alone. The
+    shim watches each exit with
     `NOTE_EXIT_DETAIL`, whose `NOTE_EXIT_MEMORY` says the kernel killed the
     process at its limit, and counts that kill as an OOM kill. No process
     may change a running process's limit, not even its own

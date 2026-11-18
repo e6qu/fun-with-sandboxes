@@ -290,8 +290,10 @@ by a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 - **`--memory`** caps each process's physical footprint in the kernel
   (jetsam's fatal limit, at once) and the processes' sum in the shim
   (every 100 ms); past either the process, or the largest, is killed and
-  the container reports `OOMKilled`. An allocation never fails first, and
-  several processes together can overshoot the sum between two samples.
+  the container reports `OOMKilled`. An allocation never fails first;
+  several processes together can overshoot the sum between two samples,
+  and a process forked without an exec, which the kernel gives no limit,
+  is held by the sum alone.
   `--memory-swap` may only equal the limit (or be -1).
   `--memory-reservation`, swappiness and `--oom-kill-disable` are
   refused.

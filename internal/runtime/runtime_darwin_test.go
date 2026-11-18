@@ -420,6 +420,9 @@ func TestMemoryLimitInTheKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join(state, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", filepath.Join(root, "hog"), "testdata/hog/main.c").CombinedOutput(); err != nil {
 		t.Fatalf("build hog: %v\n%s", err, out)
 	}

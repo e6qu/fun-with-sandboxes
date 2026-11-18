@@ -25,6 +25,7 @@ const (
 	spawnSetPgroup      = 0x0002
 	spawnSetSigDefault  = 0x0004
 	spawnSetSigMask     = 0x0008
+	spawnSetExec        = 0x0040
 	spawnSetSID         = 0x0400
 	spawnCloexecDefault = 0x4000
 	allSignals          = ^uint32(0)
@@ -120,6 +121,59 @@ func Spawn(path string, argv, env []string, a SpawnAttr) (int, error) {
 		return 0, &spawnError{path: path, err: syscall.Errno(r)}
 	}
 	return int(pid), nil
+}
+
+// jetsam's attributes (spawn_private.h): set a fatal limit, active and
+// inactive, in the default band.
+const (
+	jetsamSet             = 0x8000
+	jetsamActiveFatal     = 0x04
+	jetsamInactiveFatal   = 0x08
+	jetsamPriorityDefault = 180
+)
+
+// ExecLimited replaces the calling process with path, argv and env, as
+// execve does, holding the program to a fatal memory limit of memoryMiB
+// MiB of physical footprint, as jetsam does. An exec takes no limit, and
+// no process may set one on a running program, so it executes through
+// posix_spawn's POSIX_SPAWN_SETEXEC, which does. The program starts with
+// every signal at its default action and none blocked; descriptors are
+// kept as an exec keeps them. It returns only on failure.
+func ExecLimited(path string, argv, env []string, memoryMiB int) error {
+	cpath, err := syscall.BytePtrFromString(path)
+	if err != nil {
+		return err
+	}
+	cargv, err := cStrings(argv)
+	if err != nil {
+		return err
+	}
+	cenv, err := cStrings(env)
+	if err != nil {
+		return err
+	}
+	var attr uintptr
+	if err := call(libc_posix_spawnattr_init_trampoline_addr, uintptr(unsafe.Pointer(&attr))); err != nil {
+		return fmt.Errorf("posix_spawnattr_init: %w", err)
+	}
+	defer call(libc_posix_spawnattr_destroy_trampoline_addr, uintptr(unsafe.Pointer(&attr)))
+	if err := call(libc_posix_spawnattr_setflags_trampoline_addr, uintptr(unsafe.Pointer(&attr)), spawnSetExec|spawnSetSigDefault|spawnSetSigMask); err != nil {
+		return fmt.Errorf("posix_spawnattr_setflags: %w", err)
+	}
+	all, none := allSignals, uint32(0)
+	if err := call(libc_posix_spawnattr_setsigdefault_trampoline_addr, uintptr(unsafe.Pointer(&attr)), uintptr(unsafe.Pointer(&all))); err != nil {
+		return fmt.Errorf("posix_spawnattr_setsigdefault: %w", err)
+	}
+	if err := call(libc_posix_spawnattr_setsigmask_trampoline_addr, uintptr(unsafe.Pointer(&attr)), uintptr(unsafe.Pointer(&none))); err != nil {
+		return fmt.Errorf("posix_spawnattr_setsigmask: %w", err)
+	}
+	if r, _, _ := syscall_syscall6(libc_posix_spawnattr_setjetsam_ext_trampoline_addr, uintptr(unsafe.Pointer(&attr)),
+		jetsamSet|jetsamActiveFatal|jetsamInactiveFatal, jetsamPriorityDefault, uintptr(memoryMiB), uintptr(memoryMiB), 0); r != 0 {
+		return fmt.Errorf("posix_spawnattr_setjetsam_ext: %w", syscall.Errno(r))
+	}
+	r, _, _ := syscall_syscall6(libc_posix_spawn_trampoline_addr, 0, uintptr(unsafe.Pointer(cpath)), 0,
+		uintptr(unsafe.Pointer(&attr)), uintptr(unsafe.Pointer(&cargv[0])), uintptr(unsafe.Pointer(&cenv[0])))
+	return &spawnError{path: path, err: syscall.Errno(r)}
 }
 
 type spawnError struct {

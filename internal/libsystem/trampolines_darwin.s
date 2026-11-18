@@ -139,3 +139,8 @@ TEXT libsandbox_sandbox_apply_trampoline<>(SB),NOSPLIT,$0-0
 	JMP	libsandbox_sandbox_apply(SB)
 GLOBL	·libsandbox_sandbox_apply_trampoline_addr(SB), RODATA, $8
 DATA	·libsandbox_sandbox_apply_trampoline_addr(SB)/8, $libsandbox_sandbox_apply_trampoline<>(SB)
+
+TEXT libc_posix_spawnattr_setjetsam_ext_trampoline<>(SB),NOSPLIT,$0-0
+	JMP	libc_posix_spawnattr_setjetsam_ext(SB)
+GLOBL	·libc_posix_spawnattr_setjetsam_ext_trampoline_addr(SB), RODATA, $8
+DATA	·libc_posix_spawnattr_setjetsam_ext_trampoline_addr(SB)/8, $libc_posix_spawnattr_setjetsam_ext_trampoline<>(SB)

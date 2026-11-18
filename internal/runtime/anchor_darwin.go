@@ -33,6 +33,9 @@ type anchorRequest struct {
 	Env  []string
 	Dir  string
 	TTY  bool
+	// MemoryMiB, when set, is the memory limit the program executes with
+	// (Limits.MemoryMiB).
+	MemoryMiB int `json:",omitempty"`
 }
 
 type anchorReply struct {
@@ -126,7 +129,15 @@ func serveExec(c *net.UnixConn, main int) {
 		return
 	}
 	env := append(withoutVars(req.Env, initVar), initVar+"="+strconv.Itoa(main))
-	p, err := os.StartProcess(req.Path, req.Argv, &os.ProcAttr{
+	path, argv := req.Path, req.Argv
+	if req.MemoryMiB > 0 {
+		var err error
+		if path, argv, env, err = memoryLimited(path, argv, env, req.MemoryMiB); err != nil {
+			enc.Encode(anchorReply{Error: err.Error()})
+			return
+		}
+	}
+	p, err := os.StartProcess(path, argv, &os.ProcAttr{
 		Dir: req.Dir, Env: env, Files: files,
 		// A terminal's process leads a session with the terminal as its
 		// controlling one; any other leads its own process group, as the

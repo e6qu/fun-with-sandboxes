@@ -108,3 +108,7 @@ var libsandbox_sandbox_free_profile_trampoline_addr uintptr
 var libsandbox_sandbox_apply_trampoline_addr uintptr
 
 //go:cgo_import_dynamic libsandbox_sandbox_apply sandbox_apply "/usr/lib/libsandbox.1.dylib"
+
+var libc_posix_spawnattr_setjetsam_ext_trampoline_addr uintptr
+
+//go:cgo_import_dynamic libc_posix_spawnattr_setjetsam_ext posix_spawnattr_setjetsam_ext "/usr/lib/libSystem.B.dylib"
