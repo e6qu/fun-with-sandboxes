@@ -159,12 +159,26 @@ func PortsVar(ports map[string]int) (string, error) {
 // weakSymbols are the linker's flags for the functions the library binds
 // weakly: the IOKit functions it stands in for, from whichever image
 // provides them, as it links no framework, and the socket calls'
-// cancellation-free variants, which no header declares.
+// cancellation-free variants, which no header declares, and the private
+// dnssd client Network.framework resolves through, which the SDK's stub
+// leaves partly out.
 var weakSymbols = []string{
 	"-Wl,-U,_IORegisterForSystemPower", "-Wl,-U,_IONotificationPortCreate",
 	"-Wl,-U,_connect$NOCANCEL", "-Wl,-U,_sendto$NOCANCEL", "-Wl,-U,_sendmsg$NOCANCEL",
 	"-Wl,-U,_recvfrom$NOCANCEL", "-Wl,-U,_recvmsg$NOCANCEL", "-Wl,-U,_accept$NOCANCEL",
 	"-Wl,-U,_posix_spawn_file_actions_addchdir",
+	"-Wl,-U,_dnssd_getaddrinfo_set_hostname", "-Wl,-U,_dnssd_getaddrinfo_set_queue",
+	"-Wl,-U,_dnssd_getaddrinfo_set_result_handler", "-Wl,-U,_dnssd_getaddrinfo_set_event_handler",
+	"-Wl,-U,_dnssd_getaddrinfo_set_protocols",
+	"-Wl,-U,_dnssd_getaddrinfo_activate", "-Wl,-U,_dnssd_getaddrinfo_invalidate",
+	"-Wl,-U,_dnssd_getaddrinfo_result_get_address", "-Wl,-U,_dnssd_getaddrinfo_result_get_hostname",
+	"-Wl,-U,_dnssd_getaddrinfo_result_get_actual_hostname", "-Wl,-U,_dnssd_getaddrinfo_result_get_type",
+	"-Wl,-U,_dnssd_getaddrinfo_result_get_interface_index", "-Wl,-U,_dnssd_getaddrinfo_result_get_protocol",
+	"-Wl,-U,_dnssd_getaddrinfo_result_get_provider_name", "-Wl,-U,_dnssd_getaddrinfo_result_get_tracker_hostname",
+	"-Wl,-U,_dnssd_getaddrinfo_result_get_tracker_owner", "-Wl,-U,_dnssd_getaddrinfo_result_get_tracker_is_approved",
+	"-Wl,-U,_dnssd_getaddrinfo_result_get_validation_data", "-Wl,-U,_dnssd_getaddrinfo_result_is_from_cache",
+	"-Wl,-U,_dnssd_getaddrinfo_result_get_ech_config", "-Wl,-U,_dnssd_getaddrinfo_result_get_negative_reason",
+	"-Wl,-U,_dnssd_getaddrinfo_result_enumerate_alpn_values", "-Wl,-U,_dnssd_getaddrinfo_result_get_doh_uri",
 }
 
 // archs are the architectures the library is built for, on Apple silicon:

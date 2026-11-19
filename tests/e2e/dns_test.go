@@ -5,8 +5,12 @@ package e2e
 import (
 	"net"
 	"net/netip"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -315,4 +319,33 @@ func TestDNSQueries(t *testing.T) {
 	if out := mustDocker(t, "run", "--rm", "--network", "e2e-dnsq-internal", "--dns", "1.1.1.1", "fws/python:3.14", "python3", "-c", dnsPy, "one.one.one.one"); out != "5 []\n" {
 		t.Errorf("one.one.one.one without internet access: %q, want REFUSED", out)
 	}
+}
+
+// Network.framework, through which an app's URLSession connects, reaches a
+// container on the same network by its name, as getaddrinfo does.
+func TestNetworkFrameworkLookups(t *testing.T) {
+	dir, err := os.MkdirTemp("", "fws-e2e-nw-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	if dir, err = filepath.EvalSymlinks(dir); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-framework", "Network", "-o", filepath.Join(dir, "nwprobe"),
+		"../../internal/pathmap/testdata/nwprobe/main.c").CombinedOutput(); err != nil {
+		t.Fatalf("build the probe: %v\n%s", err, out)
+	}
+	mustDocker(t, "network", "create", "e2e-nw")
+	defer docker(t, "network", "rm", "e2e-nw")
+	mustDocker(t, "run", "-d", "--name", "e2e-nw-web", "--network", "e2e-nw", "fws/python:3.14", "python3", "-m", "http.server", "8000")
+	defer docker(t, "rm", "-f", "e2e-nw-web")
+	var out string
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
+		out, _ = docker(t, "run", "--rm", "--network", "e2e-nw", "-v", dir+":/app", "fws/base:1", "/app/nwprobe", "e2e-nw-web", "8000")
+		if strings.HasPrefix(out, "ready ") {
+			return
+		}
+	}
+	t.Errorf("Network.framework, connecting to e2e-nw-web: %q", out)
 }
