@@ -166,10 +166,13 @@ func (e *Engine) dialPeerUDP(c *Container, ap netip.AddrPort) (net.Conn, error) 
 }
 
 // crossMembersLocked are what a nested engine publishes: its members on
-// networks with subnets of their own, at their addresses there, which are
-// unique on a cluster's pod network as member addresses are not across
-// engines, each with its stack's block of host ports, which the other
-// nodes' allocators do not know.
+// networks with subnets of their own, at their addresses there, IPv4 and
+// IPv6, which are unique on a cluster's pod network as member addresses
+// are not across engines, each with its stack's block of host ports,
+// which the other nodes' allocators do not know. A member's address is
+// its first IPv4 one there, else its first IPv6 one, as on an IPv6-only
+// network, for which the nodes that list it make a key of their own
+// (peerKeys).
 func (e *Engine) crossMembersLocked() []stackmembers.Member {
 	var out []stackmembers.Member
 	for _, o := range e.containers {
@@ -180,16 +183,31 @@ func (e *Engine) crossMembersLocked() []stackmembers.Member {
 		if s, err := e.alloc.Stack(o.rec.Stack); err == nil {
 			m.Block = stackmembers.Block{Base: s.PortBase, Limit: s.PortBase + s.BlockSize}
 		}
+		var first6 string
 		for _, n := range userNetworks(o) {
 			es := o.rec.Networks[n]
-			if es == nil || !es.IPAddress.IsValid() {
+			if es == nil || (!es.IPAddress.IsValid() && !es.GlobalIPv6Address.IsValid()) {
 				continue
 			}
 			m.Networks = append(m.Networks, n)
-			m.Subnets = append(m.Subnets, stackmembers.NetAddress{Network: n, Address: netip.PrefixFrom(es.IPAddress, es.IPPrefixLen)})
-			if m.Address == "" {
-				m.Address = es.IPAddress.String()
+			if es.IPAddress.IsValid() {
+				m.Subnets = append(m.Subnets, stackmembers.NetAddress{Network: n, Address: netip.PrefixFrom(es.IPAddress, es.IPPrefixLen)})
+				if m.Address == "" {
+					m.Address = es.IPAddress.String()
+				}
 			}
+			if es.GlobalIPv6Address.IsValid() {
+				m.Subnets = append(m.Subnets, stackmembers.NetAddress{Network: n, Address: netip.PrefixFrom(es.GlobalIPv6Address, es.GlobalIPv6PrefixLen)})
+				if first6 == "" {
+					first6 = es.GlobalIPv6Address.String()
+				}
+			}
+			if nw, err := e.networkLocked(n); err == nil && nw.IPv4Disabled {
+				m.Only6 = append(m.Only6, n)
+			}
+		}
+		if m.Address == "" {
+			m.Address = first6
 		}
 		if m.Address == "" {
 			continue
@@ -239,4 +257,35 @@ func (e *Engine) writeAllNetworksLocked() error {
 	}
 	e.pruneServiceClientsLocked()
 	return nil
+}
+
+// peerKeys gives each of peers, other nodes' pods, that has no IPv4
+// address, as a pod on an IPv6-only network has none, a key in the member
+// block in its place, which no other member in ms or peers holds: the
+// container library routes a member's IPv6 address by an IPv4 one, and
+// the container's router finds the pod a relay names by it in the same
+// file. Keys run down from the top of the block, in the order of peers.
+func peerKeys(ms, peers []stackmembers.Member) {
+	used := map[netip.Addr]bool{}
+	for _, list := range [][]stackmembers.Member{ms, peers} {
+		for _, m := range list {
+			if a, err := netip.ParseAddr(m.Address); err == nil {
+				used[a] = true
+			}
+		}
+	}
+	next := netip.AddrFrom4([4]byte{127, 88, 255, 254})
+	for i := range peers {
+		if a, err := netip.ParseAddr(peers[i].Address); err == nil && a.Is4() {
+			continue
+		}
+		for used[next] {
+			next = next.Prev()
+		}
+		if b := next.As4(); b[0] != 127 || b[1] != 88 {
+			return
+		}
+		peers[i].Address = next.String()
+		used[next] = true
+	}
 }

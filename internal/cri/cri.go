@@ -66,10 +66,10 @@ type Service struct {
 	mu   sync.Mutex
 	logs map[string]*logCopy
 
-	// podCIDR is the node's pod CIDR, from the kubelet, which the pod
-	// network takes as its subnet; netMu orders the network's changes.
-	netMu   sync.Mutex
-	podCIDR netip.Prefix
+	// podCIDRs are the node's pod CIDR's subnets, from the kubelet, which
+	// the pod network takes as its own; netMu orders the network's changes.
+	netMu    sync.Mutex
+	podCIDRs []netip.Prefix
 
 	// rootUsage remembers what each image root an earlier store unpacked
 	// takes: the store names a root by its image's digest and never
@@ -259,12 +259,12 @@ func (s *Service) UpdateRuntimeConfig(ctx context.Context, req *runtimeapi.Updat
 	if cidr == "" {
 		return &runtimeapi.UpdateRuntimeConfigResponse{}, nil
 	}
-	p, err := podSubnet(cidr)
+	p, err := podSubnets(cidr)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	s.netMu.Lock()
-	s.podCIDR = p
+	s.podCIDRs = p
 	s.netMu.Unlock()
 	if err := s.ensurePodNetwork(); err != nil {
 		return nil, grpcError(err)

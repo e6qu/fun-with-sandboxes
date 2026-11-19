@@ -978,8 +978,9 @@ Pods are the engine's: a record per pod, kept in `pods.json`, and Podman's
   Docker. A pod sandbox is a pause container (`fws/pause:3.10.1`) that
   holds the pod's network, ports and DNS, and the pod's containers join it
   as `--network container:` joins one. Every pod not on its node's network
-  joins the user-defined network `fws-pods`, whose subnet is the pod CIDR
-  the kubelet sends, or kind's `10.244.0.0/16` until it sends one. The
+  joins the user-defined network `fws-pods`, whose subnets are the pod
+  CIDR the kubelet sends, IPv4, IPv6 or one of each, IPv6-only for an
+  IPv6 one alone, or kind's `10.244.0.0/16` until it sends one. The
   engine copies each container's output to the log file the kubelet names,
   in CRI's format, and serves exec, attach and port-forward streams on a
   loopback port, or a nested engine's on its privileged container's.
@@ -993,7 +994,10 @@ Pods are the engine's: a record per pod, kept in `pods.json`, and Podman's
   its network files as foreign members of the networks of the same names,
   reached through their routers, which listen on the host's loopback as
   every router does, so a pod reaches another node's pods at their
-  addresses. The outer engine refreshes the others from a goroutine of its
+  addresses, IPv4 and IPv6. A pod on an IPv6-only network has no IPv4
+  address to list it at: a node lists it under a key of its own in the
+  member block, which no member holds, by which the library routes its
+  IPv6 address and the container's router finds it (`peerKeys`). The outer engine refreshes the others from a goroutine of its
   own, and takes no nested engine's lock while holding its own.
 - **Services.** A network can carry virtual services
   (`internal/engine/services.go`), as Kubernetes Services' cluster IPs:

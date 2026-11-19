@@ -41,45 +41,7 @@ func TestKindCluster(t *testing.T) {
 	provider := cluster.NewProvider(cluster.ProviderWithDocker(), cluster.ProviderWithLogger(cmd.NewLogger()))
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
 	nodes := []string{name + "-control-plane", name + "-worker"}
-	defer func() {
-		if t.Failed() {
-			for _, n := range nodes {
-				state, _ := docker(t, "inspect", "-f", "{{json .State}}", n)
-				out, _ := exec.Command("docker", "logs", n).CombinedOutput()
-				t.Logf("%s: %s\n%s", n, strings.TrimSpace(state), tail(string(out), 80))
-			}
-			for _, args := range [][]string{
-				{"get", "nodes", "-o", "wide"},
-				{"get", "pods", "-A", "-o", "wide"},
-				{"describe", "pods", "-A"},
-				{"get", "events", "-A"},
-			} {
-				out, _ := docker(t, append([]string{"exec", nodes[0], "kubectl"}, args...)...)
-				t.Logf("kubectl %s:\n%s", strings.Join(args, " "), tail(out, 120))
-			}
-		}
-		// A delete that never ends stops the suite; fwsd's goroutines,
-		// which SIGQUIT writes to its log, show where it waits.
-		deleted := make(chan error, 1)
-		go func() { deleted <- provider.Delete(name, kubeconfig) }()
-		select {
-		case err := <-deleted:
-			if err != nil {
-				t.Errorf("kind delete cluster: %v", err)
-			}
-		case <-time.After(5 * time.Minute):
-			t.Errorf("kind delete cluster did not end in 5 minutes; fwsd's goroutines follow in its log")
-			exec.Command("pkill", "-QUIT", "-f", fwsdBin).Run()
-			time.Sleep(10 * time.Second)
-			return
-		}
-		for _, n := range nodes {
-			if out, err := docker(t, "inspect", n); err == nil {
-				t.Errorf("kind delete cluster left %s:\n%s", n, tail(out, 5))
-			}
-		}
-		docker(t, "network", "rm", "kind")
-	}()
+	defer kindCleanup(t, provider, name, kubeconfig, nodes)
 	const nodePort = 30080
 	cfg := &v1alpha4.Cluster{Nodes: []v1alpha4.Node{
 		{Role: v1alpha4.ControlPlaneRole},
@@ -281,4 +243,150 @@ func apiGet(kubeconfig, path string) (string, error) {
 		return string(body), fmt.Errorf("%s: %s", path, res.Status)
 	}
 	return string(body), nil
+}
+
+// kindCleanup deletes kind cluster name, whose nodes are nodes, and kind's
+// network, logging the nodes' state, logs and workloads first when the
+// test failed.
+func kindCleanup(t *testing.T, provider *cluster.Provider, name, kubeconfig string, nodes []string) {
+	if t.Failed() {
+		for _, n := range nodes {
+			state, _ := docker(t, "inspect", "-f", "{{json .State}}", n)
+			out, _ := exec.Command("docker", "logs", n).CombinedOutput()
+			t.Logf("%s: %s\n%s", n, strings.TrimSpace(state), tail(string(out), 80))
+		}
+		for _, args := range [][]string{
+			{"get", "nodes", "-o", "wide"},
+			{"get", "pods", "-A", "-o", "wide"},
+			{"describe", "pods", "-A"},
+			{"get", "events", "-A"},
+		} {
+			out, _ := docker(t, append([]string{"exec", nodes[0], "kubectl"}, args...)...)
+			t.Logf("kubectl %s:\n%s", strings.Join(args, " "), tail(out, 120))
+		}
+	}
+	// A delete that never ends stops the suite; fwsd's goroutines,
+	// which SIGQUIT writes to its log, show where it waits.
+	deleted := make(chan error, 1)
+	go func() { deleted <- provider.Delete(name, kubeconfig) }()
+	select {
+	case err := <-deleted:
+		if err != nil {
+			t.Errorf("kind delete cluster: %v", err)
+		}
+	case <-time.After(5 * time.Minute):
+		t.Errorf("kind delete cluster did not end in 5 minutes; fwsd's goroutines follow in its log")
+		exec.Command("pkill", "-QUIT", "-f", fwsdBin).Run()
+		time.Sleep(10 * time.Second)
+		return
+	}
+	for _, n := range nodes {
+		if out, err := docker(t, "inspect", n); err == nil {
+			t.Errorf("kind delete cluster left %s:\n%s", n, tail(out, 5))
+		}
+	}
+	docker(t, "network", "rm", "kind")
+}
+
+// IPv6 and dual-stack kind clusters, kind's ipFamily ipv6 and dual: each
+// node takes an IPv6 address on kind's network, and an IPv4 one in a
+// dual-stack cluster, and its pod network holds the pod CIDR the
+// controller manager gives it, of each family, IPv6-only in an IPv6
+// cluster. A pod on the control-plane node reaches a pod on the worker,
+// another node's, at its IPv6 address and through its Service.
+func TestKindIPv6AndDualStackClusters(t *testing.T) {
+	for _, family := range []v1alpha4.ClusterIPFamily{v1alpha4.IPv6Family, v1alpha4.DualStackFamily} {
+		t.Run(string(family), func(t *testing.T) { kindFamilyCluster(t, family) })
+	}
+}
+
+func kindFamilyCluster(t *testing.T, family v1alpha4.ClusterIPFamily) {
+	name := "fws-e2e-" + string(family)
+	provider := cluster.NewProvider(cluster.ProviderWithDocker(), cluster.ProviderWithLogger(cmd.NewLogger()))
+	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
+	nodes := []string{name + "-control-plane", name + "-worker"}
+	defer kindCleanup(t, provider, name, kubeconfig, nodes)
+	cfg := &v1alpha4.Cluster{
+		Networking: v1alpha4.Networking{IPFamily: family},
+		Nodes:      []v1alpha4.Node{{Role: v1alpha4.ControlPlaneRole}, {Role: v1alpha4.WorkerRole}},
+	}
+	if err := provider.Create(name,
+		cluster.CreateWithV1Alpha4Config(cfg),
+		cluster.CreateWithNodeImage("fws/kind-node:1.35"),
+		cluster.CreateWithKubeconfigPath(kubeconfig),
+		cluster.CreateWithRetain(true),
+		cluster.CreateWithWaitForReady(3*time.Minute),
+		cluster.CreateWithDisplayUsage(false), cluster.CreateWithDisplaySalutation(false),
+	); err != nil {
+		var run *kindexec.RunError
+		if errors.As(err, &run) {
+			t.Fatalf("kind create cluster: %v\n%s", err, tail(string(run.Output), 80))
+		}
+		t.Fatalf("kind create cluster: %v", err)
+	}
+	mustKubectl := func(args ...string) string {
+		t.Helper()
+		out, err := docker(t, append([]string{"exec", nodes[0], "kubectl"}, args...)...)
+		if err != nil {
+			t.Fatalf("kubectl %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+	// A family's addresses, of a space-separated list: IPv6 alone in an
+	// IPv6 cluster, one of each in a dual-stack one.
+	families := func(list string) string {
+		var v4, v6 int
+		for _, a := range strings.Fields(list) {
+			if strings.Contains(a, ":") {
+				v6++
+			} else {
+				v4++
+			}
+		}
+		return fmt.Sprintf("%d IPv4 %d IPv6", v4, v6)
+	}
+	want := "0 IPv4 1 IPv6"
+	if family == v1alpha4.DualStackFamily {
+		want = "1 IPv4 1 IPv6"
+	}
+	for _, n := range nodes {
+		mustKubectl("wait", "--for=condition=Ready", "--timeout=2m", "node/"+n)
+		ips := mustKubectl("get", "node", n, "-o", `jsonpath={range .status.addresses[?(@.type=="InternalIP")]}{.address} {end}`)
+		cidrs := mustKubectl("get", "node", n, "-o", `jsonpath={range .spec.podCIDRs[*]}{@} {end}`)
+		if families(ips) != want || families(cidrs) != want {
+			t.Errorf("%s's addresses %q and pod CIDRs %q, want %s of each", n, ips, cidrs, want)
+		}
+	}
+	load := dockerimage.NewCommand(cmd.NewLogger(), cmd.StandardIOStreams())
+	load.SetArgs([]string{"--name", name, "fws/nginx:1", "fws/toolbox:1"})
+	if err := load.Execute(); err != nil {
+		t.Fatalf("kind load docker-image: %v", err)
+	}
+	mustKubectl("create", "deployment", "web", "--image=fws/nginx:1")
+	mustKubectl("rollout", "status", "--timeout=3m", "deployment/web")
+	on := mustKubectl("get", "pods", "-l", "app=web", "-o", "jsonpath={.items[0].spec.nodeName}")
+	ips := mustKubectl("get", "pods", "-l", "app=web", "-o", "jsonpath={range .items[0].status.podIPs[*]}{.ip} {end}")
+	if on != nodes[1] || families(ips) != want {
+		t.Fatalf("the web pod on %q at %q, want one on %s with %s", on, ips, nodes[1], want)
+	}
+	var ip6 string
+	for _, a := range strings.Fields(ips) {
+		if strings.Contains(a, ":") {
+			ip6 = a
+		}
+	}
+	mustKubectl("expose", "deployment", "web", "--port=80")
+	// The fetchers run on the control-plane node, whose pods reach the
+	// worker's across nodes; each restarts until it gets through.
+	for i, url := range []string{"http://[" + ip6 + "]/", "http://web.default.svc.cluster.local/"} {
+		fetcher := fmt.Sprintf("fetcher-%d", i)
+		mustKubectl("run", fetcher, "--image=fws/toolbox:1", "--restart=OnFailure",
+			`--overrides={"spec":{"nodeName":"`+nodes[0]+`"}}`, "--", "fetch", url)
+		if _, err := docker(t, "exec", nodes[0], "kubectl", "wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/"+fetcher); err != nil {
+			out, _ := docker(t, "exec", nodes[0], "kubectl", "logs", fetcher)
+			t.Errorf("a pod on %s fetching %s: %v\n%s", nodes[0], url, err, out)
+		} else if out := mustKubectl("logs", fetcher); out != "200 OK\n" {
+			t.Errorf("a pod on %s fetching %s: %q", nodes[0], url, out)
+		}
+	}
 }

@@ -244,14 +244,17 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 	ms = append(ms, e.serviceMembers(nets, clients)...)
 	// Other nodes' pods, on the networks of the same names.
 	if n := e.cfg.Nested; n != nil && n.Peers != nil {
+		var peers []stackmembers.Member
 		for _, p := range n.Peers() {
 			for _, pn := range p.Networks {
 				if nets[pn] {
-					ms = append(ms, p)
+					peers = append(peers, p)
 					break
 				}
 			}
 		}
+		peerKeys(ms, peers)
+		ms = append(ms, peers...)
 	}
 	b := stackmembers.Format(ms)
 	// Every change to the engine's members recomputes every stack's file;

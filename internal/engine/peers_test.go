@@ -140,3 +140,93 @@ func TestNodesSeeOneAnothersPods(t *testing.T) {
 		t.Errorf("node A's pod answered %q: a datagram from outside its block %v", buf[:n], m.Block)
 	}
 }
+
+// A pod on an IPv6-only pod network, which holds no IPv4 address there,
+// is published at its IPv6 address, and another node's file lists it
+// under a key in the member block that no member holds, by which the
+// container library routes its IPv6 address, and marks the network
+// IPv6-only for it; the outer engine reaches it at that address.
+func TestNodesSeeOneAnothersPodsOnIPv6OnlyNetworks(t *testing.T) {
+	newAlloc := func(base int) *alloc.Allocator {
+		a, err := alloc.Open(alloc.Config{Root: t.TempDir(), PortBase: base, PortLimit: base + 1000, BlockSize: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	outer := &Engine{alloc: newAlloc(34000), containers: map[string]*Container{}, networks: map[string]*Network{}, nested: map[string]*nestedEngine{}}
+	node := func(id, podIP string, base int) (*Container, *Engine) {
+		c := &Container{rec: record{ID: id, Name: id, Stack: id, State: stateRec{Status: container.StateRunning},
+			Networks: map[string]*network.EndpointSettings{"kind": {}}}}
+		outer.containers[id] = c
+		sub := &Engine{alloc: newAlloc(base), containers: map[string]*Container{}, networks: map[string]*Network{
+			"p": {ID: "p", Name: "pods", Driver: "bridge", EnableIPv6: true, IPv4Disabled: true, IPv6: Pool{Subnet: "fd00:244::/56"}},
+		}}
+		sub.cfg.Nested = &Nested{
+			Publish: func(ms []stackmembers.Member) { outer.publishPeer(c, ms) },
+			Peers:   func() []stackmembers.Member { return outer.peersOf(c.rec.ID) },
+		}
+		outer.nested[id] = &nestedEngine{e: sub}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, id) }))
+		t.Cleanup(srv.Close)
+		if _, err := sub.alloc.Stack("pod"); err != nil {
+			t.Fatal(err)
+		}
+		addr, err := sub.assignAddressLocked("pod")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sub.containers["pod"] = &Container{rec: record{ID: "pod", Name: "pod", Stack: "pod", Address: addr,
+			Ports: map[string]int{"80/tcp": srv.Listener.Addr().(*net.TCPAddr).Port}, State: stateRec{Status: container.StateRunning},
+			Networks: map[string]*network.EndpointSettings{"pods": {GlobalIPv6Address: netip.MustParseAddr(podIP), GlobalIPv6PrefixLen: 64}}}}
+		return c, sub
+	}
+	const ipA = "fd00:244:0:1::5"
+	_, subA := node("node-a-000000000", ipA, 35000)
+	nodeB, subB := node("node-b-000000000", "fd00:244:0:2::5", 36000)
+	outer.refreshPeers("")
+	for _, s := range []*Engine{subA, subB} {
+		s.mu.Lock()
+		if err := s.writeNetworkLocked("pod"); err != nil {
+			t.Fatal(err)
+		}
+		s.mu.Unlock()
+	}
+	read := func(s *Engine) []stackmembers.Member {
+		path, _ := s.networkFile("pod")
+		b, _ := os.ReadFile(path)
+		return stackmembers.Parse(b)
+	}
+	var m stackmembers.Member
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var ok bool
+		if m, ok = stackmembers.Find(read(subB), ipA); ok && m.Foreign {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("node B's file never listed node A's pod: %+v", read(subB))
+		}
+	}
+	key, err := netip.ParseAddr(m.Address)
+	if err != nil || !key.Is4() || key.As4()[0] != 127 || key.As4()[1] != 88 {
+		t.Errorf("node A's pod is listed at %q, want a key in the member block", m.Address)
+	}
+	for _, o := range read(subB) {
+		if o.Address == m.Address && !o.Foreign {
+			t.Errorf("the key %s is node B's member %+v too", m.Address, o)
+		}
+	}
+	if len(m.Only6) != 1 || m.Only6[0] != "pods" || m.On("pods") != "" {
+		t.Errorf("node A's pod is not IPv6-only on pods: %+v", m)
+	}
+	c, err := outer.dialFrom(nodeB, netip.AddrPortFrom(netip.MustParseAddr(ipA), 80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	io.WriteString(c, "GET / HTTP/1.0\r\n\r\n")
+	b, _ := io.ReadAll(c)
+	if want := "node-a-000000000"; len(b) < len(want) || string(b[len(b)-len(want):]) != want {
+		t.Errorf("node B dialling node A's pod at %s: %q", ipA, b)
+	}
+}

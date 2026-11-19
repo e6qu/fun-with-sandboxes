@@ -184,9 +184,8 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
     takes an address of each family from the first subnet with room, or
     the one holding the address it names. On an IPv6-only network
     (`enable_ipv4: false`) members hold, report and resolve to IPv6
-    addresses only, and its interface lists the IPv6 one alone; pods of
-    other nodes do not see its members (*not built yet*). There is no
-    link-local IPv6 address.
+    addresses only, and its interface lists the IPv6 one alone. There is
+    no link-local IPv6 address.
   - A container keeps its addresses while it exists, where Docker frees
     a stopped container's.
   - A network without a subnet reports `127.88.0.0/16`, a loopback block,
@@ -257,10 +256,11 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   into its `resolv.conf`, and the library completes the cluster names it
   answers with them; its DNS servers, which name cluster DNS, go unused,
   and other names resolve through the host's resolver.
-- **Pod networks are IPv4.** A pod takes its node's pod network address;
-  other nodes' pods reach it through the routers, and the host's engine
-  does not route to it. A dual-stack pod CIDR's IPv4 subnet alone is
-  used, and a changed CIDR applies once the node's pods are gone.
+- **Pod networks hold the node's pod CIDR.** A pod takes its node's pod
+  network addresses, of each family of the CIDR, an IPv6 one alone on an
+  IPv6 CIDR; other nodes' pods reach it through the routers, and the
+  host's engine does not route to it. A changed CIDR applies once the
+  node's pods are gone.
 - **Services carry TCP and UDP.** Cluster IPs, IPv4 and IPv6 or both,
   external IPs and load balancers' addresses answer alike, and node ports
   carry TCP and UDP. `sessionAffinity: ClientIP` keeps a pod, known by
@@ -274,8 +274,8 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   proxy's poll, a second by default.
 - **kind runs on `fws/kind-node` only.** Nodes run no systemd or
   containerd: `ctr` supports `images import`, `tag` and `ls`, and
-  `journalctl` reads the node's logs. `containerdConfigPatches` and IPv6
-  or dual-stack clusters are not supported (*not built yet*).
+  `journalctl` reads the node's logs. IPv6 and dual-stack clusters run;
+  `containerdConfigPatches` are not supported (*not built yet*).
 - **`fws/k3s` is kubeadm's cluster under k3s's names.** `k3s agent`,
   joining servers, Traefik, ServiceLB, the Helm controller, the embedded
   registry and etcd snapshots are absent. The node needs an address
