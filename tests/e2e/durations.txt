@@ -47,6 +47,7 @@ TestK3sModule 51
 TestKafka 26
 TestKafkaOnANetwork 36
 TestKindCluster 110
+TestKindIPv6AndDualStackClusters 220
 TestKubernetesControlPlane 132
 TestLambdaJava 46
 TestLambdaNode 2
@@ -64,6 +65,7 @@ TestMongoDB 60
 TestMySQL 13
 TestNATS 3
 TestNeo4j 31
+TestNetworkFrameworkLookups 15
 TestNetworkSubnets 28
 TestNginx 4
 TestOpenSearch 16

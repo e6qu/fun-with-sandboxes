@@ -271,8 +271,9 @@ pod's names, so its DNS servers go unused. A pod on its node's network
 container's ports, addresses and hostname: an engine nested in a
 privileged container runs a container on the host's network mode on that
 container's network. Every sandbox not on its
-node's network joins the engine's pod network, `fws-pods`, whose subnet is
-the node's pod CIDR from the kubelet (`10.244.0.0/16` until one arrives),
+node's network joins the engine's pod network, `fws-pods`, whose subnets
+are the node's pod CIDR from the kubelet, IPv4, IPv6 or dual-stack
+(`10.244.0.0/16` until one arrives),
 so pods reach one another at their addresses, and the pods of every node
 whose container shares a network with theirs, as a cluster's pod network
 carries them between nodes. `fws-kube-proxy`, in

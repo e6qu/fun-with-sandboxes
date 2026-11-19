@@ -75,9 +75,9 @@ One pull request open at a time.
    answers DNS over UDP, so that `dig` and Go's pure resolver reach the
    stack's names and the container's servers. In #73: over TCP and to
    IPv6 servers too. In #74: Network.framework's lookups, through a
-   stand-in for its dnssd client, and `connectx`. Next: IPv6-only
-   networks' members seen across nodes, and kind's IPv6 and dual-stack
-   clusters.
+   stand-in for its dnssd client, and `connectx`. In #75: IPv6-only
+   networks' members seen across nodes, IPv6 and dual-stack pod networks,
+   and kind's IPv6 and dual-stack clusters.
 4. **Catalog upkeep.** November's PostgreSQL and MariaDB once their darwin
    builds are cached; nixos-26.11; a newer Kubernetes and kind when asked
    for.

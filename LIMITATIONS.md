@@ -184,9 +184,8 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
     takes an address of each family from the first subnet with room, or
     the one holding the address it names. On an IPv6-only network
     (`enable_ipv4: false`) members hold, report and resolve to IPv6
-    addresses only, and its interface lists the IPv6 one alone; pods of
-    other nodes do not see its members (*not built yet*). There is no
-    link-local IPv6 address.
+    addresses only, and its interface lists the IPv6 one alone. There is
+    no link-local IPv6 address.
   - A container keeps its addresses while it exists, where Docker frees
     a stopped container's.
   - A network without a subnet reports `127.88.0.0/16`, a loopback block,
@@ -257,10 +256,11 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   into its `resolv.conf`, and the library completes the cluster names it
   answers with them; its DNS servers, which name cluster DNS, go unused,
   and other names resolve through the host's resolver.
-- **Pod networks are IPv4.** A pod takes its node's pod network address;
-  other nodes' pods reach it through the routers, and the host's engine
-  does not route to it. A dual-stack pod CIDR's IPv4 subnet alone is
-  used, and a changed CIDR applies once the node's pods are gone.
+- **Pod networks hold the node's pod CIDR.** A pod takes its node's pod
+  network addresses, of each family of the CIDR, an IPv6 one alone on an
+  IPv6 CIDR; other nodes' pods reach it through the routers, and the
+  host's engine does not route to it. A changed CIDR applies once the
+  node's pods are gone.
 - **Services carry TCP and UDP.** Cluster IPs, IPv4 and IPv6 or both,
   external IPs and load balancers' addresses answer alike, and node ports
   carry TCP and UDP. `sessionAffinity: ClientIP` keeps a pod, known by
@@ -274,8 +274,8 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   proxy's poll, a second by default.
 - **kind runs on `fws/kind-node` only.** Nodes run no systemd or
   containerd: `ctr` supports `images import`, `tag` and `ls`, and
-  `journalctl` reads the node's logs. `containerdConfigPatches` and IPv6
-  or dual-stack clusters are not supported (*not built yet*).
+  `journalctl` reads the node's logs. IPv6 and dual-stack clusters run;
+  `containerdConfigPatches` are not supported (*not built yet*).
 - **`fws/k3s` is kubeadm's cluster under k3s's names.** `k3s agent`,
   joining servers, Traefik, ServiceLB, the Helm controller, the embedded
   registry and etcd snapshots are absent. The node needs an address
@@ -362,8 +362,9 @@ by a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 - **Settings without a macOS counterpart are refused**:
   - DNS settings in an engine nested in a privileged container, and a
     DNS server on loopback;
-  - `--sysctl`, `--userns`, runtimes other than runc, log drivers other
-    than `json-file` and `local` (including `none`);
+  - `--sysctl` but for the settings that hold already, below, `--userns`,
+    runtimes other than runc, log drivers other than `json-file` and
+    `local` (including `none`);
   - devices, `--gpus`, device cgroup rules, `--cgroup-parent`, cgroup
     sharing, `--oom-score-adj`, `--storage-opt`, Windows-only limits and
     isolation technologies other than the default;
@@ -371,7 +372,12 @@ by a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
     types other than bind, volume, image and tmpfs.
 - **Some settings are accepted and change nothing**, as each asks for no
   more confinement than a container has: `--cap-drop`,
-  `seccomp`/`apparmor=unconfined`, `label=disable` and `--cgroupns`.
+  `seccomp`/`apparmor=unconfined`, `label=disable` and `--cgroupns`; and
+  the sysctls that ask for what holds already, as kind's for an IPv6
+  cluster's nodes: `net.ipv6.conf.{all,default}.disable_ipv6=0`, and,
+  for a privileged container, whose nested engine carries its
+  containers' traffic, `net.ipv6.conf.{all,default}.forwarding=1` and
+  `net.ipv4.ip_forward=1`.
   Bind propagation holds as `rslave` whatever is asked: mounts the host
   makes below a bind's source show in the container, which can make
   none of its own.
