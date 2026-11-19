@@ -56,8 +56,10 @@ One pull request open at a time.
    `--security-opt seatbelt=gui`, with which Electron and VS Code itself,
    its extension host and integrated terminal, run inside a container.
    In #70: VS Code's Dev Containers extension on the host opens a folder
-   in a dev container of the engine's, with the macOS server put where it
-   looks for the Linux one it installs ([LIMITATIONS](LIMITATIONS.md)).
+   in a dev container of the engine's, and in #77 installs the macOS
+   server there itself: the engine writes an `/etc/os-release` naming
+   darwin into a container whose image has none, and the extension picks
+   its server's build from it.
    Next: Chromium's own sandbox inside a container's, so that
    `--no-sandbox` goes.
 2. **Starts and limits.** Merged in

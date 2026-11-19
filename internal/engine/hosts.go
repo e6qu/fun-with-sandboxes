@@ -209,6 +209,13 @@ func writeHostsFiles(root, hostname, domain string, addresses, extra, links []st
 			return err
 		}
 	}
+	// A container runs the host's macOS, which /etc/os-release says where
+	// the image does not, for programs that tell an operating system by
+	// it, as the Dev Containers extension does in choosing the build of
+	// VS Code's server it installs: macOS keeps no os-release of its own.
+	if err := writeOSRelease(root, mounted); err != nil {
+		return err
+	}
 	// A Linux container always has /proc. Programs that look for their
 	// processes there, as the Dev Containers extension does before it
 	// starts VS Code's server, cd into it, and read /proc/self/ns/mnt,
@@ -277,4 +284,42 @@ func resolvConf(host []byte, d dnsSettings) string {
 		b.WriteString("options " + strings.Join(d.Options, " ") + "\n")
 	}
 	return b.String()
+}
+
+// osRelease is the os-release (os-release(5)) of a container of the host's
+// macOS of version v.
+func osRelease(v string) string {
+	var b strings.Builder
+	b.WriteString("NAME=\"macOS\"\nID=darwin\n")
+	if v != "" {
+		fmt.Fprintf(&b, "VERSION_ID=%q\nPRETTY_NAME=\"macOS %s\"\n", v, v)
+	} else {
+		b.WriteString("PRETTY_NAME=\"macOS\"\n")
+	}
+	b.WriteString("HOME_URL=\"https://www.apple.com/macos/\"\n")
+	return b.String()
+}
+
+// writeOSRelease writes the container's /etc/os-release where neither the
+// image nor a mount gives it one, at /etc/os-release or /usr/lib/os-release.
+func writeOSRelease(root string, mounted map[string]bool) error {
+	const etc, lib = "/etc/os-release", "/usr/lib/os-release"
+	if mounted[etc] || mounted[lib] {
+		return nil
+	}
+	for _, p := range []string{etc, lib} {
+		if h, err := rootfs.Join(root, p); err == nil {
+			if _, err := os.Lstat(h); err == nil {
+				return nil
+			}
+		}
+	}
+	dir, err := rootfs.Join(root, "/etc")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "os-release"), []byte(osRelease(hostOSVersion())), 0o644)
 }

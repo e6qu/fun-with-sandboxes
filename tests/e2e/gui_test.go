@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -235,31 +234,13 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 		t.Fatalf("installing the Dev Containers extension: %v\n%s", err, out)
 	}
 
-	// The extension installs VS Code's server for Linux, whatever the
-	// container runs, into the volume it shares between dev containers,
-	// unless the server of the window's commit is there already: the test
-	// puts the macOS server there, where the extension looks.
-	product, err := os.ReadFile(filepath.Join(dir, app, "Contents", "Resources", "app", "product.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var build struct{ Commit string }
-	if err := json.Unmarshal(product, &build); err != nil || build.Commit == "" {
-		t.Fatalf("VS Code's product.json names no commit: %v", err)
-	}
-	seed := filepath.Join(dir, "seed")
-	server := filepath.Join(seed, "vscode-server", "bin", "linux-arm64", build.Commit)
-	if err := os.MkdirAll(server, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	fetch := exec.Command("sh", "-c", `curl -fsSL --retry 3 -o "$1.zip" "https://update.code.visualstudio.com/commit:$2/server-darwin-arm64/stable" && tar -xf "$1.zip" --strip-components 1 -C "$1"; s=$?; rm -f "$1.zip"; exit $s`, "sh", server, build.Commit)
-	if out, err := fetch.CombinedOutput(); err != nil {
-		t.Fatalf("fetching VS Code's server: %v\n%s", err, out)
-	}
+	// The extension installs VS Code's server in the volume it shares
+	// between dev containers, of the build the container's /etc/os-release
+	// names: the engine's, ID=darwin, has it install the macOS server. The
+	// volume starts empty, so the server that comes up is the one the
+	// extension installed; no Linux build could run in the container.
 	docker(t, "volume", "rm", "-f", "vscode")
-	mustDocker(t, "volume", "create", "vscode")
 	t.Cleanup(func() { docker(t, "volume", "rm", "-f", "vscode") })
-	mustDocker(t, "run", "--rm", "-v", "vscode:/vscode", "-v", seed+":/seed", "fws/base:1", "cp", "-R", "/seed/vscode-server", "/vscode/")
 
 	uri := "vscode-remote://dev-container+" + hex.EncodeToString([]byte(work)) + "/workspaces/project"
 	window := code("--new-window", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", "--disable-updates",
