@@ -178,6 +178,10 @@ func TestComposeWatch(t *testing.T) {
 	})
 	// The build once took minutes: BuildKit asks for the usage of each of
 	// the base image's layers, and each answer read the image below it.
+	// The engine loads the base image from the suite's archives the first
+	// time a test of the shard names it, which is no part of the build: it
+	// is loaded before the build is timed.
+	mustDocker(t, "image", "inspect", "fws/python:3.14")
 	began := time.Now()
 	p.must("up", "-d", "--build", "--wait")
 	if took := time.Since(began); took > 90*time.Second {
