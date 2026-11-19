@@ -97,3 +97,28 @@ func TestPidModes(t *testing.T) {
 		}
 	}
 }
+
+// A sysctl that already holds is accepted and sets nothing, as kind asks
+// for IPv6 and forwarding on an IPv6 cluster's nodes; any other is
+// refused, forwarding too for a container that is not privileged.
+func TestSysctls(t *testing.T) {
+	for _, c := range []struct {
+		sysctls    map[string]string
+		privileged bool
+		ok         bool
+	}{
+		{map[string]string{"net.ipv6.conf.all.disable_ipv6": "0", "net.ipv6.conf.all.forwarding": "1"}, true, true},
+		{map[string]string{"net.ipv6.conf.all.disable_ipv6": "0"}, false, true},
+		{map[string]string{"net.ipv6.conf.all.forwarding": "1"}, false, false},
+		{map[string]string{"net.ipv6.conf.all.disable_ipv6": "1"}, true, false},
+		{map[string]string{"net.core.somaxconn": "1024"}, true, false},
+	} {
+		err := checkHostConfig(&container.HostConfig{Sysctls: c.sysctls, Privileged: c.privileged})
+		if (err == nil) != c.ok {
+			t.Errorf("sysctls %v, privileged %v: %v, want accepted %v", c.sysctls, c.privileged, err, c.ok)
+		}
+		if err != nil && KindOf(err) != KindUnsupported {
+			t.Errorf("sysctls %v: %v, want an unsupported error", c.sysctls, err)
+		}
+	}
+}

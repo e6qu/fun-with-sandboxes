@@ -362,8 +362,9 @@ by a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 - **Settings without a macOS counterpart are refused**:
   - DNS settings in an engine nested in a privileged container, and a
     DNS server on loopback;
-  - `--sysctl`, `--userns`, runtimes other than runc, log drivers other
-    than `json-file` and `local` (including `none`);
+  - `--sysctl` but for the settings that hold already, below, `--userns`,
+    runtimes other than runc, log drivers other than `json-file` and
+    `local` (including `none`);
   - devices, `--gpus`, device cgroup rules, `--cgroup-parent`, cgroup
     sharing, `--oom-score-adj`, `--storage-opt`, Windows-only limits and
     isolation technologies other than the default;
@@ -371,7 +372,12 @@ by a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
     types other than bind, volume, image and tmpfs.
 - **Some settings are accepted and change nothing**, as each asks for no
   more confinement than a container has: `--cap-drop`,
-  `seccomp`/`apparmor=unconfined`, `label=disable` and `--cgroupns`.
+  `seccomp`/`apparmor=unconfined`, `label=disable` and `--cgroupns`; and
+  the sysctls that ask for what holds already, as kind's for an IPv6
+  cluster's nodes: `net.ipv6.conf.{all,default}.disable_ipv6=0`, and,
+  for a privileged container, whose nested engine carries its
+  containers' traffic, `net.ipv6.conf.{all,default}.forwarding=1` and
+  `net.ipv4.ip_forward=1`.
   Bind propagation holds as `rslave` whatever is asked: mounts the host
   makes below a bind's source show in the container, which can make
   none of its own.

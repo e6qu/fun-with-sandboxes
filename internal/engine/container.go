@@ -684,6 +684,41 @@ func checkContainerNetwork(req container.CreateRequest) error {
 	return nil
 }
 
+// heldSysctls are the kernel settings a container may ask for that hold
+// already, which the engine accepts and sets nothing for, as kind asks
+// for them for an IPv6 or dual-stack cluster's nodes: IPv6 not disabled,
+// as a container on a network with IPv6 has it, and, for a privileged
+// container, forwarding, as its nested engine carries its containers'
+// traffic between them through their routers. Each maps a key to the
+// value that holds and whether it holds for a privileged container alone.
+var heldSysctls = map[string]struct {
+	value      string
+	privileged bool
+}{
+	"net.ipv6.conf.all.disable_ipv6":     {"0", false},
+	"net.ipv6.conf.default.disable_ipv6": {"0", false},
+	"net.ipv6.conf.all.forwarding":       {"1", true},
+	"net.ipv6.conf.default.forwarding":   {"1", true},
+	"net.ipv4.ip_forward":                {"1", true},
+}
+
+// checkSysctls refuses the kernel settings that do not already hold: the
+// engine runs without root or a VM, and sets none.
+func checkSysctls(hc *container.HostConfig) error {
+	keys := make([]string, 0, len(hc.Sysctls))
+	for k := range hc.Sysctls {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		h, ok := heldSysctls[k]
+		if !ok || hc.Sysctls[k] != h.value || (h.privileged && !hc.Privileged) {
+			return unsupported("sysctl %s=%s is not supported: this engine runs without root or a VM and cannot enforce it", k, hc.Sysctls[k])
+		}
+	}
+	return nil
+}
+
 func checkHostConfig(hc *container.HostConfig) error {
 	r := hc.Resources
 	type knob struct {
@@ -697,11 +732,13 @@ func checkHostConfig(hc *container.HostConfig) error {
 		{hc.UsernsMode != "", "user namespaces"},
 		{hc.Runtime != "" && hc.Runtime != "runc", "alternative runtimes"},
 		{hc.LogConfig.Type != "" && hc.LogConfig.Type != "json-file" && hc.LogConfig.Type != "local", "log drivers other than json-file"},
-		{len(hc.Sysctls) > 0, "sysctls"},
 	} {
 		if k.set {
 			return unsupported("%s are not supported: this engine runs without root or a VM and cannot enforce them", k.name)
 		}
+	}
+	if err := checkSysctls(hc); err != nil {
+		return err
 	}
 	for _, k := range []struct {
 		set  bool
