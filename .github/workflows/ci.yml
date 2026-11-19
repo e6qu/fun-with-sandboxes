@@ -63,6 +63,25 @@ jobs:
           scripts/sync-buildkit.sh
           git diff --exit-code -- third_party/buildkit
           test -z "$(git status --porcelain -- third_party/buildkit)"
+
+  # The unit tests and probes on each macOS the engine runs on: it leans on
+  # Seatbelt's compiled profiles, process responsibility and the loader,
+  # which change with macOS releases.
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # Each test runs three times under the race detector, so a test that
+      # passes only sometimes, or races, fails here.
       - name: unit tests
         run: go test -race -count=3 ./...
       # The probes again, with the container library and the spawn helper
