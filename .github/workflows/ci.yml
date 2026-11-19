@@ -63,6 +63,25 @@ jobs:
           scripts/sync-buildkit.sh
           git diff --exit-code -- third_party/buildkit
           test -z "$(git status --porcelain -- third_party/buildkit)"
+      # An experiment, not a check: how the Dev Containers extension puts
+      # VS Code's server in a container, which the engine would do in its
+      # place with the macOS server. It prints what the extension's code
+      # says of the server's download, paths and the commands it runs.
+      - name: Dev Containers experiment
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          dir=$(mktemp -d)
+          curl -fsSL --compressed --retry 3 -o "$dir/rc.vsix" \
+            "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-vscode-remote/vsextensions/remote-containers/latest/vspackage"
+          unzip -q "$dir/rc.vsix" -d "$dir/x"
+          grep -m1 '"version"' "$dir/x/extension/package.json"
+          find "$dir/x/extension" -name '*.js' -size +100k | head
+          for pat in 'server-linux' 'vscode-server/bin' 'update.code.visualstudio' 'serverDownload' 'localServer' 'wget ' 'curl ' 'tar -x' 'vscode-server.tar' 'VSCODE_AGENT_FOLDER' 'installServer' 'install-vscode-server'; do
+            echo "=== $pat"
+            grep -rhoE ".{0,240}$pat.{0,240}" "$dir/x/extension" --include='*.js' --include='*.sh' | head -6 | cut -c1-520
+          done
+          ls "$dir/x/extension" "$dir/x/extension/scripts" 2>/dev/null
 
   # The unit tests and probes on each macOS the engine runs on: it leans on
   # Seatbelt's compiled profiles, process responsibility and the loader,
