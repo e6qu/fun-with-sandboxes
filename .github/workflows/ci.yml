@@ -77,10 +77,13 @@ jobs:
           unzip -q "$dir/rc.vsix" -d "$dir/x"
           grep -m1 '"version"' "$dir/x/extension/package.json"
           find "$dir/x/extension" -name '*.js' -size +100k | head
-          for pat in 'server-linux' 'vscode-server/bin' 'update.code.visualstudio' 'serverDownload' 'localServer' 'wget ' 'curl ' 'tar -x' 'vscode-server.tar' 'VSCODE_AGENT_FOLDER' 'installServer' 'install-vscode-server'; do
+          js="$dir/x/extension/dist/extension/extension.js"
+          for pat in 'uname -s' 'uname -m' 'AppleContainerSupport' '"Darwin"' 'id==="darwin"' 'id:"darwin"' 'linux-arm64' 'serverApplicationName' 'bin",s' 'await bo\(' 'function bo\(' 'function Bx\(' 'function jx\(' 'function Ih\(' 'function Lh\('; do
             echo "=== $pat"
-            grep -rhoE ".{0,240}$pat.{0,240}" "$dir/x/extension" --include='*.js' --include='*.sh' | head -6 | cut -c1-520
+            grep -oE ".{0,400}$pat.{0,700}" "$js" | head -4 | cut -c1-1200
           done
+          grep -o '"[a-zA-Z.]*AppleContainerSupport[a-zA-Z.]*"' "$dir/x/extension/package.json" | sort -u
+          grep -o '"configuration[a-zA-Z.]*ppleContainerSupport[a-zA-Z.]*": *"[^"]*"' "$dir/x/extension/package.nls.json"
           ls "$dir/x/extension" "$dir/x/extension/scripts" 2>/dev/null
 
   # The unit tests and probes on each macOS the engine runs on: it leans on
