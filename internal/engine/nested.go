@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -52,6 +53,10 @@ type Nested struct {
 	// how a nested engine's UDP Service reaches an endpoint on another
 	// node, such as cluster DNS's.
 	DialUDP func(netip.AddrPort) (net.Conn, error)
+	// Resolve finds the address of the member that answers to name on a
+	// network the privileged container is on, as its processes resolve
+	// it: how the nested engine dials a registry by its name there.
+	Resolve func(name string) (netip.Addr, error)
 	// Publish hands the engine it is nested in this engine's members on
 	// networks with subnets of their own, as they change; Peers are those
 	// the engines nested in the containers its container shares a network
@@ -155,6 +160,7 @@ func (e *Engine) openNested(c *Container) error {
 			Port:    func(proto string, p int) (int, string, error) { return e.portIn(c, proto, p) },
 			Dial:    func(ap netip.AddrPort) (net.Conn, error) { return e.dialFrom(c, ap) },
 			DialUDP: func(ap netip.AddrPort) (net.Conn, error) { return e.dialFromUDP(c, ap) },
+			Resolve: func(name string) (netip.Addr, error) { return e.resolveFrom(c, name) },
 			Publish: func(ms []stackmembers.Member) { e.publishPeer(c, ms) },
 			Peers:   func() []stackmembers.Member { return e.peersOf(c.rec.ID) },
 			Node:    func() (*Engine, *Container) { return e, c },
@@ -399,4 +405,74 @@ func (e *Engine) dialFrom(c *Container, ap netip.AddrPort) (net.Conn, error) {
 		return router.Dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(rp)), int(ap.Port()))
 	}
 	return nil, fmt.Errorf("%s does not listen on port %d", ap.Addr(), ap.Port())
+}
+
+// resolveFrom finds the address of the member that answers to name on a
+// user-defined network container c is on: its address there, or its
+// member address on a network without a subnet.
+func (e *Engine) resolveFrom(c *Container, name string) (netip.Addr, error) {
+	owner, err := e.netOwner(c)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, n := range userNetworks(owner) {
+		o := e.answeringLocked(n, name, owner)
+		if o == nil {
+			continue
+		}
+		if es := o.rec.Networks[n]; es != nil && es.IPAddress.IsValid() {
+			return es.IPAddress, nil
+		}
+		if a, err := netip.ParseAddr(o.rec.Address); err == nil {
+			return a, nil
+		}
+	}
+	return netip.Addr{}, fmt.Errorf("no member answers to %s on %s's networks", name, c.rec.Name)
+}
+
+// NodeFile reads the file at path in the privileged container a nested
+// engine runs in, as its processes find it; an engine nested in none has
+// no node, and no such file.
+func (e *Engine) NodeFile(path string) ([]byte, error) {
+	n := e.cfg.Nested
+	if n == nil || n.Path == nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
+	}
+	p, err := n.Path(path)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(p)
+}
+
+// DialNode connects to addr, a host and port, as a process of the
+// privileged container a nested engine runs in reaches it: a member of a
+// network the container is on, by its address or its name there, through
+// the engine the container runs in. Any other host, loopback included,
+// which names the host's, and every host for an engine nested in none, is
+// dialled from the host, as the engine pulls.
+func (e *Engine) DialNode(ctx context.Context, network, addr string) (net.Conn, error) {
+	n := e.cfg.Nested
+	host, port, err := net.SplitHostPort(addr)
+	if n == nil || n.Dial == nil || err != nil || (network != "tcp" && network != "tcp4" && network != "tcp6") {
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}
+	p, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return nil, fmt.Errorf("port %q: %v", port, err)
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil && n.Resolve != nil {
+		if r, rerr := n.Resolve(host); rerr == nil {
+			a, err = r, nil
+		}
+	}
+	if err != nil || a.IsLoopback() {
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}
+	return n.Dial(netip.AddrPortFrom(a, uint16(p)))
 }

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	containerdcfg "github.com/e6qu/fun-with-sandboxes/internal/containerd"
 )
 
 // The node has no containerd and no systemd; these stand in for the
@@ -91,21 +93,11 @@ func crictlArgs(engine string, args []string) []string {
 	return append([]string{"--runtime-endpoint=unix://" + engine, "--image-endpoint=unix://" + engine}, args...)
 }
 
-// containerdConfig is what containerd config dump prints: kind reads the
-// snapshotter it loads images with from it.
-const containerdConfig = `version = 2
-
-# fws/kind-node runs no containerd: its runtime is the engine fwsd nests in
-# the node, which serves the CRI at /run/containerd/containerd.sock.
-[plugins."io.containerd.grpc.v1.cri".containerd]
-  snapshotter = "native"
-`
-
 // containerd answers config dump and version; the node runs no daemon.
 func containerd(args []string, out io.Writer) int {
 	switch {
 	case len(args) >= 2 && args[0] == "config" && args[1] == "dump":
-		fmt.Fprint(out, containerdConfig)
+		fmt.Fprint(out, containerdcfg.Config)
 		return 0
 	case len(args) == 1 && (args[0] == "--version" || args[0] == "-v"):
 		fmt.Fprintln(out, "containerd fws-kind-node (the node's runtime is the engine fwsd nests in it)")

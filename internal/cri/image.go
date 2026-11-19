@@ -107,7 +107,7 @@ func (s *Service) PullImage(ctx context.Context, req *runtimeapi.PullImageReques
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "an image is required")
 	}
-	pulled, err := s.e.Images().Pull(ctx, ref, authenticator(req.Auth), func(string, string) {})
+	pulled, err := s.pull(ctx, ref, authenticator(req.Auth))
 	if err != nil {
 		return nil, pullError(ref, err)
 	}
@@ -131,7 +131,7 @@ func (s *Service) ensureImage(ctx context.Context, ref string, auth *runtimeapi.
 	if !errors.Is(err, image.ErrNotFound) {
 		return "", grpcError(err)
 	}
-	pulled, err := s.e.Images().Pull(ctx, ref, authenticator(auth), func(string, string) {})
+	pulled, err := s.pull(ctx, ref, authenticator(auth))
 	if err != nil {
 		return "", pullError(ref, err)
 	}

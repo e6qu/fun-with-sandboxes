@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -228,5 +229,56 @@ func TestNodesSeeOneAnothersPodsOnIPv6OnlyNetworks(t *testing.T) {
 	b, _ := io.ReadAll(c)
 	if want := "node-a-000000000"; len(b) < len(want) || string(b[len(b)-len(want):]) != want {
 		t.Errorf("node B dialling node A's pod at %s: %q", ipA, b)
+	}
+}
+
+// A nested engine dials a registry as its node's processes reach it: a
+// member by name or address through the engine it is nested in, and any
+// other host, loopback too, from the host.
+func TestDialNode(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	var dialled []netip.AddrPort
+	e := &Engine{cfg: Config{Nested: &Nested{
+		Dial: func(ap netip.AddrPort) (net.Conn, error) {
+			dialled = append(dialled, ap)
+			return net.Dial("tcp", l.Addr().String())
+		},
+		Resolve: func(name string) (netip.Addr, error) {
+			if name == "kind-registry" {
+				return netip.MustParseAddr("172.18.0.9"), nil
+			}
+			return netip.Addr{}, fmt.Errorf("no member answers to %s", name)
+		},
+	}}}
+	for _, addr := range []string{"kind-registry:5000", "172.18.0.7:5000", l.Addr().String()} {
+		c, err := e.DialNode(context.Background(), "tcp", addr)
+		if err != nil {
+			t.Fatalf("%s: %v", addr, err)
+		}
+		c.Close()
+	}
+	want := []netip.AddrPort{netip.MustParseAddrPort("172.18.0.9:5000"), netip.MustParseAddrPort("172.18.0.7:5000")}
+	if fmt.Sprint(dialled) != fmt.Sprint(want) {
+		t.Errorf("dialled through the outer engine %v, want %v", dialled, want)
+	}
+	// A name no member answers to is the host's to resolve.
+	if _, err := e.DialNode(context.Background(), "tcp", "no-such-host.invalid:5000"); err == nil {
+		t.Error("an unknown name was dialled")
+	}
+	if len(dialled) != 2 {
+		t.Errorf("an unknown name went through the outer engine: %v", dialled)
 	}
 }

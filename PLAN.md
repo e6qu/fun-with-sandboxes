@@ -77,7 +77,9 @@ One pull request open at a time.
    IPv6 servers too. In #74: Network.framework's lookups, through a
    stand-in for its dnssd client, and `connectx`. In #75: IPv6-only
    networks' members seen across nodes, IPv6 and dual-stack pod networks,
-   and kind's IPv6 and dual-stack clusters.
+   and kind's IPv6 and dual-stack clusters. In #76: kind's
+   `containerdConfigPatches`' registry mirrors and hosts directory, so
+   that kind's local registry works.
 4. **Catalog upkeep.** November's PostgreSQL and MariaDB once their darwin
    builds are cached; nixos-26.11; a newer Kubernetes and kind when asked
    for.

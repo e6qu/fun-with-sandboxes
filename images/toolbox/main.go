@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/registry"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/net/proxy"
 
@@ -27,7 +28,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: toolbox serve|health|echo|env|cat|put|fetch|dial|write|read|list|bind|connect|signal|exec [arg]")
+		fmt.Fprintln(os.Stderr, "usage: toolbox serve|health|echo|env|cat|put|fetch|dial|write|read|list|bind|connect|signal|exec|registry [arg]")
 		os.Exit(2)
 	}
 	arg := ""
@@ -62,6 +63,10 @@ func run(op, arg string) error {
 	case "echo":
 		fmt.Println(strings.Join(os.Args[2:], " "))
 		return nil
+	case "registry":
+		// A registry that keeps what is pushed to it in memory, listening at
+		// arg, as a kind cluster's local registry does.
+		return http.ListenAndServe(arg, registry.New())
 	case "env":
 		env := os.Environ()
 		sort.Strings(env)

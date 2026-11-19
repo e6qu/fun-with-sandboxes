@@ -274,8 +274,14 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   proxy's poll, a second by default.
 - **kind runs on `fws/kind-node` only.** Nodes run no systemd or
   containerd: `ctr` supports `images import`, `tag` and `ls`, and
-  `journalctl` reads the node's logs. IPv6 and dual-stack clusters run;
-  `containerdConfigPatches` are not supported (*not built yet*).
+  `journalctl` reads the node's logs. IPv6 and dual-stack clusters run.
+  Of what `containerdConfigPatches` set, the node's runtime takes the
+  registries an image is pulled through: registry mirrors and a hosts
+  directory (`config_path`, a registry's `hosts.toml`), whose hosts it
+  reaches as the node does, by their names on the node's networks, as
+  kind's local registry works. A node whose configuration sets anything
+  else is not ready, and says which settings it does not apply; a
+  `localhost` registry is the host's.
 - **`fws/k3s` is kubeadm's cluster under k3s's names.** `k3s agent`,
   joining servers, Traefik, ServiceLB, the Helm controller, the embedded
   registry and etcd snapshots are absent. The node needs an address

@@ -48,6 +48,7 @@ TestKafka 26
 TestKafkaOnANetwork 36
 TestKindCluster 110
 TestKindIPv6AndDualStackClusters 220
+TestKindLocalRegistry 120
 TestKubernetesControlPlane 132
 TestLambdaJava 46
 TestLambdaNode 2
