@@ -17,7 +17,11 @@ runs:
           sleep 1
         done
         tail -n 3 "$RUNNER_TEMP/e2e/test.log" || true
+    # A snapshot is for reading after a runner dies: one that cannot be
+    # kept, as when the artifact service does not resolve for a moment,
+    # leaves the suite running and the next snapshot to keep its output.
     - uses: actions/upload-artifact@v6
+      continue-on-error: true
       with:
         name: ${{ inputs.name }}
         path: ${{ runner.temp }}/e2e
