@@ -17,6 +17,9 @@ import (
 	"testing"
 	"time"
 
+	gname "github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 	"sigs.k8s.io/kind/pkg/cluster"
 	"sigs.k8s.io/kind/pkg/cmd"
@@ -388,5 +391,83 @@ func kindFamilyCluster(t *testing.T, family v1alpha4.ClusterIPFamily) {
 		} else if out := mustKubectl("logs", fetcher); out != "200 OK\n" {
 			t.Errorf("a pod on %s fetching %s: %q", nodes[0], url, out)
 		}
+	}
+}
+
+// kind's local registry, as kind's documentation sets one up: a registry
+// container, a cluster whose containerdConfigPatches name a hosts
+// directory, and on each node a hosts.toml that sends a registry's pulls
+// to the registry container, which joins kind's network. A pod's image of
+// a registry that does not exist pulls through it, as the node's runtime
+// reads the patched configuration, and reaches the registry container by
+// its name there.
+func TestKindLocalRegistry(t *testing.T) {
+	const name, registryName, upstream = "fws-e2e-reg", "fws-e2e-kind-registry", "registry.fws-e2e.invalid"
+	provider := cluster.NewProvider(cluster.ProviderWithDocker(), cluster.ProviderWithLogger(cmd.NewLogger()))
+	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
+	nodes := []string{name + "-control-plane", name + "-worker"}
+	defer kindCleanup(t, provider, name, kubeconfig, nodes)
+	mustDocker(t, "run", "-d", "--name", registryName, "-p", "127.0.0.1::5000", "fws/toolbox:1", "registry", "0.0.0.0:5000")
+	// Before kindCleanup, which removes kind's network.
+	defer docker(t, "rm", "-f", registryName)
+	hostAddr := strings.TrimSpace(mustDocker(t, "port", registryName, "5000/tcp"))
+	tag, _ := gname.NewTag("fws/toolbox:1")
+	img, err := tarball.ImageFromPath(filepath.Join(os.Getenv("FWS_E2E_IMAGES"), "toolbox.tar"), &tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pushed, _ := gname.ParseReference(hostAddr + "/e2e/toolbox:1")
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(time.Second) {
+		if err = remote.Write(pushed, img); err == nil || time.Now().After(deadline) {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("pushing to the registry container: %v", err)
+	}
+
+	cfg := &v1alpha4.Cluster{
+		ContainerdConfigPatches: []string{`[plugins."io.containerd.grpc.v1.cri".registry]
+  config_path = "/etc/containerd/certs.d"`},
+		Nodes: []v1alpha4.Node{{Role: v1alpha4.ControlPlaneRole}, {Role: v1alpha4.WorkerRole}},
+	}
+	if err := provider.Create(name,
+		cluster.CreateWithV1Alpha4Config(cfg),
+		cluster.CreateWithNodeImage("fws/kind-node:1.35"),
+		cluster.CreateWithKubeconfigPath(kubeconfig),
+		cluster.CreateWithRetain(true),
+		cluster.CreateWithWaitForReady(3*time.Minute),
+		cluster.CreateWithDisplayUsage(false), cluster.CreateWithDisplaySalutation(false),
+	); err != nil {
+		var run *kindexec.RunError
+		if errors.As(err, &run) {
+			t.Fatalf("kind create cluster: %v\n%s", err, tail(string(run.Output), 80))
+		}
+		t.Fatalf("kind create cluster: %v", err)
+	}
+	mustDocker(t, "network", "connect", "kind", registryName)
+	hosts := fmt.Sprintf("[host.\"http://%s:5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n", registryName)
+	for _, n := range nodes {
+		dir := "/etc/containerd/certs.d/" + upstream
+		mustDocker(t, "exec", n, "sh", "-c", `mkdir -p "$1" && printf '%s' "$2" > "$1/hosts.toml"`, "sh", dir, hosts)
+	}
+	mustKubectl := func(args ...string) string {
+		t.Helper()
+		out, err := docker(t, append([]string{"exec", nodes[0], "kubectl"}, args...)...)
+		if err != nil {
+			t.Fatalf("kubectl %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+	for _, n := range nodes {
+		mustKubectl("wait", "--for=condition=Ready", "--timeout=2m", "node/"+n)
+	}
+	mustKubectl("run", "puller", "--image="+upstream+"/e2e/toolbox:1", "--restart=Never", "--", "echo", "pulled through the mirror")
+	if _, err := docker(t, "exec", nodes[0], "kubectl", "wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=3m", "pod/puller"); err != nil {
+		out, _ := docker(t, "exec", nodes[0], "kubectl", "describe", "pod", "puller")
+		t.Fatalf("the pod of %s's image: %v\n%s", upstream, err, tail(out, 40))
+	}
+	if out := mustKubectl("logs", "puller"); strings.TrimSpace(out) != "pulled through the mirror" {
+		t.Errorf("the pod printed %q", out)
 	}
 }

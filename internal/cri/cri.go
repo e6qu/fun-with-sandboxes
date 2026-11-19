@@ -241,8 +241,14 @@ func (s *Service) Version(ctx context.Context, req *runtimeapi.VersionRequest) (
 }
 
 func (s *Service) Status(ctx context.Context, req *runtimeapi.StatusRequest) (*runtimeapi.StatusResponse, error) {
+	ready := &runtimeapi.RuntimeCondition{Type: runtimeapi.RuntimeReady, Status: true}
+	// A node whose containerd configuration sets what the runtime does not
+	// apply is not ready, and says why, rather than running as if it did.
+	if reason, msg, bad := s.unappliedCondition(); bad {
+		ready.Status, ready.Reason, ready.Message = false, reason, msg
+	}
 	res := &runtimeapi.StatusResponse{Status: &runtimeapi.RuntimeStatus{Conditions: []*runtimeapi.RuntimeCondition{
-		{Type: runtimeapi.RuntimeReady, Status: true},
+		ready,
 		{Type: runtimeapi.NetworkReady, Status: true},
 	}}}
 	if req.Verbose {

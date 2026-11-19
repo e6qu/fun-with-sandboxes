@@ -8,12 +8,15 @@ import (
 	"archive/tar"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -475,6 +478,24 @@ type Pulled struct {
 // downloading only the layers the store lacks, and records the reference
 // and the repository@digest it resolved to.
 func (s *Store) Pull(ctx context.Context, ref string, auth authn.Authenticator, progress Progress) (Pulled, error) {
+	return s.PullVia(ctx, ref, auth, progress, Via{})
+}
+
+// Via is where a pull fetches from in its registry's place, as a registry
+// mirror serves it: the registry's host and port, whether it speaks plain
+// HTTP or goes with its certificate unchecked, and how to connect to it.
+// The zero Via fetches from the image's registry.
+type Via struct {
+	Registry   string
+	Insecure   bool
+	SkipVerify bool
+	Dial       func(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
+// PullVia pulls ref as Pull does, from via's registry where it names one:
+// the image keeps ref's name, and the repository@digest reference of its
+// own registry.
+func (s *Store) PullVia(ctx context.Context, ref string, auth authn.Authenticator, progress Progress, via Via) (Pulled, error) {
 	r, err := name.ParseReference(ref, name.WithDefaultTag("latest"))
 	if err != nil {
 		return Pulled{}, err
@@ -483,7 +504,34 @@ func (s *Store) Pull(ctx context.Context, ref string, auth authn.Authenticator, 
 	if err != nil {
 		return Pulled{}, err
 	}
-	desc, err := remote.Get(r, remote.WithContext(ctx), remote.WithPlatform(Platform), remote.WithAuth(auth))
+	from := r
+	opts := []remote.Option{remote.WithContext(ctx), remote.WithPlatform(Platform), remote.WithAuth(auth)}
+	if via.Registry != "" {
+		var ropts []name.Option
+		if via.Insecure {
+			ropts = append(ropts, name.Insecure)
+		}
+		reg, err := name.NewRegistry(via.Registry, ropts...)
+		if err != nil {
+			return Pulled{}, err
+		}
+		repo := reg.Repo(r.Context().RepositoryStr())
+		switch t := r.(type) {
+		case name.Tag:
+			from = repo.Tag(t.TagStr())
+		case name.Digest:
+			from = repo.Digest(t.DigestStr())
+		}
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		if via.Dial != nil {
+			tr.DialContext = via.Dial
+		}
+		if via.SkipVerify {
+			tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		}
+		opts = append(opts, remote.WithTransport(tr))
+	}
+	desc, err := remote.Get(from, opts...)
 	if err != nil {
 		return Pulled{}, err
 	}

@@ -2,8 +2,10 @@ package image
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -216,5 +218,45 @@ func TestNormalizeDigestReferences(t *testing.T) {
 		if got, err := Normalize(in); err != nil || got != want {
 			t.Errorf("Normalize(%q) = %q, %v; want %q", in, got, err, want)
 		}
+	}
+}
+
+// A pull through a mirror fetches from the mirror, over the connection its
+// dialler makes, and keeps the name, and the digest reference, of the
+// image's own registry.
+func TestPullViaAMirror(t *testing.T) {
+	mirror := testRegistry(t)
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := darwinImage(t, 1)
+	dg := push(t, mirror+"/team/app:1", img)
+	dials := 0
+	via := Via{Registry: "kind-registry:5000", Insecure: true, Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if addr != "kind-registry:5000" {
+			return nil, fmt.Errorf("dialled %s", addr)
+		}
+		dials++
+		var d net.Dialer
+		return d.DialContext(ctx, network, mirror)
+	}}
+	got, err := s.PullVia(context.Background(), "localhost:5001/team/app:1", authn.Anonymous, func(string, string) {}, via)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dials == 0 {
+		t.Error("the mirror's dialler was not used")
+	}
+	if got.Ref != "localhost:5001/team/app:1" || got.Digest != dg.String() || len(got.Image.RepoDigests) != 1 ||
+		got.Image.RepoDigests[0] != "localhost:5001/team/app@"+dg.String() {
+		t.Errorf("pulled %+v", got)
+	}
+	if _, err := s.Get("localhost:5001/team/app:1"); err != nil {
+		t.Errorf("the image under its own name: %v", err)
+	}
+	// By digest, through the mirror too.
+	if again, err := s.PullVia(context.Background(), "localhost:5001/team/app@"+dg.String(), authn.Anonymous, func(string, string) {}, via); err != nil || !again.UpToDate {
+		t.Errorf("by digest: %+v, %v", again, err)
 	}
 }

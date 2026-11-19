@@ -40,6 +40,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	containerdcfg "github.com/e6qu/fun-with-sandboxes/internal/containerd"
 )
 
 const (
@@ -122,6 +124,17 @@ func boot(prefix string) *node {
 	os.Remove(criSocket)
 	if err := os.Symlink(engine, criSocket); err != nil {
 		log.Fatal(err)
+	}
+	// containerd's configuration, which kind reads and patches once the
+	// node is up: the node's runtime takes from it the registries an image
+	// is pulled through (package containerd).
+	if _, err := os.Stat(containerdcfg.ConfigPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(containerdcfg.ConfigPath), 0o755); err != nil {
+			log.Fatal(err)
+		}
+		if err := os.WriteFile(containerdcfg.ConfigPath, []byte(containerdcfg.Config), 0o644); err != nil {
+			log.Fatal(err)
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	fmt.Fprintln(stdout, "Reached target Multi-User System.")

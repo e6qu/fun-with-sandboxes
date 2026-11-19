@@ -600,8 +600,8 @@ mkimage $(accounts kubelet) -spec images/kubelet/image.json -closure "$build/kub
 # kind's node image from the parts above: kubeadm, the kubelet, kubectl
 # and fws-kube-proxy, the control plane's images, which the entrypoint
 # loads into the node's engine under the names kubeadm gives them, kind's
-# /kind/version and its manifests, and coreutils for the commands kind runs
-# in a node. kubeadm runs through the entrypoint, which skips the addons
+# /kind/version and its manifests, and coreutils and bash for the commands
+# kind runs in a node. kubeadm runs through the entrypoint, which skips the addons
 # whose Linux images a node has no use for, and so does the cp kind writes
 # files with, which copies standard input itself. It stands in for ctr,
 # containerd and journalctl too, which kind load and kind export logs run,
@@ -624,12 +624,15 @@ for c in kube-apiserver kube-controller-manager kube-scheduler etcd pause; do
 done
 cat "$build/kind-images.txt"
 echo "$k8s_version" > "$build/kind-version"
-closure "$coreutils" "$gnutar" $(nix-store -qR "$k8s" "$kubelet" | grep -v -e "^$k8s$" -e "^$kubelet$") > "$build/kind-node.closure"
+# bash, which kind runs in a node to restart containerd once it has patched
+# containerd's configuration, and sh, as which it runs too.
+bash=$(pkg_with bash bash)
+closure "$coreutils" "$gnutar" "$bash" $(nix-store -qR "$k8s" "$kubelet" | grep -v -e "^$k8s$" -e "^$kubelet$") > "$build/kind-node.closure"
 images=()
 for c in kube-apiserver kube-controller-manager kube-scheduler etcd pause; do
   images+=(-file "/kind/images/$c.tar=$out/$c.tar")
 done
-node_files=(-pkg "$coreutils" -pkg "$gnutar"
+node_files=(-pkg "$coreutils" -pkg "$gnutar" -pkg "$bash" -link /bin/sh=bash
   -file "/usr/local/bin/entrypoint=$build/kind-node-entry" -file "/usr/local/bin/kubeadm=$build/kind-node-entry"
   -file "/usr/local/bin/cp=$build/kind-node-entry" -file "/usr/local/bin/ctr=$build/kind-node-entry"
   -file "/usr/local/bin/containerd=$build/kind-node-entry" -file "/usr/local/bin/journalctl=$build/kind-node-entry"

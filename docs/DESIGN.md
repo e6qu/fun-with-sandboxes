@@ -985,7 +985,12 @@ Pods are the engine's: a record per pod, kept in `pods.json`, and Podman's
   in CRI's format, and serves exec, attach and port-forward streams on a
   loopback port, or a nested engine's on its privileged container's.
 - **Nodes.** A kind node is a privileged container whose nested engine
-  (§3a) is its kubelet's runtime.
+  (§3a) is its kubelet's runtime. The node keeps containerd's
+  configuration, which kind patches: the CRI reads it at each pull and
+  pulls through the registries its mirrors and hosts directory name,
+  dialling them as the node reaches them, by their names on its networks
+  (`internal/containerd`, `Engine.DialNode`), and reports the runtime not
+  ready while it sets anything else.
 - **Cross-node pods.** Nested engines in privileged containers that share
   a network are a cluster's nodes (`internal/engine/peers.go`). Each
   nested engine publishes its members on networks with subnets of their
