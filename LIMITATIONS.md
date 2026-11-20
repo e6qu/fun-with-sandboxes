@@ -260,8 +260,11 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   tmpfs; other filesystem types need root. A read-only bind source the
   host cannot create, such as `/lib/modules`, mounts empty.
 - **A Podman pod shares its network, IPC and PID namespaces** through an
-  infra container running `fws/pause`. `generate kube`, `play kube`,
-  checkpoints and quadlets are not served.
+  infra container running `fws/pause`. `kube play` runs Pods, and
+  Deployments of one replica, with their ConfigMaps' values, claims'
+  volumes and init containers; `kube generate` writes a pod or container
+  back and `kube down` removes what a file made. Checkpoints and quadlets
+  are not served.
 - **Refused, having no macOS counterpart**: `--sysctl` beyond those below,
   `--userns`, runtimes other than runc, log drivers other than `json-file`
   and `local`, devices, `--gpus`, device cgroup rules, `--cgroup-parent`,

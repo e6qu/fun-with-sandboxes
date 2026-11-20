@@ -56,16 +56,14 @@ at the newest versions nixpkgs packages, except Kubernetes, still at
 One pull request open at a time, large rather than granular. The roadmap
 ends when its last gap is closed: fws then does what it sets out to do.
 
-1. **Presentation gaps** (#79, in progress): `PATH`, `HOME` and `docker
-   top`'s commands read as the container's paths; tmpfs mounts and volumes
-   take `uid` and `gid`; the documents trimmed to what is true and needed.
-2. **Remaining gaps**, each removing a LIMITATIONS entry:
-   - Podman's `kube play` and `generate kube`, the pod workflow Podman
-     users reach for after `podman-compose`;
-   - a DNS server inside a stack, or a Service, answering its members'
-     queries;
-   - pod resource limits: the kubelet's `resources.limits` held as the
-     engine holds `--memory` and `--cpus`.
+1. **Presentation gaps**, merged in
+   [#79](https://github.com/e6qu/fun-with-sandboxes/pull/79): `PATH`,
+   `HOME` and `docker top`'s commands read as the container's paths;
+   tmpfs mounts and volumes take `uid` and `gid`.
+2. **Remaining gaps** (#80, in progress), each removing a LIMITATIONS
+   entry: Podman's `kube play`, `kube generate` and `kube down`; a DNS
+   server a member of the stack runs, serving it; pod resource limits, the
+   kubelet's `resources.limits` held as `--memory` and `--cpus`.
 
 ## Upkeep
 

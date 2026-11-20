@@ -284,10 +284,20 @@ func (s *Server) podCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	p, err := s.pods.create(spec.Name, spec.Labels)
+	p, err := s.newPod(spec, infra)
 	if err != nil {
 		writeEngineError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"Id": p.ID})
+}
+
+// newPod creates the pod spec names with its infra container, which holds
+// the namespaces it shares and infra's network settings.
+func (s *Server) newPod(spec podSpec, infra specGen) (pod, error) {
+	p, err := s.pods.create(spec.Name, spec.Labels)
+	if err != nil {
+		return pod{}, err
 	}
 	infra.Image = spec.InfraImage
 	if infra.Image == "" {
@@ -318,10 +328,9 @@ func (s *Server) podCreate(w http.ResponseWriter, r *http.Request) {
 			s.e.Remove(res.ID, engine.RemoveOptions{Force: true})
 		}
 		s.pods.remove(p.ID)
-		writeEngineError(w, err)
-		return
+		return pod{}, err
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"Id": p.ID})
+	return s.pods.get(p.ID)
 }
 
 // joinPod gives a container created in a pod what the pod shares, of its
@@ -506,17 +515,25 @@ func (s *Server) podRemove(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	removed := map[string]any{}
-	for _, m := range members {
-		if err := s.e.Remove(m.ID, engine.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
-			writeEngineError(w, err)
-			return
-		}
-		removed[m.ID] = nil
-	}
-	if err := s.pods.remove(p.ID); err != nil {
+	removed, err := s.removePod(p)
+	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"RemovedCtrs": removed, "Id": p.ID})
+}
+
+// removePod removes pod p and its containers, its infra container last,
+// and returns the containers it removed.
+func (s *Server) removePod(p pod) (map[string]any, error) {
+	members := s.podMembers(p)
+	sort.SliceStable(members, func(i, j int) bool { return members[j].ID == p.InfraID && members[i].ID != p.InfraID })
+	removed := map[string]any{}
+	for _, m := range members {
+		if err := s.e.Remove(m.ID, engine.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
+			return removed, err
+		}
+		removed[m.ID] = nil
+	}
+	return removed, s.pods.remove(p.ID)
 }

@@ -163,6 +163,20 @@ no VM and no more than microseconds per call.
   therefore keeps `--no-sandbox` in a container; `TestSecondSandboxRefused`
   checks this. The catalog moved to nixpkgs-26.05-darwin of 2026-11-19.
 
+## To the end of the roadmap (PRs #79–#80)
+
+- **Presentation** (#79): the library presents `PATH` and `HOME` as the
+  container's own and hands programs it starts the root's; `docker top`
+  reads a command's host paths as the container's; tmpfs mounts and
+  volumes take `uid` and `gid` as recorded owners. The documents were cut
+  to what is true, the roadmap given an end, and version updates made
+  upkeep.
+- **The last gaps** (#80): the darwin kubelet sends a container's memory
+  and CPU limits, which the CRI holds as `--memory` and `--cpus`; the
+  router asks a DNS server a member of the stack runs, over TCP at its
+  port 53; and Podman's `kube play`, `kube generate` and `kube down` run,
+  write back and remove Pods and Deployments.
+
 ## Investigations
 
 Findings still worth knowing, each with what the code does since.

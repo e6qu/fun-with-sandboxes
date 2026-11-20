@@ -85,6 +85,7 @@ func (s *Server) libpodRoutes() {
 	s.libpodNetworkRoutes()
 	s.libpodVolumeRoutes()
 	s.libpodPodRoutes()
+	s.libpodKubeRoutes()
 }
 
 func (s *Server) libpodVersion(w http.ResponseWriter, r *http.Request) {
