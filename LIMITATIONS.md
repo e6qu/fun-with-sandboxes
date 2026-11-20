@@ -49,8 +49,11 @@ what macOS offers an unprivileged process under them. Non-goals are in
   frontends ship as Linux images); `# syntax=docker/dockerfile:<version>`
   uses the vendored built-in frontend. An SSH mount's socket belongs to the
   engine's user whatever `uid` it names.
-- **Build steps run under Seatbelt**, with internet through a build-only
-  egress proxy (none with `--network none`).
+- **Build steps run darwin programs.** Every Dockerfile instruction
+  builds; a `RUN` step runs what the darwin image holds, so one that runs
+  a Linux package manager (`apt-get`, `apk`, `yum`) fails. Steps run under
+  Seatbelt, with internet through a build-only egress proxy (none with
+  `--network none`).
 
 ## Isolation
 

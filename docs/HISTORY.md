@@ -99,9 +99,10 @@ no VM and no more than microseconds per call.
    unprivileged ICMP socket; and `# syntax=docker/dockerfile:*` served by
    the built-in frontend
    (`third_party/buildkit-patches/syntax_builtin.patch`).
-5. **Dropped**: Dockerfiles in Linux idioms (`apt-get install` mapped to
-   Nix) and a converter of Linux images. Linux binaries and Linux-idiom
-   Dockerfiles are a non-goal (`PLAN.md`).
+5. **Set aside**: mapping Linux package installs (`apt-get install`) to
+   Nix, and a converter of Linux images. Dockerfiles stay in scope as far
+   as macOS can run their steps, built `FROM` fws's base images; Linux
+   binaries and Linux-specific Dockerfiles are not (`PLAN.md`).
 
 ## Dev containers, GUI apps, DNS and IPv6 clusters (PRs #67–#78)
 

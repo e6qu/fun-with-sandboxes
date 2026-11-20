@@ -20,8 +20,10 @@ and test is in `CONTRIBUTING.md`.
 - **macOS is tested in CI.** A Linux machine cross-builds and vets only
   (`CONTRIBUTING.md`); what the container library and Seatbelt do is
   proved by the macOS jobs.
-- **Linux binaries and Linux-idiom Dockerfiles are a non-goal**, as is
-  packaging for distribution (`PLAN.md`).
+- **Dockerfiles built `FROM` fws's base images are in scope**, as far as
+  macOS can run their steps: fws provides the darwin base images; consuming
+  Linux-specific Dockerfiles is not a goal. Linux binaries are a non-goal,
+  as is packaging for distribution (`PLAN.md`). (Asked on 2026-11-20.)
 - **Latest available versions.** Catalog images and Kubernetes follow the
   newest release available; where nixpkgs lags, build the release here
   rather than wait. (Asked on 2026-11-20.)

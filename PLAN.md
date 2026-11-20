@@ -26,11 +26,16 @@ Mechanism: [`docs/DESIGN.md`](docs/DESIGN.md). What differs from Docker:
   measures a process start and each interposed call against the native one.
 - **Go, and C only inside a process start**, built for `darwin/arm64` alone.
 
+Dockerfiles built `FROM` fws's base images are in scope: fws provides the
+darwin base images (`fws/base`, the language and service images), and
+`docker build`, buildx and Compose build on them whatever macOS can run.
+Consuming Dockerfiles written for Linux is not a goal.
+
 ## Non-goals
 
 - Linux binaries, in any form: unchanged images, a VM, system-call
-  translation, a converter from Linux images, or Dockerfiles that install
-  with `apt-get`, `apk` or `yum`. Images are built `FROM` darwin images.
+  translation, a converter from Linux images, or Linux-specific Dockerfiles
+  (`apt-get`, `apk`, `yum`) made to build.
 - A security boundary against hostile code, Swarm, Intel Macs.
 - Packaging for distribution: signed or notarized releases, installers, a
   `launchd` service. The engine is installed with `go install`.
