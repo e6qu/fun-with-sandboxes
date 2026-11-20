@@ -210,7 +210,9 @@ denied. A devcontainer asks for it with
 (`--user "$(id -u):$(id -g)"`): the session's services learn who calls
 them from the kernel and refuse a process that calls itself root.
 Chromium-based applications take `--no-sandbox`: their helpers cannot
-enter a sandbox of their own inside the container's.
+enter a sandbox of their own inside the container's, as macOS refuses a
+second profile to any sandboxed process; the container's profile confines
+them as it does the application.
 
 Each container runs under a supervisor that holds it to `--memory`,
 `--cpus`, `--cpu-quota` and `--pids-limit` without cgroups, and its

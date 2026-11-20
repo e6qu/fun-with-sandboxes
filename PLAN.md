@@ -60,8 +60,12 @@ One pull request open at a time.
    server there itself: the engine writes an `/etc/os-release` naming
    darwin into a container whose image has none, and the extension picks
    its server's build from it.
-   Next: Chromium's own sandbox inside a container's, so that
-   `--no-sandbox` goes.
+   In #78: whether Chromium's helpers can keep a sandbox of their own
+   inside a container's, so that `--no-sandbox` goes. They cannot: macOS
+   refuses a second Seatbelt profile to any sandboxed process, even one
+   under `(allow default)`, through `sandbox_init` and `sandbox_apply`
+   alike, on macOS 15 and 26 (`TestSecondSandboxRefused`); the container's
+   profile confines them as it does the application.
 2. **Starts and limits.** Merged in
    [#71](https://github.com/e6qu/fun-with-sandboxes/pull/71): per-process
    memory limits in the kernel, jetsam's, which CI's experiment showed
@@ -82,13 +86,14 @@ One pull request open at a time.
    and kind's IPv6 and dual-stack clusters. In #76: kind's
    `containerdConfigPatches`' registry mirrors and hosts directory, so
    that kind's local registry works.
-4. **Catalog upkeep.** November's PostgreSQL and MariaDB once their darwin
-   builds are cached; nixos-26.11; a newer Kubernetes and kind when asked
-   for.
+4. **Catalog upkeep.** In #78: nixpkgs-26.05-darwin of 2026-11-19, with
+   November's PostgreSQL (16.16, 18.7), Node.js 24.22.3 and 26.13.1 and
+   Valkey 9.1.3. Next: November's MariaDB once the darwin channel carries
+   it (still 11.4.13); nixos-26.11 once released; a newer Kubernetes and
+   kind when asked for.
 5. **Shipping**, when asked for: signed and notarized releases, prebuilt C
    parts, an installer, a `launchd` service.
 
 ## Open questions
 
-- Whether Chromium's helpers can keep a sandbox of their own inside a
-  container's: today a Chromium-based application takes `--no-sandbox`.
+None at present.
