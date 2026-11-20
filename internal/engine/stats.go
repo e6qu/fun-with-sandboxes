@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -107,7 +108,31 @@ func (e *Engine) Top(ref, psArgs string) (container.TopResponse, error) {
 	if err != nil {
 		return container.TopResponse{}, invalid("%v", err)
 	}
+	procs.PresentPaths(titles, rows, presentedPrefixes(c))
 	return container.TopResponse{Titles: titles, Processes: rows}, nil
+}
+
+// presentedPrefixes are the host directories a container's commands name
+// that it sees as others: each mount's source as its destination, and the
+// root as /, both as the engine named them and as the kernel resolves them.
+func presentedPrefixes(c *Container) []procs.Prefix {
+	var out []procs.Prefix
+	add := func(host, dest string) {
+		out = append(out, procs.Prefix{Host: host, Container: dest})
+		if real, err := filepath.EvalSymlinks(host); err == nil && real != host {
+			out = append(out, procs.Prefix{Host: real, Container: dest})
+		}
+	}
+	c.mu.Lock()
+	mounts := append([]mountRec(nil), c.rec.Mounts...)
+	c.mu.Unlock()
+	for _, m := range mounts {
+		if m.Source != "" && m.Destination != "" {
+			add(m.Source, m.Destination)
+		}
+	}
+	add(c.root(), "/")
+	return out
 }
 
 func (e *Engine) sample(c *Container) (container.StatsResponse, error) {

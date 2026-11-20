@@ -76,7 +76,9 @@ func TestCPUQuota(t *testing.T) {
 // and a raised limit lets the container fork again.
 func TestPidsLimit(t *testing.T) {
 	const name = "fws-e2e-pids"
-	mustDocker(t, "run", "-d", "--name", name, "--pids-limit", "6", "fws/toolbox:1", "forkmany", "20")
+	// The image's health check, an exec each second, would count against
+	// the limit and fail a fork of the container's own.
+	mustDocker(t, "run", "-d", "--name", name, "--pids-limit", "6", "--no-healthcheck", "fws/toolbox:1", "forkmany", "20")
 	defer docker(t, "rm", "-f", name)
 	waitLog(t, name, "fork 6 failed")
 	if logs := mustDocker(t, "logs", name); !strings.Contains(logs, "resource temporarily unavailable") {

@@ -1,15 +1,14 @@
 # Seatbelt
 
-Seatbelt is the macOS sandbox. Apple's own name for it is the *sandbox*
-(`Sandbox.kext`, `libsandbox`, `sandbox-exec`), and App Sandbox, Safari and
-most system daemons run inside it. It is part of macOS, not a separate
-project. GhostPack's *Seatbelt* on GitHub is an unrelated Windows tool.
+Seatbelt is the macOS sandbox (`Sandbox.kext`, `libsandbox`,
+`sandbox-exec`), which App Sandbox, Safari and most system daemons run
+inside. GhostPack's *Seatbelt* on GitHub is an unrelated Windows tool.
 
-fun-with-sandboxes isolates containers with Seatbelt because it is the one
+The engine confines containers with Seatbelt because it is the one
 confinement macOS gives an unprivileged process: no root, no kernel
 extension of its own, no virtual machine. This page covers what Seatbelt
-does, how to write and test a profile by hand, and how the engine uses one
-for every container.
+does, how to write and test a profile by hand, and how the engine renders
+and applies one for every container.
 
 ## How it works
 
@@ -39,7 +38,7 @@ A process enters a sandbox once and cannot leave it:
   (`TestSecondSandboxRefused`).
 - No root is needed for any of it.
 
-Apple marks `sandbox-exec` and the profile language deprecated and
+Apple marks `sandbox-exec` deprecated and leaves the profile language
 undocumented, but both keep working, and macOS's own services depend on
 them. The best references are Apple's profiles in
 `/System/Library/Sandbox/Profiles/` and `/usr/share/sandbox/`.
@@ -220,26 +219,29 @@ operation family and then allows what the container owns:
 
 | Section | Allows |
 |---|---|
-| Baseline | `(deny default)` with Apple's `system.sb`, then forks, sysctl reads, ttys, `file-ioctl`, inbound network and socket creation, except kernel control and link-layer sockets (domains 32 and 27) |
-| File writes | the container's root, its writable volumes, and a few devices |
+| Baseline | `(deny default)` with Apple's `system.sb`, then forks, sysctl reads, pseudo-terminals, `file-ioctl`, IPC, inbound network and socket creation, except kernel control and link-layer sockets (domains 32 and 27) |
+| File writes | the container's root (unless read-only), its writable volumes, its port directory, files the engine names (such as the shared-memory ledger) and a few devices |
 | File reads | everything under `/`, then denied: the engine's state directory and the trees that hold user data or other software (`DeniedReadRoots`: `/Users`, `/Volumes`, `/Library`, `/Applications`, `/opt`, `/usr/local`, `/nix`, temporary directories, `/private/var/root`, `/private/etc/ssh`); then given back: the system trees every process needs (`SystemReadPaths`), the container's root and volumes, its port directory, the container library and helper, and its stack's network file. Only the libraries may be mapped executable from outside the root |
-| Execution | programs in the root and volumes, the system shells `popen()` and `system()` hard-code, and `fws-shim` once, to start the container's exec anchor |
-| Network | Unix sockets in the root, volumes and port directory, the supervisor's socket and syslog's; binds on the loopback host ports behind the container's ports; connections to those ports and its stack's block of ports, the egress proxy included when the container has internet access |
+| Execution | programs in the root and in volumes not mounted `noexec`, the system shells `popen()` and `system()` hard-code, `/usr/bin/env` for scripts' interpreters (`SystemShells`), and the engine's helper binary `fws-shim`, which the sandbox executes once to start the container's exec anchor |
+| Network | Unix sockets in the root, volumes and port directory, the supervisor's socket and syslog's; binds on the loopback host ports behind the container's ports; connections to those ports and to its stack's block of ports, the egress proxy's included when the container has internet access |
 | Mach services | lookups of a fixed list of Apple services (`MachServices`), and registering and looking up the container's own under its IPC prefix |
 | IPC | POSIX shared memory and semaphores under the container's IPC prefix, and System V IPC, whose keys the container library keeps apart; `--ipc none` denies both, `--ipc host` leaves POSIX names open |
-| Signals and process information | processes in the same sandbox only; every process with `--pid host` |
+| Signals and process information | processes in the same sandbox only, and their task name ports; every process with `--pid host` |
 | The user's session | nothing, unless the container was created with `--security-opt seatbelt=gui`: then lookups of the window server, pasteboard, Launch Services, fonts, input methods, preferences, audio and GPU services (`GUIMachServices`), the IOKit user clients of surfaces, the GPU, displays and audio (`GUIIOKitClasses`), IOKit properties, preference reads, and the fonts, colour profiles and keyboard layouts under `/Library` (`GUIReadPaths`). The keychain's services stay denied |
+| Read-only and masked paths | last, so no allowance above reaches them: writes denied under read-only paths, reads and writes under masked ones |
 | IOKit and the rest | nothing: `(deny default)` keeps them denied |
 
-The engine applies the profile without `sandbox-exec`.
+The engine applies the profile without `sandbox-exec`:
 
-- `fws-shim`, the container's supervisor, spawns each process through a
-  small C helper.
+- `fws-shim`, the container's supervisor, spawns each process through the
+  C spawn helper (`internal/pathmap/src/spawn.c`).
 - The engine compiles the profile once, with libsandbox's
   `sandbox_compile_string`, and keeps the bytecode beside the profile's
-  text; the helper applies it with `sandbox_apply`, in microseconds, and
-  then executes the container's program, so no Apple-signed binary sits in
-  between.
+  text, keyed by the text and the macOS build. The helper applies it with
+  `sandbox_apply`, in microseconds (compiling takes about 15 ms), and then
+  executes the container's program, so no Apple-signed binary sits in
+  between. Where macOS refuses the bytecode, the helper compiles the text
+  itself with `sandbox_init`.
 - That matters because macOS strips `DYLD_INSERT_LIBRARIES` from programs
   Apple signs. With nothing in between, the container library (see
   [DESIGN](DESIGN.md)) reaches every container process.
@@ -248,6 +250,9 @@ The engine applies the profile without `sandbox-exec`.
   exec, replace such a program's signature with an ad hoc one without the
   runtime's flags before it starts (`internal/pathmap/src/hardened.h`),
   where the container's profile lets them write the file.
+- No program in a container can sandbox itself further, since macOS
+  refuses a second profile; Chromium-based applications therefore run with
+  `--no-sandbox`.
 - A process may signal only processes of its own sandbox, and a process
   that enters a profile by itself is a sandbox of its own, as step 4 of the
   tutorial shows from the other side. So the main process's helper starts
@@ -261,7 +266,8 @@ sees.
 ### Reading a container's profile
 
 The engine writes each run's profile into the container's state directory,
-`profile.sb` for the main process:
+`profile.sb` for the main process, with its compiled bytecode beside it as
+`profile.bin`:
 
 ```bash
 id=$(docker inspect -f '{{.Id}}' my-container | cut -c1-12)
@@ -303,6 +309,9 @@ Each rule has a test in `internal/seatbelt`:
 - `sandbox_darwin_test.go` runs a probe under the real sandbox on macOS. It
   tries each operation a container should be denied, and each one it should
   be allowed.
+- `nested_darwin_test.go` (`TestSecondSandboxRefused`) checks that macOS
+  still refuses a second profile, and `bench_darwin_test.go` times compiling
+  and applying one.
 
 A new rule ships with a probe that tries to break it. The end-to-end suite
 in `tests/e2e` does the same with whole containers and stacks, for example

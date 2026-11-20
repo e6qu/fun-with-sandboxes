@@ -17,6 +17,8 @@ func TestCheckVolumeOptions(t *testing.T) {
 		{map[string]string{"o": "rbind", "device": "/srv/data"}, true, false},
 		{map[string]string{"type": "tmpfs", "device": "tmpfs"}, true, false},
 		{map[string]string{"type": "tmpfs", "device": "tmpfs", "o": "size=64m"}, false, true},
+		{map[string]string{"type": "tmpfs", "device": "tmpfs", "o": "uid=1000,gid=1000,mode=700"}, true, false},
+		{map[string]string{"type": "tmpfs", "device": "tmpfs", "o": "uid=x"}, false, false},
 		{map[string]string{"type": "nfs", "o": "addr=10.0.0.1", "device": ":/export"}, false, true},
 		{map[string]string{"type": "none", "o": "bind", "device": "relative"}, false, false},
 		{map[string]string{"type": "none", "o": "bind,uid=1", "device": "/srv"}, false, true},

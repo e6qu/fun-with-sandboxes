@@ -176,3 +176,65 @@ func ParseTop(out []byte, pids map[int]bool) ([]string, [][]string, error) {
 	}
 	return titles, rows, nil
 }
+
+// A Prefix is a host directory a container sees as another: its root as /,
+// and each mount's source as the mount's destination.
+type Prefix struct {
+	Host, Container string
+}
+
+// commandTitles are the ps columns that hold a command or its arguments.
+var commandTitles = map[string]bool{"CMD": true, "COMMAND": true, "ARGS": true, "COMM": true, "UCOMM": true}
+
+// PresentPaths rewrites the command columns of ps rows so that the host
+// paths in them read as the container's: a program the container library
+// executes runs by its path on the host, which ps prints. A prefix
+// matches a whole path component; the longest one that matches wins.
+func PresentPaths(titles []string, rows [][]string, prefixes []Prefix) {
+	ps := append([]Prefix(nil), prefixes...)
+	sort.SliceStable(ps, func(i, j int) bool { return len(ps[i].Host) > len(ps[j].Host) })
+	for i, t := range titles {
+		if !commandTitles[t] {
+			continue
+		}
+		for _, row := range rows {
+			if i < len(row) {
+				row[i] = presentPath(row[i], ps)
+			}
+		}
+	}
+}
+
+func presentPath(s string, prefixes []Prefix) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		matched := false
+		// A path starts the string or follows a space, an =, a : or a
+		// quote.
+		if i == 0 || strings.ContainsRune(" =:'\"", rune(s[i-1])) {
+			for _, p := range prefixes {
+				h := strings.TrimRight(p.Host, "/")
+				if h == "" || !strings.HasPrefix(s[i:], h) {
+					continue
+				}
+				end := i + len(h)
+				if end < len(s) && s[end] != '/' && !strings.ContainsRune(" :'\"", rune(s[end])) {
+					continue
+				}
+				c := strings.TrimRight(p.Container, "/")
+				if c == "" && (end == len(s) || s[end] != '/') {
+					c = "/"
+				}
+				b.WriteString(c)
+				i = end
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			b.WriteByte(s[i])
+			i++
+		}
+	}
+	return b.String()
+}

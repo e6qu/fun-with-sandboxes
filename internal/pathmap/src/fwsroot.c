@@ -424,6 +424,8 @@ static void trace(const char *call, const char *path, const char *mapped, long e
     errno = e;
 }
 
+static void present_env(void);
+
 __attribute__((constructor)) static void fwsroot_init(void) {
     tracing = getenv("FWS_TRACE") != NULL;
     for (size_t i = 0; kept_names[i]; i++) {
@@ -526,6 +528,7 @@ __attribute__((constructor)) static void fwsroot_init(void) {
             if (strncmp(*e, "DYLD_INSERT_LIBRARIES=", 22) == 0) memcpy(*e, LOADED_NAME, 21);
         }
     }
+    present_env();
 }
 
 // The host trees a container uses as they are: no image holds them, and
@@ -534,6 +537,68 @@ static const char *const host_trees[] = {"/System/", "/usr/lib/", "/dev/", "/pri
 
 static int in_root(const char *p) {
     return strncmp(p, root, rootlen) == 0 && (p[rootlen] == '/' || p[rootlen] == 0);
+}
+
+// path_list is the variable kv, NAME=a:b:..., with each directory of its
+// value as the container names it (to_host 0) or as the host does (1): the
+// engine gives a container's processes PATH and HOME in the root, as
+// programs without the library find the container's commands and files by
+// them; through the library a process sees the container's own. Relative
+// entries stay as they are. Allocated, or NULL.
+static char *path_list(const char *kv, int to_host) {
+    const char *eq = strchr(kv, '=');
+    if (!eq || !rootlen) return NULL;
+    size_t cap = strlen(kv) + 1, len = (size_t)(eq + 1 - kv);
+    for (const char *c = eq + 1; *c; c++) {
+        if (*c == ':') cap += rootlen;
+    }
+    cap += rootlen;
+    char *out = malloc(cap);
+    if (!out) return NULL;
+    memcpy(out, kv, len);
+    const char *v = eq + 1;
+    for (;;) {
+        size_t n = strcspn(v, ":");
+        char dir[PATH_MAX];
+        if (n < sizeof dir) {
+            memcpy(dir, v, n);
+            dir[n] = 0;
+        } else {
+            dir[0] = 0;
+        }
+        if (n < sizeof dir && !to_host && in_root(dir)) {
+            const char *rest = dir[rootlen] ? dir + rootlen : "/";
+            len += strlcpy(out + len, rest, cap - len);
+        } else if (n < sizeof dir && to_host && dir[0] == '/' && !in_root(dir)) {
+            len += strlcpy(out + len, root, cap - len);
+            if (strcmp(dir, "/") != 0) len += strlcpy(out + len, dir, cap - len);
+        } else {
+            memcpy(out + len, v, n);
+            len += n;
+            out[len] = 0;
+        }
+        v += n;
+        if (*v != ':') break;
+        out[len++] = ':';
+        out[len] = 0;
+        v++;
+    }
+    return out;
+}
+
+static int presented_var(const char *kv) {
+    return strncmp(kv, "PATH=", 5) == 0 || strncmp(kv, "HOME=", 5) == 0;
+}
+
+// present_env has the process's own PATH and HOME name the container's
+// directories. Each entry is replaced where it stands, so the environment
+// keeps its length, which the Go runtime counts on.
+static void present_env(void) {
+    for (char **e = *_NSGetEnviron(); rootlen && e && *e; e++) {
+        if (!presented_var(*e)) continue;
+        char *c = path_list(*e, 0);
+        if (c) *e = c;
+    }
 }
 
 static int in_host_tree(const char *p) {
@@ -1410,18 +1475,23 @@ static int fws_removexattr(const char *path, const char *name, int o) { return r
 INTERPOSE(fws_removexattr, removexattr);
 
 // find_on_path finds the executable file, a name without a slash, in a
-// directory of PATH, whose directories name the host's paths of the
-// container's, and leaves its path in full.
+// directory of PATH, which names the container's directories
+// (present_env), and leaves in full its path on the host, which the
+// callers hand on as it is.
 static int find_on_path(const char *file, char *full) {
     const char *path = getenv("PATH");
-    char dir[PATH_MAX];
+    char dir[PATH_MAX], mapped[PATH_MAX];
     while (path && *path) {
         size_t n = strcspn(path, ":");
         if (n > 0 && n < sizeof dir) {
             memcpy(dir, path, n);
             dir[n] = 0;
-            if (join(full, PATH_MAX, dir, "/", file) && access(MAP(full), X_OK) == 0) {
-                return 1;
+            if (join(full, PATH_MAX, dir, "/", file)) {
+                const char *m = fws_map(full, mapped, 1);
+                if (access(m, X_OK) == 0) {
+                    if (m != full) strlcpy(full, m, PATH_MAX);
+                    return 1;
+                }
             }
         }
         path += n;
@@ -1554,6 +1624,35 @@ static char **child_env(char *const envp[], char *ids) {
     for (size_t i = 0; kept_names[i]; i++) {
         if (kept[i] && !has_var(out, kept[i])) out[j++] = kept[i];
     }
+    // PATH and HOME name the host's directories again (path_list), for a
+    // program without the library; one with it presents them anew. Their
+    // text goes in a block after the array's, as the caller frees one.
+    char *host[2] = {NULL, NULL};
+    size_t at[2] = {0, 0}, nh = 0, bytes = 0;
+    for (size_t i = 0; i < j && nh < 2; i++) {
+        if (!presented_var(out[i])) continue;
+        host[nh] = path_list(out[i], 1);
+        if (host[nh]) {
+            at[nh] = i;
+            bytes += strlen(host[nh]) + 1;
+            nh++;
+        }
+    }
+    if (nh > 0) {
+        size_t slots = n + 4 + sizeof kept_names / sizeof kept_names[0];
+        char **grown = realloc(out, slots * sizeof *out + bytes);
+        if (grown) {
+            out = grown;
+            char *text = (char *)(out + slots);
+            for (size_t k = 0; k < nh; k++) {
+                size_t len = strlen(host[k]) + 1;
+                memcpy(text, host[k], len);
+                out[at[k]] = text;
+                text += len;
+            }
+        }
+        for (size_t k = 0; k < nh; k++) free(host[k]);
+    }
     return out;
 }
 
@@ -1648,8 +1747,8 @@ static int fws_posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_
     return r;
 }
 INTERPOSE(fws_posix_spawn, posix_spawn);
-// posix_spawnp searches PATH, whose directories name the host's paths of
-// the container's, for a file without a slash; the search finds the script
+// posix_spawnp searches PATH, which names the container's directories,
+// for a file without a slash; the search finds the script
 // before the kernel reads its #! line.
 static int fws_posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *a,
                             char *const argv[], char *const envp[]) {
@@ -1659,6 +1758,12 @@ static int fws_posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file
     char full[PATH_MAX];
     if (find_on_path(file, full)) {
         return fws_posix_spawn(pid, full, fa, a, argv, envp);
+    }
+    // PATH names the container's directories (present_env), which libc's
+    // own search would look for on the host: a file the container's PATH
+    // does not hold is not found.
+    if (rootlen && getenv("PATH")) {
+        return ENOENT;
     }
     if (spawns(a) && pids_full()) {
         return EAGAIN;

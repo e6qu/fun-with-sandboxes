@@ -268,6 +268,35 @@ func run(check string) string {
 			parts = append(parts, result(string(b), err))
 		}
 		return strings.Join(parts, ",")
+	case "env":
+		// PATH and HOME as the process sees them, then as a program it
+		// starts receives them from the kernel, which a program without the
+		// library sees.
+		out, err := exec.Command("/bin/probe", "rawenv").Output()
+		return os.Getenv("PATH") + "|" + os.Getenv("HOME") + "|" + result(strings.TrimPrefix(strings.TrimSpace(string(out)), "rawenv="), err)
+	case "rawenv":
+		// The environment the process was executed with, as the kernel
+		// keeps it, before the library presents it.
+		b, err := unix.SysctlRaw("kern.procargs2", os.Getpid())
+		if err != nil || len(b) < 4 {
+			return result("", err)
+		}
+		argc := int(uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24)
+		words := strings.Split(string(b[4:]), "\x00")
+		// The executable's path, the NULs that pad it, the arguments, then
+		// the environment up to an empty string.
+		i := 1
+		for i < len(words) && words[i] == "" {
+			i++
+		}
+		i += argc
+		vars := map[string]string{}
+		for ; i < len(words) && words[i] != ""; i++ {
+			if k, v, ok := strings.Cut(words[i], "="); ok {
+				vars[k] = v
+			}
+		}
+		return vars["PATH"] + "|" + vars["HOME"]
 	case "empty":
 		// An empty path names nothing, wherever the process runs.
 		_, err := os.Stat("")

@@ -226,6 +226,11 @@ func TestTopAndStats(t *testing.T) {
 	if strings.Contains(out, "fwsd") {
 		t.Fatalf("docker top lists the engine's own process:\n%s", out)
 	}
+	// The command reads as the container names it, not by its path on
+	// the host, under the engine's state.
+	if !strings.Contains(out, " /toolbox serve") || strings.Contains(out, "/c/") {
+		t.Fatalf("docker top shows the command by a host path:\n%s", out)
+	}
 
 	// The server is the container's one process, but for its health
 	// check's while one runs, as Docker counts them too: a sample taken
