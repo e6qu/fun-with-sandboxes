@@ -32,7 +32,9 @@ func TestExecSignalsTheContainersProcesses(t *testing.T) {
 func TestPsListsTheContainersProcesses(t *testing.T) {
 	const a, b = "fws-e2e-ps-a", "fws-e2e-ps-b"
 	for _, n := range []string{a, b} {
-		mustDocker(t, "run", "-d", "--name", n, "fws/toolbox:1", "hold")
+		// The image's health check, an exec each second, would be listed
+		// beside the main process and the exec whenever it overlapped.
+		mustDocker(t, "run", "-d", "--name", n, "--no-healthcheck", "fws/toolbox:1", "hold")
 		t.Cleanup(func() { docker(t, "rm", "-f", n) })
 	}
 	pidA := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.Pid}}", a))
