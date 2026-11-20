@@ -60,8 +60,12 @@ One pull request open at a time.
    server there itself: the engine writes an `/etc/os-release` naming
    darwin into a container whose image has none, and the extension picks
    its server's build from it.
-   Next: Chromium's own sandbox inside a container's, so that
-   `--no-sandbox` goes.
+   In #78: whether Chromium's helpers can keep a sandbox of their own
+   inside a container's, so that `--no-sandbox` goes. They cannot: macOS
+   refuses a second Seatbelt profile to any sandboxed process, even one
+   under `(allow default)`, through `sandbox_init` and `sandbox_apply`
+   alike, on macOS 15 and 26 (`TestSecondSandboxRefused`); the container's
+   profile confines them as it does the application.
 2. **Starts and limits.** Merged in
    [#71](https://github.com/e6qu/fun-with-sandboxes/pull/71): per-process
    memory limits in the kernel, jetsam's, which CI's experiment showed
@@ -90,5 +94,4 @@ One pull request open at a time.
 
 ## Open questions
 
-- Whether Chromium's helpers can keep a sandbox of their own inside a
-  container's: today a Chromium-based application takes `--no-sandbox`.
+None at present.

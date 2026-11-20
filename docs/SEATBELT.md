@@ -32,8 +32,11 @@ A process enters a sandbox once and cannot leave it:
 - `sandbox-exec -f profile.sb command` runs a command under a profile.
 - A program can sandbox itself with `sandbox_init` or
   `sandbox_init_with_parameters` from `libsandbox`.
-- Every child the process forks or executes inherits the sandbox. A child
-  can only narrow it further, by entering a sandbox of its own.
+- Every child the process forks or executes inherits the sandbox.
+- A sandboxed process cannot enter a second one: macOS refuses
+  `sandbox_init` and `sandbox_apply` with `EPERM` to a process under any
+  profile, even `(allow default)`, on macOS 15 and 26
+  (`TestSecondSandboxRefused`).
 - No root is needed for any of it.
 
 Apple marks `sandbox-exec` and the profile language deprecated and

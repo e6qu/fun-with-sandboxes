@@ -129,12 +129,6 @@ app.whenReady().then(async () => {
 	if b, err := exec.Command("pbpaste").Output(); err != nil || string(b) != "copied in a container" {
 		t.Errorf("the host's pasteboard holds %q, %v", b, err)
 	}
-	// An experiment, not a check: what Chromium's helpers say and Seatbelt
-	// refuses when Electron keeps its sandbox inside the container's.
-	out, err = docker(t, "run", "--rm", "--security-opt", "seatbelt=gui", "--user", user, "-v", dir+":/app",
-		"fws/base:1", "/app/Electron.app/Contents/MacOS/Electron", "--enable-logging=stderr", "--v=1", "/app/main.js")
-	t.Logf("nested sandbox experiment, Electron with its sandbox (%v), the last of %d bytes:\n%s", err, len(out), out[max(0, len(out)-8000):])
-	t.Logf("nested sandbox experiment, Seatbelt refused Electron:\n%s", sandboxDenials(t, "Electron"))
 }
 
 // VS Code itself, Microsoft's macOS build, runs in a container granted the

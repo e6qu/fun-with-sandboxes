@@ -103,6 +103,10 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
     cannot set or clear it.
   - A script's `#!` interpreter runs from the root when the root holds
     it, else from the host.
+- **Chromium-based applications take `--no-sandbox`.** macOS refuses a
+  second Seatbelt profile to a process already under one, so Chromium's
+  helpers cannot enter their own inside the container's
+  (`TestSecondSandboxRefused`); the container's profile confines them.
 - **`PATH` and `HOME` hold host paths**, in the container's root, so
   programs without the library find the container's commands; `which`
   and `echo $HOME` print the host's paths.

@@ -110,13 +110,6 @@ jobs:
       - name: Network.framework experiment
         if: ${{ !cancelled() }}
         run: go test -v -count=1 -run TestNetworkFrameworkExperiment ./internal/pathmap
-      # Whether a process under an outer Seatbelt profile, a container's
-      # among them, can enter one of its own as Chromium's helpers do
-      # (TestNestedSandboxExperiment), printed even when an earlier step
-      # failed.
-      - name: nested sandbox experiment
-        if: ${{ !cancelled() }}
-        run: go test -v -count=1 -run TestNestedSandboxExperiment ./internal/seatbelt
       # What a container's processes pay for each system call the path
       # library interposes, beside the same call made natively.
       - name: system calls through the path library

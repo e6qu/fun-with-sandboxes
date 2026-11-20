@@ -278,8 +278,9 @@ same knobs, each enforced by a real mechanism or refused:
   a kubelet's node makes one for each pod, and serves its API on a socket
   in the outer run directory (`FWS_ENGINE`), which the container's profile lets it reach
   and its `dockerd` relays from the listeners its flags name. macOS
-  refuses `sandbox_init` in a process already under a profile that denies
-  anything, so no engine inside the sandbox could confine containers; the
+  refuses `sandbox_init` in a process already under any profile, even one
+  that allows everything (`TestSecondSandboxRefused`), so no engine inside
+  the sandbox could confine containers; the
   nested engine's containers are the outer engine's processes, each in a
   sandbox of its own, which deny the outermost engine's state. The nested
   engine reads a bind mount's source through the container's root and
