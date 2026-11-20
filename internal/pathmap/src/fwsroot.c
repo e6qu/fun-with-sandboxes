@@ -1476,17 +1476,22 @@ INTERPOSE(fws_removexattr, removexattr);
 
 // find_on_path finds the executable file, a name without a slash, in a
 // directory of PATH, which names the container's directories
-// (present_env), and leaves its path in full.
+// (present_env), and leaves in full its path on the host, which the
+// callers hand on as it is.
 static int find_on_path(const char *file, char *full) {
     const char *path = getenv("PATH");
-    char dir[PATH_MAX];
+    char dir[PATH_MAX], mapped[PATH_MAX];
     while (path && *path) {
         size_t n = strcspn(path, ":");
         if (n > 0 && n < sizeof dir) {
             memcpy(dir, path, n);
             dir[n] = 0;
-            if (join(full, PATH_MAX, dir, "/", file) && access(MAP(full), X_OK) == 0) {
-                return 1;
+            if (join(full, PATH_MAX, dir, "/", file)) {
+                const char *m = fws_map(full, mapped, 1);
+                if (access(m, X_OK) == 0) {
+                    if (m != full) strlcpy(full, m, PATH_MAX);
+                    return 1;
+                }
             }
         }
         path += n;
