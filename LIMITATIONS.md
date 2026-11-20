@@ -31,17 +31,6 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   container was created: a stamp of when its root was cloned spares the
   rest. A container created by an earlier engine has no stamp, and each
   such file of it is read.
-- **VS Code's Dev Containers extension installs a Linux server.** The Dev
-  Containers CLI works (`devcontainer up`, `exec`), and VS Code's macOS
-  server runs in a dev container. The extension itself creates the
-  container and runs its commands in it, then installs VS Code's server
-  for Linux whatever the container runs, which no darwin container can
-  run. With the macOS server of the window's commit put where the
-  extension looks (`/vscode/vscode-server/bin/linux-arm64/<commit>` in its
-  `vscode` volume) it skips the install, starts that server in the
-  container and connects the window to it. Seeding the volume by hand is
-  the only way yet: *not built yet* is the engine putting the macOS server
-  there itself.
 - **Catalog images are built by Nix**, mostly from source rather than the
   vendors' binaries; MongoDB and Vault are the vendors' own macOS builds.
 - **Catalog images differ from upstream's where Linux parts are missing.**
@@ -50,7 +39,8 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
     `KAFKA_TOOLS_LOG4J_LOGLEVEL` sets nothing.
   - `fws/meilisearch` serves no mini-dashboard and has no `meilitool`.
   - `fws/busybox` holds separate GNU and other darwin programs, not
-    BusyBox's applets, so options differ; its `nc` only checks a port
+    BusyBox's applets, so options differ; its `tar` is libarchive's, as
+    macOS's is, not GNU tar; its `nc` only checks a port
     (`nc -z`), and it has no `ps`, `top` or `vi`. `fws/base` is not
     Alpine and has no package manager: add programs with `COPY` or by
     downloading darwin builds.

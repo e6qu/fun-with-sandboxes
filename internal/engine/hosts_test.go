@@ -121,3 +121,44 @@ func TestCheckDNS(t *testing.T) {
 		}
 	}
 }
+
+// A container's /etc/os-release names macOS, the host's, as darwin, where
+// neither the image nor a mount gives one: the Dev Containers extension
+// chooses the build of VS Code's server it installs by its ID.
+func TestOSRelease(t *testing.T) {
+	root := t.TempDir()
+	if err := writeHostsFiles(root, "x", "", nil, nil, nil, dnsSettings{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(root, "etc", "os-release"))
+	if err != nil || !strings.Contains(string(b), "\nID=darwin\n") || !strings.HasPrefix(string(b), `NAME="macOS"`) {
+		t.Errorf("os-release %q, %v", b, err)
+	}
+	if got := osRelease("15.7"); !strings.Contains(got, `VERSION_ID="15.7"`) || !strings.Contains(got, `PRETTY_NAME="macOS 15.7"`) {
+		t.Errorf("osRelease(15.7) = %q", got)
+	}
+	// An image's own, at either path, stays, and so does a mount's.
+	for _, own := range []string{"etc/os-release", "usr/lib/os-release"} {
+		root := t.TempDir()
+		os.MkdirAll(filepath.Dir(filepath.Join(root, own)), 0o755)
+		os.WriteFile(filepath.Join(root, own), []byte("ID=custom\n"), 0o644)
+		if err := writeHostsFiles(root, "x", "", nil, nil, nil, dnsSettings{}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(filepath.Join(root, own)); string(b) != "ID=custom\n" {
+			t.Errorf("the image's %s became %q", own, b)
+		}
+		if own != "etc/os-release" {
+			if _, err := os.Stat(filepath.Join(root, "etc", "os-release")); err == nil {
+				t.Errorf("an os-release was written beside the image's %s", own)
+			}
+		}
+	}
+	root = t.TempDir()
+	if err := writeHostsFiles(root, "x", "", nil, nil, nil, dnsSettings{}, []mountRec{{Destination: "/etc/os-release"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "etc", "os-release")); err == nil {
+		t.Error("an os-release was written under a mount's")
+	}
+}

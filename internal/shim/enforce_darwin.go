@@ -112,8 +112,11 @@ func (e *enforcer) startLocked() {
 	for _, pid := range pids {
 		e.watchLocked(pid)
 	}
-	// A member may have forked between the scan and its watch.
-	e.followLocked(pids)
+	// A member may have forked between the scan and its watch, and ended
+	// too, leaving what it forked to launchd.
+	if !e.followLocked(pids) {
+		e.scanLocked()
+	}
 	e.running = true
 	go e.loop()
 }
@@ -165,6 +168,8 @@ func (e *enforcer) followLocked(parents []int) bool {
 		parents = parents[:len(parents)-1]
 		kids, err := procs.Children(ppid)
 		if err != nil {
+			// It ended, and its children went to launchd.
+			whole = false
 			continue
 		}
 		// A forker that ended before its children were read left them to
@@ -325,11 +330,23 @@ func (e *enforcer) loop() {
 
 // scanLocked updates the member set from the process table: the main
 // process's group, the descendants of members, and any process that
-// started with the container's tag.
+// started with the container's tag. A member it finds that ends before it
+// is watched may have forked after the table was read, so the table is
+// read again, a few times at most.
 func (e *enforcer) scanLocked() {
+	for range 8 {
+		if e.scanOnceLocked() {
+			return
+		}
+	}
+}
+
+// scanOnceLocked reads the process table once; it reports false when a
+// member it found could not be watched.
+func (e *enforcer) scanOnceLocked() bool {
 	es, err := procs.Own()
 	if err != nil {
-		return
+		return true
 	}
 	e.scans++
 	sort.Slice(es, func(i, j int) bool { return es[i].Start < es[j].Start })
@@ -361,6 +378,7 @@ func (e *enforcer) scanLocked() {
 		reused = p.Start
 	}
 	var added []int
+	watched := true
 	for _, p := range es {
 		if _, ok := e.members[p.PID]; ok {
 			continue
@@ -372,12 +390,15 @@ func (e *enforcer) scanLocked() {
 		if p.PGID == e.main || parent || e.answers(p, reused) || e.tagged(p.PID) {
 			e.members[p.PID] = &member{start: p.Start}
 			added = append(added, p.PID)
-			e.watchLocked(p.PID)
+			if e.watchLocked(p.PID) != nil {
+				watched = false
+			}
 		} else {
 			e.others[p.PID] = p.Start
 		}
 	}
 	e.admitLocked(added)
+	return watched
 }
 
 // admitLocked holds new members to the container's state and limits: it

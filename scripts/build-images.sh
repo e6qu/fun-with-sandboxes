@@ -109,6 +109,7 @@ go build -o "$build/seaweedfs-entry" ./images/seaweedfs/entry
 go build -o "$build/memcached-entry" ./images/memcached/entry
 go build -o "$build/nc" ./images/nc
 go build -o "$build/busybox" ./images/busybox
+go build -o "$build/tar" ./images/tar
 go build -o "$build/consul-entry" ./images/consul/entry
 go build -o "$build/vault-entry" ./images/vault/entry
 go build -o "$build/mongo-entry" ./images/mongo/entry
@@ -544,15 +545,20 @@ mkimage $(accounts playwright pwuser 1000 1000 /home/pwuser) -spec images/playwr
 # in it, as separate programs from the GNU tools and others nixpkgs builds
 # for darwin, since BusyBox builds for Linux alone, and a busybox command
 # that runs them by name. /usr/bin/env is where scripts' shebangs look.
+# Its tar is libarchive's, as macOS's is, which reads zip as well as tar,
+# through images/tar, which keeps a zip on stdin in a file so that what it
+# unpacks keeps its modes: the Dev Containers extension, in a container
+# whose /etc/os-release names darwin, unpacks VS Code's server, a zip, with
+# tar -xz from a pipe.
 busybox_pkgs=()
-for p in coreutils:ls findutils:find diffutils:diff gnugrep:grep gnused:sed gawk:awk gnutar:tar gzip:gzip \
+for p in coreutils:ls findutils:find diffutils:diff gnugrep:grep gnused:sed gawk:awk libarchive:bsdtar gzip:gzip \
   bzip2:bzip2 xz:xz unzip:unzip wget:wget which:which; do
   busybox_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
 done
 closure "${busybox_pkgs[@]}" > "$build/busybox.closure"
 mkimage $(accounts busybox) -spec images/busybox/image.json -closure "$build/busybox.closure" \
   $(printf -- '-pkg %s ' "${busybox_pkgs[@]}") -file "/bin/busybox=$build/busybox" \
-  -link /usr/bin/env=../../bin/env -out "$out/busybox.tar"
+  -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env -out "$out/busybox.tar"
 
 # A general base for images built FROM it, in place of Alpine or Debian,
 # whose Linux userlands and package managers cannot run here: bash, the
@@ -564,7 +570,7 @@ for p in bash:bash curl:curl git:git jq:jq less:less; do
 done
 closure "${base_pkgs[@]}" > "$build/base.closure"
 mkimage $(accounts base) -spec images/base/image.json -closure "$build/base.closure" \
-  $(printf -- '-pkg %s ' "${base_pkgs[@]}") -link /usr/bin/env=../../bin/env \
+  $(printf -- '-pkg %s ' "${base_pkgs[@]}") -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env \
   -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/base.tar"
 
 # Ryuk, Testcontainers' reaper, built from its 0.14.0 release.
