@@ -15,10 +15,10 @@ Each container is a process tree on the host, confined by a generated
 image. Each Compose project — a *stack* — gets its own block of host ports and
 its own directory tree, so two stacks never clash and never see each other.
 
-- [`PLAN.md`](PLAN.md) — purpose, constraints, isolation model, roadmap
+- [`PLAN.md`](PLAN.md) — purpose, constraints, non-goals, roadmap
 - [`docs/DESIGN.md`](docs/DESIGN.md) — the full mechanism
 - [`docs/SEATBELT.md`](docs/SEATBELT.md) — the macOS sandbox, a tutorial, and how each container's profile confines it
-- [`LIMITATIONS.md`](LIMITATIONS.md) — what it cannot do, and why
+- [`LIMITATIONS.md`](LIMITATIONS.md) — where it differs from Docker, and why
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — setting up, testing, and changing things
 - [`docs/HISTORY.md`](docs/HISTORY.md) — how it got here, and the investigations behind each fix
 
@@ -61,19 +61,12 @@ library and spawn helper with clang from the Xcode Command Line Tools
 ## Images
 
 The engine runs on Apple silicon Macs, and its images are macOS-native
-(`darwin/arm64`). Linux images
-cannot run without a VM; the roadmap in `PLAN.md` makes Dockerfiles written
-for Linux build darwin images. `scripts/build-images.sh` builds the catalog from
-Nix packages into archives for `docker load`, and `scripts/publish-images.sh`
-pushes them to a registry the engine can pull from. CI publishes the
-images each push to `main` passes its tests with to GitHub's container
-registry, as `ghcr.io/e6qu/fws-<name>:<tag>` for `fws/<name>:<tag>`
-(`docker pull ghcr.io/e6qu/fws-postgres:16`), built for `darwin/arm64`.
-MySQL and MariaDB are
-built from source, with the compilation comment their vendors' builds
-carry (`images/servers.nix`), so the first build compiles them, as it does
-Consul, which no binary cache holds, and Kubernetes, whose nixpkgs package
-builds for Linux alone:
+(`darwin/arm64`); Linux images cannot run without a VM. CI publishes the
+catalog each push to `main` passes its tests with, as
+`ghcr.io/e6qu/fws-<name>:<tag>` for `fws/<name>:<tag>`
+(`docker pull ghcr.io/e6qu/fws-postgres:16`). `scripts/build-images.sh`
+builds it from Nix packages into archives for `docker load`
+([CONTRIBUTING](CONTRIBUTING.md)):
 
 | Image | Configured like the official image through |
 |---|---|
@@ -167,7 +160,7 @@ the engine also tells the container where its things are:
 | `SANDBOX_STACK` | the stack (Compose project) name |
 | `SANDBOX_IPC_PREFIX` | the prefix POSIX shared memory and semaphore names start with under private IPC, which the container library adds |
 
-`PATH` entries in the image config are mapped into the root. Containers with
+A container's processes see `PATH` and `HOME` as the container's own. Containers with
 a network also get `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5, for
 any TCP) and `NO_PROXY` pointing at their stack's egress proxy, with
 credentials that name the container to it; `network_mode: none` and `internal: true`
@@ -191,12 +184,14 @@ see `images/postgres/entry` and `internal/sandboxenv`.
 | IPC | POSIX shared memory, semaphores and the Mach services it registers, under its own prefix; System V IPC, under keys of its own | other containers' names; all IPC with `--ipc none` |
 | Everything else | — | Seatbelt denies by default: IOKit, Mach registration, preferences, kernel control sockets |
 
-The Dev Containers CLI (`devcontainer up`, `exec`) drives the engine as it
-drives Docker: a `devcontainer.json` on a darwin image, a Dockerfile or a
-Compose service, with features, lifecycle commands, the workspace mount
-and `appPort`. The image needs the commands the CLI runs in it (`sh`,
-`sleep`, `cat`, `mkdir`, as `fws/base` has), and features install with
-darwin tools, not `apt-get`.
+The Dev Containers CLI (`devcontainer up`, `exec`) and VS Code's Dev
+Containers extension drive the engine as they drive Docker: a
+`devcontainer.json` on a darwin image, a Dockerfile or a Compose service,
+with features, lifecycle commands, the workspace mount and `appPort`; the
+extension installs VS Code's macOS server in the container itself. The
+image needs the commands they run in it (`sh`, `sleep`, `cat`, `mkdir`,
+`tar`, as `fws/base` has), and features install with darwin tools, not
+`apt-get`.
 
 `--security-opt seatbelt=gui` grants a container the user's login session
 besides: the window server, pasteboard, Launch Services, fonts, input
@@ -265,34 +260,18 @@ The socket serves the CRI too, as gRPC over HTTP/2, so the kubelet and
 crictl --runtime-endpoint unix://$HOME/.fws/docker.sock pods
 ```
 
-A pod sandbox is an `fws/pause:3.10.1` container that holds the pod's
-network and published ports, and the pod's containers join that network,
-as cri-dockerd maps CRI onto Docker's; the container library resolves the
-pod's names, so its DNS servers go unused. A pod on its node's network
-(`hostNetwork`), as kubeadm's static pods are, shares the node
-container's ports, addresses and hostname: an engine nested in a
-privileged container runs a container on the host's network mode on that
-container's network. Every sandbox not on its
-node's network joins the engine's pod network, `fws-pods`, whose subnets
-are the node's pod CIDR from the kubelet, IPv4, IPv6 or dual-stack
-(`10.244.0.0/16` until one arrives),
-so pods reach one another at their addresses, and the pods of every node
-whose container shares a network with theirs, as a cluster's pod network
-carries them between nodes. `fws-kube-proxy`, in
-`fws/kubelet`'s image, is the node's kube-proxy: it polls the cluster's
-Services and EndpointSlices and keeps the engine's services on the pod
-network to match (`PUT /fws/networks/fws-pods/services`). A pod reaches a
-Service at its cluster IP and as `name`, `name.namespace`,
-`name.namespace.svc` and `name.namespace.svc.cluster.local`, and the
-engine carries each connection to the Service's ready endpoints by turns,
-as kube-proxy's userspace mode did: a pod's, or one on the node
-container's networks, as the API server behind the `kubernetes` Service
-is. A NodePort Service answers at the node container's port too, where
-the members of its networks reach it. The engine writes each
-container's output to the log file the kubelet names, in CRI's format,
-and serves exec, attach and port-forward streams as containerd does: on a
-loopback port of the host, or for an engine nested in a privileged
-container, on that container's port 10010.
+A pod sandbox is an `fws/pause:3.10.1` container holding the pod's network
+and published ports, which the pod's containers join, as cri-dockerd maps
+CRI onto Docker's. Pods join the engine's pod network, `fws-pods`, on the
+node's pod CIDR (IPv4, IPv6 or dual-stack), and reach the pods of other
+nodes sharing a network with theirs; a `hostNetwork` pod, as kubeadm's
+static pods are, shares its node container's network. `fws-kube-proxy`, in
+`fws/kubelet`'s image, is the node's kube-proxy: it keeps the engine's
+Services on the pod network matching the cluster's, reachable at their
+cluster IPs, by their DNS names and, for NodePort Services, at the node's
+ports. The engine writes container output to the kubelet's log files in
+CRI's format, and serves exec, attach and port-forward streams as
+containerd does.
 
 ## kind
 

@@ -3,10 +3,10 @@
 A container engine for macOS that serves the Docker Engine API and Podman's
 libpod API, so the stock `docker` CLI, Docker Compose, `podman`,
 Testcontainers and kind drive it unchanged. Its containers run real macOS
-binaries and tooling, each confined by Seatbelt, with the Docker primitives
-that translate to macOS and a clear refusal of those that do not.
+binaries, each confined by Seatbelt, with the Docker primitives that
+translate to macOS and a clear refusal of those that do not.
 
-Mechanism: [`docs/DESIGN.md`](docs/DESIGN.md). What cannot be done:
+Mechanism: [`docs/DESIGN.md`](docs/DESIGN.md). What differs from Docker:
 [`LIMITATIONS.md`](LIMITATIONS.md). How it got here:
 [`docs/HISTORY.md`](docs/HISTORY.md).
 
@@ -20,14 +20,11 @@ Mechanism: [`docs/DESIGN.md`](docs/DESIGN.md). What cannot be done:
 - **Honour or refuse.** An option the engine cannot enforce fails with a
   Docker API error; none is accepted and dropped.
 - **OCI throughout.** Images are layered OCI images in a content-addressed
-  store: a blob and an unpacked layer are kept once and shared by every
-  image that holds them, manifests and digests survive a pull, save, load
-  and push byte for byte, and the engine speaks the distribution protocol
-  to any registry.
+  store; manifests and digests survive a pull, save, load and push byte for
+  byte, and the engine speaks the distribution protocol to any registry.
 - **Close to native.** A container costs what its processes cost; CI
   measures a process start and each interposed call against the native one.
-- **Go, and C only inside a process start**, cross-compiled for
-  `darwin/arm64` alone.
+- **Go, and C only inside a process start**, built for `darwin/arm64` alone.
 
 ## Non-goals
 
@@ -35,65 +32,33 @@ Mechanism: [`docs/DESIGN.md`](docs/DESIGN.md). What cannot be done:
   translation, a converter from Linux images, or Dockerfiles that install
   with `apt-get`, `apk` or `yum`. Images are built `FROM` darwin images.
 - A security boundary against hostile code, Swarm, Intel Macs.
+- Packaging for distribution: signed or notarized releases, installers, a
+  `launchd` service. The engine is installed with `go install`.
 
 ## Where it stands
 
-Docker's CLI, Compose, buildx and BuildKit, Testcontainers, Podman's remote
-client and `podman-compose`, `crictl`, the kubelet and kind run against the
-engine in CI on macOS 15 and 26, with a catalog of 46 darwin images
-published to `ghcr.io/e6qu/fws-*`. Kubernetes is held at 1.35.0, the node
-image of kind 0.31, until a newer one is asked for.
+Feature-complete for its purpose. Docker's CLI, Compose, buildx and
+BuildKit, Testcontainers, Podman's remote client and `podman-compose`, the
+Dev Containers CLI and VS Code's Dev Containers extension, graphical
+applications (`--security-opt seatbelt=gui`), `crictl`, the kubelet and
+kind, IPv4, IPv6 and dual-stack, run against the engine in CI on macOS 15
+and 26. A catalog of 46 darwin images is published to `ghcr.io/e6qu/fws-*`,
+at the newest versions nixpkgs packages. Kubernetes is held at 1.35.0, kind
+0.31's node image, until a newer one is asked for.
 
 ## Roadmap
 
-One pull request open at a time.
+One pull request open at a time, large rather than granular.
 
-1. **Graphical applications and VS Code.** Merged in
-   [#67](https://github.com/e6qu/fun-with-sandboxes/pull/67) and
-   [#68](https://github.com/e6qu/fun-with-sandboxes/pull/68): the Dev
-   Containers CLI against the engine, VS Code's server in a dev container,
-   hardened-runtime programs loading the container library, and
-   `--security-opt seatbelt=gui`, with which Electron and VS Code itself,
-   its extension host and integrated terminal, run inside a container.
-   In #70: VS Code's Dev Containers extension on the host opens a folder
-   in a dev container of the engine's, and in #77 installs the macOS
-   server there itself: the engine writes an `/etc/os-release` naming
-   darwin into a container whose image has none, and the extension picks
-   its server's build from it.
-   In #78: whether Chromium's helpers can keep a sandbox of their own
-   inside a container's, so that `--no-sandbox` goes. They cannot: macOS
-   refuses a second Seatbelt profile to any sandboxed process, even one
-   under `(allow default)`, through `sandbox_init` and `sandbox_apply`
-   alike, on macOS 15 and 26 (`TestSecondSandboxRefused`); the container's
-   profile confines them as it does the application.
-2. **Starts and limits.** Merged in
-   [#71](https://github.com/e6qu/fun-with-sandboxes/pull/71): per-process
-   memory limits in the kernel, jetsam's, which CI's experiment showed
-   macOS enforces, and in
-   [#72](https://github.com/e6qu/fun-with-sandboxes/pull/72) `fwsroot`'s cost to a start measured part by
-   part (`BenchmarkStartCost`): about 4 ms of interposing, some 25 µs a
-   function, spread evenly over its 160, so no part of it is cheap to cut
-   ([DESIGN §9](docs/DESIGN.md#9-runtime-launch-sequence)). The engine's
-   lock needs no split yet: a sharded e2e run's `-debug` log shows five
-   waits over 100 ms, the longest 557 ms, all behind a create.
-3. **Names and pods.** Merged in
-   [#72](https://github.com/e6qu/fun-with-sandboxes/pull/72): the router
-   answers DNS over UDP, so that `dig` and Go's pure resolver reach the
-   stack's names and the container's servers. In #73: over TCP and to
-   IPv6 servers too. In #74: Network.framework's lookups, through a
-   stand-in for its dnssd client, and `connectx`. In #75: IPv6-only
-   networks' members seen across nodes, IPv6 and dual-stack pod networks,
-   and kind's IPv6 and dual-stack clusters. In #76: kind's
-   `containerdConfigPatches`' registry mirrors and hosts directory, so
-   that kind's local registry works.
-4. **Catalog upkeep.** In #78: nixpkgs-26.05-darwin of 2026-11-19, with
-   November's PostgreSQL (16.16, 18.7), Node.js 24.22.3 and 26.13.1 and
-   Valkey 9.1.3. Next: November's MariaDB once the darwin channel carries
-   it (still 11.4.13); nixos-26.11 once released; a newer Kubernetes and
-   kind when asked for.
-5. **Shipping**, when asked for: signed and notarized releases, prebuilt C
-   parts, an installer, a `launchd` service.
-
-## Open questions
-
-None at present.
+1. **Presentation gaps** (#79, in progress): `PATH`, `HOME` and `docker
+   top`'s commands read as the container's paths; tmpfs mounts and volumes
+   take `uid` and `gid`; the documents trimmed to what is true and needed.
+2. **Catalog upkeep**, as releases appear: move the nixpkgs pin to the
+   newest `nixpkgs-26.05-darwin` (and to 26.11's once it exists), which
+   carries cached darwin builds. Where an upstream release is newer than
+   any nixpkgs channel, build it here rather than wait: MySQL and MariaDB
+   are already compiled from source (`images/servers.nix`), and any other
+   package takes the same override of its source.
+3. **Remaining gaps**, each only where it removes a LIMITATIONS entry
+   someone needs: Podman's `kube play`, a DNS server inside a stack, pod
+   resource limits from the kubelet.
