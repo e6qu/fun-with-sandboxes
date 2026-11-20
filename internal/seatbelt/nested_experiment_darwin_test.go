@@ -23,7 +23,7 @@ func TestNestedSandboxExperiment(t *testing.T) {
 		t.Fatal(err)
 	}
 	probe := filepath.Join(dir, "nested")
-	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", probe, "testdata/nested/main.c").CombinedOutput(); err != nil {
+	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", probe, "testdata/nested/main.c", "-lsandbox").CombinedOutput(); err != nil {
 		t.Fatalf("build the probe: %v\n%s", err, out)
 	}
 	target := filepath.Join(dir, "target")
