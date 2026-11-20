@@ -115,6 +115,11 @@ The checks CI runs, in the order to run them locally:
    scripts/build-images.sh images-out
    ```
 
+   Most packages come from Nix's binary cache. A first build compiles
+   MySQL and MariaDB from source, with the compilation comment their
+   vendors' builds carry (`images/servers.nix`), and Consul and Kubernetes,
+   which no cache holds for darwin.
+
    ```bash
    cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e -v -count=1 -timeout 90m ./...
    ```
