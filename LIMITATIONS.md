@@ -167,13 +167,12 @@ what macOS offers an unprivileged process under them. Non-goals are in
   resolves `/etc/hosts`, the stack's names and the host's resolver, through
   `getaddrinfo`, its async form, `DNSServiceGetAddrInfo` and
   Network.framework alike. A program that sends DNS itself (`dig`, Go's
-  pure resolver) reaches the router, which answers the stack's names and,
-  given internet access, passes other queries to the servers of the
-  container's `resolv.conf`. `--dns`, `--dns-search` and `--dns-option`
-  need internet access; of the options, `ndots`, `timeout` and `attempts`
-  take effect. A DNS server inside a stack, or a Service, cannot serve.
-  DNS settings are refused in a nested engine, as is a DNS server on
-  loopback.
+  pure resolver) reaches the router, which answers the stack's names and
+  passes other queries to the servers of the container's `resolv.conf`: a
+  DNS server a member of the stack runs, over TCP at its port 53, and a
+  server outside the machine given internet access. Of the options,
+  `ndots`, `timeout` and `attempts` take effect. DNS settings are refused
+  in a nested engine, as is a DNS server on loopback.
 - **ICMP reaches the virtual network alone.** `ping` of loopback, the
   container or a member is answered by the library; an outside IPv4 host
   is pinged by the router given internet access. Raw sockets need root.

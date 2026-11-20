@@ -250,6 +250,13 @@ func run(op, arg string) error {
 		}
 		fmt.Println("daemonized", child.Pid)
 		return nil
+	case "dnsserve":
+		// Answer every A question with arg, on port 53, as a stack's DNS
+		// server.
+		return dnsServe(arg)
+	case "lookup":
+		// Print arg's addresses through the system's resolver and Go's.
+		return lookup(arg)
 	case "hold":
 		hold()
 	case "iopolicy":
