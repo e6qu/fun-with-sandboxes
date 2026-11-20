@@ -90,6 +90,18 @@ func (s *Service) CreateContainer(ctx context.Context, req *runtimeapi.CreateCon
 		network = "host"
 	}
 	host := map[string]any{"NetworkMode": network}
+	// The limits a pod's spec gives its container, which the kubelet sends
+	// as a Linux container's resources, hold as docker run's do.
+	r := linuxLimits(cfg.GetLinux().GetResources())
+	if r.Memory > 0 {
+		host["Memory"] = r.Memory
+	}
+	if r.NanoCPUs > 0 {
+		host["NanoCpus"] = r.NanoCPUs
+	}
+	if r.CPUShares > 0 {
+		host["CpuShares"] = r.CPUShares
+	}
 	var mounts []map[string]any
 	for _, mt := range cfg.Mounts {
 		mounts = append(mounts, map[string]any{
@@ -282,16 +294,10 @@ func (s *Service) UpdateContainerResources(ctx context.Context, req *runtimeapi.
 	if err != nil {
 		return nil, err
 	}
-	r := req.GetLinux()
-	if r == nil {
+	if req.GetLinux() == nil {
 		return &runtimeapi.UpdateContainerResourcesResponse{}, nil
 	}
-	var u container.UpdateConfig
-	u.Memory = r.MemoryLimitInBytes
-	if r.CpuQuota > 0 && r.CpuPeriod > 0 {
-		u.NanoCPUs = r.CpuQuota * 1e9 / r.CpuPeriod
-	}
-	u.CPUShares = r.CpuShares
+	u := container.UpdateConfig{Resources: linuxLimits(req.GetLinux())}
 	if _, err := s.e.Update(id, u); err != nil {
 		return nil, grpcError(err)
 	}
@@ -350,4 +356,20 @@ func (s *Service) killExec(id string) {
 	if x, err := s.e.ExecInspect(id); err == nil && x.Running && x.Pid > 0 {
 		syscall.Kill(x.Pid, syscall.SIGKILL)
 	}
+}
+
+// linuxLimits are the memory and CPU limits of a Linux container's
+// resources as the engine holds them: the memory limit, the CPU quota over
+// its period as a share of CPUs, and the CPU shares.
+func linuxLimits(r *runtimeapi.LinuxContainerResources) container.Resources {
+	var out container.Resources
+	if r == nil {
+		return out
+	}
+	out.Memory = r.MemoryLimitInBytes
+	if r.CpuQuota > 0 && r.CpuPeriod > 0 {
+		out.NanoCPUs = r.CpuQuota * 1e9 / r.CpuPeriod
+	}
+	out.CPUShares = r.CpuShares
+	return out
 }

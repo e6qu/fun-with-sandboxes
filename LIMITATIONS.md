@@ -186,8 +186,11 @@ what macOS offers an unprivileged process under them. Non-goals are in
 
 - **No kube-proxy or CoreDNS.** `fws-kube-proxy` serves Services and the
   library resolves cluster names.
-- **The kubelet applies no Linux settings**, so `resources.limits` and
-  `securityContext.runAsUser` take no effect.
+- **A pod's limits hold, its requests set no priority.** The kubelet sends
+  a container's memory and CPU limits, the pod's where it sets none, and
+  the engine holds them as `--memory` and `--cpus`; requests only place
+  pods, as a nice value would weigh a pod against every process on the
+  Mac. `securityContext.runAsUser` takes no effect.
 - **The CRI refuses checkpoints**; `UpdatePodSandboxResources` changes
   nothing, as containerd's does not. Pod metrics count CPU time in whole
   seconds. A pod's DNS servers go unused; its search domains and options
