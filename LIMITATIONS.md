@@ -39,7 +39,8 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
     `KAFKA_TOOLS_LOG4J_LOGLEVEL` sets nothing.
   - `fws/meilisearch` serves no mini-dashboard and has no `meilitool`.
   - `fws/busybox` holds separate GNU and other darwin programs, not
-    BusyBox's applets, so options differ; its `nc` only checks a port
+    BusyBox's applets, so options differ; its `tar` is libarchive's, as
+    macOS's is, not GNU tar; its `nc` only checks a port
     (`nc -z`), and it has no `ps`, `top` or `vi`. `fws/base` is not
     Alpine and has no package manager: add programs with `COPY` or by
     downloading darwin builds.

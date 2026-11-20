@@ -544,15 +544,19 @@ mkimage $(accounts playwright pwuser 1000 1000 /home/pwuser) -spec images/playwr
 # in it, as separate programs from the GNU tools and others nixpkgs builds
 # for darwin, since BusyBox builds for Linux alone, and a busybox command
 # that runs them by name. /usr/bin/env is where scripts' shebangs look.
+# Its tar is libarchive's, as macOS's is: it reads zip as well as tar from
+# a pipe, which the Dev Containers extension counts on in a container
+# whose /etc/os-release names darwin, unpacking VS Code's server, a zip,
+# with tar -xz.
 busybox_pkgs=()
-for p in coreutils:ls findutils:find diffutils:diff gnugrep:grep gnused:sed gawk:awk gnutar:tar gzip:gzip \
+for p in coreutils:ls findutils:find diffutils:diff gnugrep:grep gnused:sed gawk:awk libarchive:bsdtar gzip:gzip \
   bzip2:bzip2 xz:xz unzip:unzip wget:wget which:which; do
   busybox_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
 done
 closure "${busybox_pkgs[@]}" > "$build/busybox.closure"
 mkimage $(accounts busybox) -spec images/busybox/image.json -closure "$build/busybox.closure" \
   $(printf -- '-pkg %s ' "${busybox_pkgs[@]}") -file "/bin/busybox=$build/busybox" \
-  -link /usr/bin/env=../../bin/env -out "$out/busybox.tar"
+  -link /bin/tar=bsdtar -link /usr/bin/env=../../bin/env -out "$out/busybox.tar"
 
 # A general base for images built FROM it, in place of Alpine or Debian,
 # whose Linux userlands and package managers cannot run here: bash, the
@@ -564,7 +568,7 @@ for p in bash:bash curl:curl git:git jq:jq less:less; do
 done
 closure "${base_pkgs[@]}" > "$build/base.closure"
 mkimage $(accounts base) -spec images/base/image.json -closure "$build/base.closure" \
-  $(printf -- '-pkg %s ' "${base_pkgs[@]}") -link /usr/bin/env=../../bin/env \
+  $(printf -- '-pkg %s ' "${base_pkgs[@]}") -link /bin/tar=bsdtar -link /usr/bin/env=../../bin/env \
   -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/base.tar"
 
 # Ryuk, Testcontainers' reaper, built from its 0.14.0 release.
