@@ -186,3 +186,27 @@ func TestWaitExitSeesAnotherProcessExit(t *testing.T) {
 		t.Fatalf("WaitExit on gone processes = %v, %v", left, err)
 	}
 }
+
+func TestPresentPaths(t *testing.T) {
+	titles := []string{"UID", "PID", "CMD"}
+	rows := [][]string{
+		{"0", "10", "/st/c/1/r/toolbox serve --config=/st/c/1/r/etc/toolbox.json"},
+		{"0", "11", "/bin/sh /st/c/1/r/entry /st/vol/data/x:/st/c/1/r"},
+		{"0", "12", "/st/c/1/rest /st/c/1/r2 /other/st/c/1/r"},
+		{"0", "/st/c/1/r/bin", "sh -c 'cd /st/vol/data && ls' \"/st/c/1/r\""},
+	}
+	PresentPaths(titles, rows, []Prefix{{Host: "/st/c/1/r", Container: "/"}, {Host: "/st/vol/data/", Container: "/data"}})
+	for i, want := range []string{
+		"/toolbox serve --config=/etc/toolbox.json",
+		"/bin/sh /entry /data/x:/",
+		"/st/c/1/rest /st/c/1/r2 /other/st/c/1/r",
+		"sh -c 'cd /data && ls' \"/\"",
+	} {
+		if rows[i][2] != want {
+			t.Errorf("row %d: %q, want %q", i, rows[i][2], want)
+		}
+	}
+	if rows[3][1] != "/st/c/1/r/bin" {
+		t.Errorf("a column other than the command's changed: %q", rows[3][1])
+	}
+}

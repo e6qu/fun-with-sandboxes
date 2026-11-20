@@ -393,8 +393,9 @@ by a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   resize of a pod's memory upward fails the same way.
 - **Live restore needs `fwsd -live-restore`.** Without it the engine
   stops its containers when it stops, and ends any a crash left running.
-- **`docker top` and `docker stats` read the host's `ps`**, so commands
-  show host paths. A process that starts and ends between two samples, a
+- **`docker top` and `docker stats` read the host's `ps`**: a command's
+  host paths, the root's and its mounts' sources', read as the
+  container names them. A process that starts and ends between two samples, a
   second apart, leaves its disk I/O out. Without a limit the memory
   limit shown is the machine's memory.
 - **Network I/O is the kernel's per-socket payload count** on one
