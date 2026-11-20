@@ -43,8 +43,8 @@ Dev Containers CLI and VS Code's Dev Containers extension, graphical
 applications (`--security-opt seatbelt=gui`), `crictl`, the kubelet and
 kind, IPv4, IPv6 and dual-stack, run against the engine in CI on macOS 15
 and 26. A catalog of 46 darwin images is published to `ghcr.io/e6qu/fws-*`,
-at the newest versions nixpkgs packages. Kubernetes is held at 1.35.0, kind
-0.31's node image, until a newer one is asked for.
+at the newest versions nixpkgs packages, except Kubernetes, still at
+1.35.0.
 
 ## Roadmap
 
@@ -59,6 +59,10 @@ One pull request open at a time, large rather than granular.
    any nixpkgs channel, build it here rather than wait: MySQL and MariaDB
    are already compiled from source (`images/servers.nix`), and any other
    package takes the same override of its source.
-3. **Remaining gaps**, each only where it removes a LIMITATIONS entry
+3. **Kubernetes to the newest release**, 1.37 (nixpkgs-unstable carries
+   1.37.2; the pinned channel 1.36.3): the control-plane images, the
+   kubelet's darwin patch rebased, `fws/kind-node` and `fws/k3s`, and a kind
+   release whose node image matches.
+4. **Remaining gaps**, each only where it removes a LIMITATIONS entry
    someone needs: Podman's `kube play`, a DNS server inside a stack, pod
    resource limits from the kubelet.

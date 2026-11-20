@@ -20,5 +20,8 @@ and test is in `CONTRIBUTING.md`.
 - **macOS is tested in CI.** A Linux machine cross-builds and vets only
   (`CONTRIBUTING.md`); what the container library and Seatbelt do is
   proved by the macOS jobs.
-- **Kubernetes is held at 1.35**; Linux binaries and Linux-idiom
-  Dockerfiles are a non-goal (`PLAN.md`).
+- **Linux binaries and Linux-idiom Dockerfiles are a non-goal**, as is
+  packaging for distribution (`PLAN.md`).
+- **Latest available versions.** Catalog images and Kubernetes follow the
+  newest release available; where nixpkgs lags, build the release here
+  rather than wait. (Asked on 2026-11-20.)
