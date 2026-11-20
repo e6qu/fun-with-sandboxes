@@ -26,17 +26,19 @@ func TestNestedSandboxExperiment(t *testing.T) {
 	if out, err := exec.Command("/usr/bin/xcrun", "clang", "-Wall", "-Werror", "-o", probe, "testdata/nested/main.c", "-lsandbox").CombinedOutput(); err != nil {
 		t.Fatalf("build the probe: %v\n%s", err, out)
 	}
-	target := filepath.Join(dir, "target")
+	// The file the inner profile denies is in the container's root, which
+	// the container's profile lets it read.
+	root := filepath.Join(dir, "root")
+	os.MkdirAll(root, 0o755)
+	target := filepath.Join(root, "target")
 	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	root := filepath.Join(dir, "root")
-	os.MkdirAll(root, 0o755)
-	container, err := Render(Spec{Root: root, StateRoot: filepath.Join(dir, "state")})
+	container, err := Render(Spec{Root: root, StateRoot: filepath.Join(dir, "state"), IPCPrefix: IPCPrefixFor(root)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	gui, err := Render(Spec{Root: root, StateRoot: filepath.Join(dir, "state"), GUI: true})
+	gui, err := Render(Spec{Root: root, StateRoot: filepath.Join(dir, "state"), IPCPrefix: IPCPrefixFor(root), GUI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
