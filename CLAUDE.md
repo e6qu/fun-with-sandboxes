@@ -24,6 +24,8 @@ and test is in `CONTRIBUTING.md`.
   macOS can run their steps: fws provides the darwin base images; consuming
   Linux-specific Dockerfiles is not a goal. Linux binaries are a non-goal,
   as is packaging for distribution (`PLAN.md`). (Asked on 2026-11-20.)
-- **Latest available versions.** Catalog images and Kubernetes follow the
-  newest release available; where nixpkgs lags, build the release here
-  rather than wait. (Asked on 2026-11-20.)
+- **Finish the roadmap first.** Version updates of the catalog and
+  Kubernetes are upkeep, done at any time and never ahead of the
+  roadmap's gaps. An update takes the newest release available; where
+  nixpkgs lags, build the release here rather than wait. (Asked on
+  2026-11-20.)

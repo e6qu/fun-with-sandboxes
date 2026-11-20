@@ -53,21 +53,27 @@ at the newest versions nixpkgs packages, except Kubernetes, still at
 
 ## Roadmap
 
-One pull request open at a time, large rather than granular.
+One pull request open at a time, large rather than granular. The roadmap
+ends when its last gap is closed: fws then does what it sets out to do.
 
 1. **Presentation gaps** (#79, in progress): `PATH`, `HOME` and `docker
    top`'s commands read as the container's paths; tmpfs mounts and volumes
    take `uid` and `gid`; the documents trimmed to what is true and needed.
-2. **Catalog upkeep**, as releases appear: move the nixpkgs pin to the
-   newest `nixpkgs-26.05-darwin` (and to 26.11's once it exists), which
-   carries cached darwin builds. Where an upstream release is newer than
-   any nixpkgs channel, build it here rather than wait: MySQL and MariaDB
-   are already compiled from source (`images/servers.nix`), and any other
-   package takes the same override of its source.
-3. **Kubernetes to the newest release**, 1.37 (nixpkgs-unstable carries
-   1.37.2; the pinned channel 1.36.3): the control-plane images, the
-   kubelet's darwin patch rebased, `fws/kind-node` and `fws/k3s`, and a kind
-   release whose node image matches.
-4. **Remaining gaps**, each only where it removes a LIMITATIONS entry
-   someone needs: Podman's `kube play`, a DNS server inside a stack, pod
-   resource limits from the kubelet.
+2. **Remaining gaps**, each removing a LIMITATIONS entry:
+   - Podman's `kube play` and `generate kube`, the pod workflow Podman
+     users reach for after `podman-compose`;
+   - a DNS server inside a stack, or a Service, answering its members'
+     queries;
+   - pod resource limits: the kubelet's `resources.limits` held as the
+     engine holds `--memory` and `--cpus`.
+
+## Upkeep
+
+Not on the roadmap, and done at any time, since none of it is needed to
+show what fws does: newer catalog versions (the newest
+`nixpkgs-26.05-darwin`, nixos-26.11 once released, and upstream releases
+nixpkgs lacks built here, as MySQL and MariaDB already are in
+`images/servers.nix`), and Kubernetes past 1.35 (1.36.3 in the pinned
+channel, 1.37.2 in nixpkgs-unstable): the control-plane images, the
+kubelet's darwin patch rebased, `fws/kind-node`, `fws/k3s` and a kind
+release whose node image matches.
