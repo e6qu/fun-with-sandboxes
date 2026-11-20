@@ -591,8 +591,11 @@ We cannot remount `/`, so a container's paths live under a root the engine
 names in `SANDBOX_ROOT`. An image's entrypoint maps the paths it cares about
 into that root (`internal/sandboxenv.Path`): Postgres's
 `PGDATA=/var/lib/postgresql/data` becomes
-`$SANDBOX_ROOT/var/lib/postgresql/data`. The engine maps `PATH` itself, and
-`argv[0]` is resolved inside the root.
+`$SANDBOX_ROOT/var/lib/postgresql/data`. The engine maps `PATH` and `HOME`
+into the root itself, for programs without the library; the library
+presents the container's own to each process, and hands a program it
+starts the root's again (`present_env`, `child_env`). `argv[0]` is resolved
+inside the root.
 
 A mount — a named volume, an anonymous volume from the image's `VOLUME`, a
 bind or a tmpfs — becomes a symlink at its destination inside the root that

@@ -201,12 +201,11 @@ tar -tzf /tmp/d.tgz | grep -c d/f && find /tmp/d -name f && diff /tmp/d/f /tmp/d
 			"world\na\nX\n1\n/tmp/d/f\ndone\n"},
 		{"fws/busybox:1", `busybox echo by name && busybox --list | grep -x sed && busybox nonexistent; echo $?`, "by name\nsed\n127\n"},
 		// Its tar unpacks a zip from a pipe, modes and all, as the Dev
-		// Containers extension unpacks VS Code's server, and is the one
-		// PATH finds: PATH names the root's host paths (LIMITATIONS).
+		// Containers extension unpacks VS Code's server; which finds it on
+		// PATH, and PATH and HOME name the container's directories.
 		{"fws/busybox:1", `mkdir -p /tmp/z/bin && printf '#!/bin/sh\necho ran\n' > /tmp/z/bin/x && chmod 755 /tmp/z/bin/x &&
-bsdtar --format zip -cf - -C /tmp z | tar --no-same-owner -xz -C /root && /root/z/bin/x &&
-test "$(which tar)" = "$SANDBOX_ROOT/bin/tar" && echo found`,
-			"ran\nfound\n"},
+bsdtar --format zip -cf - -C /tmp z | tar --no-same-owner -xz -C /root && /root/z/bin/x && which tar && echo "$PATH" && echo "$HOME"`,
+			"ran\n/bin/tar\n/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n/root\n"},
 		{"fws/base:1", `bash -c 'echo "bash ${BASH_VERSINFO[0]}"' && jq -n '{a: 41} | .a + 1' &&
 curl -sS -o /dev/null -w '%{http_code}\n' https://github.com/ &&
 git init -q /tmp/r && git -C /tmp/r -c user.email=e2e@example.com -c user.name=e2e commit -q --allow-empty -m first &&

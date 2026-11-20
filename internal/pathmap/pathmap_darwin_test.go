@@ -181,6 +181,29 @@ func TestMountsAndEnvScripts(t *testing.T) {
 	}
 }
 
+// A process sees PATH and HOME name the container's directories, though
+// the engine gives them in the root, and a program without the library,
+// which finds the container's commands and files by the host's paths, gets
+// them in the root again.
+func TestPresentedPathAndHome(t *testing.T) {
+	root := containerRoot(t)
+	if err := os.MkdirAll(filepath.Join(root, "host"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/bin", filepath.Join(root, "host", "bin")); err != nil {
+		t.Fatal(err)
+	}
+	mv, err := MountsVar([]Mount{{Dest: "/host/bin", Source: "/bin"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := strings.Join([]string{filepath.Join(root, "bin"), filepath.Join(root, "usr", "bin"), root, "rel"}, ":")
+	got := probe(t, root, []string{mv, "PATH=" + host, "HOME=" + filepath.Join(root, "root")}, "env")
+	if want := "/bin:/usr/bin:/:rel|/root|" + host + "|" + filepath.Join(root, "root"); got["env"] != want {
+		t.Errorf("env: %q, want %q", got["env"], want)
+	}
+}
+
 func TestPowerNotificationsWithoutIOKit(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "power")

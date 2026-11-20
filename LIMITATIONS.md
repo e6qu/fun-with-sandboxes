@@ -107,9 +107,10 @@ privilege. The project's non-goals are in [PLAN.md](PLAN.md#non-goals).
   second Seatbelt profile to a process already under one, so Chromium's
   helpers cannot enter their own inside the container's
   (`TestSecondSandboxRefused`); the container's profile confines them.
-- **`PATH` and `HOME` hold host paths**, in the container's root, so
-  programs without the library find the container's commands; `which`
-  and `echo $HOME` print the host's paths.
+- **`PATH` and `HOME` are presented.** The engine gives them in the
+  container's root and the library presents the container's own to each
+  process; a program without the library, such as Apple's shells, gets
+  them in the root, where it finds the container's commands.
 - **Processes are presented, with host pids but pid 1's.** There is no
   unprivileged PID namespace. Through the library a container lists only
   its own processes and sees its main process as pid 1 (`kill -HUP 1`

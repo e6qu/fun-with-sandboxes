@@ -268,6 +268,12 @@ func run(check string) string {
 			parts = append(parts, result(string(b), err))
 		}
 		return strings.Join(parts, ",")
+	case "env":
+		// PATH and HOME as the process sees them, then as a program
+		// without the library gets them: Apple's shell, which macOS starts
+		// without it, through a mount of the host's /bin.
+		out, err := exec.Command("/host/bin/sh", "-c", `printf '%s|%s' "$PATH" "$HOME"`).Output()
+		return os.Getenv("PATH") + "|" + os.Getenv("HOME") + "|" + result(string(out), err)
 	case "empty":
 		// An empty path names nothing, wherever the process runs.
 		_, err := os.Stat("")
