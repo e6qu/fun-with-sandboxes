@@ -59,6 +59,11 @@ type mountRec struct {
 	// permission bits, where it sets them.
 	NoExec bool    `json:"noExec,omitempty"`
 	Mode   *uint32 `json:"mode,omitempty"`
+	// UID and GID are a tmpfs mount's owner as the container sees it, where
+	// its options set one: the library presents the owner the engine
+	// records on the directory.
+	UID *uint32 `json:"uid,omitempty"`
+	GID *uint32 `json:"gid,omitempty"`
 	// volumeOpts and volumeLabels are the driver options and labels a mount
 	// gives a volume it creates.
 	volumeOpts, volumeLabels map[string]string
@@ -2353,14 +2358,26 @@ func tmpfsOption(m *mountRec, o string) error {
 		}
 		mode := uint32(n)
 		m.Mode = &mode
+	case "uid", "gid":
+		n, err := strconv.ParseUint(v, 10, 32)
+		if err != nil {
+			return invalid("invalid tmpfs %s %q", k, v)
+		}
+		id := uint32(n)
+		if k == "uid" {
+			m.UID = &id
+		} else {
+			m.GID = &id
+		}
 	default:
-		return unsupported("tmpfs mount option %q is not supported: the mount is a directory, which no size, inode count or ownership option holds", o)
+		return unsupported("tmpfs mount option %q is not supported: the mount is a directory, which no size or inode count holds", o)
 	}
 	return nil
 }
 
 // makeTmpfs makes the directory of tmpfs mount m, world-writable and
-// sticky as a tmpfs is unless its mode says otherwise.
+// sticky as a tmpfs is unless its mode says otherwise, and owned, as the
+// container sees it, by the uid and gid its options name, root otherwise.
 func makeTmpfs(m mountRec) error {
 	if err := os.MkdirAll(m.Source, 0o700); err != nil {
 		return err
@@ -2372,7 +2389,17 @@ func makeTmpfs(m mountRec) error {
 			mode |= os.ModeSticky
 		}
 	}
-	return os.Chmod(m.Source, mode)
+	if err := os.Chmod(m.Source, mode); err != nil {
+		return err
+	}
+	var uid, gid int
+	if m.UID != nil {
+		uid = int(*m.UID)
+	}
+	if m.GID != nil {
+		gid = int(*m.GID)
+	}
+	return image.RecordOwner(m.Source, uid, gid)
 }
 
 // checkMAC refuses a MAC address a client sets: the engine gives each

@@ -407,8 +407,9 @@ by a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 - **tmpfs mounts are directories**, emptied at each start, not
   memory-backed. `rw`, `ro`, `noexec` (through the profile) and `mode`
   hold, as do `nosuid` and `nodev`, as an unprivileged process makes no
-  setuid file or device; `size`, `nr_inodes`, `uid` and `gid` are
-  refused, on tmpfs volumes too. The one memory-backed filesystem an
+  setuid file or device, and `uid` and `gid`, as the owner the library
+  presents; `size` and `nr_inodes` are refused, on tmpfs volumes too,
+  whose `o` takes `mode`, `uid` and `gid`. The one memory-backed filesystem an
   unprivileged user can make, an `hdiutil` RAM disk, mounts system-wide
   under `/Volumes`.
 - **A bind's missing source is created**, as Docker does; a read-only

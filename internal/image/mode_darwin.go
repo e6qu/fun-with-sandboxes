@@ -42,6 +42,21 @@ func recordMeta(path string, mode, onDisk os.FileMode, uid, gid int, fresh bool)
 	return Mark(path)
 }
 
+// RecordOwner records uid:gid as path's owner as its container sees it,
+// as the container library records a chown; root needs no record.
+func RecordOwner(path string, uid, gid int) error {
+	if uid == 0 && gid == 0 {
+		if err := unix.Lremovexattr(path, ownerXattr); err != nil && !errors.Is(err, unix.ENOATTR) {
+			return err
+		}
+		return nil
+	}
+	if err := unix.Lsetxattr(path, ownerXattr, []byte(formatOwner(uid, gid)), 0); err != nil {
+		return err
+	}
+	return Mark(path)
+}
+
 // RecordedMode is path's mode as its container sees it, setuid, setgid
 // and sticky bits included: the one its image gave it, where extraction
 // kept more on disk, else its own.

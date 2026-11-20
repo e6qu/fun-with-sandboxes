@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/moby/moby/api/types/mount"
@@ -15,6 +16,7 @@ func TestTmpfsOptions(t *testing.T) {
 		rw     bool
 		noexec bool
 		mode   uint32
+		uid    string
 		kind   Kind
 	}{
 		{opts: "", rw: true},
@@ -27,7 +29,12 @@ func TestTmpfsOptions(t *testing.T) {
 		{opts: "mode=4755", kind: KindInvalid},
 		{opts: "size=64m", kind: KindUnsupported},
 		{opts: "rw,size=65536k", kind: KindUnsupported},
-		{opts: "uid=1000", kind: KindUnsupported},
+		{opts: "uid=1000", rw: true, uid: "1000:-"},
+		{opts: "uid=1000,gid=50", rw: true, uid: "1000:50"},
+		{opts: "gid=0", rw: true, uid: "-:0"},
+		{opts: "uid=app", kind: KindInvalid},
+		{opts: "gid=-1", kind: KindInvalid},
+		{opts: "nr_inodes=1k", kind: KindUnsupported},
 		{opts: "suid", kind: KindUnsupported},
 	} {
 		m := mountRec{Type: mount.TypeTmpfs, RW: true}
@@ -51,8 +58,18 @@ func TestTmpfsOptions(t *testing.T) {
 		if m.Mode != nil {
 			mode = *m.Mode
 		}
-		if m.RW != tc.rw || m.NoExec != tc.noexec || mode != tc.mode {
-			t.Errorf("%q: rw %v noexec %v mode %o, want %v %v %o", tc.opts, m.RW, m.NoExec, mode, tc.rw, tc.noexec, tc.mode)
+		owner := func(id *uint32) string {
+			if id == nil {
+				return "-"
+			}
+			return strconv.FormatUint(uint64(*id), 10)
+		}
+		uid := owner(m.UID) + ":" + owner(m.GID)
+		if tc.uid == "" {
+			tc.uid = "-:-"
+		}
+		if m.RW != tc.rw || m.NoExec != tc.noexec || mode != tc.mode || uid != tc.uid {
+			t.Errorf("%q: rw %v noexec %v mode %o owner %s, want %v %v %o %s", tc.opts, m.RW, m.NoExec, mode, uid, tc.rw, tc.noexec, tc.mode, tc.uid)
 		}
 	}
 }

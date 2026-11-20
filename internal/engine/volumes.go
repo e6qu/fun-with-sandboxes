@@ -217,10 +217,8 @@ func checkVolumeOptions(opts map[string]string) error {
 	typ, o, dev := opts["type"], opts["o"], opts["device"]
 	switch typ {
 	case "tmpfs":
-		if o != "" {
-			return unsupported("tmpfs volume options %q are not supported: the volume is a directory, which no size or ownership option holds", o)
-		}
-		return nil
+		_, err := tmpfsVolumeMount(o)
+		return err
 	case "", "none":
 		bind := false
 		for _, x := range strings.Split(o, ",") {
@@ -252,6 +250,18 @@ func (v *Volume) device() string {
 }
 
 func (v *Volume) isTmpfs() bool { return v.Options["type"] == "tmpfs" }
+
+// tmpfsVolumeMount is a tmpfs volume's options, o, as a tmpfs mount's: its
+// mode and owner hold, as on a tmpfs mount, and a size does not.
+func tmpfsVolumeMount(o string) (mountRec, error) {
+	m := mountRec{Type: "tmpfs", RW: true}
+	for _, x := range strings.Split(o, ",") {
+		if err := tmpfsOption(&m, x); err != nil {
+			return m, err
+		}
+	}
+	return m, nil
+}
 
 // volumeSource is the directory holding the volume's data: the bound host
 // directory, which must exist, as the local driver's mount needs it, or
@@ -291,6 +301,17 @@ func (e *Engine) emptyTmpfsVolumes(c *Container) error {
 		}
 		for _, en := range entries {
 			if err := os.RemoveAll(filepath.Join(dir, en.Name())); err != nil {
+				return err
+			}
+		}
+		// The volume's mode and owner, where its options set them.
+		if o := v.Options["o"]; o != "" {
+			tm, err := tmpfsVolumeMount(o)
+			if err != nil {
+				return err
+			}
+			tm.Source = dir
+			if err := makeTmpfs(tm); err != nil {
 				return err
 			}
 		}

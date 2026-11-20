@@ -39,7 +39,9 @@ func TestBindVolume(t *testing.T) {
 	}
 }
 
-// A tmpfs volume starts empty each time a container first mounts it.
+// A tmpfs volume starts empty each time a container first mounts it. A
+// tmpfs mount's and a tmpfs volume's uid, gid and mode options hold, as the
+// container sees its directory.
 func TestTmpfsVolume(t *testing.T) {
 	const vol = "fws-e2e-tmpfsvol"
 	mustDocker(t, "volume", "create", "--opt", "type=tmpfs", "--opt", "device=tmpfs", vol)
@@ -47,6 +49,15 @@ func TestTmpfsVolume(t *testing.T) {
 	mustDocker(t, "run", "--rm", "-v", vol+":/t", "fws/toolbox:1", "put", "/t/f", "x")
 	if _, err := docker(t, "run", "--rm", "-v", vol+":/t", "fws/toolbox:1", "cat", "/t/f"); err == nil {
 		t.Fatal("a tmpfs volume kept a file across mounts")
+	}
+	if out := mustDocker(t, "run", "--rm", "--tmpfs", "/scratch:uid=1000,gid=50,mode=750", "fws/busybox:1", "stat", "-c", "%u:%g %a", "/scratch"); out != "1000:50 750\n" {
+		t.Errorf("a tmpfs mount with uid, gid and mode: %q", out)
+	}
+	const owned = "fws-e2e-tmpfsvol-owned"
+	mustDocker(t, "volume", "create", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", "o=uid=1000,gid=1000,mode=700", owned)
+	defer docker(t, "volume", "rm", "-f", owned)
+	if out := mustDocker(t, "run", "--rm", "-v", owned+":/t", "fws/busybox:1", "stat", "-c", "%u:%g %a", "/t"); out != "1000:1000 700\n" {
+		t.Errorf("a tmpfs volume with uid, gid and mode: %q", out)
 	}
 }
 
