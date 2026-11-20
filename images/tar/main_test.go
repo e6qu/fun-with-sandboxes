@@ -53,7 +53,7 @@ func TestWithFile(t *testing.T) {
 func TestZipFromAPipeKeepsModes(t *testing.T) {
 	var err error
 	if bsdtar, err = exec.LookPath("bsdtar"); err != nil {
-		t.Skip("no bsdtar")
+		t.Fatalf("bsdtar, which the images' tar fronts: %v", err)
 	}
 	var buf bytes.Buffer
 	z := zip.NewWriter(&buf)

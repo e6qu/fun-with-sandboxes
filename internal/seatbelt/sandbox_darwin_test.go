@@ -289,7 +289,7 @@ func TestGUIGrant(t *testing.T) {
 	root := probeRoot(t)
 	const fonts = "/Library/Fonts"
 	if _, err := os.Stat(fonts); err != nil {
-		t.Skip(err)
+		t.Fatal(err)
 	}
 	plain := newProbeEnv(t, Spec{Root: root, StateRoot: filepath.Dir(root), IPCPrefix: IPCPrefixFor(root)})
 	plain.allowed("read", filepath.Join(root, "probe"))
