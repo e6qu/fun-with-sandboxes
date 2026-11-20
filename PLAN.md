@@ -86,9 +86,11 @@ One pull request open at a time.
    and kind's IPv6 and dual-stack clusters. In #76: kind's
    `containerdConfigPatches`' registry mirrors and hosts directory, so
    that kind's local registry works.
-4. **Catalog upkeep.** November's PostgreSQL and MariaDB once their darwin
-   builds are cached; nixos-26.11; a newer Kubernetes and kind when asked
-   for.
+4. **Catalog upkeep.** In #78: nixpkgs-26.05-darwin of 2026-11-19, with
+   November's PostgreSQL (16.16, 18.7), Node.js 24.22.3 and 26.13.1 and
+   Valkey 9.1.3. Next: November's MariaDB once the darwin channel carries
+   it (still 11.4.13); nixos-26.11 once released; a newer Kubernetes and
+   kind when asked for.
 5. **Shipping**, when asked for: signed and notarized releases, prebuilt C
    parts, an installer, a `launchd` service.
 

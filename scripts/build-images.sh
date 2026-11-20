@@ -12,11 +12,11 @@
 # the archives on their content.
 set -euo pipefail
 
-# nixpkgs-26.05-darwin as of 2026-11-09, pinned, so a rebuild makes the
+# nixpkgs-26.05-darwin as of 2026-11-19, pinned, so a rebuild makes the
 # same images. That branch, not nixos-26.05, advances once Hydra has built
 # and cached its darwin packages: a nixos-26.05 commit can name darwin
 # builds no cache holds yet, which the images job would compile for hours.
-nixpkgs=${NIXPKGS:-github:NixOS/nixpkgs/f4244ef33645badc8157562b5e80748929b396c2}
+nixpkgs=${NIXPKGS:-github:NixOS/nixpkgs/31cff629c6323a1a6ab22977bc497cedae34a548}
 here=$(cd "$(dirname "$0")/.." && pwd)
 # A runner's resolver drops a lookup now and then, and Nix retries a
 # download within a fraction of a second, so a failure to reach a cache is
