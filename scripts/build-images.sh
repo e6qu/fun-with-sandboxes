@@ -294,7 +294,7 @@ bash=$(pkg_with bash bash)
 kafka_links=()
 for f in "$kafka"/bin/kafka-*.sh; do
   n=$(basename "$f" .sh)
-  kafka_links+=(-link "/usr/bin/$n=../../bin/$n.sh")
+  kafka_links+=(-link "/usr/bin/$n=../../etc/confluent/docker/tool")
 done
 closure "$kafka" "$coreutils" "$gnused" "$bash" > "$build/kafka.closure"
 mkimage $(accounts kafka appuser 1000 1000 /home/appuser) -spec images/kafka/image.json -closure "$build/kafka.closure" -pkg "$kafka" \

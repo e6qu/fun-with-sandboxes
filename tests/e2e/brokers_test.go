@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
+	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 	tcmailpit "github.com/testcontainers/testcontainers-go/modules/mailpit"
 	tcnetwork "github.com/testcontainers/testcontainers-go/network"
@@ -80,6 +81,7 @@ func TestKafkaOnANetwork(t *testing.T) {
 			"KAFKA_ADVERTISED_LISTENERS": "PLAINTEXT://kafka:9092",
 			"KAFKA_LOG4J_ROOT_LOGLEVEL":  "WARN",
 			"KAFKA_LOG4J_LOGGERS":        "kafka.server.BrokerLifecycleManager=INFO",
+			"KAFKA_TOOLS_LOG4J_LOGLEVEL": "DEBUG",
 		}),
 		testcontainers.WithWaitStrategy(wait.ForLog("Transitioning from RECOVERY to RUNNING").WithStartupTimeout(3*time.Minute)),
 		tcnetwork.WithNetwork([]string{"kafka"}, nw))
@@ -119,6 +121,15 @@ kafka-console-consumer --bootstrap-server kafka:9092 --topic notes --from-beginn
 	b, _ = io.ReadAll(brokerLogs)
 	if strings.Contains(string(b), "Kafka Server started") || strings.Contains(string(b), "StatusLogger") {
 		t.Errorf("the broker logged below its root level, or about its logging:\n%s", b)
+	}
+	// A tool run in the broker's container logs at KAFKA_TOOLS_LOG4J_LOGLEVEL.
+	code, out, err := broker.Exec(ctx, []string{"kafka-topics", "--bootstrap-server", "kafka:9092", "--list"}, tcexec.Multiplexed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(out)
+	if code != 0 || !strings.Contains(string(b), "notes") || !strings.Contains(string(b), "] DEBUG ") {
+		t.Errorf("kafka-topics at KAFKA_TOOLS_LOG4J_LOGLEVEL=DEBUG exited %d:\n%.2000s", code, b)
 	}
 	r, err := broker.CopyFileFromContainer(ctx, "/etc/kafka/kafka.properties")
 	if err != nil {
