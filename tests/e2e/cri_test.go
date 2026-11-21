@@ -155,9 +155,11 @@ func TestCRIPodSandbox(t *testing.T) {
 	if got := limits(); got != "268435456 500000000 512" {
 		t.Errorf("the client's limits: %q, want 256 MiB, half a CPU and 512 shares", got)
 	}
-	mustCrictl(t, "update", "--memory", "536870912", "--cpu-period", "100000", "--cpu-quota", "100000", client)
-	if got := limits(); got != "536870912 1000000000 512" {
-		t.Errorf("the client's limits after crictl update: %q, want 512 MiB and a CPU", got)
+	// A running container's memory limit can be lowered, not raised: the
+	// kernel lets no process raise its own (LIMITATIONS).
+	mustCrictl(t, "update", "--memory", "134217728", "--cpu-period", "100000", "--cpu-quota", "100000", client)
+	if got := limits(); got != "134217728 1000000000 512" {
+		t.Errorf("the client's limits after crictl update: %q, want 128 MiB and a CPU", got)
 	}
 
 	// The pod's containers reach one another on localhost.
