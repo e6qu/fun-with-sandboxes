@@ -98,6 +98,12 @@ stdenv.mkDerivation (finalAttrs: {
     "install-man"
   ];
 
+  # 4.4 precompiles the management UI's templates with an escript run
+  # through /usr/bin/env, which a sandboxed build lacks.
+  postPatch = ''
+    patchShebangs --build deps/rabbitmq_management/scripts/precompile_ejs_templates
+  '';
+
   preBuild = ''
     export LANG=C.UTF-8 # fix elixir locale warning
     export PROJECT_VERSION="$version"
