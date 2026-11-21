@@ -222,8 +222,9 @@ closure "$nats" > "$build/nats.closure"
 mkimage $(accounts nats) -spec images/nats/image.json -closure "$build/nats.closure" -pkg "$nats" \
   -file "/nats-server.conf=images/nats/nats-server.conf" -out "$out/nats.tar"
 
-# etcd as its release image lays it out: the binaries in /usr/local/bin.
-etcd=$(pkg_with etcd etcd)
+# etcd as its release image lays it out: the binaries in /usr/local/bin,
+# built here at the release nixpkgs does not package yet.
+etcd=$(output_with etcd -f images/etcd/etcd.nix --argstr nixpkgs "$nixpkgs")
 closure "$etcd" > "$build/etcd.closure"
 mkimage $(accounts etcd) -spec images/etcd/image.json -closure "$build/etcd.closure" -pkg "$etcd" \
   -link /usr/local/bin/etcd=../../../bin/etcd -link /usr/local/bin/etcdctl=../../../bin/etcdctl -link /usr/local/bin/etcdutl=../../../bin/etcdutl \

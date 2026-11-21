@@ -143,7 +143,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 			docker(t, "rm", "-f", "e2e-"+n)
 		}
 	}()
-	run("etcd", "fws/etcd:3.6", "etcd", "--name", "etcd", "--data-dir", "/var/lib/etcd/data",
+	run("etcd", "fws/etcd:3.7", "etcd", "--name", "etcd", "--data-dir", "/var/lib/etcd/data",
 		"--listen-client-urls", "http://0.0.0.0:2379", "--advertise-client-urls", "http://etcd:2379")
 	const pkiDir = "/etc/kubernetes/pki/"
 	run("kube-apiserver", "fws/kube-apiserver:1.37", "kube-apiserver",

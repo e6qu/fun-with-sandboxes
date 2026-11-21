@@ -61,6 +61,6 @@ sets out to do.
 Done at any time, since none of it is needed to show what fws does: the
 newest catalog versions, from the newest `nixpkgs-26.05-darwin` (nixos-26.11
 once released), with upstream releases nixpkgs lacks built here, as MySQL,
-MariaDB and Kubernetes are; and Kubernetes' newest release, with the
+MariaDB, etcd and Kubernetes are; and Kubernetes' newest release, with the
 kubelet's darwin patch rebased onto it and a kind release whose node image
-matches (Kubernetes 1.37.2 and kind 0.33.0, in progress).
+matches (Kubernetes 1.37.2, etcd 3.7.4 and kind 0.33.0, in progress).

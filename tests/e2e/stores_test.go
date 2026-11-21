@@ -67,7 +67,7 @@ func TestEtcd(t *testing.T) {
 		return string(v)
 	}
 
-	single, err := tcetcd.Run(ctx, "fws/etcd:3.6", listening)
+	single, err := tcetcd.Run(ctx, "fws/etcd:3.7", listening)
 	testcontainers.CleanupContainer(t, single)
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestEtcd(t *testing.T) {
 		t.Errorf("a single node read %q", v)
 	}
 
-	cluster, err := tcetcd.Run(ctx, "fws/etcd:3.6", listening, tcetcd.WithNodes("etcd-1", "etcd-2", "etcd-3"))
+	cluster, err := tcetcd.Run(ctx, "fws/etcd:3.7", listening, tcetcd.WithNodes("etcd-1", "etcd-2", "etcd-3"))
 	testcontainers.CleanupContainer(t, cluster)
 	if err != nil {
 		t.Fatal(err)
