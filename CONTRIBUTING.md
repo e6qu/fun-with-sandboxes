@@ -157,9 +157,11 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   none of them skips the build. Otherwise it restores the newest earlier
   catalog and keeps each archive whose inputs are unchanged (`fws-mkimage
   -reuse`), so a change to one image rebuilds that one, and then checks
-  every archive publishes to a local registry as a darwin image. It waits
-  for `linux`, `macos` and `servers`, so a change the unit tests fail
-  spends no image build or end-to-end run;
+  every archive publishes to a local registry as a darwin image. It hands
+  the archives to the run's `e2e` and `publish` jobs as an artifact,
+  which another run's cache cannot evict past the repository's 10 GB. It
+  waits for `linux`, `macos` and `servers`, so a change the unit tests
+  fail spends no image build or end-to-end run;
 - `e2e`: the end-to-end suite, in four shards on runners of their own.
   `scripts/e2e-shard.sh` spreads the tests by their durations in
   `tests/e2e/durations.txt`, seconds per test from an earlier run; a test
