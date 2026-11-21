@@ -167,13 +167,12 @@ what macOS offers an unprivileged process under them. Non-goals are in
   resolves `/etc/hosts`, the stack's names and the host's resolver, through
   `getaddrinfo`, its async form, `DNSServiceGetAddrInfo` and
   Network.framework alike. A program that sends DNS itself (`dig`, Go's
-  pure resolver) reaches the router, which answers the stack's names and,
-  given internet access, passes other queries to the servers of the
-  container's `resolv.conf`. `--dns`, `--dns-search` and `--dns-option`
-  need internet access; of the options, `ndots`, `timeout` and `attempts`
-  take effect. A DNS server inside a stack, or a Service, cannot serve.
-  DNS settings are refused in a nested engine, as is a DNS server on
-  loopback.
+  pure resolver) reaches the router, which answers the stack's names and
+  passes other queries to the servers of the container's `resolv.conf`: a
+  DNS server a member of the stack runs, over TCP at its port 53, and a
+  server outside the machine given internet access. Of the options,
+  `ndots`, `timeout` and `attempts` take effect. DNS settings are refused
+  in a nested engine, as is a DNS server on loopback.
 - **ICMP reaches the virtual network alone.** `ping` of loopback, the
   container or a member is answered by the library; an outside IPv4 host
   is pinged by the router given internet access. Raw sockets need root.
@@ -186,8 +185,11 @@ what macOS offers an unprivileged process under them. Non-goals are in
 
 - **No kube-proxy or CoreDNS.** `fws-kube-proxy` serves Services and the
   library resolves cluster names.
-- **The kubelet applies no Linux settings**, so `resources.limits` and
-  `securityContext.runAsUser` take no effect.
+- **A pod's limits hold, its requests set no priority.** The kubelet sends
+  a container's memory and CPU limits, the pod's where it sets none, and
+  the engine holds them as `--memory` and `--cpus`; requests only place
+  pods, as a nice value would weigh a pod against every process on the
+  Mac. `securityContext.runAsUser` takes no effect.
 - **The CRI refuses checkpoints**; `UpdatePodSandboxResources` changes
   nothing, as containerd's does not. Pod metrics count CPU time in whole
   seconds. A pod's DNS servers go unused; its search domains and options
@@ -258,8 +260,11 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   tmpfs; other filesystem types need root. A read-only bind source the
   host cannot create, such as `/lib/modules`, mounts empty.
 - **A Podman pod shares its network, IPC and PID namespaces** through an
-  infra container running `fws/pause`. `generate kube`, `play kube`,
-  checkpoints and quadlets are not served.
+  infra container running `fws/pause`. `kube play` runs Pods, and
+  Deployments of one replica, with their ConfigMaps' values, claims'
+  volumes and init containers; `kube generate` writes a pod or container
+  back and `kube down` removes what a file made. Checkpoints and quadlets
+  are not served.
 - **Refused, having no macOS counterpart**: `--sysctl` beyond those below,
   `--userns`, runtimes other than runc, log drivers other than `json-file`
   and `local`, devices, `--gpus`, device cgroup rules, `--cgroup-parent`,

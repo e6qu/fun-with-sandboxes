@@ -237,3 +237,98 @@ func TestRouterServesDNSOverTCP(t *testing.T) {
 		t.Errorf("www.test over TCP: %s %v", m.RCode, answerAddrs(m))
 	}
 }
+
+// tcpDNSServer answers every A question over TCP with addr, as a DNS
+// server a container runs; it returns its port.
+func tcpDNSServer(t *testing.T, addr [4]byte) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				var n [2]byte
+				if _, err := io.ReadFull(c, n[:]); err != nil {
+					return
+				}
+				q := make([]byte, binary.BigEndian.Uint16(n[:]))
+				if _, err := io.ReadFull(c, q); err != nil {
+					return
+				}
+				var m dnsmessage.Message
+				if m.Unpack(q) != nil || len(m.Questions) != 1 {
+					return
+				}
+				m.Response = true
+				h := dnsmessage.ResourceHeader{Name: m.Questions[0].Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60}
+				m.Answers = []dnsmessage.Resource{{Header: h, Body: &dnsmessage.AResource{A: addr}}}
+				b, _ := m.Pack()
+				c.Write(append(binary.BigEndian.AppendUint16(nil, uint16(len(b))), b...))
+			}()
+		}
+	}()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// A DNS server a member of the container's stack runs answers the
+// container's queries, at its port 53, without internet access; one on a
+// member the container does not see is not asked.
+func TestRouterAsksAStackMembersDNSServer(t *testing.T) {
+	file := filepath.Join(portDir(t), "network")
+	ms := []members.Member{
+		{Address: "127.88.0.2", Names: []string{"app"}, Networks: []string{"net"}},
+		{Address: "127.88.0.5", Names: []string{"dns"}, Networks: []string{"net"}, Ports: map[string]int{"53/tcp": tcpDNSServer(t, [4]byte{192, 0, 2, 53})}},
+		{Address: "127.88.0.6", Names: []string{"hidden"}, Networks: []string{"other"}, Ports: map[string]int{"53/tcp": tcpDNSServer(t, [4]byte{192, 0, 2, 66})}},
+	}
+	if err := os.WriteFile(file, members.Format(ms), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ask := func(server, name string) dnsmessage.Message {
+		r, err := Listen("127.0.0.1:0", portDir(t), listenFlow, Network{File: file, Address: "127.88.0.2", Upstream: []netip.Addr{netip.MustParseAddr(server)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		return askDNS(t, r.dns.LocalAddr(), name, dnsmessage.TypeA)
+	}
+	if m := ask("127.88.0.5", "www.test."); m.RCode != dnsmessage.RCodeSuccess || !equalStrings(answerAddrs(m), []string{"192.0.2.53"}) {
+		t.Errorf("through the stack's DNS server: %s %v", m.RCode, answerAddrs(m))
+	}
+	// The stack's own names are the router's still.
+	if m := ask("127.88.0.5", "app."); !equalStrings(answerAddrs(m), []string{"127.88.0.2"}) {
+		t.Errorf("app through the stack's DNS server: %s %v", m.RCode, answerAddrs(m))
+	}
+	if m := ask("127.88.0.6", "www.test."); m.RCode != dnsmessage.RCodeRefused {
+		t.Errorf("a DNS server on a member the container does not see: %s %v", m.RCode, answerAddrs(m))
+	}
+}
+
+// The library's lookups reach a stack member's DNS server through the
+// router too, without internet access.
+func TestResolveThroughAStackMembersDNSServer(t *testing.T) {
+	file := filepath.Join(portDir(t), "network")
+	ms := []members.Member{
+		{Address: "127.88.0.2", Names: []string{"app"}, Networks: []string{"net"}},
+		{Address: "127.88.0.5", Names: []string{"dns"}, Networks: []string{"net"}, Ports: map[string]int{"53/tcp": tcpDNSServer(t, [4]byte{192, 0, 2, 53})}},
+	}
+	if err := os.WriteFile(file, members.Format(ms), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dns := &DNS{Servers: []netip.Addr{netip.MustParseAddr("127.88.0.5")}, Ndots: 1, Timeout: time.Second, Attempts: 1}
+	r, err := Listen("127.0.0.1:0", portDir(t), listenFlow, Network{File: file, Address: "127.88.0.2", DNS: dns})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if got, err := LookupName(r.Addr().String(), 4, "www.test"); err != nil || len(got) != 1 || got[0].String() != "192.0.2.53" {
+		t.Errorf("www.test: %v, %v", got, err)
+	}
+}

@@ -21,8 +21,9 @@ import (
 // that sends DNS itself, as dig and Go's pure resolver do, reaches the
 // router instead. It answers the A and AAAA questions for names the
 // container's stack answers, as the library resolves them, and passes any
-// other query on to the container's servers, given internet access; where
-// it has none, it refuses it.
+// other query on to the container's servers: a member of its stack over
+// TCP, at its port 53, and a server outside, given internet access; with
+// none it can ask, it refuses the query.
 
 // dnsTTL is the time to live of the records the router answers with: the
 // stack's members come and go, so a resolver asks again soon.
@@ -98,13 +99,57 @@ func (r *Router) answerDNS(q []byte, tcp bool) []byte {
 			return a
 		}
 	}
-	if r.net.Internet && len(r.net.Upstream) > 0 {
-		if a := forwardDNS(q, h.ID, r.net.Upstream, r.dnsPort(), tcp); a != nil {
+	// The container's servers in turn: one of its stack's members, such as
+	// a DNS server it runs, answers over TCP at its port 53, as the router
+	// reaches any member's port; any other is asked over the internet.
+	asked := false
+	for _, s := range r.net.Upstream {
+		if c, err := r.foreign(s, 53); err == nil {
+			asked = true
+			a, err := exchangeConn(c, q, h.ID)
+			c.Close()
+			if err == nil {
+				return a
+			}
+			continue
+		} else if _, err := r.peer(s); err == nil {
+			// A member that serves no DNS.
+			asked = true
+			continue
+		}
+		if !r.net.Internet {
+			continue
+		}
+		asked = true
+		if a := forwardDNS(q, h.ID, []netip.Addr{s}, r.dnsPort(), tcp); a != nil {
 			return a
 		}
+	}
+	if asked {
 		return dnsReply(h, qs, dnsmessage.RCodeServerFailure, nil)
 	}
 	return dnsReply(h, qs, dnsmessage.RCodeRefused, nil)
+}
+
+// exchangeConn sends q over c, a connection to a DNS server's TCP port,
+// and returns its answer.
+func exchangeConn(c net.Conn, q []byte, id uint16) ([]byte, error) {
+	c.SetDeadline(time.Now().Add(dnsForwardTimeout))
+	if _, err := c.Write(append(binary.BigEndian.AppendUint16(nil, uint16(len(q))), q...)); err != nil {
+		return nil, err
+	}
+	var l [2]byte
+	if _, err := io.ReadFull(c, l[:]); err != nil {
+		return nil, err
+	}
+	a := make([]byte, binary.BigEndian.Uint16(l[:]))
+	if _, err := io.ReadFull(c, a); err != nil {
+		return nil, err
+	}
+	if len(a) < 2 || binary.BigEndian.Uint16(a) != id {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return a, nil
 }
 
 // dnsPort is the upstream servers' port: 53 unless a test serves

@@ -249,7 +249,14 @@ podman --remote run --rm fws/python:3.14 python3 -c 'print("hi")'
 A pod's infra container runs `fws/pause`, and the pod's containers join
 its network, IPC and, where shared, PID namespace; `--infra=false
 --share=`, as `podman-compose` creates pods, makes one that shares
-nothing.
+nothing. `podman kube play` runs Kubernetes YAML, Pods and Deployments of
+one replica with their ConfigMaps, claims and init containers;
+`podman kube generate` writes a pod back, and `podman kube down` removes
+it:
+
+```bash
+podman --remote kube play pod.yaml
+```
 
 ## Kubernetes' Container Runtime Interface
 

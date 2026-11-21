@@ -466,11 +466,24 @@ func (s *Server) libpodCreate(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &spec) {
 		return
 	}
+	res, err := s.createContainer(spec)
+	if err != nil {
+		writeEngineError(w, err)
+		return
+	}
+	if res.Warnings == nil {
+		res.Warnings = []string{}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"Id": res.ID, "Warnings": res.Warnings})
+}
+
+// createContainer creates the container spec describes, in the pod it
+// names, joining what the pod shares.
+func (s *Server) createContainer(spec specGen) (container.CreateResponse, error) {
 	if spec.Pod != "" {
 		p, err := s.pods.get(spec.Pod)
 		if err != nil {
-			writeEngineError(w, err)
-			return
+			return container.CreateResponse{}, err
 		}
 		if spec.Labels == nil {
 			spec.Labels = map[string]string{}
@@ -480,18 +493,9 @@ func (s *Server) libpodCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	req, err := dockerCreate(spec)
 	if err != nil {
-		writeEngineError(w, err)
-		return
+		return container.CreateResponse{}, err
 	}
-	res, err := s.e.Create(engine.CreateOptions{Name: spec.Name}, req)
-	if err != nil {
-		writeEngineError(w, err)
-		return
-	}
-	if res.Warnings == nil {
-		res.Warnings = []string{}
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"Id": res.ID, "Warnings": res.Warnings})
+	return s.e.Create(engine.CreateOptions{Name: spec.Name}, req)
 }
 
 // libpodPortMappings are a container's published ports in Podman's shape.

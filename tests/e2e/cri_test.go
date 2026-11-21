@@ -128,22 +128,39 @@ func TestCRIPodSandbox(t *testing.T) {
 		t.Errorf("crictl pods --label app=web: %q", out)
 	}
 
-	container := func(name string, args ...string) string {
+	container := func(name string, linux map[string]any, args ...string) string {
 		cfg := writeJSON(t, filepath.Join(dir, name+".json"), map[string]any{
 			"metadata": map[string]any{"name": name},
 			"image":    map[string]any{"image": "fws/toolbox:1"},
 			"args":     args,
 			"log_path": name + ".log",
 			"envs":     []map[string]string{{"key": "SANDBOX_GREETING", "value": "hello"}},
-			"linux":    map[string]any{},
+			"linux":    linux,
 		})
 		id := strings.TrimSpace(mustCrictl(t, "create", sandbox, cfg, pod))
 		mustCrictl(t, "start", id)
 		return id
 	}
-	web := container("web", "serve")
-	client := container("client", "hold")
-	greeter := container("greeter", "echo", "from the pod")
+	web := container("web", map[string]any{}, "serve")
+	// The limits a pod's spec gives a container, which the kubelet sends as
+	// its Linux resources, hold as docker run's do, and an update changes
+	// them.
+	client := container("client", map[string]any{"resources": map[string]any{
+		"memory_limit_in_bytes": 268435456, "cpu_period": 100000, "cpu_quota": 50000, "cpu_shares": 512,
+	}}, "hold")
+	greeter := container("greeter", map[string]any{}, "echo", "from the pod")
+	limits := func() string {
+		return strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.CpuShares}}", client))
+	}
+	if got := limits(); got != "268435456 500000000 512" {
+		t.Errorf("the client's limits: %q, want 256 MiB, half a CPU and 512 shares", got)
+	}
+	// A running container's memory limit can be lowered, not raised: the
+	// kernel lets no process raise its own (LIMITATIONS).
+	mustCrictl(t, "update", "--memory", "134217728", "--cpu-period", "100000", "--cpu-quota", "100000", client)
+	if got := limits(); got != "134217728 1000000000 512" {
+		t.Errorf("the client's limits after crictl update: %q, want 128 MiB and a CPU", got)
+	}
 
 	// The pod's containers reach one another on localhost.
 	deadline := time.Now().Add(time.Minute)

@@ -349,3 +349,30 @@ func TestNetworkFrameworkLookups(t *testing.T) {
 	}
 	t.Errorf("Network.framework, connecting to e2e-nw-web: %q", out)
 }
+
+// A DNS server a container of the stack runs serves the stack: a
+// container whose --dns names it resolves through it, by the system's
+// resolver and by a program that sends DNS itself, on a network without
+// internet access, while the stack's own names stay the stack's.
+func TestStackDNSServer(t *testing.T) {
+	const network, server = "fws-e2e-stackdns", "fws-e2e-stackdns-server"
+	mustDocker(t, "network", "create", "--internal", "--subnet", "172.29.53.0/24", network)
+	t.Cleanup(func() { docker(t, "network", "rm", network) })
+	mustDocker(t, "run", "-d", "--name", server, "--network", network, "--ip", "172.29.53.53",
+		"--expose", "53/udp", "--expose", "53/tcp", "--no-healthcheck", "fws/toolbox:1", "dnsserve", "192.0.2.53")
+	t.Cleanup(func() { docker(t, "rm", "-f", server) })
+	waitLog(t, server, "serving DNS")
+	out, err := docker(t, "run", "--rm", "--network", network, "--dns", "172.29.53.53", "--no-healthcheck",
+		"fws/toolbox:1", "lookup", "www.example.test")
+	if err != nil || strings.TrimSpace(out) != "192.0.2.53 192.0.2.53" {
+		t.Errorf("a name through the stack's DNS server: %q, %v", out, err)
+	}
+	out, err = docker(t, "run", "--rm", "--network", network, "--dns", "172.29.53.53", "--no-healthcheck",
+		"fws/toolbox:1", "lookup", server)
+	// The system resolver asks the router, which knows its stack's names;
+	// a program sending DNS to the server itself gets the server's answer,
+	// as dig @server would.
+	if err != nil || !strings.HasPrefix(out, "172.29.53.53 ") {
+		t.Errorf("a member's name with the stack's DNS server: %q, %v", out, err)
+	}
+}

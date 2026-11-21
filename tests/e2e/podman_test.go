@@ -4,11 +4,14 @@ package e2e
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // podman runs Podman's remote client against the engine, which serves
@@ -166,5 +169,106 @@ else:
 	mustPodman(t, "pod", "rm", "-f", "e2e-ipod")
 	if out, err := podman(t, "container", "exists", infra); err == nil {
 		t.Errorf("the infra container outlived its pod: %s", out)
+	}
+}
+
+// podman kube play runs a Pod from Kubernetes YAML: a ConfigMap's value in
+// its variables, a claim's volume its init container prepares before its
+// server starts, and its server on the host port it asks for; podman kube
+// generate writes it back, and podman kube down removes it.
+func TestPodmanKubePlay(t *testing.T) {
+	port := freePort(t)
+	file := filepath.Join(t.TempDir(), "pod.yaml")
+	yaml := fmt.Sprintf(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: e2e-kube-settings
+data:
+  greeting: hello from a ConfigMap
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: e2e-kube-data
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: e2e-kube
+  labels:
+    app: e2e-kube
+spec:
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: e2e-kube-data
+  initContainers:
+  - name: prepare
+    image: fws/toolbox:1
+    args: [put, /data/ready, prepared]
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  containers:
+  - name: web
+    image: fws/toolbox:1
+    args: [serve]
+    env:
+    - name: SANDBOX_GREETING
+      valueFrom:
+        configMapKeyRef:
+          name: e2e-kube-settings
+          key: greeting
+    ports:
+    - containerPort: 8080
+      hostPort: %d
+    volumeMounts:
+    - name: data
+      mountPath: /data
+    resources:
+      limits:
+        memory: 128Mi
+`, port)
+	if err := os.WriteFile(file, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		podman(t, "pod", "rm", "-f", "e2e-kube")
+		podman(t, "volume", "rm", "-f", "e2e-kube-data")
+	})
+	if out := mustPodman(t, "kube", "play", file); !strings.Contains(out, "Pod:") {
+		t.Errorf("podman kube play printed %q", out)
+	}
+	healthz := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(500 * time.Millisecond) {
+		res, err := http.Get(healthz)
+		if err == nil {
+			res.Body.Close()
+			if res.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pod's server never answered at %s: %v", healthz, err)
+		}
+	}
+	if out := mustPodman(t, "exec", "e2e-kube-web", "/toolbox", "env"); !strings.Contains(out, "SANDBOX_GREETING=hello from a ConfigMap") {
+		t.Errorf("the ConfigMap's value: %q", out)
+	}
+	if out := mustPodman(t, "exec", "e2e-kube-web", "/toolbox", "cat", "/data/ready"); out != "prepared\n" {
+		t.Errorf("what the init container wrote: %q", out)
+	}
+	if out := strings.TrimSpace(mustPodman(t, "inspect", "e2e-kube-web", "--format", "{{.HostConfig.Memory}}")); out != "134217728" {
+		t.Errorf("the container's memory limit: %q", out)
+	}
+	gen := mustPodman(t, "kube", "generate", "e2e-kube")
+	for _, want := range []string{"kind: Pod", "name: e2e-kube", "image: fws/toolbox:1", "name: web", fmt.Sprintf("hostPort: %d", port), "memory: \"134217728\""} {
+		if !strings.Contains(gen, want) {
+			t.Errorf("podman kube generate lacks %q:\n%s", want, gen)
+		}
+	}
+	mustPodman(t, "kube", "down", file)
+	if out, err := podman(t, "pod", "exists", "e2e-kube"); err == nil {
+		t.Errorf("the pod outlived podman kube down: %s", out)
 	}
 }

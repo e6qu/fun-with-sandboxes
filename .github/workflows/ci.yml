@@ -178,8 +178,6 @@ jobs:
     needs: [servers, macos, linux]
     runs-on: macos-15
     timeout-minutes: 120
-    outputs:
-      key: ${{ steps.key.outputs.key }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -192,12 +190,13 @@ jobs:
         run: |
           scripts/build-images.sh --inputs > "$RUNNER_TEMP/inputs"
           echo "key=images-$(xargs shasum -a 256 < "$RUNNER_TEMP/inputs" | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      # The archives a run with the same inputs built: the cache keeps them
+      # between runs, and this run's jobs take them from its artifact below.
       - uses: actions/cache/restore@v5
         id: images
         with:
           path: ~/fws-images
           key: ${{ steps.key.outputs.key }}
-          lookup-only: true
       - uses: cachix/install-nix-action@v31
         if: steps.images.outputs.cache-hit != 'true'
         with:
@@ -310,6 +309,16 @@ jobs:
         with:
           path: ~/fws-images
           key: ${{ steps.key.outputs.key }}
+      # The run's own copy for its e2e and publish jobs: an artifact of the
+      # run, which another run's cache cannot evict, as it can the cache
+      # entry, past the repository's 10 GB.
+      - uses: actions/upload-artifact@v6
+        with:
+          name: fws-images
+          path: ~/fws-images
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
 
   # The end-to-end suite in four shards, each on a runner of its own,
   # balanced by the tests' durations in an earlier run
@@ -329,11 +338,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: actions/cache/restore@v5
+      - uses: actions/download-artifact@v7
         with:
+          name: fws-images
           path: ~/fws-images
-          key: ${{ needs.images.outputs.key }}
-          fail-on-cache-miss: true
       - name: install the Docker CLI, Docker Compose and buildx
         run: |
           brew install docker docker-compose docker-buildx podman podman-compose cri-tools
@@ -457,11 +465,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: actions/cache/restore@v5
+      - uses: actions/download-artifact@v7
         with:
+          name: fws-images
           path: ~/fws-images
-          key: ${{ needs.images.outputs.key }}
-          fail-on-cache-miss: true
       - name: log in to ghcr.io
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}

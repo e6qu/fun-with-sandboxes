@@ -1276,3 +1276,117 @@ index 1771bc1..359f761 100644
  
  /*
  Copyright 2014 The Kubernetes Authors.
+diff --git a/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go b/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go
+--- a/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go
++++ b/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go
+@@ -1,5 +1,5 @@
+-//go:build !linux && !windows
+-// +build !linux,!windows
++//go:build !linux && !windows && !darwin
++// +build !linux,!windows,!darwin
+ 
+ /*
+ Copyright 2018 The Kubernetes Authors.
+diff --git a/pkg/kubelet/kuberuntime/kuberuntime_container_darwin.go b/pkg/kubelet/kuberuntime/kuberuntime_container_darwin.go
+new file mode 100644
+--- /dev/null
++++ b/pkg/kubelet/kuberuntime/kuberuntime_container_darwin.go
+@@ -0,0 +1,98 @@
++//go:build darwin
++// +build darwin
++
++package kuberuntime
++
++import (
++	"context"
++
++	v1 "k8s.io/api/core/v1"
++	"k8s.io/apimachinery/pkg/api/resource"
++	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
++	"k8s.io/kubernetes/pkg/kubelet/cm"
++	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
++	"k8s.io/kubernetes/pkg/kubelet/types"
++)
++
++// darwinQuotaPeriod is the CPU quota's period in microseconds, as a Linux
++// node's default CFS period.
++const darwinQuotaPeriod = 100000
++
++// applyPlatformSpecificContainerConfig gives the runtime the container's
++// limits as a Linux container's resources, which a darwin node's runtime
++// holds without cgroups: the memory limit and the CPU limit as a quota.
++// Requests set no priority: a nice value would weigh the pod against
++// every process on the Mac, not only the node's pods.
++func (m *kubeGenericRuntimeManager) applyPlatformSpecificContainerConfig(ctx context.Context, config *runtimeapi.ContainerConfig, container *v1.Container, pod *v1.Pod, uid *int64, username string, nsTarget *kubecontainer.ContainerID) error {
++	config.Linux = &runtimeapi.LinuxContainerConfig{Resources: darwinResources(pod, container)}
++	return nil
++}
++
++// darwinResources are the container's memory and CPU limits, the pod's
++// where the container sets none.
++func darwinResources(pod *v1.Pod, container *v1.Container) *runtimeapi.LinuxContainerResources {
++	limit := func(name v1.ResourceName) resource.Quantity {
++		if q, ok := container.Resources.Limits[name]; ok && !q.IsZero() {
++			return q
++		}
++		if pod.Spec.Resources != nil {
++			if q, ok := pod.Spec.Resources.Limits[name]; ok {
++				return q
++			}
++		}
++		return resource.Quantity{}
++	}
++	r := &runtimeapi.LinuxContainerResources{}
++	if mem := limit(v1.ResourceMemory); !mem.IsZero() {
++		r.MemoryLimitInBytes = mem.Value()
++	}
++	if cpu := limit(v1.ResourceCPU); !cpu.IsZero() {
++		r.CpuPeriod = darwinQuotaPeriod
++		r.CpuQuota = max(cpu.MilliValue()*darwinQuotaPeriod/1000, 1000)
++	}
++	return r
++}
++
++// generateContainerResources generates the resources an in-place resize
++// sends the runtime.
++func (m *kubeGenericRuntimeManager) generateContainerResources(ctx context.Context, pod *v1.Pod, container *v1.Container) *runtimeapi.ContainerResources {
++	return &runtimeapi.ContainerResources{Linux: darwinResources(pod, container)}
++}
++
++// generateUpdatePodSandboxResourcesRequest generates no pod sandbox
++// resources: the runtime limits each container.
++func (m *kubeGenericRuntimeManager) generateUpdatePodSandboxResourcesRequest(sandboxID string, pod *v1.Pod, podResources *cm.ResourceConfig) *runtimeapi.UpdatePodSandboxResourcesRequest {
++	return nil
++}
++
++// toKubeContainerResources reads back the limits the runtime reports.
++func toKubeContainerResources(statusResources *runtimeapi.ContainerResources) *kubecontainer.ContainerResources {
++	r := statusResources.GetLinux()
++	if r == nil {
++		return nil
++	}
++	var out kubecontainer.ContainerResources
++	if r.CpuPeriod > 0 && r.CpuQuota > 0 {
++		out.CPULimit = resource.NewMilliQuantity(r.CpuQuota*1000/r.CpuPeriod, resource.DecimalSI)
++	}
++	if r.MemoryLimitInBytes > 0 {
++		out.MemoryLimit = resource.NewQuantity(r.MemoryLimitInBytes, resource.BinarySI)
++	}
++	if out.CPULimit == nil && out.MemoryLimit == nil {
++		return nil
++	}
++	return &out
++}
++
++func toKubeContainerUser(statusUser *runtimeapi.ContainerUser) *kubecontainer.ContainerUser {
++	return nil
++}
++
++func (m *kubeGenericRuntimeManager) GetContainerSwapBehavior(pod *v1.Pod, container *v1.Container) types.SwapBehavior {
++	return types.NoSwap
++}
++
++// initSwapControllerAvailabilityCheck reports no swap controller.
++func initSwapControllerAvailabilityCheck(ctx context.Context) func() bool {
++	return func() bool { return false }
++}

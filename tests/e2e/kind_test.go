@@ -145,6 +145,14 @@ func TestKindCluster(t *testing.T) {
 	} else if out := mustKubectl("logs", "fetcher"); out != "200 OK\n" {
 		t.Errorf("a pod fetching the Service: %q", out)
 	}
+	// A pod's memory limit holds: the kubelet sends it, and a container
+	// past it is killed, as under a memory cgroup.
+	mustKubectl("run", "hog", "--image=fws/toolbox:1", "--restart=Never", "--overrides",
+		`{"spec":{"containers":[{"name":"hog","image":"fws/toolbox:1","args":["alloc","512"],"resources":{"limits":{"memory":"32Mi","cpu":"500m"}}}]}}`)
+	if _, err := kubectl("wait", "--for=jsonpath={.status.containerStatuses[0].state.terminated.reason}=OOMKilled", "--timeout=2m", "pod/hog"); err != nil {
+		out, _ := kubectl("get", "pod", "hog", "-o", "jsonpath={.status}")
+		t.Errorf("a pod past its memory limit: %v\n%s", err, out)
+	}
 	if out := mustKubectl("get", "storageclass", "standard", "-o", "jsonpath={.provisioner}"); out != "kubernetes.io/host-path" {
 		t.Errorf("the default storage class: %q", out)
 	}
