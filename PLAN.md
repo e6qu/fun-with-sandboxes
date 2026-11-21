@@ -48,7 +48,7 @@ Dev Containers CLI and VS Code's Dev Containers extension, graphical
 applications (`--security-opt seatbelt=gui`), `crictl`, the kubelet and
 kind, IPv4, IPv6 and dual-stack, run against the engine in CI on macOS 15
 and 26. A catalog of 46 darwin images is published to `ghcr.io/e6qu/fws-*`,
-at the newest versions nixpkgs packages, and Kubernetes at 1.37.2.
+at the newest upstream releases, and Kubernetes at 1.37.2.
 
 ## Roadmap
 
@@ -59,8 +59,12 @@ sets out to do.
 ## Upkeep
 
 Done at any time, since none of it is needed to show what fws does: the
-newest catalog versions, from the newest `nixpkgs-26.05-darwin` (nixos-26.11
-once released), with upstream releases nixpkgs lacks built here, as MySQL,
-MariaDB, etcd and Kubernetes are; and Kubernetes' newest release, with the
-kubelet's darwin patch rebased onto it and a kind release whose node image
-matches (Kubernetes 1.37.2, etcd 3.7.4 and kind 0.33.0, in progress).
+catalog and Kubernetes at their newest upstream releases. The images take
+`nixpkgs-26.05-darwin`'s packages (nixos-26.11's once released), and,
+where it lags, `images/catalog`'s: nixpkgs-unstable's packages, its
+recipes at the newest release, or the release's own macOS build, as for
+ClickHouse; `images/servers.nix` builds MySQL and MariaDB and
+`images/etcd` etcd, at their newest releases, and `images/kubernetes`
+Kubernetes. Kubernetes 1.37.2, etcd 3.7.4 and kind 0.33.0 merged in
+[#81](https://github.com/e6qu/fun-with-sandboxes/pull/81); the catalog at
+its newest releases is in progress.

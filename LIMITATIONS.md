@@ -37,7 +37,6 @@ what macOS offers an unprivileged process under them. Non-goals are in
     macOS's is; its `nc` only checks a port (`nc -z`); it has no `ps`,
     `top` or `vi`. `fws/base` has no package manager: add programs with
     `COPY` or by downloading darwin builds.
-  - `fws/qdrant` serves the older web UI nixpkgs builds.
   - `fws/neo4j` is the Community Edition.
   - `fws/opensearch` is the minimal distribution, without the security,
     k-NN and ML Commons plugins, so `DISABLE_SECURITY_PLUGIN` and the demo

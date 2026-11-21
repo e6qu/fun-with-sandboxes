@@ -165,7 +165,7 @@ func TestMemcached(t *testing.T) {
 // the monitoring endpoint.
 func TestNATS(t *testing.T) {
 	ctx := context.Background()
-	c, err := tcnats.Run(ctx, "fws/nats:2.14")
+	c, err := tcnats.Run(ctx, "fws/nats:2.15")
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestNATS(t *testing.T) {
 	}
 
 	const name = "fws-e2e-nats"
-	mustDocker(t, "run", "-d", "--name", name, "-p", "127.0.0.1::8222", "fws/nats:2.14")
+	mustDocker(t, "run", "-d", "--name", name, "-p", "127.0.0.1::8222", "fws/nats:2.15")
 	defer docker(t, "rm", "-f", name)
 	waitLog(t, name, "Server is ready")
 	if body := httpGet(t, "http://"+strings.TrimSpace(mustDocker(t, "port", name, "8222"))+"/healthz"); !strings.Contains(body, `"status":"ok"`) {
@@ -211,7 +211,7 @@ func TestNATS(t *testing.T) {
 // interfaces; an S3 client stores an object through it.
 func TestSeaweedFS(t *testing.T) {
 	const name = "fws-e2e-seaweedfs"
-	mustDocker(t, "run", "-d", "--name", name, "-p", "127.0.0.1::8333", "fws/seaweedfs:4.36")
+	mustDocker(t, "run", "-d", "--name", name, "-p", "127.0.0.1::8333", "fws/seaweedfs:4.54")
 	defer docker(t, "rm", "-f", "-v", name)
 	waitLog(t, name, "All enabled components are running and ready to use")
 	ctx := context.Background()

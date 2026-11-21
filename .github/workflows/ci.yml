@@ -125,17 +125,20 @@ jobs:
       - name: profile compile
         run: go test -run '^$' -bench . -benchtime 50x ./internal/seatbelt
 
-  # Nix builds MySQL and MariaDB from source, with their vendors'
-  # compilation comment (images/servers.nix), which no binary cache holds.
-  # Each server's build is kept in the Actions cache, keyed by its
-  # derivation, so it is built again only when it changes.
-  servers:
+  # Nix builds from source what no binary cache holds: MySQL and MariaDB
+  # with their vendors' compilation comment (images/servers.nix), and the
+  # catalog's packages at the releases nixpkgs lacks (images/catalog), in
+  # groups side by side (scripts/build-images.sh --prebuilt). Each group's
+  # build is kept in the Actions cache, keyed by its derivations, so it is
+  # built again only when they change, and handed to the images job as an
+  # artifact of the run.
+  prebuilt:
     runs-on: macos-15
     timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
-        server: [mysql, mariadb]
+        group: [mysql, mariadb, qdrant, meilisearch, influxdb, gitea, tools]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -149,23 +152,29 @@ jobs:
             sandbox = true
       - name: derivation
         id: drv
-        run: echo "key=server-${{ matrix.server }}-$(scripts/build-images.sh --server-derivations ${{ matrix.server }} | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+        run: echo "key=prebuilt-${{ matrix.group }}-$(scripts/build-images.sh --prebuilt-derivations ${{ matrix.group }} | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v5
         id: cache
         with:
-          path: ~/fws-servers/${{ matrix.server }}
+          path: ~/fws-prebuilt/${{ matrix.group }}
           key: ${{ steps.drv.outputs.key }}
-          lookup-only: true
       - name: build
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          paths=$(scripts/build-images.sh --servers ${{ matrix.server }})
-          nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-servers/${{ matrix.server }}" $paths
+          paths=$(scripts/build-images.sh --prebuilt ${{ matrix.group }})
+          nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-prebuilt/${{ matrix.group }}" $paths
       - uses: actions/cache/save@v5
         if: steps.cache.outputs.cache-hit != 'true'
         with:
-          path: ~/fws-servers/${{ matrix.server }}
+          path: ~/fws-prebuilt/${{ matrix.group }}
           key: ${{ steps.drv.outputs.key }}
+      - uses: actions/upload-artifact@v6
+        with:
+          name: prebuilt-${{ matrix.group }}
+          path: ~/fws-prebuilt/${{ matrix.group }}
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
 
   # The catalog's image archives, kept in the Actions cache under a hash of
   # every file their build reads (scripts/build-images.sh --inputs). A
@@ -175,7 +184,7 @@ jobs:
   # It waits for the unit tests: a change they fail spends no hour of
   # image building and end-to-end testing.
   images:
-    needs: [servers, macos, linux]
+    needs: [prebuilt, macos, linux]
     runs-on: macos-15
     timeout-minutes: 120
     steps:
@@ -201,25 +210,12 @@ jobs:
         if: steps.images.outputs.cache-hit != 'true'
         with:
           extra_nix_config: trusted-users = root runner
-      - name: database server derivations
-        if: steps.images.outputs.cache-hit != 'true'
-        id: drv
-        run: |
-          for s in mysql mariadb; do
-            echo "$s=server-$s-$(scripts/build-images.sh --server-derivations $s | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
-          done
-      - uses: actions/cache/restore@v5
+      # What the prebuilt jobs built, each group a binary cache of its own.
+      - uses: actions/download-artifact@v7
         if: steps.images.outputs.cache-hit != 'true'
         with:
-          path: ~/fws-servers/mysql
-          key: ${{ steps.drv.outputs.mysql }}
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@v5
-        if: steps.images.outputs.cache-hit != 'true'
-        with:
-          path: ~/fws-servers/mariadb
-          key: ${{ steps.drv.outputs.mariadb }}
-          fail-on-cache-miss: true
+          pattern: prebuilt-*
+          path: ~/fws-prebuilt
       # The images, their archives and a registry's copies fill the
       # runner's disk; the runner's SDKs for other platforms take tens of
       # gigabytes the build never uses.
@@ -255,7 +251,10 @@ jobs:
       - name: build images
         if: steps.images.outputs.cache-hit != 'true'
         run: |
-          substituters="file://$HOME/fws-servers/mysql?trusted=1 file://$HOME/fws-servers/mariadb?trusted=1"
+          substituters=""
+          for d in ~/fws-prebuilt/prebuilt-*; do
+            substituters="$substituters file://$d?trusted=1"
+          done
           # The daemon, as root, would claim an empty cache directory that
           # the next step fills as the runner.
           if [ -d ~/fws-built ]; then
@@ -286,7 +285,7 @@ jobs:
       - name: free what the build left
         if: steps.images.outputs.cache-hit != 'true'
         run: |
-          rm -rf ~/fws-built ~/fws-servers
+          rm -rf ~/fws-built ~/fws-prebuilt
           nix-store --gc
           df -h /
       # crane's registry keeps every blob in memory, so it stops once it
@@ -301,7 +300,7 @@ jobs:
           trap 'kill $registry' EXIT
           until curl -sf 127.0.0.1:5000/v2/ >/dev/null; do sleep 1; done
           scripts/publish-images.sh ~/fws-images 127.0.0.1:5000/e6qu
-          for ref in fws-postgres:16 fws-postgres:18 fws-redis:8 fws-nginx:1 fws-mariadb:11 fws-python:3.14 fws-node:26 fws-bun:1 fws-gitea:1 fws-dynamodb-local:2 fws-rabbitmq:4 fws-lambda/python:3.14 fws-lambda/nodejs:24 fws-lambda/java:17 fws-playwright:1.65 fws-toolbox:1 fws-busybox:1 fws-base:1 fws-ryuk:0.14.0 fws-mysql:8.4 fws-valkey:9 fws-memcached:1.6 fws-nats:2.14 fws-seaweedfs:4.36 fws-etcd:3.7 fws-consul:2.1 fws-vault:2.0 fws-mongo:8.2 fws-kafka:4.2 fws-mailpit:1.33 fws-meilisearch:1.43 fws-qdrant:1.17 fws-neo4j:2026.02 fws-clickhouse:26.5 fws-influxdb:2.7 fws-opensearch:3.5 fws-toxiproxy:2.12 fws-dind:29 fws-kube-apiserver:1.37 fws-kube-controller-manager:1.37 fws-kube-scheduler:1.37 fws-kubectl:1.37 fws-pause:3.10.2 fws-kubelet:1.37 fws-kind-node:1.37 fws-k3s:1.37; do
+          for ref in fws-postgres:16 fws-postgres:18 fws-redis:8 fws-nginx:1 fws-mariadb:11 fws-python:3.14 fws-node:26 fws-bun:1 fws-gitea:28 fws-dynamodb-local:2 fws-rabbitmq:4 fws-lambda/python:3.14 fws-lambda/nodejs:24 fws-lambda/java:17 fws-playwright:1.65 fws-toolbox:1 fws-busybox:1 fws-base:1 fws-ryuk:0.14.0 fws-mysql:8.4 fws-valkey:9 fws-memcached:1.6 fws-nats:2.15 fws-seaweedfs:4.54 fws-etcd:3.7 fws-consul:2.1 fws-vault:2.2 fws-mongo:8.3 fws-kafka:4.4 fws-mailpit:1.34 fws-meilisearch:1.57 fws-qdrant:1.20 fws-neo4j:2026.10 fws-clickhouse:26.10 fws-influxdb:2.10 fws-opensearch:3.10 fws-toxiproxy:2.13 fws-dind:29 fws-kube-apiserver:1.37 fws-kube-controller-manager:1.37 fws-kube-scheduler:1.37 fws-kubectl:1.37 fws-pause:3.10.2 fws-kubelet:1.37 fws-kind-node:1.37 fws-k3s:1.37; do
             "$crane" config "127.0.0.1:5000/e6qu/$ref" | grep -q '"os":"darwin"'
           done
       - uses: actions/cache/save@v5

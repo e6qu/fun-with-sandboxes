@@ -1,5 +1,5 @@
 {
-  "tag": "fws/kafka:4.2",
+  "tag": "fws/kafka:4.4",
   "files": {},
   "dirs": [
     "/tmp",
