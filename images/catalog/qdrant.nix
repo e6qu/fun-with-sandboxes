@@ -6,6 +6,7 @@
   protobuf,
   pkg-config,
   openssl,
+  aws-lc,
   rust-jemalloc-sys,
   rust-jemalloc-sys-unprefixed,
   versionCheckHook,
@@ -32,7 +33,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     pkg-config
   ];
 
+  # 1.20 links aws-lc-sys, which nixpkgs' Rust builds point at the
+  # system's AWS-LC.
   buildInputs = [
+    aws-lc
     openssl
     rust-jemalloc-sys
     rust-jemalloc-sys-unprefixed
