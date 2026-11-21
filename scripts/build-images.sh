@@ -2,10 +2,12 @@
 # Build the darwin image archives of the catalog into $1.
 # Needs macOS (install_name_tool, codesign) and Nix.
 #
-# build-images.sh --server-derivations [NAME...] prints the derivations of
-# the database servers Nix builds from source (images/servers.nix), and
-# build-images.sh --servers [NAME...] builds them and prints their outputs,
-# so CI can keep them between runs.
+# build-images.sh --prebuilt-derivations GROUP prints the derivations of a
+# group of the packages Nix builds from source that no binary cache holds
+# (the database servers of images/servers.nix, the catalog's packages
+# images/catalog builds), and build-images.sh --prebuilt GROUP builds them
+# and prints their outputs, so CI can build the groups side by side and
+# keep them between runs.
 #
 # build-images.sh --inputs prints the files the build reads: this script,
 # images/, and the Go sources of every package it compiles, so CI can key
@@ -72,19 +74,30 @@ case "${1:-}" in
   } | sort -u
   exit
   ;;
---server-derivations | --servers)
+--prebuilt-derivations | --prebuilt)
+  # The packages Nix builds from source that no binary cache holds, in
+  # groups CI builds side by side and keeps (.github/workflows/ci.yml): the
+  # database servers, and the catalog's packages built at releases
+  # nixpkgs lacks.
   mode=$1
-  shift
-  [ $# -gt 0 ] || set -- mysql mariadb
-  if [ "$mode" = --servers ]; then
-    "${nix[@]}" build --no-link --print-out-paths "${servers[@]}" "$@"
+  case "${2:?usage: build-images.sh --prebuilt[-derivations] GROUP}" in
+  mysql | mariadb) what=("${servers[@]}" "$2") ;;
+  qdrant) what=("${catalog[@]}" qdrant) ;;
+  meilisearch) what=("${catalog[@]}" meilisearch) ;;
+  influxdb) what=("${catalog[@]}" influxdb2-server) ;;
+  gitea) what=("${catalog[@]}" gitea gitea.data mailpit) ;;
+  tools) what=("${catalog[@]}" podman seaweedfs toxiproxy docker-client docker-buildx docker-compose valkey rabbitmq-server) ;;
+  *) echo "no such group: $2" >&2; exit 1 ;;
+  esac
+  if [ "$mode" = --prebuilt ]; then
+    NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" build --no-link --print-out-paths "${what[@]}"
   else
-    "${nix[@]}" path-info --derivation "${servers[@]}" "$@"
+    NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" path-info --derivation "${what[@]}"
   fi
   exit
   ;;
 esac
-out=${1:?usage: build-images.sh OUTPUT_DIR | --server-derivations | --servers}
+out=${1:?usage: build-images.sh OUTPUT_DIR | --prebuilt-derivations GROUP | --prebuilt GROUP}
 build=$(mktemp -d)
 trap 'rm -rf "$build"' EXIT
 mkdir -p "$out"

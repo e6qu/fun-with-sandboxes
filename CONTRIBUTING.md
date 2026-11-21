@@ -117,8 +117,9 @@ The checks CI runs, in the order to run them locally:
 
    Most packages come from Nix's binary cache. A first build compiles
    MySQL and MariaDB from source, with the compilation comment their
-   vendors' builds carry (`images/servers.nix`), and Consul and Kubernetes,
-   which no cache holds for darwin.
+   vendors' builds carry (`images/servers.nix`), the catalog's packages
+   at releases nixpkgs lacks (`images/catalog`), and Consul and
+   Kubernetes, which no cache holds for darwin: hours on one machine.
 
    ```bash
    cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e -v -count=1 -timeout 90m ./...
@@ -151,7 +152,11 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   Network.framework experiments; and benchmarks of each interposed system
   call against the native one, of a container's start, part by part, and
   of compiling a profile;
-- `servers`: the MySQL and MariaDB builds, cached by derivation;
+- `prebuilt`: what Nix builds from source that no cache holds, in groups
+  on runners of their own (`scripts/build-images.sh --prebuilt GROUP`):
+  MySQL, MariaDB and the catalog's packages at releases nixpkgs lacks,
+  each group cached by its derivations and handed to `images` as an
+  artifact;
 - `images`: the catalog's archives, cached under a hash of the files the
   build reads (`scripts/build-images.sh --inputs`), so a push that changes
   none of them skips the build. Otherwise it restores the newest earlier
@@ -160,7 +165,7 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   every archive publishes to a local registry as a darwin image. It hands
   the archives to the run's `e2e` and `publish` jobs as an artifact,
   which another run's cache cannot evict past the repository's 10 GB. It
-  waits for `linux`, `macos` and `servers`, so a change the unit tests
+  waits for `linux`, `macos` and `prebuilt`, so a change the unit tests
   fail spends no image build or end-to-end run;
 - `e2e`: the end-to-end suite, in four shards on runners of their own.
   `scripts/e2e-shard.sh` spreads the tests by their durations in
