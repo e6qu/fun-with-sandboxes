@@ -38,7 +38,14 @@ rustPlatform.buildRustPackage (finalAttrs: {
     url = "https://github.com/meilisearch/mini-dashboard/releases/download/v0.4.2/build.zip";
     hash = "sha256-I5rWwcR1RK1de9PWSIFPJOpnl0ZrB938rEo1I2Wayms=";
   };
+  # The build script's zip takes flate2 without a backend, which the
+  # tokenizers' build scripts give it in the release's build: flate2's
+  # default backend, a crate Cargo.lock holds already, is named here.
   postPatch = ''
+    substituteInPlace crates/meilisearch/Cargo.toml \
+      --replace-fail 'zip = { version = "6.0.0", optional = true, default-features = false, features = ["deflate-flate2"] }' \
+        'zip = { version = "6.0.0", optional = true, default-features = false, features = ["deflate-flate2"] }
+    flate2 = "1.1.9"'
     substituteInPlace crates/meilisearch/build.rs \
       --replace-fail 'let dashboard_assets_bytes = get(url)?.bytes()?;' \
         'let _ = (url, get::<&str>); let dashboard_assets_bytes = std::fs::read(env::var("MEILI_MINI_DASHBOARD_ZIP")?)?;'
