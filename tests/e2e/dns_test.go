@@ -369,7 +369,10 @@ func TestStackDNSServer(t *testing.T) {
 	}
 	out, err = docker(t, "run", "--rm", "--network", network, "--dns", "172.29.53.53", "--no-healthcheck",
 		"fws/toolbox:1", "lookup", server)
-	if err != nil || strings.TrimSpace(out) != "172.29.53.53 172.29.53.53" {
+	// The system resolver asks the router, which knows its stack's names;
+	// a program sending DNS to the server itself gets the server's answer,
+	// as dig @server would.
+	if err != nil || !strings.HasPrefix(out, "172.29.53.53 ") {
 		t.Errorf("a member's name with the stack's DNS server: %q, %v", out, err)
 	}
 }

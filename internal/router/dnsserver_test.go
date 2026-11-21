@@ -310,3 +310,25 @@ func TestRouterAsksAStackMembersDNSServer(t *testing.T) {
 		t.Errorf("a DNS server on a member the container does not see: %s %v", m.RCode, answerAddrs(m))
 	}
 }
+
+// The library's lookups reach a stack member's DNS server through the
+// router too, without internet access.
+func TestResolveThroughAStackMembersDNSServer(t *testing.T) {
+	file := filepath.Join(portDir(t), "network")
+	ms := []members.Member{
+		{Address: "127.88.0.2", Names: []string{"app"}, Networks: []string{"net"}},
+		{Address: "127.88.0.5", Names: []string{"dns"}, Networks: []string{"net"}, Ports: map[string]int{"53/tcp": tcpDNSServer(t, [4]byte{192, 0, 2, 53})}},
+	}
+	if err := os.WriteFile(file, members.Format(ms), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dns := &DNS{Servers: []netip.Addr{netip.MustParseAddr("127.88.0.5")}, Ndots: 1, Timeout: time.Second, Attempts: 1}
+	r, err := Listen("127.0.0.1:0", portDir(t), listenFlow, Network{File: file, Address: "127.88.0.2", DNS: dns})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if got, err := LookupName(r.Addr().String(), 4, "www.test"); err != nil || len(got) != 1 || got[0].String() != "192.0.2.53" {
+		t.Errorf("www.test: %v, %v", got, err)
+	}
+}

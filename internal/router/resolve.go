@@ -45,6 +45,13 @@ type DNS struct {
 	Attempts int
 	// port is the servers' port, 53 unless a test serves elsewhere.
 	port int
+	// member connects to the TCP port 53 of a server that is a member of
+	// the container's stack, which ok reports; the router reaches such a
+	// server whatever the container's internet access (Router.resolve).
+	member func(server netip.Addr) (c net.Conn, ok bool, err error)
+	// offline marks a container without internet access, whose servers
+	// outside the machine are out of reach.
+	offline bool
 }
 
 // ParseResolvConf reads the servers, search domains and options of a
@@ -171,6 +178,15 @@ func (d *DNS) query(ctx context.Context, name dnsmessage.Name, t dnsmessage.Type
 
 var errAnswer = errors.New("router: no usable DNS answer")
 
+// memberConn connects to server's TCP port 53 when it is a member of the
+// container's stack, which ok reports.
+func (d *DNS) memberConn(server netip.Addr) (net.Conn, bool, error) {
+	if d.member == nil {
+		return nil, false, nil
+	}
+	return d.member(server)
+}
+
 // exchange sends one query to server, over UDP, and over TCP when the UDP
 // answer comes truncated. A server that answers that the name does not
 // exist, or has no such records, answers with no addresses.
@@ -195,22 +211,39 @@ func (d *DNS) exchange(ctx context.Context, server netip.Addr, name dnsmessage.N
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	addr := netip.AddrPortFrom(server, uint16(port)).String()
-	var dialer net.Dialer
-	answer, err := d.udp(ctx, &dialer, addr, q, id)
-	if err != nil {
-		return nil, err
-	}
 	var m dnsmessage.Message
-	if err := m.Unpack(answer); err != nil {
-		return nil, err
-	}
-	if m.Truncated {
-		if answer, err = d.tcp(ctx, &dialer, addr, q); err != nil {
+	if c, ok, err := d.memberConn(server); ok {
+		if err != nil {
+			return nil, err
+		}
+		answer, err := exchangeConn(c, q, id)
+		c.Close()
+		if err != nil {
 			return nil, err
 		}
 		if err := m.Unpack(answer); err != nil {
 			return nil, err
+		}
+	} else {
+		if d.offline {
+			return nil, errAnswer
+		}
+		addr := netip.AddrPortFrom(server, uint16(port)).String()
+		var dialer net.Dialer
+		answer, err := d.udp(ctx, &dialer, addr, q, id)
+		if err != nil {
+			return nil, err
+		}
+		if err := m.Unpack(answer); err != nil {
+			return nil, err
+		}
+		if m.Truncated {
+			if answer, err = d.tcp(ctx, &dialer, addr, q); err != nil {
+				return nil, err
+			}
+			if err := m.Unpack(answer); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if m.ID != id || !m.Response || len(m.Questions) != 1 || m.Questions[0].Type != t || !strings.EqualFold(m.Questions[0].Name.String(), name.String()) {
@@ -295,10 +328,30 @@ func (r *Router) resolve(c net.Conn) {
 		return
 	}
 	var addrs []netip.Addr
-	if r.net.Internet && r.net.DNS != nil && len(name) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), ResolveTimeout)
-		addrs = r.net.DNS.Lookup(ctx, h[0], string(name))
-		cancel()
+	if r.net.DNS != nil && len(name) > 0 {
+		// The container's servers that are its stack's members it asks
+		// over TCP through the router, with or without internet access;
+		// the others only with it.
+		d := *r.net.DNS
+		d.offline = !r.net.Internet
+		d.member = func(s netip.Addr) (net.Conn, bool, error) {
+			if _, err := r.peer(s); err != nil {
+				return nil, false, nil
+			}
+			c, err := r.foreign(s, 53)
+			return c, true, err
+		}
+		askable := r.net.Internet
+		for _, s := range d.Servers {
+			if _, err := r.peer(s); err == nil {
+				askable = true
+			}
+		}
+		if askable {
+			ctx, cancel := context.WithTimeout(context.Background(), ResolveTimeout)
+			addrs = d.Lookup(ctx, h[0], string(name))
+			cancel()
+		}
 	}
 	c.Write(resolveAnswer(addrs))
 }
