@@ -36,7 +36,8 @@ let
       hash = "sha256-WkMHUK5fc35fQ4SAsFLEzsmtpOrmv7gtKCBkinQjT0M=";
     };
     dontUnpack = true;
-    nativeBuildInputs = u.lib.optional u.stdenv.hostPlatform.isDarwin u.darwin.autoSignDarwinBinariesHook;
+    # The release's binary is signed as it is built; re-signing fails on it.
+    dontFixup = true;
     installPhase = ''
       install -Dm755 $src $out/bin/clickhouse
       for t in ch chc chl benchmark check-marks checksum-for-compressed-block client compressor disks \

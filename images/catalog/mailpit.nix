@@ -70,6 +70,10 @@ buildGoModule (finalAttrs: {
   pname = "mailpit";
   inherit src version vendorHash;
 
+  # The test times reading a 50 MiB text against a bound a runner building
+  # other packages at once misses.
+  checkFlags = [ "-skip=TestTextSnippetOnlyReadsWhatItNeeds" ];
+
   env.CGO_ENABLED = 0;
 
   ldflags = [

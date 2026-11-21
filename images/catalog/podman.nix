@@ -37,7 +37,6 @@
   writableTmpDirAsHomeHook,
   coreutils,
   runtimeShell,
-  fetchpatch,
 }:
 buildGoModule (finalAttrs: {
   pname = "podman";
@@ -59,13 +58,6 @@ buildGoModule (finalAttrs: {
 
     # we intentionally don't build and install the helper so we shouldn't display messages to users about it
     ./podman-rm-podman-mac-helper-msg.patch
-    # Fix `podman completion` in the build sandbox
-    # https://github.com/podman-container-tools/podman/pull/29832
-    (fetchpatch {
-      name = "fix-podman-completion.patch";
-      url = "https://github.com/podman-container-tools/podman/commit/7cef788844bdaae01ca672a55698d40428644eb4.patch";
-      hash = "sha256-CAECXYRFyOF4aIc9qIZQceiz5vE/gFGyitjPI48IhYU=";
-    })
   ];
 
   vendorHash = null;

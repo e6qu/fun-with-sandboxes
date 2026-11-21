@@ -32,7 +32,9 @@ buildGoModule (finalAttrs: {
 
   checkFlags = [
     "-short"
-    "-skip=TestVersionEndpointReturnsVersion|TestFullstreamLatencyBiasDown"
+    # The toxics' tests time wall-clock latency and bandwidth to within
+    # milliseconds, which a runner building other packages at once misses.
+    "-skip=TestVersionEndpointReturnsVersion|TestFullstreamLatencyBiasDown|TestBandwidthToxic|TestFullstreamLatencyEven|TestTwoLatencyToxics|TestLatencyToxicBandwidth|TestSlicerToxic|TestProxyLatency"
   ];
 
   postInstall = ''

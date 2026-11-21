@@ -24,7 +24,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     hash = "sha256-m4InR9PpMOR3pqumAdBQoC6wFtoWF964qTQJ4/PP1tM=";
   };
 
-  cargoHash = "sha256-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  cargoHash = "sha256-gYvZ5l+ZMn8FI9hoZbGo6wRJPFODL0+kaWzW8xefJCQ=";
 
   nativeBuildInputs = [
     protobuf

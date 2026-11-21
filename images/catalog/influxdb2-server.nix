@@ -83,7 +83,7 @@ buildGoModule {
     perl
   ];
 
-  vendorHash = "sha256-ZiwbrLsy1OF9yGUJ3VLrIIRDysMDR5fwQ+Egi8BfDA4=";
+  vendorHash = "sha256-NY0R9YUeJX2M3jtMWAACtjPY55N2vQb+bDkoypjmrM0=";
   subPackages = [
     "cmd/influxd"
     "cmd/telemetryd"
