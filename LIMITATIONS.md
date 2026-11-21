@@ -31,7 +31,6 @@ what macOS offers an unprivileged process under them. Non-goals are in
   - `fws/kafka` is Apache Kafka in Confluent's layout, without Confluent's
     own components such as the REST Proxy; `KAFKA_TOOLS_LOG4J_LOGLEVEL`
     sets nothing.
-  - `fws/meilisearch` serves no mini-dashboard and has no `meilitool`.
   - `fws/busybox` holds separate GNU and other darwin programs, not
     BusyBox's applets, so options differ; its `tar` is libarchive's, as
     macOS's is; its `nc` only checks a port (`nc -z`); it has no `ps`,

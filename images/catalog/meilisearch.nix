@@ -2,6 +2,7 @@
   lib,
   rustPlatform,
   fetchFromGitHub,
+  fetchurl,
   nixosTests,
   nix-update-script,
   oniguruma,
@@ -20,12 +21,28 @@ rustPlatform.buildRustPackage (finalAttrs: {
     hash = "sha256-Vmzl6kiI7/pZn/RiBfJY1x7HqTGDeNh3Xt40PnkkfAE=";
   };
 
-  cargoBuildFlags = [ "--package=meilisearch" ];
+  # meilitool too, which the release's image carries.
+  cargoBuildFlags = [
+    "--package=meilisearch"
+    "--package=meilitool"
+  ];
 
   cargoHash = "sha256-Lnp+7k4ZEwkcVNWHJMBAbqJevmaF/P9Wn1+E30Xn+f0=";
 
-  # Default features include mini dashboard which downloads something from the internet.
+  # The mini-dashboard its release serves, whose assets the build script
+  # downloads: it reads them from the fetched archive, which it checks
+  # against the SHA-1 Cargo.toml pins, as it checks the download.
   buildNoDefaultFeatures = true;
+  buildFeatures = [ "meilisearch/mini-dashboard" ];
+  env.MEILI_MINI_DASHBOARD_ZIP = fetchurl {
+    url = "https://github.com/meilisearch/mini-dashboard/releases/download/v0.4.2/build.zip";
+    hash = "sha256-I5rWwcR1RK1de9PWSIFPJOpnl0ZrB938rEo1I2Wayms=";
+  };
+  postPatch = ''
+    substituteInPlace crates/meilisearch/build.rs \
+      --replace-fail 'let dashboard_assets_bytes = get(url)?.bytes()?;' \
+        'let _ = (url, get::<&str>); let dashboard_assets_bytes = std::fs::read(env::var("MEILI_MINI_DASHBOARD_ZIP")?)?;'
+  '';
 
   nativeBuildInputs = [
     pkg-config

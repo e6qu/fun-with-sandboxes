@@ -308,7 +308,7 @@ mkimage $(accounts mailpit) -spec images/mailpit/image.json -closure "$build/mai
   -link /mailpit=bin/mailpit -out "$out/mailpit.tar"
 
 # Meilisearch as its image runs it: /bin/meilisearch, linked from
-# /meilisearch, in /meili_data.
+# /meilisearch, and /bin/meilitool, in /meili_data.
 meilisearch=$(cat_with meilisearch meilisearch)
 closure "$meilisearch" > "$build/meilisearch.closure"
 mkimage $(accounts meilisearch) -spec images/meilisearch/image.json -closure "$build/meilisearch.closure" -pkg "$meilisearch" \

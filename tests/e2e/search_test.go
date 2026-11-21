@@ -66,6 +66,14 @@ func TestMeilisearch(t *testing.T) {
 	if code, _ := httpDo(t, "GET", base+"/indexes", "", nil); code != 401 {
 		t.Errorf("a request without the key: %d", code)
 	}
+	if code, out, err := m.Exec(ctx, []string{"meilitool", "--help"}); err != nil || code != 0 {
+		b, _ := io.ReadAll(out)
+		t.Errorf("meilitool: %d %v %s", code, err, b)
+	}
+	// The mini-dashboard, served in development as the release serves it.
+	if code, body := httpDo(t, "GET", base+"/", "", nil); code != 200 || !strings.Contains(strings.ToLower(body), "<html") {
+		t.Errorf("the mini-dashboard: %d %.200s", code, body)
+	}
 	code, body := httpDo(t, "POST", base+"/indexes/notes/documents?primaryKey=id", `[{"id":1,"text":"kept in the index"},{"id":2,"text":"something else"}]`, auth)
 	if code != 202 {
 		t.Fatalf("add documents: %d %s", code, body)
