@@ -1,5 +1,5 @@
 {
-  "tag": "fws/opensearch:3.5",
+  "tag": "fws/opensearch:3.10",
   "files": {},
   "dirs": [
     "/tmp"

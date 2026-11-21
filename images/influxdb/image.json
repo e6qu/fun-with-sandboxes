@@ -1,5 +1,5 @@
 {
-  "tag": "fws/influxdb:2.7",
+  "tag": "fws/influxdb:2.10",
   "files": {},
   "dirs": [
     "/tmp",

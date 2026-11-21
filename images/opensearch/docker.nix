@@ -1,17 +1,18 @@
-# OpenSearch's minimal distribution of the version nixpkgs packages, and
-# the files its image adds to it, from the opensearch-build release.
+# OpenSearch's minimal distribution at its newest release, and the files
+# its image adds to it, from the opensearch-build release.
 { nixpkgs, system ? builtins.currentSystem }:
 let
   pkgs = (builtins.getFlake nixpkgs).legacyPackages.${system};
-  src = "https://raw.githubusercontent.com/opensearch-project/opensearch-build/${pkgs.opensearch.version}";
+  version = "3.10.0";
+  src = "https://raw.githubusercontent.com/opensearch-project/opensearch-build/${version}";
   file = path: hash: { name = baseNameOf path; path = pkgs.fetchurl { url = "${src}/${path}"; inherit hash; }; };
 in
 pkgs.linkFarm "opensearch-docker" [
   {
     name = "opensearch-min.tar.gz";
     path = pkgs.fetchurl {
-      url = "https://artifacts.opensearch.org/releases/core/opensearch/${pkgs.opensearch.version}/opensearch-min-${pkgs.opensearch.version}-linux-x64.tar.gz";
-      hash = "sha256-9Q0pJx+9D1pVTvHRW9Bi78DwajH1c0bjOVbO1qWNnYI=";
+      url = "https://artifacts.opensearch.org/releases/core/opensearch/${version}/opensearch-min-${version}-linux-x64.tar.gz";
+      hash = "sha256-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     };
   }
   (file "docker/release/config/opensearch/opensearch-docker-entrypoint-3.x.sh" "sha256-0lQUw+aBg1uA13tq23rESe2v0DzvhR934CUuhutU9d0=")

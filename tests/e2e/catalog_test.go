@@ -240,7 +240,7 @@ git -C /tmp/r log --format=%s`, "bash 5\n42\n200\nfirst\n"},
 
 func TestGitea(t *testing.T) {
 	const name = "fws-e2e-gitea"
-	waitedRun(t, name, "-p", "127.0.0.1::3000", "-e", "GITEA__security__INSTALL_LOCK=true", "fws/gitea:1")
+	waitedRun(t, name, "-p", "127.0.0.1::3000", "-e", "GITEA__security__INSTALL_LOCK=true", "fws/gitea:28")
 	addr := "http://" + strings.TrimSpace(mustDocker(t, "port", name, "3000"))
 	if body := httpGet(t, addr+"/api/v1/version"); !strings.Contains(body, `"version":"1.`) {
 		t.Fatalf("version: %q", body)

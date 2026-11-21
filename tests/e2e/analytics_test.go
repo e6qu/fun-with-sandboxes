@@ -51,7 +51,7 @@ func TestClickHouse(t *testing.T) {
 		"INSERT INTO analytics.notes VALUES (1, 'kept');\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c, err := tcclickhouse.Run(ctx, "fws/clickhouse:26.5", tcclickhouse.WithUsername("reporter"), tcclickhouse.WithPassword("s3cret"),
+	c, err := tcclickhouse.Run(ctx, "fws/clickhouse:26.10", tcclickhouse.WithUsername("reporter"), tcclickhouse.WithPassword("s3cret"),
 		tcclickhouse.WithDatabase("analytics"), tcclickhouse.WithInitScripts(script))
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {
@@ -83,7 +83,7 @@ func TestClickHouse(t *testing.T) {
 func TestInfluxDB(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	c, err := tcinfluxdb.Run(ctx, "fws/influxdb:2.7", tcinfluxdb.WithV2Auth("acme", "metrics", "admin", "password123"),
+	c, err := tcinfluxdb.Run(ctx, "fws/influxdb:2.10", tcinfluxdb.WithV2Auth("acme", "metrics", "admin", "password123"),
 		tcinfluxdb.WithV2AdminToken("a-token"))
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {
@@ -116,7 +116,7 @@ func TestInfluxDB(t *testing.T) {
 func TestOpenSearch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	c, err := tcopensearch.Run(ctx, "fws/opensearch:3.5")
+	c, err := tcopensearch.Run(ctx, "fws/opensearch:3.10")
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestOpenSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := map[string]string{"Content-Type": "application/json"}
-	if code, body := httpDo(t, "GET", base+"/", "", h); code != 200 || !strings.Contains(body, `"number" : "3.5.0"`) {
+	if code, body := httpDo(t, "GET", base+"/", "", h); code != 200 || !strings.Contains(body, `"number" : "3.10.0"`) {
 		t.Errorf("the root: %d %s", code, body)
 	}
 	if code, body := httpDo(t, "PUT", base+"/notes/_doc/1?refresh=true", `{"text":"kept in the index"}`, h); code != 201 {
@@ -162,7 +162,7 @@ func TestToxiproxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := tctoxiproxy.Run(ctx, "fws/toxiproxy:2.12", tctoxiproxy.WithProxy("web", "web:80"), tcnetwork.WithNetwork(nil, nw))
+	c, err := tctoxiproxy.Run(ctx, "fws/toxiproxy:2.13", tctoxiproxy.WithProxy("web", "web:80"), tcnetwork.WithNetwork(nil, nw))
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {
 		t.Fatal(err)

@@ -1,5 +1,5 @@
 {
-  "tag": "fws/clickhouse:26.5",
+  "tag": "fws/clickhouse:26.10",
   "files": {},
   "dirs": [
     "/tmp",

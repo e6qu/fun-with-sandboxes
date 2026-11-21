@@ -207,6 +207,11 @@ connection, never on a fixed sleep.
   in the README's catalog and in the `images` job's registry check in
   `.github/workflows/ci.yml`, and drive it in `tests/e2e/catalog_test.go`
   through the client its users would use.
+- **A newer release.** An image takes `nixpkgs-26.05-darwin`'s package;
+  where that lags upstream, add it to `images/catalog`: nixpkgs-unstable's
+  package when it has the newest release, else its recipe copied there at
+  the release, or the release's own macOS build. GitHub's source archives
+  hash as `git archive` of the tag lays the tree out.
 - **BuildKit.** Change the packages it copies with
   `scripts/sync-buildkit.sh`, and patches in `third_party/buildkit-patches`.
   Never edit `third_party/buildkit` by hand: CI checks it matches the

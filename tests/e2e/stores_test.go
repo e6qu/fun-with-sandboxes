@@ -138,7 +138,7 @@ func TestConsul(t *testing.T) {
 // up before it reads as ready.
 func TestVault(t *testing.T) {
 	ctx := context.Background()
-	v, err := tcvault.Run(ctx, "fws/vault:2.0", tcvault.WithToken("root-token"),
+	v, err := tcvault.Run(ctx, "fws/vault:2.2", tcvault.WithToken("root-token"),
 		tcvault.WithInitCommand("secrets enable transit", "write -f transit/keys/note-key", "kv put secret/note body=kept"))
 	testcontainers.CleanupContainer(t, v)
 	if err != nil {
@@ -183,7 +183,7 @@ func TestMongoDB(t *testing.T) {
 		{name: "replica set with a root user", opts: append(append([]testcontainers.ContainerCustomizer{}, auth...), tcmongodb.WithReplicaSet("rs1")), auth: true, replSet: "rs1"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			m, err := tcmongodb.Run(ctx, "fws/mongo:8.2", c.opts...)
+			m, err := tcmongodb.Run(ctx, "fws/mongo:8.3", c.opts...)
 			testcontainers.CleanupContainer(t, m)
 			if err != nil {
 				t.Fatal(err)

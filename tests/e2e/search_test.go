@@ -53,7 +53,7 @@ func TestMeilisearch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	const key = "a-master-key-of-16-bytes"
-	m, err := tcmeili.Run(ctx, "fws/meilisearch:1.43", tcmeili.WithMasterKey(key))
+	m, err := tcmeili.Run(ctx, "fws/meilisearch:1.57", tcmeili.WithMasterKey(key))
 	testcontainers.CleanupContainer(t, m)
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestMeilisearch(t *testing.T) {
 	if err := os.WriteFile(path, dump, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := tcmeili.Run(ctx, "fws/meilisearch:1.43", tcmeili.WithMasterKey(key), tcmeili.WithDumpImport(path))
+	restored, err := tcmeili.Run(ctx, "fws/meilisearch:1.57", tcmeili.WithMasterKey(key), tcmeili.WithDumpImport(path))
 	testcontainers.CleanupContainer(t, restored)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestMeilisearch(t *testing.T) {
 func TestQdrant(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	q, err := tcqdrant.Run(ctx, "fws/qdrant:1.17")
+	q, err := tcqdrant.Run(ctx, "fws/qdrant:1.20")
 	testcontainers.CleanupContainer(t, q)
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func TestQdrant(t *testing.T) {
 func TestNeo4j(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	n, err := tcneo4j.Run(ctx, "fws/neo4j:2026.02", tcneo4j.WithAdminPassword("letmein123"),
+	n, err := tcneo4j.Run(ctx, "fws/neo4j:2026.10", tcneo4j.WithAdminPassword("letmein123"),
 		tcneo4j.WithLabsPlugin(tcneo4j.Apoc), tcneo4j.WithNeo4jSetting("server.memory.heap.max_size", "512m"))
 	testcontainers.CleanupContainer(t, n)
 	if err != nil {
@@ -184,7 +184,7 @@ func TestNeo4j(t *testing.T) {
 		Data struct{ Values [][]string }
 	}
 	if code != 202 && code != 200 || json.Unmarshal([]byte(body), &res) != nil || len(res.Data.Values) != 1 ||
-		res.Data.Values[0][0] != "2026.02.2" || res.Data.Values[0][1] != "kept" {
+		res.Data.Values[0][0] != "2026.10.2" || res.Data.Values[0][1] != "kept" {
 		t.Fatalf("the query: %d %s", code, body)
 	}
 	r, err := n.CopyFileFromContainer(ctx, "/var/lib/neo4j/conf/neo4j.conf")

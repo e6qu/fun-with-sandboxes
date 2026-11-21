@@ -27,7 +27,7 @@ import (
 func TestKafka(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	k, err := tckafka.Run(ctx, "fws/kafka:4.2", tckafka.WithClusterID("kraftCluster"))
+	k, err := tckafka.Run(ctx, "fws/kafka:4.4", tckafka.WithClusterID("kraftCluster"))
 	testcontainers.CleanupContainer(t, k)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestKafkaOnANetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer nw.Remove(context.Background())
-	broker, err := testcontainers.Run(ctx, "fws/kafka:4.2",
+	broker, err := testcontainers.Run(ctx, "fws/kafka:4.4",
 		testcontainers.WithEnv(map[string]string{
 			"KAFKA_ADVERTISED_LISTENERS": "PLAINTEXT://kafka:9092",
 			"KAFKA_LOG4J_ROOT_LOGLEVEL":  "WARN",
@@ -92,7 +92,7 @@ func TestKafkaOnANetwork(t *testing.T) {
 kafka-topics --bootstrap-server kafka:9092 --create --topic notes --partitions 1 --replication-factor 1
 echo kept | kafka-console-producer --bootstrap-server kafka:9092 --topic notes
 kafka-console-consumer --bootstrap-server kafka:9092 --topic notes --from-beginning --max-messages 1 --timeout-ms 60000 | sed 's/^/consumed /'`
-	client, err := testcontainers.Run(ctx, "fws/kafka:4.2",
+	client, err := testcontainers.Run(ctx, "fws/kafka:4.4",
 		testcontainers.WithCmd("sh", "-c", script),
 		testcontainers.WithWaitStrategyAndDeadline(3*time.Minute, wait.ForExit()),
 		tcnetwork.WithNetwork(nil, nw))
@@ -156,7 +156,7 @@ func logsOnFailure(t *testing.T, c testcontainers.Container) {
 func TestMailpit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	m, err := tcmailpit.Run(ctx, "fws/mailpit:1.33", tcmailpit.WithSMTPAuth("sender", "secret"))
+	m, err := tcmailpit.Run(ctx, "fws/mailpit:1.34", tcmailpit.WithSMTPAuth("sender", "secret"))
 	testcontainers.CleanupContainer(t, m)
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestMailpit(t *testing.T) {
 // until it first passes.
 func TestMailpitHealth(t *testing.T) {
 	const name = "fws-e2e-mailpit"
-	waitedRun(t, name, "fws/mailpit:1.33")
+	waitedRun(t, name, "fws/mailpit:1.34")
 	if out := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.Config.Healthcheck.StartInterval}}", name)); out != "1s" {
 		t.Errorf("the health check's start interval: %q", out)
 	}
