@@ -12,7 +12,7 @@ pkgs.linkFarm "opensearch-docker" [
     name = "opensearch-min.tar.gz";
     path = pkgs.fetchurl {
       url = "https://artifacts.opensearch.org/releases/core/opensearch/${version}/opensearch-min-${version}-linux-x64.tar.gz";
-      hash = "sha256-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      hash = "sha256-J0D5rEda49Zj+hEA2Qi3OdRn7x7359zqWczaRSGyxrA=";
     };
   }
   (file "docker/release/config/opensearch/opensearch-docker-entrypoint-3.x.sh" "sha256-0lQUw+aBg1uA13tq23rESe2v0DzvhR934CUuhutU9d0=")
