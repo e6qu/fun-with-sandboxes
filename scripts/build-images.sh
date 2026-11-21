@@ -615,7 +615,7 @@ mkimage $(accounts kubelet) -spec images/kubelet/image.json -closure "$build/kub
 go build -o "$build/kind-node-entry" ./images/kind-node/entry
 # crictl, upstream's, which kind and its users run in a node against the
 # runtime's CRI, built from its module as the release builds it.
-crictl_src=$(GOFLAGS=-mod=mod go mod download -json "sigs.k8s.io/cri-tools@v1.35.0" | sed -n 's/.*"Dir": "\(.*\)",/\1/p')
+crictl_src=$(GOFLAGS=-mod=mod go mod download -json "sigs.k8s.io/cri-tools@v1.37.0" | sed -n 's/.*"Dir": "\(.*\)",/\1/p')
 cp -R "$crictl_src" "$build/crictl-src"
 chmod -R u+w "$build/crictl-src"
 (cd "$build/crictl-src" && CGO_ENABLED=0 GOFLAGS=-mod=mod go build -o "$build/crictl" ./cmd/crictl)

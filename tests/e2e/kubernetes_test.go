@@ -146,7 +146,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 	run("etcd", "fws/etcd:3.6", "etcd", "--name", "etcd", "--data-dir", "/var/lib/etcd/data",
 		"--listen-client-urls", "http://0.0.0.0:2379", "--advertise-client-urls", "http://etcd:2379")
 	const pkiDir = "/etc/kubernetes/pki/"
-	run("kube-apiserver", "fws/kube-apiserver:1.35", "kube-apiserver",
+	run("kube-apiserver", "fws/kube-apiserver:1.37", "kube-apiserver",
 		"--etcd-servers=http://etcd:2379", "--secure-port=6443",
 		"--tls-cert-file="+pkiDir+"apiserver.crt", "--tls-private-key-file="+pkiDir+"apiserver.key",
 		"--client-ca-file="+pkiDir+"ca.crt",
@@ -158,7 +158,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "docker", append([]string{"run", "--rm", "--network", network,
-			"-v", dir + ":/etc/kubernetes/pki:ro", "fws/kubectl:1.35", "kubectl", "--kubeconfig=" + pkiDir + "admin.conf"}, args...)...)
+			"-v", dir + ":/etc/kubernetes/pki:ro", "fws/kubectl:1.37", "kubectl", "--kubeconfig=" + pkiDir + "admin.conf"}, args...)...)
 		// The image's entrypoint, go-runner, logs to stderr.
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
@@ -253,7 +253,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 	// As kubeadm's static pods, which the kubelet restarts, the controller
 	// manager and the scheduler start against a serving API server and
 	// restart while its bootstrap roles are being written.
-	run("kube-controller-manager", "fws/kube-controller-manager:1.35", "kube-controller-manager",
+	run("kube-controller-manager", "fws/kube-controller-manager:1.37", "kube-controller-manager",
 		"--kubeconfig="+pkiDir+"controller-manager.conf",
 		"--authentication-kubeconfig="+pkiDir+"controller-manager.conf", "--authorization-kubeconfig="+pkiDir+"controller-manager.conf",
 		"--bind-address=127.0.0.1", "--leader-elect=true", "--use-service-account-credentials=true",
@@ -263,12 +263,12 @@ func TestKubernetesControlPlane(t *testing.T) {
 		// As kind's: each node takes a /24 of the cluster's pod subnet,
 		// which its runtime's pod network takes as its own.
 		"--allocate-node-cidrs=true", "--cluster-cidr=10.244.0.0/16")
-	run("kube-scheduler", "fws/kube-scheduler:1.35", "kube-scheduler",
+	run("kube-scheduler", "fws/kube-scheduler:1.37", "kube-scheduler",
 		"--kubeconfig="+pkiDir+"scheduler.conf",
 		"--authentication-kubeconfig="+pkiDir+"scheduler.conf", "--authorization-kubeconfig="+pkiDir+"scheduler.conf",
 		"--bind-address=127.0.0.1", "--leader-elect=true")
 
-	if out := mustKubectl("version", "-o", "json"); !strings.Contains(out, `"gitVersion": "v1.35.0"`) {
+	if out := mustKubectl("version", "-o", "json"); !strings.Contains(out, `"gitVersion": "v1.37.2"`) {
 		t.Errorf("kubectl version: %s", out)
 	}
 
@@ -308,7 +308,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 	joinNode := func(node, container string) string {
 		t.Helper()
 		mustDocker(t, "run", "-d", "--privileged", "--restart=on-failure", "--name", container, "--network", network, "--network-alias", node,
-			"-v", dir+":/etc/kubernetes/pki:ro", "--entrypoint", "/bin/sh", "fws/kubelet:1.35", "-c",
+			"-v", dir+":/etc/kubernetes/pki:ro", "--entrypoint", "/bin/sh", "fws/kubelet:1.37", "-c",
 			"fws-kube-proxy --kubeconfig="+pkiDir+"kube-proxy.conf & "+
 				"exec kubelet --kubeconfig="+pkiDir+node+".conf --container-runtime-endpoint=unix://$FWS_ENGINE --hostname-override="+node+
 				" --cgroups-per-qos=false --enforce-node-allocatable= --fail-swap-on=false --eviction-hard='memory.available<10Mi' --resolv-conf=/dev/null"+
@@ -316,13 +316,13 @@ func TestKubernetesControlPlane(t *testing.T) {
 				" --register-with-taints=e2e/loading=true:NoSchedule")
 		mustKubectl("wait", "--for=create", "--timeout=2m", "node/"+node)
 		mustKubectl("wait", "--for=condition=Ready", "--timeout=2m", "node/"+node)
-		if out := mustKubectl("get", "node/"+node, "-o", "jsonpath={.status.nodeInfo.operatingSystem} {.status.nodeInfo.kubeletVersion} {.status.nodeInfo.containerRuntimeVersion}"); !strings.HasPrefix(out, "darwin v1.35.0 fun-with-sandboxes://") {
+		if out := mustKubectl("get", "node/"+node, "-o", "jsonpath={.status.nodeInfo.operatingSystem} {.status.nodeInfo.kubeletVersion} {.status.nodeInfo.containerRuntimeVersion}"); !strings.HasPrefix(out, "darwin v1.37.2 fun-with-sandboxes://") {
 			t.Errorf("%s's info: %q", node, out)
 		}
 		sock := strings.TrimSpace(mustDocker(t, "exec", container, "/bin/sh", "-c", "echo $FWS_ENGINE"))
 		ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 		defer cancel()
-		save := exec.CommandContext(ctx, "docker", "save", "fws/pause:3.10.1", "fws/nginx:1", "fws/toolbox:1", "fws/kubectl:1.35")
+		save := exec.CommandContext(ctx, "docker", "save", "fws/pause:3.10.2", "fws/nginx:1", "fws/toolbox:1", "fws/kubectl:1.37")
 		load := exec.CommandContext(ctx, "docker", "-H", "unix://"+sock, "load")
 		pipe, err := save.StdoutPipe()
 		if err != nil {
@@ -419,7 +419,7 @@ func TestKubernetesControlPlane(t *testing.T) {
 	// The kubernetes Service reaches the API server, beyond the pod
 	// network: an in-cluster client, kubectl with the pod's service
 	// account, asks for its health.
-	mustKubectl("run", "in-cluster", "--image=fws/kubectl:1.35", "--restart=OnFailure", "--command", "--", "kubectl", "get", "--raw", "/healthz")
+	mustKubectl("run", "in-cluster", "--image=fws/kubectl:1.37", "--restart=OnFailure", "--command", "--", "kubectl", "get", "--raw", "/healthz")
 	if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/in-cluster"); err != nil {
 		out, _ := kubectl("logs", "in-cluster")
 		t.Errorf("kubectl in a pod, through the kubernetes Service: %v\n%s", err, out)

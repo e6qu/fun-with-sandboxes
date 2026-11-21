@@ -1,5 +1,5 @@
 {
-  "tag": "fws/kube-controller-manager:1.35",
+  "tag": "fws/kube-controller-manager:1.37",
   "files": {},
   "dirs": [
     "/tmp"

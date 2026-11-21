@@ -48,30 +48,19 @@ Dev Containers CLI and VS Code's Dev Containers extension, graphical
 applications (`--security-opt seatbelt=gui`), `crictl`, the kubelet and
 kind, IPv4, IPv6 and dual-stack, run against the engine in CI on macOS 15
 and 26. A catalog of 46 darwin images is published to `ghcr.io/e6qu/fws-*`,
-at the newest versions nixpkgs packages, except Kubernetes, still at
-1.35.0.
+at the newest versions nixpkgs packages, and Kubernetes at 1.37.2.
 
 ## Roadmap
 
-One pull request open at a time, large rather than granular. The roadmap
-ends when its last gap is closed: fws then does what it sets out to do.
-
-1. **Presentation gaps**, merged in
-   [#79](https://github.com/e6qu/fun-with-sandboxes/pull/79): `PATH`,
-   `HOME` and `docker top`'s commands read as the container's paths;
-   tmpfs mounts and volumes take `uid` and `gid`.
-2. **Remaining gaps** (#80, in progress), each removing a LIMITATIONS
-   entry: Podman's `kube play`, `kube generate` and `kube down`; a DNS
-   server a member of the stack runs, serving it; pod resource limits, the
-   kubelet's `resources.limits` held as `--memory` and `--cpus`.
+Complete: its last gaps closed in
+[#80](https://github.com/e6qu/fun-with-sandboxes/pull/80). fws does what it
+sets out to do.
 
 ## Upkeep
 
-Not on the roadmap, and done at any time, since none of it is needed to
-show what fws does: newer catalog versions (the newest
-`nixpkgs-26.05-darwin`, nixos-26.11 once released, and upstream releases
-nixpkgs lacks built here, as MySQL and MariaDB already are in
-`images/servers.nix`), and Kubernetes past 1.35 (1.36.3 in the pinned
-channel, 1.37.2 in nixpkgs-unstable): the control-plane images, the
-kubelet's darwin patch rebased, `fws/kind-node`, `fws/k3s` and a kind
-release whose node image matches.
+Done at any time, since none of it is needed to show what fws does: the
+newest catalog versions, from the newest `nixpkgs-26.05-darwin` (nixos-26.11
+once released), with upstream releases nixpkgs lacks built here, as MySQL,
+MariaDB and Kubernetes are; and Kubernetes' newest release, with the
+kubelet's darwin patch rebased onto it and a kind release whose node image
+matches (Kubernetes 1.37.2 and kind 0.33.0, in progress).

@@ -79,11 +79,11 @@ builds it from Nix packages into archives for `docker load`
 | `fws/seaweedfs:4.36` | the subcommand and its flags, as `mini` (the default: master, volume, filer, S3 on 8333, WebDAV and the admin UI), `server`, `master`, `volume`, `filer`, `s3` or `shell`; `/data` |
 | `fws/mongo:8.2` | `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD` (or their `_FILE` forms), `MONGO_INITDB_DATABASE`, `/docker-entrypoint-initdb.d/*.js` and `*.sh`, run against a server that listens on loopback alone; arguments to `mongod`, which binds every address unless they or its configuration name some; `mongosh` |
 | `fws/etcd:3.6` | arguments to `etcd`, with `etcdctl` and `etcdutl`; clients on 2379, peers on 2380 |
-| `fws/kube-apiserver:1.35`, `fws/kube-controller-manager:1.35`, `fws/kube-scheduler:1.35`, `fws/kubectl:1.35` | Kubernetes 1.35.0, the release kind's node image ships, laid out as its release images are: the command and its flags, run through `/go-runner` (its `--log-file` and `--also-stdout`), with the binary in `/usr/local/bin`; the API server on 6443, the controller manager on 10257, the scheduler on 10259 |
-| `fws/kubelet:1.35` | Kubernetes 1.35.0's kubelet with its darwin parts (`images/kubernetes/kubelet-darwin.patch`): the node's capacity and use from macOS's kernel, and no cgroups; run privileged, it runs its pods on the engine nested in its container, through the CRI that engine serves at `$FWS_ENGINE` |
-| `fws/k3s:1.35` | k3s's image, as Testcontainers' k3s module runs it, from `fws/kind-node`'s parts: `k3s server` brings up a single-node cluster with kubeadm on the node's address on the default bridge network and writes `/etc/rancher/k3s/k3s.yaml`; `k3s kubectl`, `ctr` and `crictl` run against it. `k3s.Run(ctx, "fws/k3s:1.35")` |
-| `fws/kind-node:1.35` | kind's node image from the parts above: `kind create cluster --image fws/kind-node:1.35` runs kubeadm, the kubelet and `fws-kube-proxy` in each node, with the control plane's images loaded into the node's engine under the names kubeadm gives them (see [kind](#kind)) |
-| `fws/pause:3.10.1` | Kubernetes' pause program, the infra container of a CRI pod sandbox |
+| `fws/kube-apiserver:1.37`, `fws/kube-controller-manager:1.37`, `fws/kube-scheduler:1.37`, `fws/kubectl:1.37` | Kubernetes 1.37.2, the release kind's node image ships, laid out as its release images are: the command and its flags, run through `/go-runner` (its `--log-file` and `--also-stdout`), with the binary in `/usr/local/bin`; the API server on 6443, the controller manager on 10257, the scheduler on 10259 |
+| `fws/kubelet:1.37` | Kubernetes 1.37.2's kubelet with its darwin parts (`images/kubernetes/kubelet-darwin.patch`): the node's capacity and use from macOS's kernel, and no cgroups; run privileged, it runs its pods on the engine nested in its container, through the CRI that engine serves at `$FWS_ENGINE` |
+| `fws/k3s:1.37` | k3s's image, as Testcontainers' k3s module runs it, from `fws/kind-node`'s parts: `k3s server` brings up a single-node cluster with kubeadm on the node's address on the default bridge network and writes `/etc/rancher/k3s/k3s.yaml`; `k3s kubectl`, `ctr` and `crictl` run against it. `k3s.Run(ctx, "fws/k3s:1.37")` |
+| `fws/kind-node:1.37` | kind's node image from the parts above: `kind create cluster --image fws/kind-node:1.37` runs kubeadm, the kubelet and `fws-kube-proxy` in each node, with the control plane's images loaded into the node's engine under the names kubeadm gives them (see [kind](#kind)) |
+| `fws/pause:3.10.2` | Kubernetes' pause program, the infra container of a CRI pod sandbox |
 | `fws/consul:2.1` | `CONSUL_LOCAL_CONFIG`, `CONSUL_BIND_INTERFACE`, `CONSUL_CLIENT_INTERFACE`; arguments to `consul` (default `agent -dev -client 0.0.0.0`); HTTP on 8500, DNS on 8600 |
 | `fws/vault:2.0` | `VAULT_DEV_ROOT_TOKEN_ID`, `VAULT_DEV_LISTEN_ADDRESS`, `VAULT_LOCAL_CONFIG`, `VAULT_REDIRECT_INTERFACE`, `VAULT_CLUSTER_INTERFACE`; arguments to `vault` (default `server -dev`); port 8200 |
 | `fws/kafka:4.2` | `KAFKA_` variables, written into `/etc/kafka/kafka.properties` as Confluent's images write them (`KAFKA_ADVERTISED_LISTENERS` becomes `advertised.listeners`), `CLUSTER_ID`, and `KAFKA_LOG4J_ROOT_LOGLEVEL` and `KAFKA_LOG4J_LOGGERS` for its log on standard output, through the `/etc/confluent/docker` scripts Testcontainers' module drives; one KRaft broker and controller by default, clients on 9092; Kafka's tools in `/usr/bin` |
@@ -267,7 +267,7 @@ The socket serves the CRI too, as gRPC over HTTP/2, so the kubelet and
 crictl --runtime-endpoint unix://$HOME/.fws/docker.sock pods
 ```
 
-A pod sandbox is an `fws/pause:3.10.1` container holding the pod's network
+A pod sandbox is an `fws/pause:3.10.2` container holding the pod's network
 and published ports, which the pod's containers join, as cri-dockerd maps
 CRI onto Docker's. Pods join the engine's pod network, `fws-pods`, on the
 node's pod CIDR (IPv4, IPv6 or dual-stack), and reach the pods of other
@@ -283,11 +283,11 @@ containerd does.
 ## kind
 
 [kind](https://kind.sigs.k8s.io)'s docker provider drives the engine, with
-`fws/kind-node:1.35` as its node image:
+`fws/kind-node:1.37` as its node image:
 
 ```bash
 export DOCKER_HOST=unix://$HOME/.fws/docker.sock
-kind create cluster --image fws/kind-node:1.35
+kind create cluster --image fws/kind-node:1.37
 kubectl get nodes
 ```
 

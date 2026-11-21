@@ -5,7 +5,7 @@
 let
   pkgs = (builtins.getFlake nixpkgs).legacyPackages.${system};
   kubernetes = import ./kubernetes.nix { inherit nixpkgs system; };
-  version = "3.10.1";
+  version = "3.10.2";
 in
 pkgs.stdenv.mkDerivation {
   pname = "pause";
