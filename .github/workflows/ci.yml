@@ -153,21 +153,54 @@ jobs:
       - name: derivation
         id: drv
         run: echo "key=prebuilt-${{ matrix.group }}-$(scripts/build-images.sh --prebuilt-derivations ${{ matrix.group }} | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      # The group's build, or else what an earlier run built of it: a run
+      # cancelled or failed partway keeps what it finished (below), from
+      # which the next substitutes.
       - uses: actions/cache/restore@v5
         id: cache
         with:
           path: ~/fws-prebuilt/${{ matrix.group }}
           key: ${{ steps.drv.outputs.key }}
+          restore-keys: |
+            ${{ steps.drv.outputs.key }}-
+            prebuilt-${{ matrix.group }}-
       - name: build
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
+          dir="$HOME/fws-prebuilt/${{ matrix.group }}"
+          # The daemon, as root, would claim an empty cache directory that
+          # this step fills as the runner.
+          if [ -d "$dir" ]; then
+            export NIX_CONFIG="extra-substituters = file://$dir?trusted=1"
+          fi
           paths=$(scripts/build-images.sh --prebuilt ${{ matrix.group }})
-          nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-prebuilt/${{ matrix.group }}" $paths
+          nix --extra-experimental-features nix-command copy --to "file://$dir" $paths
       - uses: actions/cache/save@v5
         if: steps.cache.outputs.cache-hit != 'true'
         with:
           path: ~/fws-prebuilt/${{ matrix.group }}
           key: ${{ steps.drv.outputs.key }}
+      # A build stopped partway, by a failure or a newer push, keeps the
+      # store paths it finished, under a key the next run restores from
+      # but does not take for the whole group.
+      - name: keep what a stopped build finished
+        id: partial
+        if: (failure() || cancelled()) && steps.cache.outputs.cache-hit != 'true' && steps.drv.outputs.key != ''
+        run: |
+          built=$(nix --extra-experimental-features nix-command path-info --json --all | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          entries = d.items() if isinstance(d, dict) else ((e["path"], e) for e in d)
+          print(" ".join(p for p, i in entries if i and i.get("ultimate")))')
+          if [ -n "$built" ]; then
+            nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-prebuilt/${{ matrix.group }}" $built
+            echo "kept=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/cache/save@v5
+        if: (failure() || cancelled()) && steps.partial.outputs.kept == 'true'
+        with:
+          path: ~/fws-prebuilt/${{ matrix.group }}
+          key: ${{ steps.drv.outputs.key }}-partial-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-artifact@v6
         with:
           name: prebuilt-${{ matrix.group }}

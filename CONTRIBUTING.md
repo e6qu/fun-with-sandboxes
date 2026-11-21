@@ -156,7 +156,8 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   on runners of their own (`scripts/build-images.sh --prebuilt GROUP`):
   MySQL, MariaDB and the catalog's packages at releases nixpkgs lacks,
   each group cached by its derivations and handed to `images` as an
-  artifact;
+  artifact. A group's run stopped partway, by a failure or a newer push,
+  keeps what it finished, which the next run substitutes;
 - `images`: the catalog's archives, cached under a hash of the files the
   build reads (`scripts/build-images.sh --inputs`), so a push that changes
   none of them skips the build. Otherwise it restores the newest earlier
