@@ -20,8 +20,8 @@ in
 {
   mysql = commented (release pkgs.mysql84 "8.4.13"
     "https://dev.mysql.com/get/Downloads/MySQL-8.4/mysql-8.4.13.tar.gz"
-    "sha256-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=") "MySQL Community Server - GPL";
+    "sha256-9t3H9/tkYrq4tTOxPAavP/9X+pyhIlm4GrE82ZMLnVg=") "MySQL Community Server - GPL";
   mariadb = commented (release pkgs.mariadb "11.4.14"
     "https://archive.mariadb.org/mariadb-11.4.14/source/mariadb-11.4.14.tar.gz"
-    "sha256-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=") "mariadb.org binary distribution";
+    "sha256-UpUCWDXaRJhxUYYG9QwRNAR9+XjkOTnkVTc33QeOEmE=") "mariadb.org binary distribution";
 }
