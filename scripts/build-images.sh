@@ -222,8 +222,9 @@ closure "$nats" > "$build/nats.closure"
 mkimage $(accounts nats) -spec images/nats/image.json -closure "$build/nats.closure" -pkg "$nats" \
   -file "/nats-server.conf=images/nats/nats-server.conf" -out "$out/nats.tar"
 
-# etcd as its release image lays it out: the binaries in /usr/local/bin.
-etcd=$(pkg_with etcd etcd)
+# etcd as its release image lays it out: the binaries in /usr/local/bin,
+# built here at the release nixpkgs does not package yet.
+etcd=$(output_with etcd -f images/etcd/etcd.nix --argstr nixpkgs "$nixpkgs")
 closure "$etcd" > "$build/etcd.closure"
 mkimage $(accounts etcd) -spec images/etcd/image.json -closure "$build/etcd.closure" -pkg "$etcd" \
   -link /usr/local/bin/etcd=../../../bin/etcd -link /usr/local/bin/etcdctl=../../../bin/etcdctl -link /usr/local/bin/etcdutl=../../../bin/etcdutl \
@@ -615,7 +616,7 @@ mkimage $(accounts kubelet) -spec images/kubelet/image.json -closure "$build/kub
 go build -o "$build/kind-node-entry" ./images/kind-node/entry
 # crictl, upstream's, which kind and its users run in a node against the
 # runtime's CRI, built from its module as the release builds it.
-crictl_src=$(GOFLAGS=-mod=mod go mod download -json "sigs.k8s.io/cri-tools@v1.35.0" | sed -n 's/.*"Dir": "\(.*\)",/\1/p')
+crictl_src=$(GOFLAGS=-mod=mod go mod download -json "sigs.k8s.io/cri-tools@v1.37.0" | sed -n 's/.*"Dir": "\(.*\)",/\1/p')
 cp -R "$crictl_src" "$build/crictl-src"
 chmod -R u+w "$build/crictl-src"
 (cd "$build/crictl-src" && CGO_ENABLED=0 GOFLAGS=-mod=mod go build -o "$build/crictl" ./cmd/crictl)

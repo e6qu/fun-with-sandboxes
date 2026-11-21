@@ -824,7 +824,7 @@ carry Podman's `cause` and `response` beside Docker's `message`.
 - **CRI.** The socket also serves the Kubernetes Container Runtime
   Interface (`internal/cri`): a request over unencrypted HTTP/2 with a gRPC
   content type goes to it. It maps CRI onto the engine as cri-dockerd maps
-  it onto Docker. A pod sandbox is a pause container (`fws/pause:3.10.1`)
+  it onto Docker. A pod sandbox is a pause container (`fws/pause:3.10.2`)
   holding the pod's network, ports and DNS, which the pod's containers join
   as `--network container:` does. Every pod not on its node's network joins
   the network `fws-pods`, whose subnets are the pod CIDR the kubelet sends

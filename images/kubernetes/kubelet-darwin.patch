@@ -1,9 +1,9 @@
 diff --git a/pkg/kubelet/cadvisor/cadvisor_darwin.go b/pkg/kubelet/cadvisor/cadvisor_darwin.go
 new file mode 100644
-index 00000000..e1f13956
+index 00000000..e22b5a5a
 --- /dev/null
 +++ b/pkg/kubelet/cadvisor/cadvisor_darwin.go
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,90 @@
 +//go:build darwin
 +// +build darwin
 +
@@ -28,8 +28,8 @@ index 00000000..e1f13956
 +import (
 +	"context"
 +
-+	cadvisorapi "github.com/google/cadvisor/info/v1"
-+	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
++	cadvisorapi "github.com/google/cadvisor/lib/model"
++	"k8s.io/klog/v2"
 +	"k8s.io/kubernetes/pkg/kubelet/darwinstats"
 +)
 +
@@ -43,7 +43,7 @@ index 00000000..e1f13956
 +var _ Interface = new(cadvisorClient)
 +
 +// New creates a cAdvisor client for a macOS node.
-+func New(imageFsInfoProvider ImageFsInfoProvider, rootPath string, cgroupRoots []string, usingLegacyStats, localStorageCapacityIsolation bool) (Interface, error) {
++func New(_ klog.Logger, imageFsInfoProvider ImageFsInfoProvider, rootPath string, cgroupRoots []string, usingLegacyStats, localStorageCapacityIsolation, disableContainerDiscovery bool) (Interface, error) {
 +	client, err := darwinstats.NewClient()
 +	return &cadvisorClient{rootPath: rootPath, stats: client}, err
 +}
@@ -52,19 +52,19 @@ index 00000000..e1f13956
 +	return nil
 +}
 +
-+func (cu *cadvisorClient) ContainerInfoV2(name string, options cadvisorapiv2.RequestOptions) (map[string]cadvisorapiv2.ContainerInfo, error) {
++func (cu *cadvisorClient) ContainerInfoV2(name string, options cadvisorapi.RequestOptions) (map[string]cadvisorapi.ContainerInfo, error) {
 +	info, err := cu.stats.RootInfo()
 +	if err != nil {
 +		return nil, err
 +	}
-+	return map[string]cadvisorapiv2.ContainerInfo{"/": info}, nil
++	return map[string]cadvisorapi.ContainerInfo{"/": info}, nil
 +}
 +
-+func (cu *cadvisorClient) GetRequestedContainersInfo(containerName string, options cadvisorapiv2.RequestOptions) (map[string]*cadvisorapi.ContainerInfo, error) {
++func (cu *cadvisorClient) GetRequestedContainersInfo(containerName string, options cadvisorapi.RequestOptions) (map[string]*cadvisorapi.ContainerInfo, error) {
 +	return nil, nil
 +}
 +
-+func (cu *cadvisorClient) MachineInfo() (*cadvisorapi.MachineInfo, error) {
++func (cu *cadvisorClient) MachineInfo(klog.Logger) (*cadvisorapi.MachineInfo, error) {
 +	return cu.stats.MachineInfo()
 +}
 +
@@ -74,36 +74,39 @@ index 00000000..e1f13956
 +
 +// The node keeps its images and its containers' files on the disk of its
 +// root directory.
-+func (cu *cadvisorClient) ImagesFsInfo(context.Context) (cadvisorapiv2.FsInfo, error) {
++func (cu *cadvisorClient) ImagesFsInfo(context.Context) (cadvisorapi.FsInfo, error) {
 +	return cu.RootFsInfo()
 +}
 +
-+func (cu *cadvisorClient) ContainerFsInfo(context.Context) (cadvisorapiv2.FsInfo, error) {
++func (cu *cadvisorClient) ContainerFsInfo(context.Context) (cadvisorapi.FsInfo, error) {
 +	return cu.RootFsInfo()
 +}
 +
-+func (cu *cadvisorClient) RootFsInfo() (cadvisorapiv2.FsInfo, error) {
++func (cu *cadvisorClient) RootFsInfo() (cadvisorapi.FsInfo, error) {
 +	return cu.GetDirFsInfo(cu.rootPath)
 +}
 +
-+func (cu *cadvisorClient) GetDirFsInfo(path string) (cadvisorapiv2.FsInfo, error) {
++func (cu *cadvisorClient) GetDirFsInfo(path string) (cadvisorapi.FsInfo, error) {
 +	return darwinstats.FsInfo(path)
 +}
++
++// IsPsiEnabled reports macOS, which has no Pressure Stall Information.
++func IsPsiEnabled(_ klog.Logger) bool {
++	return false
++}
 diff --git a/pkg/kubelet/cadvisor/cadvisor_unsupported.go b/pkg/kubelet/cadvisor/cadvisor_unsupported.go
-index e555f2e5..4a3e14be 100644
+index 5c722c78..97eb5fac 100644
 --- a/pkg/kubelet/cadvisor/cadvisor_unsupported.go
 +++ b/pkg/kubelet/cadvisor/cadvisor_unsupported.go
-@@ -1,5 +1,5 @@
+@@ -1,4 +1,4 @@
 -//go:build !linux && !windows
--// +build !linux,!windows
 +//go:build !linux && !windows && !darwin
-+// +build !linux,!windows,!darwin
  
  /*
  Copyright 2015 The Kubernetes Authors.
 diff --git a/pkg/kubelet/cm/container_manager_darwin.go b/pkg/kubelet/cm/container_manager_darwin.go
 new file mode 100644
-index 00000000..6abb9dbb
+index 00000000..8284a761
 --- /dev/null
 +++ b/pkg/kubelet/cm/container_manager_darwin.go
 @@ -0,0 +1,104 @@
@@ -157,8 +160,8 @@ index 00000000..6abb9dbb
 +var _ ContainerManager = &containerManagerImpl{}
 +
 +// NewContainerManager creates the container manager of a macOS node.
-+func NewContainerManager(_ context.Context, _ mount.Interface, cadvisorInterface cadvisor.Interface, nodeConfig NodeConfig, failSwapOn bool, recorder record.EventRecorder, kubeClient clientset.Interface) (ContainerManager, error) {
-+	machineInfo, err := cadvisorInterface.MachineInfo()
++func NewContainerManager(ctx context.Context, _ mount.Interface, cadvisorInterface cadvisor.Interface, nodeConfig NodeConfig, failSwapOn bool, recorder record.EventRecorder, kubeClient clientset.Interface) (ContainerManager, error) {
++	machineInfo, err := cadvisorInterface.MachineInfo(klog.FromContext(ctx))
 +	if err != nil {
 +		return nil, err
 +	}
@@ -187,7 +190,7 @@ index 00000000..6abb9dbb
 +	return cm.nodeConfig
 +}
 +
-+func (cm *containerManagerImpl) GetCapacity(localStorageCapacityIsolation bool) v1.ResourceList {
++func (cm *containerManagerImpl) GetCapacity(_ klog.Logger, localStorageCapacityIsolation bool) v1.ResourceList {
 +	return cm.capacity
 +}
 +
@@ -212,50 +215,44 @@ index 00000000..6abb9dbb
 +	return result
 +}
 diff --git a/pkg/kubelet/cm/container_manager_unsupported.go b/pkg/kubelet/cm/container_manager_unsupported.go
-index a92f0ce8..4d2f5c69 100644
+index 8a5ff199..8379a9cd 100644
 --- a/pkg/kubelet/cm/container_manager_unsupported.go
 +++ b/pkg/kubelet/cm/container_manager_unsupported.go
-@@ -1,5 +1,5 @@
+@@ -1,4 +1,4 @@
 -//go:build !linux && !windows
--// +build !linux,!windows
 +//go:build !linux && !windows && !darwin
-+// +build !linux,!windows,!darwin
  
  /*
  Copyright 2015 The Kubernetes Authors.
 diff --git a/pkg/kubelet/config/file_unsupported.go b/pkg/kubelet/config/file_unsupported.go
-index 1b2c56a6..7d7dfdfc 100644
+index 3ea4bccd..97715576 100644
 --- a/pkg/kubelet/config/file_unsupported.go
 +++ b/pkg/kubelet/config/file_unsupported.go
-@@ -1,5 +1,5 @@
+@@ -1,4 +1,4 @@
 -//go:build !linux
--// +build !linux
 +//go:build !linux && !darwin
-+// +build !linux,!darwin
  
  /*
  Copyright 2016 The Kubernetes Authors.
 diff --git a/pkg/kubelet/config/file_linux.go b/pkg/kubelet/config/file_watch.go
-similarity index 98%
+similarity index 99%
 rename from pkg/kubelet/config/file_linux.go
 rename to pkg/kubelet/config/file_watch.go
-index f05010f8..6921ee4e 100644
+index 84ff81c9..4efbf96d 100644
 --- a/pkg/kubelet/config/file_linux.go
 +++ b/pkg/kubelet/config/file_watch.go
-@@ -1,5 +1,5 @@
+@@ -1,4 +1,4 @@
 -//go:build linux
--// +build linux
 +//go:build linux || darwin
-+// +build linux darwin
  
  /*
  Copyright 2016 The Kubernetes Authors.
 diff --git a/pkg/kubelet/darwinstats/darwinstats.go b/pkg/kubelet/darwinstats/darwinstats.go
 new file mode 100644
-index 00000000..7795eca0
+index 00000000..0d086ab9
 --- /dev/null
 +++ b/pkg/kubelet/darwinstats/darwinstats.go
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,248 @@
 +//go:build darwin
 +
 +/*
@@ -285,8 +282,7 @@ index 00000000..7795eca0
 +	"sync"
 +	"time"
 +
-+	cadvisorapi "github.com/google/cadvisor/info/v1"
-+	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
++	cadvisorapi "github.com/google/cadvisor/lib/model"
 +	"golang.org/x/sys/unix"
 +)
 +
@@ -294,7 +290,7 @@ index 00000000..7795eca0
 +type Client struct {
 +	mu      sync.Mutex
 +	started time.Time
-+	prev    *cadvisorapiv2.ContainerStats
++	prev    *cadvisorapi.ContainerStats
 +}
 +
 +// NewClient returns a client for the node it runs on.
@@ -402,7 +398,7 @@ index 00000000..7795eca0
 +}
 +
 +// sample reads the node's CPU time and memory now.
-+func (c *Client) sample() (*cadvisorapiv2.ContainerStats, error) {
++func (c *Client) sample() (*cadvisorapi.ContainerStats, error) {
 +	load, err := readCPULoad()
 +	if err != nil {
 +		return nil, err
@@ -430,7 +426,7 @@ index 00000000..7795eca0
 +	used := (anonymous + uint64(vm.wireCount) + uint64(vm.compressorPageCount)) * page
 +	// The page cache, file-backed pages, can be reclaimed.
 +	cache := uint64(vm.externalPageCount) * page
-+	return &cadvisorapiv2.ContainerStats{
++	return &cadvisorapi.ContainerStats{
 +		Timestamp: time.Now(),
 +		Cpu: &cadvisorapi.CpuStats{Usage: cadvisorapi.CpuUsage{
 +			Total: user + system, User: user, System: system,
@@ -451,50 +447,50 @@ index 00000000..7795eca0
 +// RootInfo is the node's root container: its capacity and its two most
 +// recent samples, the earlier taken by the previous call, whose difference
 +// is the CPU it uses now.
-+func (c *Client) RootInfo() (cadvisorapiv2.ContainerInfo, error) {
++func (c *Client) RootInfo() (cadvisorapi.ContainerInfo, error) {
 +	m, err := c.MachineInfo()
 +	if err != nil {
-+		return cadvisorapiv2.ContainerInfo{}, err
++		return cadvisorapi.ContainerInfo{}, err
 +	}
 +	cur, err := c.sample()
 +	if err != nil {
-+		return cadvisorapiv2.ContainerInfo{}, err
++		return cadvisorapi.ContainerInfo{}, err
 +	}
 +	c.mu.Lock()
 +	prev := c.prev
 +	c.prev = cur
 +	c.mu.Unlock()
-+	stats := []*cadvisorapiv2.ContainerStats{cur}
++	stats := []*cadvisorapi.ContainerStats{cur}
 +	if prev != nil {
 +		if d := cur.Timestamp.Sub(prev.Timestamp); d > 0 && cur.Cpu.Usage.Total >= prev.Cpu.Usage.Total {
-+			cur.CpuInst = &cadvisorapiv2.CpuInstStats{Usage: cadvisorapiv2.CpuInstUsage{
++			cur.CpuInst = &cadvisorapi.CpuInstStats{Usage: cadvisorapi.CpuInstUsage{
 +				Total:  (cur.Cpu.Usage.Total - prev.Cpu.Usage.Total) * uint64(time.Second) / uint64(d),
 +				User:   (cur.Cpu.Usage.User - prev.Cpu.Usage.User) * uint64(time.Second) / uint64(d),
 +				System: (cur.Cpu.Usage.System - prev.Cpu.Usage.System) * uint64(time.Second) / uint64(d),
 +			}}
 +		}
-+		stats = []*cadvisorapiv2.ContainerStats{prev, cur}
++		stats = []*cadvisorapi.ContainerStats{prev, cur}
 +	}
-+	return cadvisorapiv2.ContainerInfo{
-+		Spec: cadvisorapiv2.ContainerSpec{
++	return cadvisorapi.ContainerInfo{
++		Spec: cadvisorapi.ContainerSpec{
 +			CreationTime: c.started,
 +			HasCpu:       true,
 +			HasMemory:    true,
-+			Memory:       cadvisorapiv2.MemorySpec{Limit: m.MemoryCapacity},
++			Memory:       cadvisorapi.MemorySpec{Limit: m.MemoryCapacity},
 +		},
 +		Stats: stats,
 +	}, nil
 +}
 +
 +// FsInfo is the capacity and use of the filesystem path is on.
-+func FsInfo(path string) (cadvisorapiv2.FsInfo, error) {
++func FsInfo(path string) (cadvisorapi.FsInfo, error) {
 +	var s unix.Statfs_t
 +	if err := unix.Statfs(path, &s); err != nil {
-+		return cadvisorapiv2.FsInfo{}, fmt.Errorf("statfs %s: %w", path, err)
++		return cadvisorapi.FsInfo{}, fmt.Errorf("statfs %s: %w", path, err)
 +	}
 +	bsize := uint64(s.Bsize)
 +	inodes, free := s.Files, s.Ffree
-+	return cadvisorapiv2.FsInfo{
++	return cadvisorapi.FsInfo{
 +		Timestamp:  time.Now(),
 +		Device:     unix.ByteSliceToString(s.Mntfromname[:]),
 +		Mountpoint: unix.ByteSliceToString(s.Mntonname[:]),
@@ -507,7 +503,7 @@ index 00000000..7795eca0
 +}
 diff --git a/pkg/kubelet/darwinstats/libsystem_darwin.go b/pkg/kubelet/darwinstats/libsystem_darwin.go
 new file mode 100644
-index 00000000..ea41706a
+index 00000000..c29be813
 --- /dev/null
 +++ b/pkg/kubelet/darwinstats/libsystem_darwin.go
 @@ -0,0 +1,89 @@
@@ -567,14 +563,14 @@ index 00000000..ea41706a
 +
 +// vmStatistics64 is struct vm_statistics64 (mach/vm_statistics.h).
 +type vmStatistics64 struct {
-+	freeCount, activeCount, inactiveCount, wireCount  uint32
-+	zeroFillCount, reactivations, pageins, pageouts   uint64
-+	faults, cowFaults, lookups, hits, purges          uint64
-+	purgeableCount, speculativeCount                  uint32
-+	decompressions, compressions, swapins, swapouts   uint64
-+	compressorPageCount, throttledCount               uint32
-+	externalPageCount, internalPageCount              uint32
-+	totalUncompressedPagesInCompressor                uint64
++	freeCount, activeCount, inactiveCount, wireCount uint32
++	zeroFillCount, reactivations, pageins, pageouts  uint64
++	faults, cowFaults, lookups, hits, purges         uint64
++	purgeableCount, speculativeCount                 uint32
++	decompressions, compressions, swapins, swapouts  uint64
++	compressorPageCount, throttledCount              uint32
++	externalPageCount, internalPageCount             uint32
++	totalUncompressedPagesInCompressor               uint64
 +}
 +
 +var host = func() uintptr {
@@ -633,6 +629,144 @@ index 00000000..ec5305c6
 +	JMP	libc_host_statistics64(SB)
 +GLOBL	·libc_host_statistics64_trampoline_addr(SB), RODATA, $8
 +DATA	·libc_host_statistics64_trampoline_addr(SB)/8, $libc_host_statistics64_trampoline<>(SB)
+diff --git a/pkg/kubelet/kuberuntime/kuberuntime_container_darwin.go b/pkg/kubelet/kuberuntime/kuberuntime_container_darwin.go
+new file mode 100644
+index 00000000..beade9fb
+--- /dev/null
++++ b/pkg/kubelet/kuberuntime/kuberuntime_container_darwin.go
+@@ -0,0 +1,106 @@
++//go:build darwin
++// +build darwin
++
++package kuberuntime
++
++import (
++	"context"
++
++	v1 "k8s.io/api/core/v1"
++	"k8s.io/apimachinery/pkg/api/resource"
++	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
++	"k8s.io/kubernetes/pkg/kubelet/cm"
++	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
++	"k8s.io/kubernetes/pkg/kubelet/types"
++)
++
++// darwinQuotaPeriod is the CPU quota's period in microseconds, as a Linux
++// node's default CFS period.
++const darwinQuotaPeriod = 100000
++
++// applyPlatformSpecificContainerConfig gives the runtime the container's
++// limits as a Linux container's resources, which a darwin node's runtime
++// holds without cgroups: the memory limit and the CPU limit as a quota.
++// Requests set no priority: a nice value would weigh the pod against
++// every process on the Mac, not only the node's pods.
++func (m *kubeGenericRuntimeManager) applyPlatformSpecificContainerConfig(ctx context.Context, config *runtimeapi.ContainerConfig, container *v1.Container, pod *v1.Pod, uid *int64, username string, nsTarget *kubecontainer.ContainerID) error {
++	config.Linux = &runtimeapi.LinuxContainerConfig{Resources: darwinResources(pod, container)}
++	return nil
++}
++
++// darwinResources are the container's memory and CPU limits, the pod's
++// where the container sets none.
++func darwinResources(pod *v1.Pod, container *v1.Container) *runtimeapi.LinuxContainerResources {
++	limit := func(name v1.ResourceName) resource.Quantity {
++		if q, ok := container.Resources.Limits[name]; ok && !q.IsZero() {
++			return q
++		}
++		if pod.Spec.Resources != nil {
++			if q, ok := pod.Spec.Resources.Limits[name]; ok {
++				return q
++			}
++		}
++		return resource.Quantity{}
++	}
++	r := &runtimeapi.LinuxContainerResources{}
++	if mem := limit(v1.ResourceMemory); !mem.IsZero() {
++		r.MemoryLimitInBytes = mem.Value()
++	}
++	if cpu := limit(v1.ResourceCPU); !cpu.IsZero() {
++		r.CpuPeriod = darwinQuotaPeriod
++		r.CpuQuota = max(cpu.MilliValue()*darwinQuotaPeriod/1000, 1000)
++	}
++	return r
++}
++
++// generateContainerResources generates the resources an in-place resize
++// sends the runtime.
++func (m *kubeGenericRuntimeManager) generateContainerResources(ctx context.Context, pod *v1.Pod, container *v1.Container) *runtimeapi.ContainerResources {
++	return &runtimeapi.ContainerResources{Linux: darwinResources(pod, container)}
++}
++
++// generateUpdatePodSandboxResourcesRequest generates no pod sandbox
++// resources: the runtime limits each container.
++func (m *kubeGenericRuntimeManager) generateUpdatePodSandboxResourcesRequest(sandboxID string, pod *v1.Pod, podResources *cm.ResourceConfig) *runtimeapi.UpdatePodSandboxResourcesRequest {
++	return nil
++}
++
++// toKubeContainerResources reads back the limits the runtime reports.
++func toKubeContainerResources(statusResources *runtimeapi.ContainerResources) *kubecontainer.ContainerResources {
++	r := statusResources.GetLinux()
++	if r == nil {
++		return nil
++	}
++	var out kubecontainer.ContainerResources
++	if r.CpuPeriod > 0 && r.CpuQuota > 0 {
++		out.CPULimit = resource.NewMilliQuantity(r.CpuQuota*1000/r.CpuPeriod, resource.DecimalSI)
++	}
++	if r.MemoryLimitInBytes > 0 {
++		out.MemoryLimit = resource.NewQuantity(r.MemoryLimitInBytes, resource.BinarySI)
++	}
++	if out.CPULimit == nil && out.MemoryLimit == nil {
++		return nil
++	}
++	return &out
++}
++
++func toKubeContainerUser(statusUser *runtimeapi.ContainerUser) *kubecontainer.ContainerUser {
++	return nil
++}
++
++func (m *kubeGenericRuntimeManager) GetContainerSwapBehavior(pod *v1.Pod, container *v1.Container) types.SwapBehavior {
++	return types.NoSwap
++}
++
++// initSwapControllerAvailabilityCheck reports no swap controller.
++func initSwapControllerAvailabilityCheck(ctx context.Context) func() bool {
++	return func() bool { return false }
++}
++
++// isMemoryQoSEnforced reports no memory QoS, which needs cgroup v2.
++func (m *kubeGenericRuntimeManager) isMemoryQoSEnforced() bool {
++	return false
++}
++
++func (m *kubeGenericRuntimeManager) applyPodLevelMemoryHigh(_ *v1.Pod, _ *cm.ResourceConfig) {
++}
+diff --git a/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go b/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go
+index bb2a73a8..03e7d8db 100644
+--- a/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go
++++ b/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go
+@@ -1,4 +1,4 @@
+-//go:build !linux && !windows
++//go:build !linux && !windows && !darwin
+ 
+ /*
+ Copyright 2018 The Kubernetes Authors.
+diff --git a/pkg/volume/emptydir/empty_dir.go b/pkg/volume/emptydir/empty_dir.go
+index 332617ea..1f1a6324 100644
+--- a/pkg/volume/emptydir/empty_dir.go
++++ b/pkg/volume/emptydir/empty_dir.go
+@@ -169,6 +169,11 @@ func (plugin *emptyDirPlugin) newMounterInternal(spec *volume.Spec, pod *v1.Pod,
+ 		if utilfeature.DefaultFeatureGate.Enabled(features.EmptyDirVolumeMode) {
+ 			mode = spec.Volume.EmptyDir.Mode
+ 		}
++		// macOS lets no unprivileged process mount a tmpfs: memory-backed
++		// storage is a directory on disk there.
++		if medium == v1.StorageMediumMemory && runtime.GOOS == "darwin" {
++			medium = v1.StorageMediumDefault
++		}
+ 	}
+ 	return &emptyDir{
+ 		pod:             pod,
 diff --git a/pkg/volume/util/hostutil/hostutil_darwin.go b/pkg/volume/util/hostutil/hostutil_darwin.go
 new file mode 100644
 index 00000000..9f7e20f8
@@ -761,213 +895,18 @@ index 00000000..9f7e20f8
 +	return "", nil
 +}
 diff --git a/pkg/volume/util/hostutil/hostutil_unsupported.go b/pkg/volume/util/hostutil/hostutil_unsupported.go
-index c5ff9c0b..9e5e32c3 100644
+index 2fd76593..3c641a4b 100644
 --- a/pkg/volume/util/hostutil/hostutil_unsupported.go
 +++ b/pkg/volume/util/hostutil/hostutil_unsupported.go
-@@ -1,5 +1,5 @@
+@@ -1,4 +1,4 @@
 -//go:build !linux && !windows
--// +build !linux,!windows
 +//go:build !linux && !windows && !darwin
-+// +build !linux,!windows,!darwin
- 
- /*
- Copyright 2014 The Kubernetes Authors.
-diff --git a/pkg/volume/emptydir/empty_dir.go b/pkg/volume/emptydir/empty_dir.go
-index d5c29b1..cd956b7 100644
---- a/pkg/volume/emptydir/empty_dir.go
-+++ b/pkg/volume/emptydir/empty_dir.go
-@@ -20,6 +20,7 @@ import (
- 	"fmt"
- 	"os"
- 	"path/filepath"
-+	"runtime"
- 
- 	"k8s.io/kubernetes/pkg/features"
- 	"k8s.io/kubernetes/pkg/kubelet/util/swap"
-@@ -151,6 +152,11 @@ func (plugin *emptyDirPlugin) newMounterInternal(spec *volume.Spec, pod *v1.Pod,
- 			}
- 			sizeLimit = calculateEmptyDirMemorySize(nodeAllocatable.Memory(), spec, pod)
- 		}
-+		// macOS lets no unprivileged process mount a tmpfs: memory-backed
-+		// storage is a directory on disk there.
-+		if medium == v1.StorageMediumMemory && runtime.GOOS == "darwin" {
-+			medium = v1.StorageMediumDefault
-+		}
- 	}
- 	return &emptyDir{
- 		pod:             pod,
-diff --git a/staging/src/k8s.io/mount-utils/mount_darwin.go b/staging/src/k8s.io/mount-utils/mount_darwin.go
-new file mode 100644
-index 0000000..a43e773
---- /dev/null
-+++ b/staging/src/k8s.io/mount-utils/mount_darwin.go
-@@ -0,0 +1,151 @@
-+//go:build darwin
-+
-+package mount
-+
-+import (
-+	"bytes"
-+	"errors"
-+	"os"
-+	"path/filepath"
-+
-+	"golang.org/x/sys/unix"
-+)
-+
-+// Mounter implements mount.Interface on macOS, which lets no unprivileged
-+// process mount: it reads the kernel's mount table and refuses to mount.
-+type Mounter struct {
-+	mounterPath string
-+}
-+
-+var errUnprivileged = errors.New("util/mount: macOS lets no unprivileged process mount or unmount")
-+
-+func New(mounterPath string) Interface {
-+	return &Mounter{mounterPath: mounterPath}
-+}
-+
-+func (mounter *Mounter) Mount(source string, target string, fstype string, options []string) error {
-+	return errUnprivileged
-+}
-+
-+func (mounter *Mounter) MountSensitive(source string, target string, fstype string, options []string, sensitiveOptions []string) error {
-+	return errUnprivileged
-+}
-+
-+func (mounter *Mounter) MountSensitiveWithoutSystemd(source string, target string, fstype string, options []string, sensitiveOptions []string) error {
-+	return errUnprivileged
-+}
-+
-+func (mounter *Mounter) MountSensitiveWithoutSystemdWithMountFlags(source string, target string, fstype string, options []string, sensitiveOptions []string, mountFlags []string) error {
-+	return errUnprivileged
-+}
-+
-+func (mounter *Mounter) Unmount(target string) error {
-+	return errUnprivileged
-+}
-+
-+func cString(b []byte) string {
-+	if i := bytes.IndexByte(b, 0); i >= 0 {
-+		b = b[:i]
-+	}
-+	return string(b)
-+}
-+
-+// List reads the kernel's mount table.
-+func (mounter *Mounter) List() ([]MountPoint, error) {
-+	n, err := unix.Getfsstat(nil, unix.MNT_NOWAIT)
-+	if err != nil {
-+		return nil, err
-+	}
-+	fs := make([]unix.Statfs_t, n)
-+	if n, err = unix.Getfsstat(fs, unix.MNT_NOWAIT); err != nil {
-+		return nil, err
-+	}
-+	out := make([]MountPoint, 0, n)
-+	for _, f := range fs[:n] {
-+		var opts []string
-+		if f.Flags&unix.MNT_RDONLY != 0 {
-+			opts = append(opts, "ro")
-+		} else {
-+			opts = append(opts, "rw")
-+		}
-+		out = append(out, MountPoint{Device: cString(f.Mntfromname[:]), Path: cString(f.Mntonname[:]), Type: cString(f.Fstypename[:]), Opts: opts})
-+	}
-+	return out, nil
-+}
-+
-+// mountOf is the mount point of the filesystem file is on, as statfs names
-+// it, and file with its symlinks resolved.
-+func mountOf(file string) (string, string, error) {
-+	real, err := filepath.EvalSymlinks(file)
-+	if err != nil {
-+		return "", "", err
-+	}
-+	var st unix.Statfs_t
-+	if err := unix.Statfs(real, &st); err != nil {
-+		return "", "", &os.PathError{Op: "statfs", Path: file, Err: err}
-+	}
-+	return cString(st.Mntonname[:]), real, nil
-+}
-+
-+// IsLikelyNotMountPoint is exact on macOS, whose statfs names the mount
-+// point a path is on.
-+func (mounter *Mounter) IsLikelyNotMountPoint(file string) (bool, error) {
-+	mp, real, err := mountOf(file)
-+	if err != nil {
-+		return true, err
-+	}
-+	return mp != real, nil
-+}
-+
-+func (mounter *Mounter) CanSafelySkipMountPointCheck() bool {
-+	return false
-+}
-+
-+func (mounter *Mounter) IsMountPoint(file string) (bool, error) {
-+	notMnt, err := mounter.IsLikelyNotMountPoint(file)
-+	return !notMnt, err
-+}
-+
-+// GetMountRefs is the other mount points of the device mounted at pathname:
-+// none, as macOS has no bind mounts, or none when pathname is no mount point.
-+func (mounter *Mounter) GetMountRefs(pathname string) ([]string, error) {
-+	mp, real, err := mountOf(pathname)
-+	if os.IsNotExist(err) {
-+		return []string{}, nil
-+	}
-+	if err != nil {
-+		return nil, err
-+	}
-+	if mp != real {
-+		return []string{}, nil
-+	}
-+	mps, err := mounter.List()
-+	if err != nil {
-+		return nil, err
-+	}
-+	var device string
-+	for _, m := range mps {
-+		if m.Path == mp {
-+			device = m.Device
-+		}
-+	}
-+	var refs []string
-+	for _, m := range mps {
-+		if m.Device == device && m.Path != mp {
-+			refs = append(refs, m.Path)
-+		}
-+	}
-+	return refs, nil
-+}
-+
-+func (mounter *SafeFormatAndMount) formatAndMountSensitive(source string, target string, fstype string, options []string, sensitiveOptions []string, formatOptions []string) error {
-+	return errUnprivileged
-+}
-+
-+func (mounter *SafeFormatAndMount) diskLooksUnformatted(disk string) (bool, error) {
-+	return false, errUnprivileged
-+}
-+
-+func (mounter *SafeFormatAndMount) IsMountPoint(file string) (bool, error) {
-+	return mounter.Interface.IsMountPoint(file)
-+}
-diff --git a/staging/src/k8s.io/mount-utils/mount_unsupported.go b/staging/src/k8s.io/mount-utils/mount_unsupported.go
-index 0345904..60228fa 100644
---- a/staging/src/k8s.io/mount-utils/mount_unsupported.go
-+++ b/staging/src/k8s.io/mount-utils/mount_unsupported.go
-@@ -1,5 +1,5 @@
--//go:build !linux && !windows
--// +build !linux,!windows
-+//go:build !linux && !windows && !darwin
-+// +build !linux,!windows,!darwin
  
  /*
  Copyright 2014 The Kubernetes Authors.
 diff --git a/pkg/volume/util/subpath/subpath_darwin.go b/pkg/volume/util/subpath/subpath_darwin.go
 new file mode 100644
-index 0000000..7a4a38b
+index 00000000..7a4a38b4
 --- /dev/null
 +++ b/pkg/volume/util/subpath/subpath_darwin.go
 @@ -0,0 +1,190 @@
@@ -1163,7 +1102,7 @@ index 0000000..7a4a38b
 +}
 diff --git a/pkg/volume/util/subpath/subpath_darwin_test.go b/pkg/volume/util/subpath/subpath_darwin_test.go
 new file mode 100644
-index 0000000..cabb5d6
+index 00000000..cabb5d60
 --- /dev/null
 +++ b/pkg/volume/util/subpath/subpath_darwin_test.go
 @@ -0,0 +1,97 @@
@@ -1265,128 +1204,179 @@ index 0000000..cabb5d6
 +	}
 +}
 diff --git a/pkg/volume/util/subpath/subpath_unsupported.go b/pkg/volume/util/subpath/subpath_unsupported.go
-index 1771bc1..359f761 100644
+index b294ffdf..45a21197 100644
 --- a/pkg/volume/util/subpath/subpath_unsupported.go
 +++ b/pkg/volume/util/subpath/subpath_unsupported.go
-@@ -1,5 +1,5 @@
+@@ -1,4 +1,4 @@
 -//go:build !linux && !windows
--// +build !linux,!windows
 +//go:build !linux && !windows && !darwin
-+// +build !linux,!windows,!darwin
  
  /*
  Copyright 2014 The Kubernetes Authors.
-diff --git a/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go b/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go
---- a/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go
-+++ b/pkg/kubelet/kuberuntime/kuberuntime_container_unsupported.go
-@@ -1,5 +1,5 @@
--//go:build !linux && !windows
--// +build !linux,!windows
-+//go:build !linux && !windows && !darwin
-+// +build !linux,!windows,!darwin
- 
- /*
- Copyright 2018 The Kubernetes Authors.
-diff --git a/pkg/kubelet/kuberuntime/kuberuntime_container_darwin.go b/pkg/kubelet/kuberuntime/kuberuntime_container_darwin.go
+diff --git a/staging/src/k8s.io/mount-utils/mount_darwin.go b/staging/src/k8s.io/mount-utils/mount_darwin.go
 new file mode 100644
+index 00000000..a43e7733
 --- /dev/null
-+++ b/pkg/kubelet/kuberuntime/kuberuntime_container_darwin.go
-@@ -0,0 +1,98 @@
++++ b/staging/src/k8s.io/mount-utils/mount_darwin.go
+@@ -0,0 +1,151 @@
 +//go:build darwin
-+// +build darwin
 +
-+package kuberuntime
++package mount
 +
 +import (
-+	"context"
++	"bytes"
++	"errors"
++	"os"
++	"path/filepath"
 +
-+	v1 "k8s.io/api/core/v1"
-+	"k8s.io/apimachinery/pkg/api/resource"
-+	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
-+	"k8s.io/kubernetes/pkg/kubelet/cm"
-+	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
-+	"k8s.io/kubernetes/pkg/kubelet/types"
++	"golang.org/x/sys/unix"
 +)
 +
-+// darwinQuotaPeriod is the CPU quota's period in microseconds, as a Linux
-+// node's default CFS period.
-+const darwinQuotaPeriod = 100000
-+
-+// applyPlatformSpecificContainerConfig gives the runtime the container's
-+// limits as a Linux container's resources, which a darwin node's runtime
-+// holds without cgroups: the memory limit and the CPU limit as a quota.
-+// Requests set no priority: a nice value would weigh the pod against
-+// every process on the Mac, not only the node's pods.
-+func (m *kubeGenericRuntimeManager) applyPlatformSpecificContainerConfig(ctx context.Context, config *runtimeapi.ContainerConfig, container *v1.Container, pod *v1.Pod, uid *int64, username string, nsTarget *kubecontainer.ContainerID) error {
-+	config.Linux = &runtimeapi.LinuxContainerConfig{Resources: darwinResources(pod, container)}
-+	return nil
++// Mounter implements mount.Interface on macOS, which lets no unprivileged
++// process mount: it reads the kernel's mount table and refuses to mount.
++type Mounter struct {
++	mounterPath string
 +}
 +
-+// darwinResources are the container's memory and CPU limits, the pod's
-+// where the container sets none.
-+func darwinResources(pod *v1.Pod, container *v1.Container) *runtimeapi.LinuxContainerResources {
-+	limit := func(name v1.ResourceName) resource.Quantity {
-+		if q, ok := container.Resources.Limits[name]; ok && !q.IsZero() {
-+			return q
++var errUnprivileged = errors.New("util/mount: macOS lets no unprivileged process mount or unmount")
++
++func New(mounterPath string) Interface {
++	return &Mounter{mounterPath: mounterPath}
++}
++
++func (mounter *Mounter) Mount(source string, target string, fstype string, options []string) error {
++	return errUnprivileged
++}
++
++func (mounter *Mounter) MountSensitive(source string, target string, fstype string, options []string, sensitiveOptions []string) error {
++	return errUnprivileged
++}
++
++func (mounter *Mounter) MountSensitiveWithoutSystemd(source string, target string, fstype string, options []string, sensitiveOptions []string) error {
++	return errUnprivileged
++}
++
++func (mounter *Mounter) MountSensitiveWithoutSystemdWithMountFlags(source string, target string, fstype string, options []string, sensitiveOptions []string, mountFlags []string) error {
++	return errUnprivileged
++}
++
++func (mounter *Mounter) Unmount(target string) error {
++	return errUnprivileged
++}
++
++func cString(b []byte) string {
++	if i := bytes.IndexByte(b, 0); i >= 0 {
++		b = b[:i]
++	}
++	return string(b)
++}
++
++// List reads the kernel's mount table.
++func (mounter *Mounter) List() ([]MountPoint, error) {
++	n, err := unix.Getfsstat(nil, unix.MNT_NOWAIT)
++	if err != nil {
++		return nil, err
++	}
++	fs := make([]unix.Statfs_t, n)
++	if n, err = unix.Getfsstat(fs, unix.MNT_NOWAIT); err != nil {
++		return nil, err
++	}
++	out := make([]MountPoint, 0, n)
++	for _, f := range fs[:n] {
++		var opts []string
++		if f.Flags&unix.MNT_RDONLY != 0 {
++			opts = append(opts, "ro")
++		} else {
++			opts = append(opts, "rw")
 +		}
-+		if pod.Spec.Resources != nil {
-+			if q, ok := pod.Spec.Resources.Limits[name]; ok {
-+				return q
-+			}
++		out = append(out, MountPoint{Device: cString(f.Mntfromname[:]), Path: cString(f.Mntonname[:]), Type: cString(f.Fstypename[:]), Opts: opts})
++	}
++	return out, nil
++}
++
++// mountOf is the mount point of the filesystem file is on, as statfs names
++// it, and file with its symlinks resolved.
++func mountOf(file string) (string, string, error) {
++	real, err := filepath.EvalSymlinks(file)
++	if err != nil {
++		return "", "", err
++	}
++	var st unix.Statfs_t
++	if err := unix.Statfs(real, &st); err != nil {
++		return "", "", &os.PathError{Op: "statfs", Path: file, Err: err}
++	}
++	return cString(st.Mntonname[:]), real, nil
++}
++
++// IsLikelyNotMountPoint is exact on macOS, whose statfs names the mount
++// point a path is on.
++func (mounter *Mounter) IsLikelyNotMountPoint(file string) (bool, error) {
++	mp, real, err := mountOf(file)
++	if err != nil {
++		return true, err
++	}
++	return mp != real, nil
++}
++
++func (mounter *Mounter) CanSafelySkipMountPointCheck() bool {
++	return false
++}
++
++func (mounter *Mounter) IsMountPoint(file string) (bool, error) {
++	notMnt, err := mounter.IsLikelyNotMountPoint(file)
++	return !notMnt, err
++}
++
++// GetMountRefs is the other mount points of the device mounted at pathname:
++// none, as macOS has no bind mounts, or none when pathname is no mount point.
++func (mounter *Mounter) GetMountRefs(pathname string) ([]string, error) {
++	mp, real, err := mountOf(pathname)
++	if os.IsNotExist(err) {
++		return []string{}, nil
++	}
++	if err != nil {
++		return nil, err
++	}
++	if mp != real {
++		return []string{}, nil
++	}
++	mps, err := mounter.List()
++	if err != nil {
++		return nil, err
++	}
++	var device string
++	for _, m := range mps {
++		if m.Path == mp {
++			device = m.Device
 +		}
-+		return resource.Quantity{}
 +	}
-+	r := &runtimeapi.LinuxContainerResources{}
-+	if mem := limit(v1.ResourceMemory); !mem.IsZero() {
-+		r.MemoryLimitInBytes = mem.Value()
++	var refs []string
++	for _, m := range mps {
++		if m.Device == device && m.Path != mp {
++			refs = append(refs, m.Path)
++		}
 +	}
-+	if cpu := limit(v1.ResourceCPU); !cpu.IsZero() {
-+		r.CpuPeriod = darwinQuotaPeriod
-+		r.CpuQuota = max(cpu.MilliValue()*darwinQuotaPeriod/1000, 1000)
-+	}
-+	return r
++	return refs, nil
 +}
 +
-+// generateContainerResources generates the resources an in-place resize
-+// sends the runtime.
-+func (m *kubeGenericRuntimeManager) generateContainerResources(ctx context.Context, pod *v1.Pod, container *v1.Container) *runtimeapi.ContainerResources {
-+	return &runtimeapi.ContainerResources{Linux: darwinResources(pod, container)}
++func (mounter *SafeFormatAndMount) formatAndMountSensitive(source string, target string, fstype string, options []string, sensitiveOptions []string, formatOptions []string) error {
++	return errUnprivileged
 +}
 +
-+// generateUpdatePodSandboxResourcesRequest generates no pod sandbox
-+// resources: the runtime limits each container.
-+func (m *kubeGenericRuntimeManager) generateUpdatePodSandboxResourcesRequest(sandboxID string, pod *v1.Pod, podResources *cm.ResourceConfig) *runtimeapi.UpdatePodSandboxResourcesRequest {
-+	return nil
++func (mounter *SafeFormatAndMount) diskLooksUnformatted(disk string) (bool, error) {
++	return false, errUnprivileged
 +}
 +
-+// toKubeContainerResources reads back the limits the runtime reports.
-+func toKubeContainerResources(statusResources *runtimeapi.ContainerResources) *kubecontainer.ContainerResources {
-+	r := statusResources.GetLinux()
-+	if r == nil {
-+		return nil
-+	}
-+	var out kubecontainer.ContainerResources
-+	if r.CpuPeriod > 0 && r.CpuQuota > 0 {
-+		out.CPULimit = resource.NewMilliQuantity(r.CpuQuota*1000/r.CpuPeriod, resource.DecimalSI)
-+	}
-+	if r.MemoryLimitInBytes > 0 {
-+		out.MemoryLimit = resource.NewQuantity(r.MemoryLimitInBytes, resource.BinarySI)
-+	}
-+	if out.CPULimit == nil && out.MemoryLimit == nil {
-+		return nil
-+	}
-+	return &out
++func (mounter *SafeFormatAndMount) IsMountPoint(file string) (bool, error) {
++	return mounter.Interface.IsMountPoint(file)
 +}
-+
-+func toKubeContainerUser(statusUser *runtimeapi.ContainerUser) *kubecontainer.ContainerUser {
-+	return nil
-+}
-+
-+func (m *kubeGenericRuntimeManager) GetContainerSwapBehavior(pod *v1.Pod, container *v1.Container) types.SwapBehavior {
-+	return types.NoSwap
-+}
-+
-+// initSwapControllerAvailabilityCheck reports no swap controller.
-+func initSwapControllerAvailabilityCheck(ctx context.Context) func() bool {
-+	return func() bool { return false }
-+}
+diff --git a/staging/src/k8s.io/mount-utils/mount_unsupported.go b/staging/src/k8s.io/mount-utils/mount_unsupported.go
+index 9dc7d81d..8e09fc31 100644
+--- a/staging/src/k8s.io/mount-utils/mount_unsupported.go
++++ b/staging/src/k8s.io/mount-utils/mount_unsupported.go
+@@ -1,4 +1,4 @@
+-//go:build !linux && !windows
++//go:build !linux && !windows && !darwin
+ 
+ /*
+ Copyright 2014 The Kubernetes Authors.

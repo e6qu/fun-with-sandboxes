@@ -25,7 +25,7 @@ import (
 func TestK3sModule(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	c, err := k3s.Run(ctx, "fws/k3s:1.35")
+	c, err := k3s.Run(ctx, "fws/k3s:1.37")
 	defer func() {
 		if c != nil && t.Failed() {
 			if r, err := c.Logs(ctx); err == nil {

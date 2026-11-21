@@ -28,12 +28,12 @@ func TestParseK3sServer(t *testing.T) {
 
 func TestK3sKubeadmConfig(t *testing.T) {
 	o, _ := parseK3sServer([]string{"--tls-san=localhost", "--tls-san=docker.example"}, func(string) string { return "" })
-	b, err := k3sKubeadmConfig(o, "n1", "172.17.0.2", "v1.35.0")
+	b, err := k3sKubeadmConfig(o, "n1", "172.17.0.2", "v1.37.2")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`advertiseAddress: "172.17.0.2"`, `name: "n1"`, "taints: []", `value: "172.17.0.2"`, `kubernetesVersion: "v1.35.0"`,
+		`advertiseAddress: "172.17.0.2"`, `name: "n1"`, "taints: []", `value: "172.17.0.2"`, `kubernetesVersion: "v1.37.2"`,
 		`controlPlaneEndpoint: "172.17.0.2:6443"`, "  certSANs:\n  - \"localhost\"\n  - \"127.0.0.1\"\n  - \"n1\"\n  - \"docker.example\"\n",
 		`podSubnet: "10.42.0.0/16"`, `serviceSubnet: "10.43.0.0/16"`,
 	} {

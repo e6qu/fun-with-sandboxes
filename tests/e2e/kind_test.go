@@ -52,7 +52,7 @@ func TestKindCluster(t *testing.T) {
 	}}
 	if err := provider.Create(name,
 		cluster.CreateWithV1Alpha4Config(cfg),
-		cluster.CreateWithNodeImage("fws/kind-node:1.35"),
+		cluster.CreateWithNodeImage("fws/kind-node:1.37"),
 		cluster.CreateWithKubeconfigPath(kubeconfig),
 		cluster.CreateWithRetain(true),
 		cluster.CreateWithWaitForReady(3*time.Minute),
@@ -82,7 +82,7 @@ func TestKindCluster(t *testing.T) {
 	for _, n := range nodes {
 		mustKubectl("wait", "--for=condition=Ready", "--timeout=2m", "node/"+n)
 	}
-	if out := mustKubectl("get", "node", nodes[1], "-o", "jsonpath={.status.nodeInfo.operatingSystem} {.status.nodeInfo.kubeletVersion} {.spec.providerID}"); out != "darwin v1.35.0 kind://docker/"+name+"/"+nodes[1] {
+	if out := mustKubectl("get", "node", nodes[1], "-o", "jsonpath={.status.nodeInfo.operatingSystem} {.status.nodeInfo.kubeletVersion} {.spec.providerID}"); out != "darwin v1.37.2 kind://docker/"+name+"/"+nodes[1] {
 		t.Errorf("the worker's info: %q", out)
 	}
 	// The control plane runs as kubeadm's static pods, on the node's
@@ -196,7 +196,7 @@ func TestKindCluster(t *testing.T) {
 		"kubelet.log":            "kubelet",
 		"journal.log":            "Reached target Multi-User System",
 		"images.log":             "fws/nginx",
-		"kubernetes-version.txt": "v1.35.0",
+		"kubernetes-version.txt": "v1.37.2",
 		"serial.log":             "Reached target Multi-User System",
 	} {
 		b, err := os.ReadFile(filepath.Join(logs, nodes[1], file))
@@ -323,7 +323,7 @@ func kindFamilyCluster(t *testing.T, family v1alpha4.ClusterIPFamily) {
 	}
 	if err := provider.Create(name,
 		cluster.CreateWithV1Alpha4Config(cfg),
-		cluster.CreateWithNodeImage("fws/kind-node:1.35"),
+		cluster.CreateWithNodeImage("fws/kind-node:1.37"),
 		cluster.CreateWithKubeconfigPath(kubeconfig),
 		cluster.CreateWithRetain(true),
 		cluster.CreateWithWaitForReady(3*time.Minute),
@@ -441,7 +441,7 @@ func TestKindLocalRegistry(t *testing.T) {
 	}
 	if err := provider.Create(name,
 		cluster.CreateWithV1Alpha4Config(cfg),
-		cluster.CreateWithNodeImage("fws/kind-node:1.35"),
+		cluster.CreateWithNodeImage("fws/kind-node:1.37"),
 		cluster.CreateWithKubeconfigPath(kubeconfig),
 		cluster.CreateWithRetain(true),
 		cluster.CreateWithWaitForReady(3*time.Minute),

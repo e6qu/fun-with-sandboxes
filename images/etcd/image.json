@@ -1,5 +1,5 @@
 {
-  "tag": "fws/etcd:3.6",
+  "tag": "fws/etcd:3.7",
   "files": {},
   "dirs": [
     "/tmp",

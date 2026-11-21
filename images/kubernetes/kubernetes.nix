@@ -4,7 +4,7 @@
 { nixpkgs, system ? builtins.currentSystem }:
 let
   pkgs = (builtins.getFlake nixpkgs).legacyPackages.${system};
-  version = "1.35.0";
+  version = "1.37.2";
 in
 pkgs.buildGoModule {
   pname = "kubernetes";
@@ -15,7 +15,7 @@ pkgs.buildGoModule {
     tag = "v${version}";
     # The archive substitutes the refs that name the commit, which change.
     forceFetchGit = true;
-    hash = "sha256-w1Y8PqVEjRUtlqbpj51Np9Wn8JGNu7TzPkbJ59NAugE=";
+    hash = "sha256-f8I5fKBYlPsMxtoI/NUdjGOsZ7n1nOdM06hUz0tA/gI=";
   };
   vendorHash = null;
   doCheck = false;
@@ -24,7 +24,7 @@ pkgs.buildGoModule {
     WHAT = "cmd/kube-apiserver cmd/kube-controller-manager cmd/kube-scheduler cmd/kubeadm cmd/kubectl";
     # What upstream's make reads from git, which the source archive lacks.
     KUBE_GIT_VERSION = "v${version}";
-    KUBE_GIT_COMMIT = "66452049f3d692768c39c797b21b793dce80314e";
+    KUBE_GIT_COMMIT = "c50e5395f1ae2d4a2c05f28fdcc38c0916cc1a32";
     KUBE_GIT_TREE_STATE = "clean";
     # Upstream links darwin's kubectl with cgo, against a libresolv the
     # images do not carry; kind's node binaries are static.

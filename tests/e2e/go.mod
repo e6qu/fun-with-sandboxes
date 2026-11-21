@@ -38,7 +38,7 @@ require (
 	github.com/twmb/franz-go v1.22.2
 	go.mongodb.org/mongo-driver/v2 v2.10.0
 	golang.org/x/net v0.60.0
-	sigs.k8s.io/kind v0.31.0
+	sigs.k8s.io/kind v0.33.0
 	sigs.k8s.io/yaml v1.4.0
 )
 

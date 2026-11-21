@@ -27,8 +27,8 @@ import (
 )
 
 // DefaultSandboxImage is the pause image a sandbox runs, the one the
-// kubelet of Kubernetes 1.35 names.
-const DefaultSandboxImage = "fws/pause:3.10.1"
+// kubelet of Kubernetes 1.37 names.
+const DefaultSandboxImage = "fws/pause:3.10.2"
 
 // Labels the runtime keeps a CRI object's identity in, on the engine's
 // container that holds it.
