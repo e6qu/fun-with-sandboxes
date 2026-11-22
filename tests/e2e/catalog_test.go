@@ -242,7 +242,7 @@ func TestGitea(t *testing.T) {
 	const name = "fws-e2e-gitea"
 	waitedRun(t, name, "-p", "127.0.0.1::3000", "-e", "GITEA__security__INSTALL_LOCK=true", "fws/gitea:28")
 	addr := "http://" + strings.TrimSpace(mustDocker(t, "port", name, "3000"))
-	if body := httpGet(t, addr+"/api/v1/version"); !strings.Contains(body, `"version":"1.`) {
+	if body := httpGet(t, addr+"/api/v1/version"); !strings.Contains(body, `"version":"28.`) {
 		t.Fatalf("version: %q", body)
 	}
 	mustDocker(t, "exec", name, "/entry", "admin", "user", "create", "--username", "e2e", "--password", "e2e-password-1", "--email", "e2e@example.com", "--admin", "--must-change-password=false")
@@ -308,7 +308,9 @@ func TestRabbitMQ(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	q, err := ch.QueueDeclare("e2e", false, true, false, false, nil)
+	// A durable queue: RabbitMQ 4.4 refuses transient non-exclusive ones
+	// by default (the deprecated feature transient_nonexcl_queues).
+	q, err := ch.QueueDeclare("e2e", true, true, false, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
