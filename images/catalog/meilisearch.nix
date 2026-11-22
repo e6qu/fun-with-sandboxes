@@ -8,6 +8,7 @@
   oniguruma,
   pkg-config,
   rust-jemalloc-sys-unprefixed,
+  zstd,
 }:
 
 rustPlatform.buildRustPackage (finalAttrs: {
@@ -67,9 +68,12 @@ rustPlatform.buildRustPackage (finalAttrs: {
     rustPlatform.bindgenHook
   ];
 
+  # zstd for zstd-sys, which the default features link and nixpkgs'
+  # Rust builds point at the system's library.
   buildInputs = [
     oniguruma
     rust-jemalloc-sys-unprefixed
+    zstd
   ];
 
   passthru = {
