@@ -19,8 +19,9 @@ pkgs.linkFarm "opensearch-docker" [
   {
     name = "opensearch-security.zip";
     path = pkgs.fetchurl {
-      url = "https://artifacts.opensearch.org/releases/plugins/opensearch-security/${version}.0/opensearch-security-${version}.0.zip";
-      hash = "sha256-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      # The plugin's release, published to Maven Central.
+      url = "https://repo1.maven.org/maven2/org/opensearch/plugin/opensearch-security/${version}.0/opensearch-security-${version}.0.zip";
+      hash = "sha256-Wq2iAtAE6/swwQQrMfo852D/XrVV1pNjCKwjdMeFLDY=";
     };
   }
   (file "docker/release/config/opensearch/opensearch-docker-entrypoint-3.x.sh" "sha256-0lQUw+aBg1uA13tq23rESe2v0DzvhR934CUuhutU9d0=")
