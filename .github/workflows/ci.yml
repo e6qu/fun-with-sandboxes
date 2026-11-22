@@ -381,6 +381,15 @@ jobs:
             *) gh cache delete --repo "$GITHUB_REPOSITORY" "$k" || true ;;
             esac
           done
+      # What the repository's 10 GB of cache holds, largest first: a run
+      # that finds a prebuilt group or the catalog evicted shows why.
+      - name: the repository's cache
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --limit 100 --sort size_in_bytes --json key,ref,sizeInBytes \
+            --jq '.[] | "\(.sizeInBytes / 1048576 | floor) MiB  \(.ref)  \(.key)"'
       # The run's own copy for its e2e and publish jobs: an artifact of the
       # run, which another run's cache cannot evict, as it can the cache
       # entry, past the repository's 10 GB.
