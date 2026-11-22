@@ -198,9 +198,13 @@ func (s *server) run(report func(Ready)) (int, error) {
 			}
 			return c, err
 		}
-		// A relay to another stack's member sends from that stack's block,
-		// carrying the container's traffic.
+		// A relay to a member sends from its stack's block, carrying the
+		// container's traffic: another stack's, which the network file
+		// names, or the container's own.
 		dialFlow := func(stack string, raddr *net.UDPAddr) (net.Conn, error) {
+			if stack == "" {
+				stack = cfg.Stack
+			}
 			c, err := alloc.DialFlow(cfg.AllocRoot, stack, raddr)
 			if err != nil {
 				return nil, err

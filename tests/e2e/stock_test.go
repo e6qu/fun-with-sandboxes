@@ -257,9 +257,9 @@ func TestSharedNetworks(t *testing.T) {
 	// Seatbelt holds a program that skips the library, connecting with the
 	// system call itself, from a member's host port even on a shared
 	// network: a container reaches members only through its router.
-	hp := strings.TrimSpace(mustDocker(t, "exec", "e2e-shared-api", "printenv", "SANDBOX_PORT_8000"))
-	if out := mustDocker(t, "run", "--rm", "--network", network, "fws/python:3.14", "python3", "-c", rawConnect, hp); out != "EPERM\n" {
-		t.Errorf("a raw connect to a member's host port %s printed %q, want EPERM", hp, out)
+	hp := strings.TrimSpace(mustDocker(t, "exec", "e2e-shared-api", "python3", "-c", "import os; print(os.environ['SANDBOX_PORT_8000'])"))
+	if out, err := docker(t, "run", "--rm", "--network", network, "fws/toolbox:1", "rawconnect", hp); err == nil || !strings.Contains(out+err.Error(), "operation not permitted") {
+		t.Errorf("a raw connect to a member's host port %s: %v, %q, want operation not permitted", hp, err, out)
 	}
 	// Datagrams cross too, to a port with a host port and one without, and
 	// their replies come from the member's address and port.
@@ -303,16 +303,6 @@ for port in (9053, 9054):
 		t.Errorf("a reconnected container printed %q", out)
 	}
 }
-
-// rawConnect connects to loopback port argv[1] with the connect system
-// call, past the container library, and prints the result.
-const rawConnect = `import ctypes, errno, os, socket, struct, sys
-libc = ctypes.CDLL(None, use_errno=True)
-fd = socket.socket(socket.AF_INET, socket.SOCK_STREAM).detach()
-addr = struct.pack("BBH4s8x", 16, socket.AF_INET, socket.htons(int(sys.argv[1])), socket.inet_aton("127.0.0.1"))
-r = libc.syscall(98, fd, addr, 16)
-print("connected" if r == 0 else errno.errorcode[ctypes.get_errno()])
-`
 
 // Two Compose projects on an external network reach each other's services
 // on it by service name; a service not on it does not.

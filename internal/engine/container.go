@@ -1595,8 +1595,13 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	if net.rec.RouterPort != 0 {
 		spec.ConnectPorts = append(spec.ConnectPorts, net.rec.RouterPort)
 	}
+	// The proxy starts after the profile is written, on the port its stack
+	// is allocated here first.
 	proxy := ne.egressPort(net.rec.Stack)
-	if proxy != 0 && ne.hasEgress(net) {
+	if ne.hasEgress(net) {
+		if proxy, err = ne.alloc.Port(net.rec.Stack, egressKey); err != nil {
+			return seatbelt.Spec{}, err
+		}
 		spec.ConnectPorts = append(spec.ConnectPorts, proxy)
 	}
 	for p := s.PortBase; p < s.PortBase+s.BlockSize; p++ {

@@ -344,6 +344,12 @@ func run(op, arg string) error {
 	case "ps":
 		// List the processes the container sees.
 		return ps()
+	case "rawconnect":
+		// Connect to a loopback port past the container library.
+		return rawConnect(arg)
+	case "rawproctable":
+		// Read the process table's listing past the container library.
+		return rawProcTable()
 	case "shmmake":
 		// Create the POSIX shared memory object arg and leave it.
 		return shmMake(arg)
