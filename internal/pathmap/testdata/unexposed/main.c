@@ -2,7 +2,8 @@
 // dual-stack IPv6 socket, TCP and UDP, and reaches it on loopback, then
 // reaches port 7100 of stack member peer, TCP and UDP, in a sandbox that
 // lets it bind Unix sockets in its port directory and reach its router and
-// the two flow ports it gives the UDP ports alone, as a container's does,
+// the flow ports it gives the UDP ports, and datagrams to any loopback
+// port, where its router's relays lie, as a container's does,
 // and listens on published port 7200, whose host port the sandbox lets it
 // bind and reach.
 // It asks UDP sockets for their datagrams' destinations, as IPv6 and IPv4
@@ -97,7 +98,7 @@ int main(int argc, char **argv) {
     snprintf(profile, sizeof profile,
              "(version 1)(allow default)(deny network-bind)(deny network-outbound)"
              "(allow network-bind (local unix-socket (subpath \"%s\")) (local ip \"localhost:%s\"))"
-             "(allow network-outbound (remote unix-socket (subpath \"%s\")) (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\"))",
+             "(allow network-outbound (remote unix-socket (subpath \"%s\")) (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote ip \"localhost:%s\") (remote udp \"localhost:*\"))",
              argv[1], argv[6], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]);
     setvbuf(stdout, NULL, _IOLBF, 0);
     pthread_t w;
