@@ -77,8 +77,8 @@ case "${1:-}" in
 --prebuilt-derivations | --prebuilt)
   # The packages Nix builds from source that no binary cache holds, in
   # groups CI builds side by side and keeps (.github/workflows/ci.yml): the
-  # database servers, and the catalog's packages built at releases
-  # nixpkgs lacks.
+  # database servers, the catalog's packages built at releases nixpkgs
+  # lacks, Kubernetes and Consul.
   mode=$1
   case "${2:?usage: build-images.sh --prebuilt[-derivations] GROUP}" in
   mysql | mariadb) what=("${servers[@]}" "$2") ;;
@@ -87,6 +87,15 @@ case "${1:-}" in
   influxdb) what=("${catalog[@]}" influxdb2-server) ;;
   gitea) what=("${catalog[@]}" gitea gitea.data mailpit) ;;
   tools) what=("${catalog[@]}" podman seaweedfs toxiproxy docker-client docker-buildx docker-compose valkey rabbitmq-server) ;;
+  # Kubernetes, its kubelet with the darwin patch, and etcd, built here at
+  # their releases.
+  kubernetes)
+    what=(--impure --expr "map (f: import f { nixpkgs = \"$nixpkgs\"; }) [
+      $here/images/kubernetes/kubernetes.nix $here/images/kubernetes/kubelet.nix
+      $here/images/kubernetes/go-runner.nix $here/images/kubernetes/pause.nix $here/images/etcd/etcd.nix ]")
+    ;;
+  # Consul, which Hydra does not build under its licence.
+  consul) what=(--impure "$nixpkgs#consul") ;;
   *) echo "no such group: $2" >&2; exit 1 ;;
   esac
   if [ "$mode" = --prebuilt ]; then
