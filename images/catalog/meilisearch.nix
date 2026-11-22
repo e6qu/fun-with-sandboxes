@@ -29,15 +29,26 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   cargoHash = "sha256-Lnp+7k4ZEwkcVNWHJMBAbqJevmaF/P9Wn1+E30Xn+f0=";
 
-  # The mini-dashboard its release serves, whose assets the build script
-  # downloads: it reads them from the fetched archive, which it checks
-  # against the SHA-1 Cargo.toml pins, as it checks the download.
-  buildNoDefaultFeatures = true;
-  buildFeatures = [ "meilisearch/mini-dashboard" ];
+  # The release's default features: every tokenization and the
+  # mini-dashboard. Their build scripts download what they embed: the
+  # dashboard's assets, which the build script reads from the fetched
+  # archive, checked against the SHA-1 Cargo.toml pins as a download is,
+  # and lindera's Japanese and Korean dictionaries, which it takes from
+  # its build cache, checked against their MD5s as a download is.
   env.MEILI_MINI_DASHBOARD_ZIP = fetchurl {
     url = "https://github.com/meilisearch/mini-dashboard/releases/download/v0.4.2/build.zip";
     hash = "sha256-I5rWwcR1RK1de9PWSIFPJOpnl0ZrB938rEo1I2Wayms=";
   };
+  preBuild = let
+    dictionary = name: hash: fetchurl { url = "https://lindera.dev/${name}"; inherit hash; };
+    unidic = dictionary "unidic-mecab-2.1.2.tar.gz" "sha256-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    kodic = dictionary "mecab-ko-dic-2.1.1-20180720.tar.gz" "sha256-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  in ''
+    export LINDERA_BUILD_DICTIONARY_CACHE_DIR="$TMPDIR/lindera"
+    mkdir -p "$LINDERA_BUILD_DICTIONARY_CACHE_DIR/5.3.0-fmt2"
+    cp ${unidic} "$LINDERA_BUILD_DICTIONARY_CACHE_DIR/5.3.0-fmt2/unidic-mecab-2.1.2.tar.gz"
+    cp ${kodic} "$LINDERA_BUILD_DICTIONARY_CACHE_DIR/5.3.0-fmt2/mecab-ko-dic-2.1.1-20180720.tar.gz"
+  '';
   # The build script's zip takes flate2 without a backend, which the
   # tokenizers' build scripts give it in the release's build: flate2's
   # default backend, a crate Cargo.lock holds already, is named here.
