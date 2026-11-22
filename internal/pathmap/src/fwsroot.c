@@ -5233,10 +5233,11 @@ static int dgram_connect(int fd, const struct sockaddr *sa, socklen_t len);
 
 static int dgram_dest(const struct sockaddr *sa, socklen_t len, in_addr_t *v4, unsigned short *port);
 
-// relay_bind binds an unbound UDP socket about to reach another stack's
-// member to an ephemeral port of the container's own, where the kernel
-// would bind one of its own on the first datagram: the router's relay to
-// the member takes datagrams from the container's ports alone.
+// relay_bind binds an unbound UDP socket about to reach a member through
+// the container's router's relay, another stack's member or a port without
+// a host port, to an ephemeral port of the container's own, where the
+// kernel would bind one of its own on the first datagram: the relay takes
+// datagrams from the container's ports alone.
 static int relay_bind(int fd, const struct sockaddr *sa, socklen_t len) {
     if (!sa || !router_port || (state_of(fd) & NET_UNIX) || sock_type(fd) != SOCK_DGRAM) {
         return 0;
@@ -5245,8 +5246,9 @@ static int relay_bind(int fd, const struct sockaddr *sa, socklen_t len) {
     in_addr_t v4;
     unsigned short port, router = 0;
     int member = 0;
-    if (dgram_dest(sa, len, &v4, &port) == 0 && member_block(v4)) member_route(v4, SOCK_DGRAM, port, &member, &router);
-    if (member != 2) {
+    unsigned short h = 0;
+    if (dgram_dest(sa, len, &v4, &port) == 0 && member_block(v4)) h = member_route(v4, SOCK_DGRAM, port, &member, &router);
+    if (member != 2 && !(member == 1 && !h)) {
         errno = e;
         return 0;
     }
