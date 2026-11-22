@@ -135,6 +135,10 @@ jobs:
   prebuilt:
     runs-on: macos-15
     timeout-minutes: 150
+    # actions: write lets it drop the cache entries its build supersedes.
+    permissions:
+      contents: read
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -180,6 +184,21 @@ jobs:
         with:
           path: ~/fws-prebuilt/${{ matrix.group }}
           key: ${{ steps.drv.outputs.key }}
+      # The group's whole build supersedes its partial builds and its
+      # builds of older derivations, which would otherwise crowd the
+      # repository's 10 GB of cache until the other groups' entries are
+      # evicted and rebuilt.
+      - name: drop the entries this build supersedes
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "prebuilt-${{ matrix.group }}-" --limit 100 --json key --jq '.[].key' |
+            sort -u | while read -r k; do
+              if [ "$k" != "${{ steps.drv.outputs.key }}" ]; then
+                gh cache delete --repo "$GITHUB_REPOSITORY" "$k" || true
+              fi
+            done
       # A build stopped partway, by a failure or a newer push, keeps the
       # store paths it finished, under a key the next run restores from
       # but does not take for the whole group.
@@ -220,6 +239,10 @@ jobs:
     needs: [prebuilt, macos, linux]
     runs-on: macos-15
     timeout-minutes: 120
+    # actions: write lets it drop the cache entries its build supersedes.
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -341,6 +364,23 @@ jobs:
         with:
           path: ~/fws-images
           key: ${{ steps.key.outputs.key }}
+      # The catalog and the store paths this run saved supersede earlier
+      # runs', which would otherwise crowd the repository's 10 GB of cache
+      # until the prebuilt groups' entries are evicted and built again.
+      - name: drop the entries this build supersedes
+        if: steps.images.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: ${{ steps.key.outputs.key }} ${{ steps.built.outputs.cache-primary-key }}
+        run: |
+          for prefix in images- built-; do
+            gh cache list --repo "$GITHUB_REPOSITORY" --key "$prefix" --limit 100 --json key --jq '.[].key'
+          done | sort -u | while read -r k; do
+            case " $KEEP " in
+            *" $k "*) ;;
+            *) gh cache delete --repo "$GITHUB_REPOSITORY" "$k" || true ;;
+            esac
+          done
       # The run's own copy for its e2e and publish jobs: an artifact of the
       # run, which another run's cache cannot evict, as it can the cache
       # entry, past the repository's 10 GB.
