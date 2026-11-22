@@ -42,29 +42,69 @@ Consuming Dockerfiles written for Linux is not a goal.
 
 ## Where it stands
 
-Feature-complete for its purpose. Docker's CLI, Compose, buildx and
-BuildKit, Testcontainers, Podman's remote client and `podman-compose`, the
-Dev Containers CLI and VS Code's Dev Containers extension, graphical
-applications (`--security-opt seatbelt=gui`), `crictl`, the kubelet and
-kind, IPv4, IPv6 and dual-stack, run against the engine in CI on macOS 15
-and 26. A catalog of 46 darwin images is published to `ghcr.io/e6qu/fws-*`,
-at the newest upstream releases, and Kubernetes at 1.37.2.
+Docker's CLI, Compose, buildx and BuildKit, Testcontainers, Podman's
+remote client, `podman-compose`, pods and `kube play`, the Dev Containers
+CLI and VS Code's extension, graphical applications
+(`--security-opt seatbelt=gui`), `crictl`, the kubelet, kind and k3s run
+against the engine in CI on macOS 15 and 26. That includes bridge networks
+with IPv4, IPv6 and dual-stack subnets, published ports, `--network
+container:` sidecars, internal networks and the egress proxy. A catalog of
+46 darwin images is published to `ghcr.io/e6qu/fws-*` at the newest
+upstream releases. It includes Python, Node.js and the AWS Lambda runtimes
+for both. Kubernetes is at 1.37.2.
+
+What a container sees is presented by the container library, and Seatbelt
+enforces part of it. The roadmap moves the rest from presented to
+enforced, wherever an unprivileged process on macOS can enforce it.
 
 ## Roadmap
 
-Complete: its last gaps closed in
-[#80](https://github.com/e6qu/fun-with-sandboxes/pull/80). fws does what it
-sets out to do.
+Four pull requests to the finish line, in this order. Each one ships with
+the e2e tests that prove its claims on macOS.
+
+1. **Enforced isolation.** A container behaves as if under chroot, even
+   for programs that load no library:
+   - It reads only its root, its volumes, the system tree and the few host
+     files a root would hold. Seatbelt allow-lists reads instead of
+     denying a list of roots (in progress).
+   - A container's ports are its own. Every listener sits on a Unix socket
+     in the container's port directory. Seatbelt lets a container connect
+     only to the sockets of the networks it is a member of, and the router
+     alone holds the published host ports. This makes network membership
+     and internal ports enforced, not presented.
+   - Its process listing is its own. Seatbelt denies process information
+     about other sandboxes, and the `kern.proc` listing is narrowed where
+     the kernel allows it.
+2. **Limits macOS can enforce.**
+   - CPU placement and priority: `--cpuset-cpus` maps to performance or
+     efficiency cores through QoS, with per-container QoS options.
+   - A disk quota: `--storage-opt size` puts the root on a sparse APFS
+     disk image the user mounts.
+   - Bandwidth: a rate per container in the router and egress proxy.
+3. **Networks: ingress, egress and routes.**
+   - Egress policy per network and per container: allow-listed hosts and
+     ports in the egress proxy, denied elsewhere by Seatbelt.
+   - Ingress through published ports, with a source allow-list.
+   - Presented routes in `docker network inspect` and the routing sysctl
+     for a network's gateways and subnets.
+   - The `docker network` options that remain, where they translate.
+4. **Images and the CLI.**
+   - More versions of the Python, Node.js and Lambda images: the
+     supported releases each upstream maintains.
+   - An `fws` command that lists the catalog's images, their versions and
+     their tags (`fws catalog`).
+
+Done when all four have merged and `main` is green through `publish`.
+Compatibility with Compose, Testcontainers, Podman, Kubernetes, kind and
+k3s is kept by the tests that already run them; gaps they turn up go into
+the open pull request.
 
 ## Upkeep
 
-Done at any time, since none of it is needed to show what fws does: the
-catalog and Kubernetes at their newest upstream releases. The images take
-`nixpkgs-26.05-darwin`'s packages (nixos-26.11's once released), and,
-where it lags, `images/catalog`'s: nixpkgs-unstable's packages, its
-recipes at the newest release, or the release's own macOS build, as for
-ClickHouse; `images/servers.nix` builds MySQL and MariaDB and
-`images/etcd` etcd, at their newest releases, and `images/kubernetes`
-Kubernetes. Kubernetes 1.37.2, etcd 3.7.4 and kind 0.33.0 merged in
-[#81](https://github.com/e6qu/fun-with-sandboxes/pull/81); the catalog at
-its newest releases is in progress.
+Done at any time, never ahead of the roadmap: the catalog, Kubernetes,
+etcd and kind at their newest upstream releases. The images take
+`nixpkgs-26.05-darwin`'s packages. Where it lags, they take
+`images/catalog`'s instead: nixpkgs-unstable's packages, its recipes at
+the newest release, or the release's own macOS build. `images/servers.nix`
+builds MySQL and MariaDB, `images/etcd` builds etcd, and
+`images/kubernetes` builds Kubernetes.

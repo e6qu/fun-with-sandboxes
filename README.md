@@ -177,7 +177,7 @@ see `images/postgres/entry` and `internal/sandboxenv`.
 
 | | Allowed | Denied |
 |---|---|---|
-| Files | read and write its root and read-write volumes; read the macOS system tree | write anywhere else; read `/Users`, `/Volumes`, `/Library`, `/opt`, `/usr/local`, `/nix`, temp dirs, other stacks |
+| Files | read and write its root and read-write volumes; read the macOS system tree, the shells, the time zone and the CA certificates | write anywhere else; read any other host path: `/Users`, `/private/etc`, `/usr/bin`, `/usr/local`, `/opt`, temp dirs, other stacks |
 | Network | listen on its assigned loopback ports; connect to its stack's ports; reach the internet over HTTP(S) or SOCKS5 through its stack's egress proxy | listen on any other port or address; connect to anything else; reach the host through the proxy |
 | Processes | exec binaries in its root and the system shell; signal its own processes | exec other host binaries; signal or inspect other sandboxes' processes |
 | Mach services | user lookup, notifications, logging, certificate trust evaluation | keychain, pasteboard, Launch Services, TCC and everything else |
