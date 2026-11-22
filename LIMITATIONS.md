@@ -36,9 +36,9 @@ what macOS offers an unprivileged process under them. Non-goals are in
     `top` or `vi`. `fws/base` has no package manager: add programs with
     `COPY` or by downloading darwin builds.
   - `fws/neo4j` is the Community Edition.
-  - `fws/opensearch` is the minimal distribution, without the security,
-    k-NN and ML Commons plugins, so `DISABLE_SECURITY_PLUGIN` and the demo
-    configuration act on nothing.
+  - `fws/opensearch` is the minimal distribution with the security plugin,
+    without the k-NN and ML Commons plugins, whose native libraries are
+    built for Linux.
   - Kubernetes' images carry `/bin/sh` and `/bin/nc`, where upstream's are
     distroless; there is no kube-proxy or CoreDNS image.
 - **BuildKit builds on one darwin worker.** Multi-platform builds and

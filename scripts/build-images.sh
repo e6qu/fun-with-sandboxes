@@ -403,9 +403,10 @@ mkimage $(accounts influxdb influxdb 1000 1000 /home/influxdb) -spec images/infl
   -out "$out/influxdb.tar"
 
 # OpenSearch laid out at /usr/share/opensearch as its image lays it out:
-# OpenSearch's minimal distribution, of the version nixpkgs packages, with
-# the image's entrypoint and configuration and the changes its one-time
-# setup makes at build time, and nixpkgs' JDK at the bundled JDK's path.
+# OpenSearch's minimal distribution at its newest release, with its
+# security plugin and the image's entrypoint and configuration and the
+# changes its one-time setup makes at build time, and nixpkgs' JDK at the
+# bundled JDK's path.
 opensearch_docker=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/opensearch/docker.nix --argstr nixpkgs "$nixpkgs")
 jre=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#jre_headless")
 coreutils=$(pkg_with coreutils dirname)
@@ -417,6 +418,11 @@ gnused=$(pkg_with gnused sed)
 home=$(cd "$build" && pwd -P)/opensearch
 mkdir "$home"
 tar -xzf "$opensearch_docker/opensearch-min.tar.gz" -C "$home" --strip-components=1 --exclude '*/jdk/*' --exclude '*/jdk'
+# The security plugin, as the full distribution carries it, installed as
+# its image's build installs plugins; the demo configuration is set up as
+# a container starts, unless DISABLE_INSTALL_DEMO_CONFIG says otherwise.
+JAVA_HOME="$jre" PATH="$coreutils/bin:$gnugrep/bin:$gnused/bin:$PATH" "$bash/bin/bash" "$home/bin/opensearch-plugin" \
+  install --batch "file://$opensearch_docker/opensearch-security.zip"
 cp "$opensearch_docker/opensearch-docker-entrypoint-3.x.sh" "$home/opensearch-docker-entrypoint.sh"
 cp "$opensearch_docker/opensearch-onetime-setup.sh" "$home/"
 cp "$opensearch_docker/log4j2.properties" "$opensearch_docker/opensearch.yml" "$home/config/"

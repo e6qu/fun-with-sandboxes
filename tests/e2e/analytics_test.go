@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -143,6 +144,46 @@ func TestOpenSearch(t *testing.T) {
 	}
 	if code != 200 || json.Unmarshal([]byte(body), &res) != nil || len(res.Hits.Hits) != 1 || res.Hits.Hits[0].ID != "1" {
 		t.Fatalf("search: %d %s", code, body)
+	}
+}
+
+// OpenSearch as its image starts by default: the security plugin with the
+// demo configuration, serving HTTPS, admin's password the one the
+// container is given, and refusing a request without it.
+func TestOpenSearchSecurity(t *testing.T) {
+	const name = "fws-e2e-opensearch-security"
+	const password = "Fws-e2e-Passw0rd!"
+	mustDocker(t, "run", "-d", "--name", name, "-p", "127.0.0.1::9200", "-e", "discovery.type=single-node",
+		"-e", "OPENSEARCH_INITIAL_ADMIN_PASSWORD="+password, "fws/opensearch:3.10")
+	t.Cleanup(func() { docker(t, "rm", "-f", "-v", name) })
+	base := "https://" + strings.TrimSpace(mustDocker(t, "port", name, "9200"))
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	get := func(auth bool) (int, string) {
+		req, _ := http.NewRequest("GET", base+"/", nil)
+		if auth {
+			req.SetBasicAuth("admin", password)
+		}
+		res, err := client.Do(req)
+		if err != nil {
+			return 0, err.Error()
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(b)
+	}
+	var code int
+	var body string
+	for deadline := time.Now().Add(4 * time.Minute); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
+		if code, body = get(true); code == 200 {
+			break
+		}
+	}
+	if code != 200 || !strings.Contains(body, `"number" : "3.10.0"`) {
+		logs, _ := docker(t, "logs", "--tail", "60", name)
+		t.Fatalf("the root as admin: %d %s\n%s", code, body, logs)
+	}
+	if code, body := get(false); code != 401 {
+		t.Errorf("the root without credentials: %d %s", code, body)
 	}
 }
 
