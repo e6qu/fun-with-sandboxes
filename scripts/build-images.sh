@@ -291,14 +291,19 @@ kafka=$(cat_with apacheKafka kafka-server-start.sh)
 coreutils=$(pkg_with coreutils dirname)
 gnused=$(pkg_with gnused sed)
 bash=$(pkg_with bash bash)
-kafka_links=()
+# /usr/bin's kafka-* run each tool through /etc/confluent/docker/tool,
+# which has it log as the container's start configured.
+kafka_tools=()
+mkdir "$build/kafka-tools"
 for f in "$kafka"/bin/kafka-*.sh; do
   n=$(basename "$f" .sh)
-  kafka_links+=(-link "/usr/bin/$n=../../etc/confluent/docker/tool")
+  printf '#!/bin/bash\nexec /etc/confluent/docker/tool %s "$@"\n' "$n" > "$build/kafka-tools/$n"
+  chmod 755 "$build/kafka-tools/$n"
+  kafka_tools+=(-file "/usr/bin/$n=$build/kafka-tools/$n")
 done
 closure "$kafka" "$coreutils" "$gnused" "$bash" > "$build/kafka.closure"
 mkimage $(accounts kafka appuser 1000 1000 /home/appuser) -spec images/kafka/image.json -closure "$build/kafka.closure" -pkg "$kafka" \
-  -pkg "$coreutils" -pkg "$gnused" -pkg "$bash" "${kafka_links[@]}" \
+  -pkg "$coreutils" -pkg "$gnused" -pkg "$bash" "${kafka_tools[@]}" \
   -file "/usr/bin/ub=$build/ub" -file "/etc/confluent/docker=images/kafka/docker" -out "$out/kafka.tar"
 
 # Mailpit as its image runs it, from /mailpit.

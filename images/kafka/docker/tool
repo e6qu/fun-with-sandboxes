@@ -1,9 +1,12 @@
 #!/bin/bash
-# A Kafka tool, /usr/bin/kafka-*, as Confluent's image runs it: with the
-# log4j configuration the container's start wrote at
+# tool NAME ARG...: the Kafka tool NAME, as Confluent's image runs it, with
+# the log4j configuration the container's start wrote at
 # KAFKA_TOOLS_LOG4J_LOGLEVEL, where it wrote one, unless KAFKA_LOG4J_OPTS
-# names another.
+# names another. /usr/bin's kafka-* run it with their names: a script's $0
+# names the link's target where the container library runs it.
+name=${1:?usage: tool NAME [ARG...]}
+shift
 if [[ -z "${KAFKA_LOG4J_OPTS-}" && -f /etc/kafka/tools-log4j2.properties ]]; then
   export KAFKA_LOG4J_OPTS="-Dlog4j2.configurationFile=/etc/kafka/tools-log4j2.properties"
 fi
-exec "/bin/${0##*/}.sh" "$@"
+exec "/bin/$name.sh" "$@"
