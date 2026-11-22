@@ -53,11 +53,16 @@ more of the host than under Docker, though it can act on none of it:
   processes.
 - **Shared kernel surfaces.** `sysctl` values, the system clock and the
   Mach host port are global and readable; Seatbelt denies writing them.
-- **The host's system tree.** A container reads everything under `/` but
-  the user's and the machine's data roots (`/Users`, `/Volumes`,
-  `/Library`, `/opt`, `/usr/local`, `/nix`, temporary and per-user
-  directories and others, `seatbelt.DeniedReadRoots`) and the engine's
-  state, of which it gets back only its own root, volumes and files (§3).
+- **The host's system tree.** A container reads, as under chroot, its own
+  root, volumes and files, the system tree every macOS program loads
+  (`seatbelt.SystemReadPaths`: `/System`, `/usr/lib`, `/usr/share`, the
+  dyld and time zone databases, `/dev`) and the few host files a root of
+  its own would hold (`seatbelt.HostReadPaths`: the shells, the time zone,
+  the CA certificates, the services and protocols databases), and nothing
+  else of the host, whatever path a program names. A container granted the
+  user's session reads the host but its data roots
+  (`seatbelt.DeniedReadRoots`) and the engine's state, as graphical
+  applications read fonts, preferences and bundles all over it (§3).
 
 Another stack's files, ports, environment and logs, and the right to signal
 its processes, stay denied. [`LIMITATIONS.md`](../LIMITATIONS.md) lists every
@@ -94,7 +99,7 @@ it was not handed.
 | Dimension | Primitive | Guarantee | Gap (accepted) |
 |---|---|---|---|
 | Filesystem write | Seatbelt `(deny file-write*)` + allow only the container root and its volumes | A container writes only inside its own clone and mounts | — |
-| Filesystem read of host | Seatbelt `(allow file-read* (subpath "/"))`, then `(deny file-read*)` of the user's and machine's data roots (`seatbelt.DeniedReadRoots`) and the engine's state, then allow the container root, its volumes, the container library and its network file | No read of `$HOME`, other stacks' roots, or user data | The rest of the host's system tree is readable |
+| Filesystem read of host | Seatbelt `(deny file-read*)`, then allow the container root, its volumes, the container library and its network file, the system tree (`seatbelt.SystemReadPaths`) and the host files a root would hold (`seatbelt.HostReadPaths`); a container granted the user's session reads the host but its data roots (`seatbelt.DeniedReadRoots`) and the engine's state | No read of the host outside the root, volumes and system tree: not `$HOME`, other stacks' roots, `/private/etc`, `/usr/bin` or shared temporary directories | The system tree is readable |
 | Cross-stack visibility | Per-stack directory tree + per-stack Seatbelt path allowances | Stack A's profile names only A's paths; A cannot read or write B | — |
 | Ports | Engine allocates a disjoint range per stack; Seatbelt `(deny network-bind)` except the assigned ports | Two stacks never clash; a container binds only its grants | Host sees all listening sockets globally |
 | Process signalling | Seatbelt `(deny signal)` and `(deny process-info*)` except same-sandbox; execs start in the container's sandbox; the container library lists the sandbox's processes alone. `--pid host` allows both, and the library lists every process (`FWS_PIDNS=host`). `--pid container:` shares a namespace through the containers' shims (§3a) | A cannot `kill`, inspect or list B's processes | pids are the host's (no PID namespace) |

@@ -68,10 +68,35 @@ func TestReadOnlyVolumeIsNotWritable(t *testing.T) {
 	}
 }
 
-func TestStateRootDeniedThenRootReallowed(t *testing.T) {
+// A container reads nothing of the host but what it is allowed, as under
+// chroot: its root, the system tree and the few host files a root would
+// hold, and neither the host's top nor the engine's state.
+func TestReadsAreAllowedNotDenied(t *testing.T) {
 	p, _ := Render(spec())
-	deny := strings.Index(p, `(deny file-read*`)
-	allow := deny + strings.Index(p[deny:], `(allow file-read*`)
+	deny := strings.Index(p, "(deny file-read*)")
+	if deny < 0 || deny > strings.Index(p, "(allow file-read*") {
+		t.Fatalf("reads must be denied before any is allowed:\n%s", p)
+	}
+	for _, unwanted := range []string{`(allow file-read* (subpath "/"))`, `(subpath "/Users/u/.fws")`} {
+		if strings.Contains(p, unwanted) {
+			t.Errorf("the profile allows %s", unwanted)
+		}
+	}
+	for _, want := range []string{`(subpath "/Users/u/.fws/stacks/a/containers/c1/root")`, `(subpath "/System")`, `(subpath "/bin/sh")`} {
+		if !strings.Contains(p[deny:], want) {
+			t.Errorf("the profile does not allow %s", want)
+		}
+	}
+}
+
+// A container granted the user's session reads the host but user data and
+// the engine's state, and its root inside them.
+func TestGUIStateRootDeniedThenRootReallowed(t *testing.T) {
+	s := spec()
+	s.GUI = true
+	p, _ := Render(s)
+	deny := strings.Index(p, "(deny file-read*\n")
+	allow := deny + strings.Index(p[deny:], "(allow file-read*")
 	if deny < 0 || allow < deny {
 		t.Fatalf("read allowance must follow the denial so it wins")
 	}

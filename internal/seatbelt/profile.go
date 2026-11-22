@@ -25,8 +25,23 @@ var SystemReadPaths = []string{
 	"/dev",
 }
 
-// DeniedReadRoots hold user data or other stacks' state; the container root
-// and volumes are re-allowed inside them.
+// HostReadPaths are the host's files outside the system tree a container
+// reads, as a root of its own would hold them: the shells it may run, the
+// link that names /bin/sh's shell, the time zone, the CA certificates and
+// the services and protocols databases, which programs without the
+// container library read at their host paths.
+var HostReadPaths = []string{
+	"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/usr/bin/env",
+	"/private/var/select",
+	"/private/etc/localtime",
+	"/private/etc/ssl",
+	"/private/etc/services",
+	"/private/etc/protocols",
+}
+
+// DeniedReadRoots hold user data or other stacks' state. A container granted
+// the user's session (Spec.GUI) reads the host but these, and its root and
+// volumes inside them; any other reads only what it is allowed.
 var DeniedReadRoots = []string{
 	"/Users",
 	"/Volumes",
@@ -362,14 +377,32 @@ func Render(s Spec) (string, error) {
 	w("  (regex #\"^/dev/fd/\")")
 	w("  (regex #\"^/dev/ttys[0-9]+$\"))")
 
-	// A rule without a filter outranks every filtered rule of its
-	// operation, wherever it stands, so the broad allowance names a subpath.
-	w("(allow file-read* (subpath \"/\"))")
-	w("(deny file-read*")
-	for _, d := range append(append([]string{}, DeniedReadRoots...), s.StateRoot) {
-		w("  (subpath %q)", d)
+	// A container reads its root, its volumes, the system tree and the few
+	// host files a root of its own would hold, as under chroot: nothing else
+	// of the host, whether a program presents its paths through the
+	// container library or not. A container granted the user's session
+	// reads the host but user data and other stacks' state, as graphical
+	// applications read fonts, preferences and bundles all over it. A rule
+	// without a filter outranks every filtered rule of its operation,
+	// wherever it stands, so the broad allowance names a subpath.
+	if s.GUI {
+		w("(allow file-read* (subpath \"/\"))")
+		w("(deny file-read*")
+		for _, d := range append(append([]string{}, DeniedReadRoots...), s.StateRoot) {
+			w("  (subpath %q)", d)
+		}
+		w(")")
+	} else {
+		w("(deny file-read*)")
+		w("(allow file-read*")
+		for _, p := range HostReadPaths {
+			w("  (subpath %q)", p)
+		}
+		w(")")
+		// The links / holds to /private, which a path through /etc, /tmp or
+		// /var resolves.
+		w("(allow file-read-metadata (literal \"/etc\") (literal \"/tmp\") (literal \"/var\"))")
 	}
-	w(")")
 	w("(allow file-read*")
 	w("  (subpath %q)", s.Root)
 	if s.PortDir != "" {

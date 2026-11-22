@@ -125,6 +125,20 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 		e.denied("list", home)
 		e.denied("write", "/private/tmp/fws-escape")
 		e.allowed("read", "/System/Library/CoreServices/SystemVersion.plist")
+		// Outside the root, the volumes, the system tree and the few host
+		// files a root would hold, nothing of the host is readable: not a
+		// shared directory's file, not the host's configuration, not a
+		// program it would not run.
+		hostFile := filepath.Join("/private/var/tmp", "fws-read-"+strconv.Itoa(os.Getpid()))
+		if err := os.WriteFile(hostFile, []byte("host's"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(hostFile)
+		e.denied("read", hostFile)
+		e.denied("read", "/private/etc/shells")
+		e.denied("list", "/usr/bin")
+		e.allowed("read", "/private/etc/ssl/cert.pem")
+		e.allowed("read", "/private/etc/services")
 	})
 	t.Run("network", func(t *testing.T) {
 		e.t = t

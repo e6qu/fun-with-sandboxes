@@ -116,7 +116,11 @@ what macOS offers an unprivileged process under them. Non-goals are in
 - **The macOS system tree is readable** (`/System`, `/usr/lib`,
   `/usr/share`), and the host's shells (`/bin/sh`, `bash`, `zsh`, `dash`,
   `/usr/bin/env`) are executable: binaries cannot run without them
-  ([DESIGN](docs/DESIGN.md#accepted-exceptions)).
+  ([DESIGN](docs/DESIGN.md#accepted-exceptions)). Of the rest of the host
+  a container reads only the time zone, the CA certificates and the
+  services and protocols databases, as a root of its own would hold them;
+  a container granted the user's session (`--security-opt seatbelt=gui`)
+  reads the host but user data and other stacks' state.
 
 ## Networking
 
