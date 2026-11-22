@@ -265,6 +265,11 @@ type Spec struct {
 	Sockets []string
 }
 
+// ProcListings are the process table's sysctl listings that name processes
+// across the Mac, which a container without the host's PID namespace may
+// not read.
+var ProcListings = []string{"kern.proc.all", "kern.proc.uid", "kern.proc.ruid", "kern.proc.tty"}
+
 // IPCMode is a container's IPC confinement.
 type IPCMode int
 
@@ -347,6 +352,17 @@ func Render(s Spec) (string, error) {
 	w("(import \"system.sb\")")
 	w("(allow process-fork)")
 	w("(allow sysctl-read)")
+	if !s.HostPIDs {
+		// The process table's listings name every process on the Mac; the
+		// container's supervisor answers its library with the container's
+		// own, as a PID namespace lists them. A listing of one process,
+		// group or session stays, as programs read their own.
+		w("(deny sysctl-read")
+		for _, n := range ProcListings {
+			w("  (sysctl-name-prefix %q)", n)
+		}
+		w(")")
+	}
 	w("(allow file-ioctl)")
 	w("(allow pseudo-tty)")
 	w("(allow ipc-posix* ipc-sysv*)")

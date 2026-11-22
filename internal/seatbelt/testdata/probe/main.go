@@ -50,6 +50,10 @@ func run(op, arg string) error {
 			return err
 		}
 		return c.Close()
+	case "proclist":
+		// The process table, as ps reads it.
+		_, err := unix.SysctlRaw("kern.proc.all")
+		return err
 	case "send":
 		// One UDP datagram, which a sandbox denies at the send.
 		c, err := net.Dial("udp", "127.0.0.1:"+arg)

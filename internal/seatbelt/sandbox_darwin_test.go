@@ -158,6 +158,7 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 	t.Run("processes", func(t *testing.T) {
 		e.t = t
 		e.denied("signal", strconv.Itoa(os.Getpid()))
+		e.denied("proclist", "")
 		e.denied("exec", "/bin/ls")
 		e.allowed("exec", "/bin/sh")
 		e.allowed("exec", "/usr/bin/env")

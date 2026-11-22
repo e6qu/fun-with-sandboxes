@@ -38,7 +38,16 @@ const (
 	OpPath = 4
 	// OpArgs is pid's kern.procargs2.
 	OpArgs = 5
+	// OpTable is the process table as kern.proc.all lists it, holding the
+	// container's processes and the namespace's alone: Seatbelt denies the
+	// container the table's listings, which name every process on the
+	// Mac. The result counts the bytes of kinfo_proc entries the data
+	// holds.
+	OpTable = 6
 )
+
+// MaxTable bounds the data of an OpTable reply.
+const MaxTable = 16 << 20
 
 // RequestSize and ReplySize are the sizes of a request and of a reply's
 // result and errno.

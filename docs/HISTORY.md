@@ -191,7 +191,9 @@ no VM and no more than microseconds per call.
   as chroot would, instead of denying a list of host roots. It lets a
   container connect over TCP only to its own ports, its router and the
   egress proxy. The router carries each connection to another member only
-  when the two share a network, so network membership is enforced.
+  when the two share a network, so network membership is enforced. The
+  process table's listings are denied as well; the container's supervisor
+  answers the library with the container's own processes.
 
 ## Investigations
 

@@ -15,14 +15,15 @@ import (
 )
 
 // Serve answers the requests of a container's library on l about the
-// namespace whose file is file, until l closes.
-func Serve(l net.Listener, file string) {
+// namespace whose file is file, until l closes. own lists the container's
+// processes, as its supervisor follows them, or nil before it does.
+func Serve(l net.Listener, file string, own func() []int) {
 	for {
 		c, err := l.Accept()
 		if err != nil {
 			return
 		}
-		go handle(c, file)
+		go handle(c, file, own)
 	}
 }
 
@@ -31,7 +32,7 @@ type request struct {
 	B                uint64
 }
 
-func handle(c net.Conn, file string) {
+func handle(c net.Conn, file string, own func() []int) {
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(10 * time.Second))
 	var b [RequestSize]byte
@@ -43,7 +44,14 @@ func handle(c net.Conn, file string) {
 		A: int32(binary.NativeEndian.Uint32(b[8:])), Size: int32(binary.NativeEndian.Uint32(b[12:])),
 		B: binary.NativeEndian.Uint64(b[16:]),
 	}
-	ret, data, err := answer(req, file)
+	var err error
+	var ret int
+	var data []byte
+	if req.Op == OpTable {
+		ret, data, err = table(file, own)
+	} else {
+		ret, data, err = answer(req, file)
+	}
 	var errno syscall.Errno
 	if err != nil {
 		ret, data = -1, nil
@@ -179,4 +187,41 @@ func kill(ms []procs.Entry, req request) error {
 		return nil
 	}
 	return first
+}
+
+// table is the kinfo_proc entries of the container's processes, own, and
+// the namespace's, as kern.proc.pid reads each.
+func table(file string, own func() []int) (int, []byte, error) {
+	seen := map[int]bool{}
+	var pids []int
+	add := func(pid int) {
+		if !seen[pid] {
+			seen[pid] = true
+			pids = append(pids, pid)
+		}
+	}
+	if own != nil {
+		for _, pid := range own() {
+			add(pid)
+		}
+	}
+	if file != "" {
+		if ms, err := members(file); err == nil {
+			for _, m := range ms {
+				add(m.PID)
+			}
+		}
+	}
+	var data []byte
+	for _, pid := range pids {
+		b, err := unix.SysctlRaw("kern.proc.pid", pid)
+		if err != nil || len(b) == 0 {
+			continue
+		}
+		if len(data)+len(b) > MaxTable {
+			return 0, nil, syscall.E2BIG
+		}
+		data = append(data, b...)
+	}
+	return len(data), data, nil
 }

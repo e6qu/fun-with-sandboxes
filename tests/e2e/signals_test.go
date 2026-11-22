@@ -62,6 +62,21 @@ func TestPsListsTheContainersProcesses(t *testing.T) {
 	}
 }
 
+// Seatbelt denies a program that skips the library the process table's
+// listing, which names every process on the Mac, as a PID namespace would
+// hide them: the library asks the container's supervisor instead.
+func TestProcessTableDeniedPastTheLibrary(t *testing.T) {
+	out := mustDocker(t, "run", "--rm", "fws/python:3.14", "python3", "-c", `import ctypes, errno
+libc = ctypes.CDLL(None, use_errno=True)
+mib = (ctypes.c_int * 3)(1, 14, 0)
+size = ctypes.c_size_t(0)
+r = libc.syscall(202, mib, 3, None, ctypes.byref(size), None, 0)
+print("listed" if r == 0 else errno.errorcode[ctypes.get_errno()])`)
+	if out != "EPERM\n" {
+		t.Errorf("a raw kern.proc.all printed %q, want EPERM", out)
+	}
+}
+
 // On the host's PID namespace a container lists every host process by its
 // host pid, its own main process too, with launchd as pid 1, and signals the
 // engine's other containers; its pids limit still counts its own processes

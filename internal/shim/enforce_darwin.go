@@ -575,6 +575,12 @@ func (e *enforcer) renice(nice int) error {
 // event has not been handled. It reads a list of children per member,
 // where the library listed every process of the user.
 func (e *enforcer) count() int {
+	return len(e.live())
+}
+
+// live lists the container's processes, a fork the kernel made a moment
+// before included.
+func (e *enforcer) live() []int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var live []int
@@ -588,7 +594,7 @@ func (e *enforcer) count() int {
 	if !e.followLocked(live) {
 		e.scanLocked()
 	}
-	return len(e.members)
+	return e.pidsLocked()
 }
 
 // serveCount answers each connection on l with count, until l closes.

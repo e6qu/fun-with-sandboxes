@@ -219,7 +219,7 @@ operation family and then allows what the container owns:
 
 | Section | Allows |
 |---|---|
-| Baseline | `(deny default)` with Apple's `system.sb`, then forks, sysctl reads, pseudo-terminals, `file-ioctl`, IPC, inbound network and socket creation, except kernel control and link-layer sockets (domains 32 and 27) |
+| Baseline | `(deny default)` with Apple's `system.sb`, then forks, sysctl reads but the process table's listings (`ProcListings`, unless on the host's PID namespace), pseudo-terminals, `file-ioctl`, IPC, inbound network and socket creation, except kernel control and link-layer sockets (domains 32 and 27) |
 | File writes | the container's root (unless read-only), its writable volumes, its port directory, files the engine names (such as the shared-memory ledger) and a few devices |
 | File reads | nothing, then allowed, as under chroot: the container's root and volumes, its port directory, the container library and helper, its stack's network file, the system trees every process needs (`SystemReadPaths`), and the host files a root would hold (`HostReadPaths`: the shells, `/private/var/select`, the time zone, `/private/etc/ssl`, `services`, `protocols`). A container granted the user's session reads everything under `/` but the engine's state directory and the trees that hold user data or other software (`DeniedReadRoots`). Only the libraries may be mapped executable from outside the root |
 | Execution | programs in the root and in volumes not mounted `noexec`, the system shells `popen()` and `system()` hard-code, `/usr/bin/env` for scripts' interpreters (`SystemShells`), and the engine's helper binary `fws-shim`, which the sandbox executes once to start the container's exec anchor |

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -42,6 +43,9 @@ type server struct {
 	cfg  Config
 	proc *runtime.Process
 	enf  *enforcer
+	// enfReady is enf once it follows the container's processes, for the
+	// library's process table.
+	enfReady atomic.Pointer[enforcer]
 
 	mu      sync.Mutex
 	stdin   io.WriteCloser
@@ -102,7 +106,12 @@ func (s *server) run(report func(Ready)) (int, error) {
 		}
 		defer os.Remove(cfg.Procs)
 		defer pl.Close()
-		go pidns.Serve(pl, cfg.PidNamespace)
+		go pidns.Serve(pl, cfg.PidNamespace, func() []int {
+			if e := s.enfReady.Load(); e != nil {
+				return e.live()
+			}
+			return nil
+		})
 	}
 	// The library asks from the container's first fork on; the count is
 	// answered once the enforcer follows the container's processes, and a
@@ -283,6 +292,7 @@ func (s *server) run(report func(Ready)) (int, error) {
 		}()
 	}
 	s.enf = newEnforcer(cfg.Tag, proc.Pid(), cfg.Resources, traffic)
+	s.enfReady.Store(s.enf)
 	if pidsListener != nil {
 		go s.enf.serveCount(pidsListener)
 	}

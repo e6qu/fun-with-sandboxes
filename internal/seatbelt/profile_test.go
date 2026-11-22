@@ -365,3 +365,21 @@ func TestGUIGrantNamesTheSessionsServices(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessTableListingsDeniedOutsideTheHostsPIDNamespace(t *testing.T) {
+	p, err := Render(spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p, "(deny sysctl-read\n  (sysctl-name-prefix \"kern.proc.all\")") {
+		t.Errorf("profile lets the container list the process table:\n%s", p)
+	}
+	s := spec()
+	s.HostPIDs = true
+	if p, err = Render(s); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(p, "kern.proc.all") {
+		t.Errorf("profile on the host's PID namespace denies the process table:\n%s", p)
+	}
+}

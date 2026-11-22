@@ -2389,7 +2389,7 @@ static int fws_uname(struct utsname *u) {
 INTERPOSE(fws_uname, uname);
 
 // The shim's operations (package pidns).
-enum { NS_LIST = 1, NS_KILL = 2, NS_INFO = 3, NS_PATH = 4, NS_ARGS = 5 };
+enum { NS_LIST = 1, NS_KILL = 2, NS_INFO = 3, NS_PATH = 4, NS_ARGS = 5, NS_TABLE = 6 };
 
 struct ns_request {
     int32_t op, pid, a, size;
@@ -2736,6 +2736,51 @@ static size_t own_procs(struct kinfo_proc *kp, size_t n) {
     return kept * sizeof *kp;
 }
 
+// table_op reports whether Seatbelt denies the container the process
+// table's listing op, which names every process on the Mac: the
+// container's supervisor answers it instead.
+static int table_op(int op) {
+    return !host_pids && procs_path[0] && (op == KERN_PROC_ALL || op == KERN_PROC_UID || op == KERN_PROC_RUID || op == KERN_PROC_TTY);
+}
+
+// proc_table returns the entries of listing op of arg, as kern.proc lists
+// them, of the container's processes and its namespace's, which its
+// supervisor follows, in a buffer the caller frees, and their size in
+// bytes in *len; NULL with errno set where it fails.
+static struct kinfo_proc *proc_table(int op, int arg, size_t *len) {
+    size_t cap = 256 * sizeof(struct kinfo_proc);
+    for (int tries = 0; tries < 4; tries++) {
+        struct kinfo_proc *kp = malloc(cap);
+        if (!kp) {
+            errno = ENOMEM;
+            return NULL;
+        }
+        int r = ns_call(NS_TABLE, 0, 0, 0, 0, kp, cap);
+        if (r < 0) {
+            free(kp);
+            return NULL;
+        }
+        if ((size_t)r > cap) {
+            free(kp);
+            cap = (size_t)r + 64 * sizeof(struct kinfo_proc);
+            continue;
+        }
+        size_t n = (size_t)r / sizeof *kp, kept = 0;
+        for (size_t i = 0; i < n; i++) {
+            int keep = op == KERN_PROC_ALL || (op == KERN_PROC_UID && (int)kp[i].kp_eproc.e_ucred.cr_uid == arg) ||
+                       (op == KERN_PROC_RUID && (int)kp[i].kp_eproc.e_pcred.p_ruid == arg) ||
+                       (op == KERN_PROC_TTY && (int)kp[i].kp_eproc.e_tdev == arg);
+            if (!keep) continue;
+            if (kept != i) memmove(&kp[kept], &kp[i], sizeof *kp);
+            kept++;
+        }
+        *len = kept * sizeof *kp;
+        return kp;
+    }
+    errno = EAGAIN;
+    return NULL;
+}
+
 // list_pids writes to buf, of size bytes, the container's processes the
 // process table's listing op of arg holds, those whose parent is ppid when
 // ppid is set, and returns how many it wrote; with no buffer, how many
@@ -2745,22 +2790,31 @@ static int list_pids(int op, int arg, pid_t ppid, pid_t *buf, int size) {
     int mib[4] = {CTL_KERN, KERN_PROC, op, arg};
     u_int miblen = op == KERN_PROC_ALL ? 3 : 4;
     size_t len = 0;
-    if (sysctl(mib, miblen, NULL, &len, NULL, 0) != 0) {
-        return -1;
-    }
-    // Room for processes started since.
-    len += 32 * sizeof(struct kinfo_proc);
-    if (!buf) {
-        return (int)(len / sizeof(struct kinfo_proc));
-    }
-    struct kinfo_proc *kp = malloc(len);
-    if (!kp) {
-        errno = ENOMEM;
-        return -1;
-    }
-    if (sysctl(mib, miblen, kp, &len, NULL, 0) != 0) {
-        free(kp);
-        return -1;
+    struct kinfo_proc *kp;
+    if (table_op(op)) {
+        if (!(kp = proc_table(op, arg, &len))) return -1;
+        if (!buf) {
+            free(kp);
+            return (int)(len / sizeof *kp) + 32;
+        }
+    } else {
+        if (sysctl(mib, miblen, NULL, &len, NULL, 0) != 0) {
+            return -1;
+        }
+        // Room for processes started since.
+        len += 32 * sizeof(struct kinfo_proc);
+        if (!buf) {
+            return (int)(len / sizeof(struct kinfo_proc));
+        }
+        kp = malloc(len);
+        if (!kp) {
+            errno = ENOMEM;
+            return -1;
+        }
+        if (sysctl(mib, miblen, kp, &len, NULL, 0) != 0) {
+            free(kp);
+            return -1;
+        }
     }
     int n = 0, cap = size / (int)sizeof(pid_t), nn;
     pid_t *ns = ns_members(&nn);
@@ -3166,6 +3220,28 @@ static int fws_sysctl(int *name, u_int namelen, void *old, size_t *oldlen, void 
             return r;
         }
         return ns_procargs(mib[2], name[1] == KERN_PROCARGS2, old, oldlen);
+    }
+    if (namelen >= 3 && name[0] == CTL_KERN && name[1] == KERN_PROC && oldlen && !new && table_op(name[2]) &&
+        namelen == (name[2] == KERN_PROC_ALL ? 3u : 4u)) {
+        // The table's listings, which Seatbelt denies the container, come
+        // from its supervisor, holding its processes alone.
+        size_t len;
+        struct kinfo_proc *kp = proc_table(name[2], namelen == 4 ? name[3] : 0, &len);
+        if (!kp) return -1;
+        if (!old) {
+            free(kp);
+            *oldlen = len + 32 * sizeof *kp;
+            return 0;
+        }
+        size_t n = len <= *oldlen ? len : *oldlen / sizeof *kp * sizeof *kp;
+        memcpy(old, kp, n);
+        free(kp);
+        *oldlen = own_procs(old, n);
+        if (n < len) {
+            errno = ENOMEM;
+            return -1;
+        }
+        return 0;
     }
     if (namelen >= 3 && name[0] == CTL_KERN && name[1] == KERN_PROC && old && oldlen && !new) {
         // A listing of one process, group or session names it as the

@@ -90,8 +90,11 @@ what macOS offers an unprivileged process under them. Non-goals are in
 - **Processes have host pids, but pid 1.** There is no unprivileged PID
   namespace. Through the library a container lists only its own processes
   and sees its main process as pid 1 (`kill -HUP 1` works); Seatbelt
-  denies signalling or inspecting any other. Apple's `ps` sees host pids
-  and every process of the user.
+  denies signalling or inspecting any other, and reading the process
+  table's listings (`kern.proc.all`, `uid`, `ruid`, `tty`), which the
+  library asks the container's supervisor for instead. A program without
+  the library, such as Apple's `ps`, lists nothing; one that knows another
+  process's pid still reads its `kern.proc.pid` entry.
 - **A stop kills every process the main process started**, daemons in
   their own session included, as macOS holds the main process responsible
   for them.

@@ -73,8 +73,8 @@ the e2e tests that prove its claims on macOS.
      network. This makes network membership enforced, not presented
      (in progress).
    - Its process listing is its own. Seatbelt denies process information
-     about other sandboxes, and the `kern.proc` listing is narrowed where
-     the kernel allows it.
+     about other sandboxes and the process table's listings, which the
+     container's supervisor answers with its own processes (in progress).
 2. **Limits macOS can enforce.**
    - CPU placement and priority: `--cpuset-cpus` maps to performance or
      efficiency cores through QoS, with per-container QoS options.
