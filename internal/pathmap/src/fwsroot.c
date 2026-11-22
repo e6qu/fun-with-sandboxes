@@ -1477,8 +1477,9 @@ INTERPOSE(fws_removexattr, removexattr);
 // find_on_path finds the executable file, a name without a slash, in a
 // directory of PATH, which names the container's directories
 // (present_env), and leaves in full its path on the host, which the
-// callers hand on as it is.
-static int find_on_path(const char *file, char *full) {
+// callers hand on as it is, and in shown, unless NULL, its path as the
+// container sees it.
+static int find_on_path(const char *file, char *full, char *shown) {
     const char *path = getenv("PATH");
     char dir[PATH_MAX], mapped[PATH_MAX];
     while (path && *path) {
@@ -1489,6 +1490,7 @@ static int find_on_path(const char *file, char *full) {
             if (join(full, PATH_MAX, dir, "/", file)) {
                 const char *m = fws_map(full, mapped, 1);
                 if (access(m, X_OK) == 0) {
+                    if (shown) strlcpy(shown, full, PATH_MAX);
                     if (m != full) strlcpy(full, m, PATH_MAX);
                     return 1;
                 }
@@ -1504,7 +1506,7 @@ static int find_on_path(const char *file, char *full) {
 // not hold, as env would: the program its argument names, found on PATH,
 // with the argument's other words under -S, then the script and its
 // arguments. Apple's env does not run with the container library loaded.
-static char **env_argv(char *arg, const char *path, char *const argv[], char *interp) {
+static char **env_argv(char *arg, const char *shown, char *const argv[], char *interp) {
     char *words[64];
     size_t nw = 0;
     if (strncmp(arg, "-S", 2) == 0 && (arg[2] == ' ' || arg[2] == '\t')) {
@@ -1518,7 +1520,7 @@ static char **env_argv(char *arg, const char *path, char *const argv[], char *in
     if (strchr(words[0], '/')) {
         const char *m = fws_map(words[0], interp, 1);
         if (m != interp) strlcpy(interp, m, PATH_MAX);
-    } else if (!find_on_path(words[0], interp)) {
+    } else if (!find_on_path(words[0], interp, NULL)) {
         return NULL;
     }
     size_t argc = 0;
@@ -1529,7 +1531,7 @@ static char **env_argv(char *arg, const char *path, char *const argv[], char *in
     }
     size_t i = 0;
     for (size_t j = 0; j < nw; j++) out[i++] = strdup(words[j]);
-    out[i++] = (char *)path;
+    out[i++] = (char *)shown;
     for (size_t j = 1; j < argc; j++) out[i++] = argv[j];
     return out;
 }
@@ -1537,9 +1539,13 @@ static char **env_argv(char *arg, const char *path, char *const argv[], char *in
 // The kernel resolves a script's interpreter on the host. A script whose
 // interpreter the root holds runs with the root's, as in a chroot: the
 // interpreter, its #! argument, the script, then the script's arguments.
-// script_argv returns the arguments to run interp with, allocated, or NULL
-// when path runs as it is.
-static char **script_argv(const char *path, char *const argv[], char *interp) {
+// script_argv reads the #! line of path, the script's file on the host,
+// and returns the arguments to run interp with, allocated, or NULL when
+// path runs as it is. The script is named to the interpreter as shown, the
+// path the caller ran, as the kernel names it: a script reached by a link
+// sees the link's path in $0, and no host path, since the interpreter,
+// the root's, maps it as it opens it.
+static char **script_argv(const char *path, const char *shown, char *const argv[], char *interp) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
         return NULL;
@@ -1565,7 +1571,7 @@ static char **script_argv(const char *path, char *const argv[], char *interp) {
     }
     const char *mapped = fws_map(line, interp, 1);
     if (mapped != interp && strcmp(line, "/usr/bin/env") == 0) {
-        return env_argv(arg, path, argv, interp);
+        return env_argv(arg, shown, argv, interp);
     }
     if (mapped != interp) {
         // The host's interpreter: the kernel runs it as the #! line says.
@@ -1580,7 +1586,7 @@ static char **script_argv(const char *path, char *const argv[], char *interp) {
     size_t i = 0;
     out[i++] = strdup(line);
     if (*arg) out[i++] = strdup(arg);
-    out[i++] = (char *)path;
+    out[i++] = (char *)shown;
     for (size_t j = 1; j < argc; j++) out[i++] = argv[j];
     return out;
 }
@@ -1670,7 +1676,7 @@ static int fws_execve(const char *path, char *const argv[], char *const envp[]) 
     if (env) envp = env;
     const char *p = MAP(path);
     char interp[PATH_MAX];
-    char **sargv = script_argv(p, argv, interp);
+    char **sargv = script_argv(p, path, argv, interp);
     fws_unharden(sargv ? interp : p);
     int r;
     if (memory_mib() > 0) {
@@ -1735,7 +1741,7 @@ static int fws_posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_
     if (env) envp = env;
     const char *p = MAP(path);
     char interp[PATH_MAX];
-    char **sargv = script_argv(p, argv, interp);
+    char **sargv = script_argv(p, path, argv, interp);
     fws_unharden(sargv ? interp : p);
     posix_spawnattr_t own;
     int owned;
@@ -1755,9 +1761,11 @@ static int fws_posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file
     if (strchr(file, '/')) {
         return fws_posix_spawn(pid, file, fa, a, argv, envp);
     }
-    char full[PATH_MAX];
-    if (find_on_path(file, full)) {
-        return fws_posix_spawn(pid, full, fa, a, argv, envp);
+    // The container's path, which a script's interpreter is shown, as the
+    // kernel shows it the path PATH led to; the spawn maps it.
+    char full[PATH_MAX], shown[PATH_MAX];
+    if (find_on_path(file, full, shown)) {
+        return fws_posix_spawn(pid, shown, fa, a, argv, envp);
     }
     // PATH names the container's directories (present_env), which libc's
     // own search would look for on the host: a file the container's PATH
