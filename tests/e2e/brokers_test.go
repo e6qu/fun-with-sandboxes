@@ -80,7 +80,7 @@ func TestKafkaOnANetwork(t *testing.T) {
 		testcontainers.WithEnv(map[string]string{
 			"KAFKA_ADVERTISED_LISTENERS": "PLAINTEXT://kafka:9092",
 			"KAFKA_LOG4J_ROOT_LOGLEVEL":  "WARN",
-			"KAFKA_LOG4J_LOGGERS":        "kafka.server.BrokerLifecycleManager=INFO",
+			"KAFKA_LOG4J_LOGGERS":        "org.apache.kafka.server.BrokerLifecycleManager=INFO",
 			"KAFKA_TOOLS_LOG4J_LOGLEVEL": "DEBUG",
 		}),
 		testcontainers.WithWaitStrategy(wait.ForLog("Transitioning from RECOVERY to RUNNING").WithStartupTimeout(3*time.Minute)),
