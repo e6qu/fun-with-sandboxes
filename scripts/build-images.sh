@@ -90,7 +90,8 @@ case "${1:-}" in
   *) echo "no such group: $2" >&2; exit 1 ;;
   esac
   if [ "$mode" = --prebuilt ]; then
-    NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" build --no-link --print-out-paths "${what[@]}"
+    # --keep-going: a failure names every package or source that fails.
+    NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" build --keep-going --no-link --print-out-paths "${what[@]}"
   else
     NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" path-info --derivation "${what[@]}"
   fi

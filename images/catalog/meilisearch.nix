@@ -42,7 +42,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   preBuild = let
     dictionary = name: hash: fetchurl { url = "https://lindera.dev/${name}"; inherit hash; };
     unidic = dictionary "unidic-mecab-2.1.2.tar.gz" "sha256-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-    kodic = dictionary "mecab-ko-dic-2.1.1-20180720.tar.gz" "sha256-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    kodic = dictionary "mecab-ko-dic-2.1.1-20180720.tar.gz" "sha256-cCztIcYWfp2a68Z0q17lSvWNREOXXylA030FZ8AgWRo=";
   in ''
     export LINDERA_BUILD_DICTIONARY_CACHE_DIR="$TMPDIR/lindera"
     mkdir -p "$LINDERA_BUILD_DICTIONARY_CACHE_DIR/5.3.0-fmt2"
