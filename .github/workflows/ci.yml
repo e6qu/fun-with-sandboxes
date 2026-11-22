@@ -24,6 +24,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          # Off: Go's caches, near 1.4 GB, would crowd the catalog's out of
+          # the repository's 10 GB, and Go builds the module in minutes.
+          cache: false
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: cross-build
@@ -83,6 +86,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          # Off: Go's caches, near 1.4 GB, would crowd the catalog's out of
+          # the repository's 10 GB, and Go builds the module in minutes.
+          cache: false
       # Each test runs three times under the race detector, so a test that
       # passes only sometimes, or races, fails here.
       - name: unit tests
@@ -142,7 +148,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [mysql, mariadb, qdrant, meilisearch, influxdb, gitea, tools]
+        group: [mysql, mariadb, qdrant, meilisearch, influxdb, gitea, tools, kubernetes, consul]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -250,6 +256,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          # Off: Go's caches, near 1.4 GB, would crowd the catalog's out of
+          # the repository's 10 GB, and Go builds the module in minutes.
+          cache: false
       - name: the archives' inputs
         id: key
         run: |
@@ -292,18 +301,6 @@ jobs:
           path: ~/fws-images
           key: ${{ steps.key.outputs.key }}
           restore-keys: images-
-      # What the image build makes rather than substitutes from
-      # cache.nixos.org: the files the images pin from GitHub releases and
-      # repositories, and the packages Hydra does not build, such as Consul
-      # and MongoDB under their licences. Nix substitutes by store path, so
-      # an earlier run's cache serves every derivation that has not changed.
-      - uses: actions/cache/restore@v5
-        if: steps.images.outputs.cache-hit != 'true'
-        id: built
-        with:
-          path: ~/fws-built
-          key: built-${{ hashFiles('scripts/build-images.sh', 'images/**') }}
-          restore-keys: built-
       - name: build images
         if: steps.images.outputs.cache-hit != 'true'
         run: |
@@ -311,37 +308,12 @@ jobs:
           for d in ~/fws-prebuilt/prebuilt-*; do
             substituters="$substituters file://$d?trusted=1"
           done
-          # The daemon, as root, would claim an empty cache directory that
-          # the next step fills as the runner.
-          if [ -d ~/fws-built ]; then
-            substituters="$substituters file://$HOME/fws-built?trusted=1"
-          fi
           export NIX_CONFIG="extra-substituters = $substituters"
           scripts/build-images.sh ~/fws-images
-      # The store paths this run built, added to what the restored cache
-      # holds.
-      - name: keep what the build made
-        if: steps.images.outputs.cache-hit != 'true' && steps.built.outputs.cache-hit != 'true'
-        run: |
-          built=$(nix --extra-experimental-features nix-command path-info --json --all | python3 -c '
-          import json, sys
-          d = json.load(sys.stdin)
-          entries = d.items() if isinstance(d, dict) else ((e["path"], e) for e in d)
-          print(" ".join(p for p, i in entries if i and i.get("ultimate")))')
-          mkdir -p ~/fws-built
-          if [ -n "$built" ]; then
-            nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-built" $built
-          fi
-          du -sh ~/fws-built
-      - uses: actions/cache/save@v5
-        if: steps.images.outputs.cache-hit != 'true' && steps.built.outputs.cache-hit != 'true'
-        with:
-          path: ~/fws-built
-          key: ${{ steps.built.outputs.cache-primary-key }}
       - name: free what the build left
         if: steps.images.outputs.cache-hit != 'true'
         run: |
-          rm -rf ~/fws-built ~/fws-prebuilt
+          rm -rf ~/fws-prebuilt
           nix-store --gc
           df -h /
       # crane's registry keeps every blob in memory, so it stops once it
@@ -359,28 +331,37 @@ jobs:
           for ref in fws-postgres:16 fws-postgres:18 fws-redis:8 fws-nginx:1 fws-mariadb:11 fws-python:3.14 fws-node:26 fws-bun:1 fws-gitea:28 fws-dynamodb-local:2 fws-rabbitmq:4 fws-lambda/python:3.14 fws-lambda/nodejs:24 fws-lambda/java:17 fws-playwright:1.65 fws-toolbox:1 fws-busybox:1 fws-base:1 fws-ryuk:0.14.0 fws-mysql:8.4 fws-valkey:9 fws-memcached:1.6 fws-nats:2.15 fws-seaweedfs:4.54 fws-etcd:3.7 fws-consul:2.1 fws-vault:2.2 fws-mongo:8.3 fws-kafka:4.4 fws-mailpit:1.34 fws-meilisearch:1.57 fws-qdrant:1.20 fws-neo4j:2026.10 fws-clickhouse:26.10 fws-influxdb:2.10 fws-opensearch:3.10 fws-toxiproxy:2.13 fws-dind:29 fws-kube-apiserver:1.37 fws-kube-controller-manager:1.37 fws-kube-scheduler:1.37 fws-kubectl:1.37 fws-pause:3.10.2 fws-kubelet:1.37 fws-kind-node:1.37 fws-k3s:1.37; do
             "$crane" config "127.0.0.1:5000/e6qu/$ref" | grep -q '"os":"darwin"'
           done
+      # The catalog this run built supersedes earlier runs', which are
+      # dropped before it is saved: the repository holds 10 GB of cache,
+      # and a second catalog beside the first would evict the prebuilt
+      # groups. The built- entries are an older layout's.
+      - name: drop the entries this build supersedes
+        if: steps.images.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: ${{ steps.key.outputs.key }}
+        run: |
+          for prefix in images- built-; do
+            gh cache list --repo "$GITHUB_REPOSITORY" --key "$prefix" --limit 100 --json key --jq '.[].key'
+          done | sort -u | while read -r k; do
+            if [ "$k" != "$KEEP" ]; then
+              gh cache delete --repo "$GITHUB_REPOSITORY" "$k" || true
+            fi
+          done
       - uses: actions/cache/save@v5
         if: steps.images.outputs.cache-hit != 'true'
         with:
           path: ~/fws-images
           key: ${{ steps.key.outputs.key }}
-      # The catalog and the store paths this run saved supersede earlier
-      # runs', which would otherwise crowd the repository's 10 GB of cache
-      # until the prebuilt groups' entries are evicted and built again.
-      - name: drop the entries this build supersedes
-        if: steps.images.outputs.cache-hit != 'true'
+      # What the repository's 10 GB of cache holds, largest first: a run
+      # that finds a prebuilt group or the catalog evicted shows why.
+      - name: the repository's cache
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          KEEP: ${{ steps.key.outputs.key }} ${{ steps.built.outputs.cache-primary-key }}
         run: |
-          for prefix in images- built-; do
-            gh cache list --repo "$GITHUB_REPOSITORY" --key "$prefix" --limit 100 --json key --jq '.[].key'
-          done | sort -u | while read -r k; do
-            case " $KEEP " in
-            *" $k "*) ;;
-            *) gh cache delete --repo "$GITHUB_REPOSITORY" "$k" || true ;;
-            esac
-          done
+          gh cache list --repo "$GITHUB_REPOSITORY" --limit 100 --sort size_in_bytes --json key,ref,sizeInBytes \
+            --jq '.[] | "\(.sizeInBytes / 1048576 | floor) MiB  \(.ref)  \(.key)"'
       # The run's own copy for its e2e and publish jobs: an artifact of the
       # run, which another run's cache cannot evict, as it can the cache
       # entry, past the repository's 10 GB.
@@ -410,6 +391,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          # Off: Go's caches, near 1.4 GB, would crowd the catalog's out of
+          # the repository's 10 GB, and Go builds the module in minutes.
+          cache: false
       - uses: actions/download-artifact@v7
         with:
           name: fws-images
@@ -537,6 +521,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          # Off: Go's caches, near 1.4 GB, would crowd the catalog's out of
+          # the repository's 10 GB, and Go builds the module in minutes.
+          cache: false
       - uses: actions/download-artifact@v7
         with:
           name: fws-images

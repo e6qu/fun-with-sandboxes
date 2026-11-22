@@ -1,5 +1,6 @@
-# OpenSearch's minimal distribution at its newest release, and the files
-# its image adds to it, from the opensearch-build release.
+# OpenSearch's minimal distribution at its newest release, its security
+# plugin, which is Java alone, and the files its image adds to it, from the
+# opensearch-build release.
 { nixpkgs, system ? builtins.currentSystem }:
 let
   pkgs = (builtins.getFlake nixpkgs).legacyPackages.${system};
@@ -13,6 +14,14 @@ pkgs.linkFarm "opensearch-docker" [
     path = pkgs.fetchurl {
       url = "https://artifacts.opensearch.org/releases/core/opensearch/${version}/opensearch-min-${version}-linux-x64.tar.gz";
       hash = "sha256-J0D5rEda49Zj+hEA2Qi3OdRn7x7359zqWczaRSGyxrA=";
+    };
+  }
+  {
+    name = "opensearch-security.zip";
+    path = pkgs.fetchurl {
+      # The plugin's release, published to Maven Central.
+      url = "https://repo1.maven.org/maven2/org/opensearch/plugin/opensearch-security/${version}.0/opensearch-security-${version}.0.zip";
+      hash = "sha256-Wq2iAtAE6/swwQQrMfo852D/XrVV1pNjCKwjdMeFLDY=";
     };
   }
   (file "docker/release/config/opensearch/opensearch-docker-entrypoint-3.x.sh" "sha256-0lQUw+aBg1uA13tq23rESe2v0DzvhR934CUuhutU9d0=")

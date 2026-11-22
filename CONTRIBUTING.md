@@ -154,8 +154,8 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   of compiling a profile;
 - `prebuilt`: what Nix builds from source that no cache holds, in groups
   on runners of their own (`scripts/build-images.sh --prebuilt GROUP`):
-  MySQL, MariaDB and the catalog's packages at releases nixpkgs lacks,
-  each group cached by its derivations and handed to `images` as an
+  MySQL, MariaDB, the catalog's packages at releases nixpkgs lacks,
+  Kubernetes, etcd and Consul, each group cached by its derivations and handed to `images` as an
   artifact. A group's run stopped partway, by a failure or a newer push,
   keeps what it finished, which the next run substitutes. A whole build
   drops the entries it supersedes, as `images` does, so the repository's
@@ -167,8 +167,12 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   -reuse`), so a change to one image rebuilds that one, and then checks
   every archive publishes to a local registry as a darwin image. It hands
   the archives to the run's `e2e` and `publish` jobs as an artifact,
-  which another run's cache cannot evict past the repository's 10 GB. It
-  waits for `linux`, `macos` and `prebuilt`, so a change the unit tests
+  which another run's cache cannot evict past the repository's 10 GB, and
+  drops the earlier catalog before it saves its own, as two would not fit
+  beside the prebuilt groups. The whole of it substitutes from
+  cache.nixos.org and the prebuilt groups, so no other store paths are
+  cached, and the Go jobs keep no cache either. It waits for `linux`,
+  `macos` and `prebuilt`, so a change the unit tests
   fail spends no image build or end-to-end run;
 - `e2e`: the end-to-end suite, in four shards on runners of their own.
   `scripts/e2e-shard.sh` spreads the tests by their durations in
