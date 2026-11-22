@@ -188,7 +188,10 @@ no VM and no more than microseconds per call.
   its security plugin. CI's cache was moved within its 10 GB by building
   Kubernetes and Consul in prebuilt groups.
 - **Enforced isolation** (#84): Seatbelt allow-lists a container's reads,
-  as chroot would, instead of denying a list of host roots.
+  as chroot would, instead of denying a list of host roots. It lets a
+  container connect over TCP only to its own ports, its router and the
+  egress proxy. The router carries each connection to another member only
+  when the two share a network, so network membership is enforced.
 
 ## Investigations
 

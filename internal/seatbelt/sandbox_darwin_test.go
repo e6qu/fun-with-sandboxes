@@ -100,14 +100,16 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 	_, foreign := listen(t)
 	bindOK := freePort(t)
 	bindNo := freePort(t)
+	_, dgram := listen(t)
 
 	e := newProbeEnv(t, Spec{
-		IPCPrefix:    IPCPrefixFor("enforce"),
-		Root:         root,
-		StateRoot:    state,
-		Volumes:      []Volume{{Path: vol}, {Path: ro, ReadOnly: true}},
-		BindPorts:    []int{bindOK},
-		ConnectPorts: []int{peer},
+		IPCPrefix:     IPCPrefixFor("enforce"),
+		Root:          root,
+		StateRoot:     state,
+		Volumes:       []Volume{{Path: vol}, {Path: ro, ReadOnly: true}},
+		BindPorts:     []int{bindOK},
+		ConnectPorts:  []int{peer},
+		DatagramPorts: []int{dgram},
 	})
 
 	t.Run("filesystem", func(t *testing.T) {
@@ -146,6 +148,12 @@ func TestSandboxEnforcesSpec(t *testing.T) {
 		e.denied("bind", strconv.Itoa(bindNo))
 		e.allowed("connect", strconv.Itoa(peer))
 		e.denied("connect", strconv.Itoa(foreign))
+		// A port of the stack's block takes datagrams, where routers'
+		// relays lie, but no TCP connection, which goes through the
+		// container's router.
+		e.allowed("send", strconv.Itoa(dgram))
+		e.denied("send", strconv.Itoa(foreign))
+		e.denied("connect", strconv.Itoa(dgram))
 	})
 	t.Run("processes", func(t *testing.T) {
 		e.t = t

@@ -215,9 +215,13 @@ type Spec struct {
 	Volumes   []Volume
 	// BindPorts are the loopback ports the container may listen on.
 	BindPorts []int
-	// ConnectPorts are the loopback ports the container may connect to: its
-	// own and its stack peers'.
+	// ConnectPorts are the loopback ports the container may connect to
+	// over TCP and UDP: its own, its router's and its stack's egress proxy.
 	ConnectPorts []int
+	// DatagramPorts are the loopback ports the container may send UDP
+	// datagrams to besides: its stack's block, where its routers' relays
+	// and its members' flow ports lie.
+	DatagramPorts []int
 	// ReadOnlyRoot denies writes to Root; volumes and tmpfs mounts, which
 	// live outside it, stay as their own entries say.
 	ReadOnlyRoot bool
@@ -327,7 +331,7 @@ func Render(s Spec) (string, error) {
 	if s.IPC == IPCPrivate && !ipcPrefixOK(s.IPCPrefix) {
 		return "", fmt.Errorf("seatbelt: IPC prefix %q must be letters, digits and dots", s.IPCPrefix)
 	}
-	for _, p := range append(append([]int{}, s.BindPorts...), s.ConnectPorts...) {
+	for _, p := range append(append(append([]int{}, s.BindPorts...), s.ConnectPorts...), s.DatagramPorts...) {
 		if err := checkPort(p); err != nil {
 			return "", err
 		}
@@ -500,6 +504,9 @@ func Render(s Spec) (string, error) {
 	// node's API server.
 	for _, p := range uniq(append(append([]int{}, s.ConnectPorts...), s.BindPorts...)) {
 		w("(allow network-outbound (remote ip \"localhost:%d\"))", p)
+	}
+	for _, p := range uniq(s.DatagramPorts) {
+		w("(allow network-outbound (remote udp \"localhost:%d\"))", p)
 	}
 
 	w("(deny mach-lookup)")

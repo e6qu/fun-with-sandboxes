@@ -4101,10 +4101,11 @@ static int reach(int type, in_addr_t v4, unsigned short port, in_addr_t *a, unsi
         // closed, and an address no member holds is unreachable.
         int member;
         unsigned short router = 0, mh = member_route(v4, type, port, &member, &router);
-        if (!mh && member == 1 && type == SOCK_DGRAM && router) mh = flow_port(router, port, v4, 0);
-        // Another stack's member's datagrams go through the container's
-        // own router's relay to it.
-        if (member == 2 && type == SOCK_DGRAM && router_port) mh = flow_port(router_port, port, v4, 1);
+        // A member's port without a host port, and any port of another
+        // stack's member, takes datagrams through the container's own
+        // router's relay to it: Seatbelt lets the container reach no other
+        // router.
+        if (type == SOCK_DGRAM && router_port && ((!mh && member == 1) || member == 2)) mh = flow_port(router_port, port, v4, 1);
         if (!mh) {
             errno = member ? ECONNREFUSED : EHOSTUNREACH;
             return -1;
@@ -5111,18 +5112,25 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         return 1;
     }
     if (member_block(a) && !own_addr(a)) {
+        // Every connection to a member goes through the container's own
+        // router, which carries it only to a member that shares a network
+        // with the container: Seatbelt lets the container reach no other
+        // member's port or router.
         int member;
         unsigned short router = 0;
-        unsigned short h = member_route(a, SOCK_STREAM, port, &member, &router);
-        if (member == 2) {
-            if (!router_port) return 0;
-            *r = route(fd, a, router_port, port, v6, 1);
-        } else if (h || !member || !router) {
-            return 0;
-        } else {
-            *r = route(fd, a, router, port, v6, 0);
-        }
+        member_route(a, SOCK_STREAM, port, &member, &router);
+        if (!member || !router_port) return 0;
+        *r = route(fd, a, router_port, port, v6, 1);
         if (*r == 0 && p6) set_state(fd, state_of(fd) | NET_P6);
+        return 1;
+    }
+    in_addr_t ma;
+    unsigned short mc;
+    if (a == htonl(INADDR_LOOPBACK) && router_port && !container_port(SOCK_STREAM, port) && port != router_port &&
+        member_of_host_port(SOCK_STREAM, port, &ma, &mc)) {
+        // A member's host port, as its SANDBOX_* variables name it, is the
+        // member's own port at its address, reached the same way.
+        *r = route(fd, ma, router_port, mc, v6, 1);
         return 1;
     }
     if ((v4_local(a) || own_addr(a)) && router_port && !(host_port(SOCK_STREAM, port) && own_addr(a))) {

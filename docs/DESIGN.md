@@ -352,10 +352,17 @@ knobs, each enforced by a real mechanism or refused:
   internet access and refused without; the answer reads as from the server
   asked.
 
-  *Routers.* The library connects to a member's address through the host
-  port behind its port, or the member's router for a port without one,
-  refuses a port the member does not expose, and
-  reports a peer's host port as its member address and port. Each shim runs
+  *Routers.* The library connects to a member's address, or to a member's
+  host port, through its own container's router, with a `StreamRelay`
+  request that carries the router's relay key: the router carries it to
+  the member's host port, or the member's router for a port without one,
+  only when the two share a network or a link. Seatbelt lets a container
+  connect to no other port of the block than its own, its router's and the
+  egress proxy's, so network membership is enforced, not presented; it
+  may send datagrams to the block, where routers' relays and members' flow
+  ports lie, and the library asks its own router's relay for a member's UDP
+  port without a host port. The library refuses a port the member does not
+  expose, and reports a peer's host port as its member address and port. Each shim runs
   its container's router on a port of the stack's block that the network
   file names: a client sends a byte naming its request's kind and the two
   bytes of the container port, and the router joins the connection to that

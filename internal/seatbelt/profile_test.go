@@ -7,12 +7,13 @@ import (
 
 func spec() Spec {
 	return Spec{
-		Root:         "/Users/u/.fws/stacks/a/containers/c1/root",
-		StateRoot:    "/Users/u/.fws",
-		Volumes:      []Volume{{Path: "/Users/u/.fws/stacks/a/volumes/data"}, {Path: "/Users/u/.fws/stacks/a/volumes/conf", ReadOnly: true}},
-		BindPorts:    []int{41000},
-		ConnectPorts: []int{41001, 41000, 41001},
-		IPCPrefix:    IPCPrefixFor("c1"),
+		Root:          "/Users/u/.fws/stacks/a/containers/c1/root",
+		StateRoot:     "/Users/u/.fws",
+		Volumes:       []Volume{{Path: "/Users/u/.fws/stacks/a/volumes/data"}, {Path: "/Users/u/.fws/stacks/a/volumes/conf", ReadOnly: true}},
+		BindPorts:     []int{41000},
+		ConnectPorts:  []int{41001, 41000, 41001},
+		DatagramPorts: []int{41050},
+		IPCPrefix:     IPCPrefixFor("c1"),
 	}
 }
 
@@ -27,6 +28,7 @@ func TestRenderGrantsOnlyOwnResources(t *testing.T) {
 		`(allow network-bind (local ip "localhost:41000"))`,
 		`(allow network-outbound (remote ip "localhost:41000"))`,
 		`(allow network-outbound (remote ip "localhost:41001"))`,
+		`(allow network-outbound (remote udp "localhost:41050"))`,
 		`(allow process-exec* process-exec-interpreter` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/containers/c1/root")` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/volumes/data")`,
 		`  (literal "/bin/sh")`,
 		`(allow signal (target same-sandbox))`,

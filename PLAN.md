@@ -67,11 +67,11 @@ the e2e tests that prove its claims on macOS.
    - It reads only its root, its volumes, the system tree and the few host
      files a root would hold. Seatbelt allow-lists reads instead of
      denying a list of roots (in progress).
-   - A container's ports are its own. Every listener sits on a Unix socket
-     in the container's port directory. Seatbelt lets a container connect
-     only to the sockets of the networks it is a member of, and the router
-     alone holds the published host ports. This makes network membership
-     and internal ports enforced, not presented.
+   - A container's ports are its own. Seatbelt lets a container connect
+     over TCP only to its own ports, its router and the egress proxy, and
+     its router carries a connection to a member only when they share a
+     network. This makes network membership enforced, not presented
+     (in progress).
    - Its process listing is its own. Seatbelt denies process information
      about other sandboxes, and the `kern.proc` listing is narrowed where
      the kernel allows it.

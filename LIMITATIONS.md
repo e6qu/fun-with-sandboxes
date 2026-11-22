@@ -135,8 +135,8 @@ what macOS offers an unprivileged process under them. Non-goals are in
   these addresses:
   - Servers see clients connect from `127.0.0.1`; a UDP server sees an
     IPv6 client at its IPv4-mapped address.
-  - A program without the library resolves no member name; it uses
-    `$SANDBOX_<SERVICE>_HOST:$SANDBOX_<SERVICE>_PORT_<n>`.
+  - A program without the library reaches no member: its connections go
+    through the container's router, which the library asks.
   - A container keeps its addresses while it exists. There is no
     link-local IPv6 address, and a user-set MAC address is refused.
   - A network without a subnet reports `127.88.0.0/16`, so a program that
@@ -151,10 +151,13 @@ what macOS offers an unprivileged process under them. Non-goals are in
   listener listens on `127.0.0.1` alone. A loopback-only TCP listener is
   unpublished, as in Docker, but stack members still reach it. Programs
   without the library see the host ports.
-- **A stack's block is one reachability domain.** Within a stack, network
-  membership is presented, not enforced: a program without the library
-  reaches any member's host port. A host process that later binds a port
-  in a stack's block is reachable from that stack.
+- **Network membership is enforced for TCP, presented for UDP.** A
+  container connects over TCP to its own ports, its router and the egress
+  proxy alone; its router carries a connection on only to a member it
+  shares a network with. Datagrams may go to any port of the stack's
+  block, where routers' relays lie, so a program without the library
+  reaches a member's UDP host port, and a host process that later binds a
+  UDP port in the block is reachable from that stack.
 - **Stacks meet through their routers.** On a shared network, and through
   legacy links, a datagram across stacks uses a relay port of the sender's
   router, idle-closed after 90 seconds. Without a link, containers on the

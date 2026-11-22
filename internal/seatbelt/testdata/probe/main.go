@@ -50,6 +50,15 @@ func run(op, arg string) error {
 			return err
 		}
 		return c.Close()
+	case "send":
+		// One UDP datagram, which a sandbox denies at the send.
+		c, err := net.Dial("udp", "127.0.0.1:"+arg)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		_, err = c.Write([]byte("probe"))
+		return err
 	case "signal":
 		pid, err := strconv.Atoi(arg)
 		if err != nil {
