@@ -682,3 +682,37 @@ func TestRelaysDatagramsToAPodOfAnotherNode(t *testing.T) {
 		t.Errorf("the relay sent from port %d, outside the pod's block %v", from, block)
 	}
 }
+
+// A relay to a member whose router is the relaying router itself, as two
+// containers sharing one router are, looks the member's flow port up
+// without holding the router's lock, which that lookup takes.
+func TestRelayToAMemberOfTheSameRouter(t *testing.T) {
+	dir := portDir(t)
+	file := filepath.Join(portDir(t), "network")
+	r, err := Listen("127.0.0.1:0", dir, listenFlow, Network{File: file, Address: "127.88.0.2",
+		DialFlow: func(_ string, raddr *net.UDPAddr) (net.Conn, error) { return net.DialUDP("udp", nil, raddr) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	ms := []members.Member{
+		{Address: "127.88.0.2", Names: []string{"app"}, Router: r.Addr().Port, Networks: []string{"shared"}},
+		{Address: "127.88.0.3", Names: []string{"peer"}, Router: r.Addr().Port, Networks: []string{"shared"}},
+	}
+	if err := os.WriteFile(file, members.Format(ms), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := lookupForeign(r.Addr().String(), readKey(t, dir), netip.MustParseAddr("127.88.0.3"), 7100)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the relay lookup hung")
+	}
+}
