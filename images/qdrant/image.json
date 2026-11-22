@@ -1,5 +1,5 @@
 {
-  "tag": "fws/qdrant:1.17",
+  "tag": "fws/qdrant:1.20",
   "files": {},
   "dirs": [
     "/tmp",

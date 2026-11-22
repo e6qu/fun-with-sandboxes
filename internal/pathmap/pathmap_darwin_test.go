@@ -181,6 +181,22 @@ func TestMountsAndEnvScripts(t *testing.T) {
 	}
 }
 
+// A script whose interpreter the root holds is shown the path it was run
+// by, as the kernel shows it: a link's, the container's, not its target's
+// on the host, which $0 would name.
+func TestScriptSeesThePathItRanBy(t *testing.T) {
+	root := containerRoot(t)
+	os.MkdirAll(filepath.Join(root, "usr", "bin"), 0o755)
+	os.WriteFile(filepath.Join(root, "bin", "script"), []byte("#!/bin/probe scriptargs\n"), 0o755)
+	if err := os.Symlink("/bin/script", filepath.Join(root, "usr", "bin", "linked")); err != nil {
+		t.Fatal(err)
+	}
+	got := probe(t, root, nil, "linkedscript")
+	if want := "scriptargs=/usr/bin/linked,x"; got["linkedscript"] != want {
+		t.Errorf("a linked script was shown %q, want %q", got["linkedscript"], want)
+	}
+}
+
 // A process sees PATH and HOME name the container's directories, though
 // the engine gives them in the root, and a program it starts receives
 // them in the root again, as a program without the library, which finds

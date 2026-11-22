@@ -2,10 +2,12 @@
 # Build the darwin image archives of the catalog into $1.
 # Needs macOS (install_name_tool, codesign) and Nix.
 #
-# build-images.sh --server-derivations [NAME...] prints the derivations of
-# the database servers Nix builds from source (images/servers.nix), and
-# build-images.sh --servers [NAME...] builds them and prints their outputs,
-# so CI can keep them between runs.
+# build-images.sh --prebuilt-derivations GROUP prints the derivations of a
+# group of the packages Nix builds from source that no binary cache holds
+# (the database servers of images/servers.nix, the catalog's packages
+# images/catalog builds), and build-images.sh --prebuilt GROUP builds them
+# and prints their outputs, so CI can build the groups side by side and
+# keep them between runs.
 #
 # build-images.sh --inputs prints the files the build reads: this script,
 # images/, and the Go sources of every package it compiles, so CI can key
@@ -17,6 +19,10 @@ set -euo pipefail
 # and cached its darwin packages: a nixos-26.05 commit can name darwin
 # builds no cache holds yet, which the images job would compile for hours.
 nixpkgs=${NIXPKGS:-github:NixOS/nixpkgs/31cff629c6323a1a6ab22977bc497cedae34a548}
+# nixpkgs-unstable as of 2026-11-21, pinned, whose packages and recipes give
+# the catalog the upstream releases nixpkgs-26.05 lags behind
+# (images/catalog).
+unstable=${NIXPKGS_UNSTABLE:-github:NixOS/nixpkgs/9996594bd38077de6a018ec17453ba3d99182787}
 here=$(cd "$(dirname "$0")/.." && pwd)
 # A runner's resolver drops a lookup now and then, and Nix retries a
 # download within a fraction of a second, so a failure to reach a cache is
@@ -48,6 +54,7 @@ retry_net() {
 }
 nix=(retry_net nix --extra-experimental-features 'nix-command flakes')
 servers=(--impure -f "$here/images/servers.nix" --argstr nixpkgs "$nixpkgs")
+catalog=(--impure -f "$here/images/catalog" --argstr unstable "$unstable")
 case "${1:-}" in
 --inputs)
   cd "$here"
@@ -67,19 +74,30 @@ case "${1:-}" in
   } | sort -u
   exit
   ;;
---server-derivations | --servers)
+--prebuilt-derivations | --prebuilt)
+  # The packages Nix builds from source that no binary cache holds, in
+  # groups CI builds side by side and keeps (.github/workflows/ci.yml): the
+  # database servers, and the catalog's packages built at releases
+  # nixpkgs lacks.
   mode=$1
-  shift
-  [ $# -gt 0 ] || set -- mysql mariadb
-  if [ "$mode" = --servers ]; then
-    "${nix[@]}" build --no-link --print-out-paths "${servers[@]}" "$@"
+  case "${2:?usage: build-images.sh --prebuilt[-derivations] GROUP}" in
+  mysql | mariadb) what=("${servers[@]}" "$2") ;;
+  qdrant) what=("${catalog[@]}" qdrant) ;;
+  meilisearch) what=("${catalog[@]}" meilisearch) ;;
+  influxdb) what=("${catalog[@]}" influxdb2-server) ;;
+  gitea) what=("${catalog[@]}" gitea gitea.data mailpit) ;;
+  tools) what=("${catalog[@]}" podman seaweedfs toxiproxy docker-client docker-buildx docker-compose valkey rabbitmq-server) ;;
+  *) echo "no such group: $2" >&2; exit 1 ;;
+  esac
+  if [ "$mode" = --prebuilt ]; then
+    NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" build --no-link --print-out-paths "${what[@]}"
   else
-    "${nix[@]}" path-info --derivation "${servers[@]}" "$@"
+    NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" path-info --derivation "${what[@]}"
   fi
   exit
   ;;
 esac
-out=${1:?usage: build-images.sh OUTPUT_DIR | --server-derivations | --servers}
+out=${1:?usage: build-images.sh OUTPUT_DIR | --prebuilt-derivations GROUP | --prebuilt GROUP}
 build=$(mktemp -d)
 trap 'rm -rf "$build"' EXIT
 mkdir -p "$out"
@@ -139,6 +157,15 @@ output_with() {
 # bin/BINARY; server_with ATTR BINARY that of images/servers.nix's ATTR.
 pkg_with() { output_with "$2" "$nixpkgs#$1"; }
 server_with() { output_with "$2" "${servers[@]}" "$1"; }
+# cat_with ATTR BINARY prints that of images/catalog's ATTR.
+cat_with() { output_with "$2" "${catalog[@]}" "$1"; }
+cat_out() { NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" build --no-link --print-out-paths "${catalog[@]}" "$1"; }
+
+# The catalog's packages first, all of them, at once: those built here
+# rather than substituted build side by side, and a failure names every
+# package that fails, not only the first.
+NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" build --impure --no-link --keep-going \
+  --expr "builtins.attrValues (import $here/images/catalog { unstable = \"$unstable\"; })"
 
 # Every catalog image carries a shell of its own at /bin/sh: the loader
 # drops the container library from Apple's shells, and with it from what
@@ -181,12 +208,12 @@ for v in 16 18; do
     -file "/entry=$build/postgres-entry" -out "$out/postgres-$v.tar"
 done
 
-redis=$(pkg_with redis redis-server)
+redis=$(cat_with redis redis-server)
 closure "$redis" > "$build/redis.closure"
 mkimage $(accounts redis redis 999 999 /data) -spec images/redis/image.json -closure "$build/redis.closure" -pkg "$redis" \
   -file "/entry=$build/redis-entry" -out "$out/redis.tar"
 
-nginx=$(pkg_with nginx nginx)
+nginx=$(cat_with nginx nginx)
 closure "$nginx" > "$build/nginx.closure"
 mkimage $(accounts nginx nginx 101 101 /nonexistent) -spec images/nginx/image.json -closure "$build/nginx.closure" -pkg "$nginx" \
   -file "/entry=$build/nginx-entry" -file "/usr/share/nginx/html/index.html=$nginx/html/index.html" -out "$out/nginx.tar"
@@ -201,7 +228,7 @@ closure "$mysql" > "$build/mysql.closure"
 mkimage $(accounts mysql mysql 999 999 /var/lib/mysql) -spec images/mysql/image.json -closure "$build/mysql.closure" -pkg "$mysql" \
   -file "/entry=$build/mysql-entry" -file "/etc/my.cnf=images/mysql/my.cnf" -out "$out/mysql.tar"
 
-valkey=$(pkg_with valkey valkey-server)
+valkey=$(cat_with valkey valkey-server)
 closure "$valkey" > "$build/valkey.closure"
 mkimage $(accounts valkey valkey 999 999 /data) -spec images/valkey/image.json -closure "$build/valkey.closure" -pkg "$valkey" \
   -file "/entry=$build/valkey-entry" -out "$out/valkey.tar"
@@ -211,13 +238,13 @@ closure "$memcached" > "$build/memcached.closure"
 mkimage $(accounts memcached memcache 11211 11211 /home/memcache) -spec images/memcached/image.json -closure "$build/memcached.closure" -pkg "$memcached" \
   -file "/entry=$build/memcached-entry" -out "$out/memcached.tar"
 
-seaweedfs=$(pkg_with seaweedfs weed)
+seaweedfs=$(cat_with seaweedfs weed)
 closure "$seaweedfs" > "$build/seaweedfs.closure"
 mkimage $(accounts seaweedfs seaweed 1000 1000 /home/seaweed) -spec images/seaweedfs/image.json -closure "$build/seaweedfs.closure" -pkg "$seaweedfs" \
   -link /usr/bin/weed=../../bin/weed -file "/etc/seaweedfs/filer.toml=images/seaweedfs/filer.toml" -file "/entry=$build/seaweedfs-entry" \
   -out "$out/seaweedfs.tar"
 
-nats=$(pkg_with nats-server nats-server)
+nats=$(cat_with nats-server nats-server)
 closure "$nats" > "$build/nats.closure"
 mkimage $(accounts nats) -spec images/nats/image.json -closure "$build/nats.closure" -pkg "$nats" \
   -file "/nats-server.conf=images/nats/nats-server.conf" -out "$out/nats.tar"
@@ -237,7 +264,7 @@ closure "$consul" > "$build/consul.closure"
 mkimage $(accounts consul consul 100 1000 /home/consul) -spec images/consul/image.json -closure "$build/consul.closure" -pkg "$consul" \
   -file "/usr/local/bin/docker-entrypoint.sh=$build/consul-entry" -out "$out/consul.tar"
 
-vault=$(pkg_with vault-bin vault)
+vault=$(cat_with vault-bin vault)
 closure "$vault" > "$build/vault.closure"
 mkimage $(accounts vault vault 100 1000 /home/vault) -spec images/vault/image.json -closure "$build/vault.closure" -pkg "$vault" \
   -file "/usr/local/bin/docker-entrypoint.sh=$build/vault-entry" -out "$out/vault.tar"
@@ -245,8 +272,8 @@ mkimage $(accounts vault vault 100 1000 /home/vault) -spec images/vault/image.js
 # MongoDB's own build of the server, mongosh, and the tools the official
 # image carries that scripts run in it, Testcontainers' among them: bash,
 # openssl and the core utilities.
-mongodb=$(pkg_with mongodb-ce mongod)
-mongosh=$(pkg_with mongosh mongosh)
+mongodb=$(cat_with mongodb-ce mongod)
+mongosh=$(cat_with mongosh mongosh)
 openssl=$(pkg_with openssl.bin openssl)
 findutils=$(pkg_with findutils find)
 coreutils=$(pkg_with coreutils dirname)
@@ -260,29 +287,34 @@ mkimage $(accounts mongo mongodb 999 999 /data/db) -spec images/mongo/image.json
 # Apache Kafka laid out as Confluent's images lay it out, which
 # Testcontainers' module drives: the scripts in /etc/confluent/docker, the
 # utility belt they run, and Kafka's tools in /usr/bin without their .sh.
-kafka=$(pkg_with apacheKafka kafka-server-start.sh)
+kafka=$(cat_with apacheKafka kafka-server-start.sh)
 coreutils=$(pkg_with coreutils dirname)
 gnused=$(pkg_with gnused sed)
 bash=$(pkg_with bash bash)
-kafka_links=()
+# /usr/bin's kafka-* run each tool through /etc/confluent/docker/tool,
+# which has it log as the container's start configured.
+kafka_tools=()
+mkdir "$build/kafka-tools"
 for f in "$kafka"/bin/kafka-*.sh; do
   n=$(basename "$f" .sh)
-  kafka_links+=(-link "/usr/bin/$n=../../bin/$n.sh")
+  printf '#!/bin/bash\nexec /etc/confluent/docker/tool %s "$@"\n' "$n" > "$build/kafka-tools/$n"
+  chmod 755 "$build/kafka-tools/$n"
+  kafka_tools+=(-file "/usr/bin/$n=$build/kafka-tools/$n")
 done
 closure "$kafka" "$coreutils" "$gnused" "$bash" > "$build/kafka.closure"
 mkimage $(accounts kafka appuser 1000 1000 /home/appuser) -spec images/kafka/image.json -closure "$build/kafka.closure" -pkg "$kafka" \
-  -pkg "$coreutils" -pkg "$gnused" -pkg "$bash" "${kafka_links[@]}" \
+  -pkg "$coreutils" -pkg "$gnused" -pkg "$bash" "${kafka_tools[@]}" \
   -file "/usr/bin/ub=$build/ub" -file "/etc/confluent/docker=images/kafka/docker" -out "$out/kafka.tar"
 
 # Mailpit as its image runs it, from /mailpit.
-mailpit=$(pkg_with mailpit mailpit)
+mailpit=$(cat_with mailpit mailpit)
 closure "$mailpit" > "$build/mailpit.closure"
 mkimage $(accounts mailpit) -spec images/mailpit/image.json -closure "$build/mailpit.closure" -pkg "$mailpit" \
   -link /mailpit=bin/mailpit -out "$out/mailpit.tar"
 
 # Meilisearch as its image runs it: /bin/meilisearch, linked from
-# /meilisearch, in /meili_data.
-meilisearch=$(pkg_with meilisearch meilisearch)
+# /meilisearch, and /bin/meilitool, in /meili_data.
+meilisearch=$(cat_with meilisearch meilisearch)
 closure "$meilisearch" > "$build/meilisearch.closure"
 mkimage $(accounts meilisearch) -spec images/meilisearch/image.json -closure "$build/meilisearch.closure" -pkg "$meilisearch" \
   -link /meilisearch=bin/meilisearch -out "$out/meilisearch.tar"
@@ -290,9 +322,9 @@ mkimage $(accounts meilisearch) -spec images/meilisearch/image.json -closure "$b
 # Qdrant laid out in /qdrant as its image lays it out: the binary, the
 # configuration and entrypoint script from its source, and the web UI
 # with the API's OpenAPI document, which its sync script adds.
-qdrant=$(pkg_with qdrant qdrant)
-qdrant_src=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#qdrant.src")
-qdrant_ui=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#qdrant-web-ui")
+qdrant=$(cat_with qdrant qdrant)
+qdrant_src=$(cat_out qdrant.src)
+qdrant_ui=$(cat_out qdrant-web-ui)
 cp -R "$qdrant_ui" "$build/qdrant-static"
 chmod -R u+w "$build/qdrant-static"
 cp "$qdrant_src/docs/redoc/master/openapi.json" "$build/qdrant-static/openapi.json"
@@ -307,7 +339,7 @@ mkimage $(accounts qdrant) -spec images/qdrant/image.json -closure "$build/qdran
 # holds the distribution, a writable copy of its configuration, and data
 # and logs linked to the /data and /logs volumes; the entrypoint and the
 # plugins it installs are in /startup.
-neo4j=$(pkg_with neo4j neo4j)
+neo4j=$(cat_with neo4j neo4j)
 coreutils=$(pkg_with coreutils dirname)
 bash=$(pkg_with bash bash)
 neo4j_home=$neo4j/share/neo4j
@@ -336,7 +368,7 @@ mkimage $(accounts neo4j neo4j 7474 7474 /var/lib/neo4j) -spec images/neo4j/imag
 # packages install, the image's own configuration and entrypoint script,
 # which reads the configuration with clickhouse extract-from-config and
 # drops to the clickhouse user with clickhouse su.
-clickhouse=$(pkg_with clickhouse clickhouse)
+clickhouse=$(cat_with clickhouse clickhouse)
 clickhouse_docker=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/clickhouse/docker.nix --argstr nixpkgs "$nixpkgs")
 mkdir "$build/clickhouse"
 cp "$clickhouse_docker"/* "$build/clickhouse"
@@ -359,7 +391,7 @@ mkimage $(accounts clickhouse clickhouse 101 101 /var/lib/clickhouse) -spec imag
 # InfluxDB 2 with the influx CLI its image carries, the image's default
 # configuration and an entrypoint that does what its script does;
 # run-parts runs the user's setup scripts.
-influxd=$(pkg_with influxdb2-server influxd)
+influxd=$(cat_with influxdb2-server influxd)
 influx=$(pkg_with influxdb2-cli influx)
 debianutils=$(pkg_with debianutils run-parts)
 coreutils=$(pkg_with coreutils dirname)
@@ -406,10 +438,10 @@ mkimage $(accounts opensearch opensearch 1000 1000 /usr/share/opensearch) -spec 
 # buildx and Compose plugins, the entrypoint scripts' work, and a dockerd
 # that serves the engine fwsd nests in a privileged container, whose
 # socket serves Podman's API too, for the Podman client beside Docker's.
-docker=$(pkg_with docker-client docker)
-podman=$(pkg_with podman podman)
-buildx=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#docker-buildx")
-compose=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#docker-compose")
+docker=$(cat_with docker-client docker)
+podman=$(cat_with podman podman)
+buildx=$(cat_out docker-buildx)
+compose=$(cat_out docker-compose)
 coreutils=$(pkg_with coreutils dirname)
 wget=$(pkg_with wget wget)
 closure "$docker" "$podman" "$buildx" "$compose" "$coreutils" "$wget" > "$build/dind.closure"
@@ -422,7 +454,7 @@ mkimage $(accounts dind) -spec images/dind/image.json -closure "$build/dind.clos
 
 # Toxiproxy as its image runs it: the server at /toxiproxy and the CLI
 # beside it.
-toxiproxy=$(pkg_with toxiproxy toxiproxy-server)
+toxiproxy=$(cat_with toxiproxy toxiproxy-server)
 closure "$toxiproxy" > "$build/toxiproxy.closure"
 mkimage $(accounts toxiproxy) -spec images/toxiproxy/image.json -closure "$build/toxiproxy.closure" -pkg "$toxiproxy" \
   -link /toxiproxy=bin/toxiproxy-server -link /toxiproxy-cli=bin/toxiproxy-cli -out "$out/toxiproxy.tar"
@@ -439,12 +471,12 @@ node=$(pkg_with nodejs_26 node)
 closure "$node" > "$build/node.closure"
 mkimage $(accounts node node 1000 1000 /home/node) -spec images/node/image.json -closure "$build/node.closure" -pkg "$node" -out "$out/node.tar"
 
-bun=$(pkg_with bun bun)
+bun=$(cat_with bun bun)
 closure "$bun" > "$build/bun.closure"
 mkimage $(accounts bun bun 1000 1000 /home/bun) -spec images/bun/image.json -closure "$build/bun.closure" -pkg "$bun" -out "$out/bun.tar"
 
-gitea=$(pkg_with gitea gitea)
-gitea_data=$(NIXPKGS_ALLOW_UNFREE=1 "${nix[@]}" build --impure --no-link --print-out-paths "$nixpkgs#gitea.data")
+gitea=$(cat_with gitea gitea)
+gitea_data=$(cat_out gitea.data)
 git=$(pkg_with git git)
 # Gitea's repository hooks are bash scripts, as in the official image.
 bash=$(pkg_with bash bash)
@@ -463,7 +495,7 @@ closure "$dynamodb" > "$build/dynamodb.closure"
 mkimage $(accounts dynamodb dynamodblocal 1000 1000 /home/dynamodblocal) -spec images/dynamodb/image.json -closure "$build/dynamodb.closure" -pkg "$jre" \
   -env "DYNAMODB_HOME=$dynamodb/share/dynamodb-local" -file "/entry=$build/dynamodb-entry" -out "$out/dynamodb.tar"
 
-rabbitmq=$(pkg_with rabbitmq-server rabbitmq-server)
+rabbitmq=$(cat_with rabbitmq-server rabbitmq-server)
 # RabbitMQ's scripts run the POSIX tools from PATH.
 coreutils=$(pkg_with coreutils dirname)
 gnused=$(pkg_with gnused sed)

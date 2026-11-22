@@ -1,0 +1,91 @@
+{
+  lib,
+  rustPlatform,
+  fetchFromGitHub,
+  fetchurl,
+  nixosTests,
+  nix-update-script,
+  oniguruma,
+  pkg-config,
+  rust-jemalloc-sys-unprefixed,
+}:
+
+rustPlatform.buildRustPackage (finalAttrs: {
+  pname = "meilisearch";
+  version = "1.57.0";
+
+  src = fetchFromGitHub {
+    owner = "meilisearch";
+    repo = "meilisearch";
+    tag = "v${finalAttrs.version}";
+    hash = "sha256-Vmzl6kiI7/pZn/RiBfJY1x7HqTGDeNh3Xt40PnkkfAE=";
+  };
+
+  # meilitool too, which the release's image carries.
+  cargoBuildFlags = [
+    "--package=meilisearch"
+    "--package=meilitool"
+  ];
+
+  cargoHash = "sha256-Lnp+7k4ZEwkcVNWHJMBAbqJevmaF/P9Wn1+E30Xn+f0=";
+
+  # The mini-dashboard its release serves, whose assets the build script
+  # downloads: it reads them from the fetched archive, which it checks
+  # against the SHA-1 Cargo.toml pins, as it checks the download.
+  buildNoDefaultFeatures = true;
+  buildFeatures = [ "meilisearch/mini-dashboard" ];
+  env.MEILI_MINI_DASHBOARD_ZIP = fetchurl {
+    url = "https://github.com/meilisearch/mini-dashboard/releases/download/v0.4.2/build.zip";
+    hash = "sha256-I5rWwcR1RK1de9PWSIFPJOpnl0ZrB938rEo1I2Wayms=";
+  };
+  # The build script's zip takes flate2 without a backend, which the
+  # tokenizers' build scripts give it in the release's build: flate2's
+  # default backend, a crate Cargo.lock holds already, is named here.
+  postPatch = ''
+    substituteInPlace crates/meilisearch/Cargo.toml \
+      --replace-fail 'zip = { version = "6.0.0", optional = true, default-features = false, features = ["deflate-flate2"] }' \
+        'zip = { version = "6.0.0", optional = true, default-features = false, features = ["deflate-flate2"] }
+    flate2 = "1.1.9"'
+    substituteInPlace crates/meilisearch/build.rs \
+      --replace-fail 'let dashboard_assets_bytes = get(url)?.bytes()?;' \
+        'let _ = (url, get::<&str>); let dashboard_assets_bytes = std::fs::read(env::var("MEILI_MINI_DASHBOARD_ZIP")?)?;'
+  '';
+
+  nativeBuildInputs = [
+    pkg-config
+    rustPlatform.bindgenHook
+  ];
+
+  buildInputs = [
+    oniguruma
+    rust-jemalloc-sys-unprefixed
+  ];
+
+  passthru = {
+    updateScript = nix-update-script { extraArgs = [ "--use-github-releases" ]; };
+    tests = {
+      meilisearch = nixosTests.meilisearch;
+    };
+  };
+
+  # Tests will try to compile with mini-dashboard features which downloads something from the internet.
+  doCheck = false;
+
+  meta = {
+    description = "Powerful, fast, and an easy to use search engine";
+    mainProgram = "meilisearch";
+    homepage = "https://docs.meilisearch.com/";
+    changelog = "https://github.com/meilisearch/meilisearch/releases/tag/v${finalAttrs.version}";
+    license = lib.licenses.mit;
+    maintainers = with lib.maintainers; [
+      happysalada
+      bbenno
+    ];
+    platforms = [
+      "aarch64-linux"
+      "aarch64-darwin"
+      "riscv64-linux"
+      "x86_64-linux"
+    ];
+  };
+})

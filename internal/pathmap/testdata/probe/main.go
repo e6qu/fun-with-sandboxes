@@ -226,6 +226,14 @@ func run(check string) string {
 	case "envscript":
 		out, err := exec.Command("/bin/run").Output()
 		return result(string(out), err)
+	case "scriptargs":
+		// probe as a script's interpreter: the arguments after its #!
+		// argument, the script as the interpreter was shown it first.
+		return strings.Join(os.Args[2:], ",")
+	case "linkedscript":
+		// A script run by a link's path, its interpreter the root's.
+		out, err := exec.Command("/usr/bin/linked", "x").Output()
+		return result(strings.Split(string(out), "\n")[0], err)
 	case "drop":
 		// As an entrypoint drops root with gosu: the program it executes
 		// runs as the user it switched to.

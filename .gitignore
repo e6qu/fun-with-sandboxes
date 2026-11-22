@@ -1,5 +1,9 @@
-# Build output
+# Build output, and what go build leaves in the root for a package of
+# images/ or cmd/
 /bin/
+/toolbox
+/fws*
+!/fws*/
 /images-out/
 /dist/
 *.test

@@ -35,6 +35,9 @@ type nodePeers struct {
 	mu      sync.Mutex
 	members map[string][]stackmembers.Member
 	nets    map[string][]string
+	// refreshing counts the refreshes publishPeer and dropPeer start,
+	// which shutdown waits for: each rewrites nested engines' files.
+	refreshing sync.WaitGroup
 }
 
 // publishPeer records the members c's nested engine published and hands
@@ -46,7 +49,7 @@ func (e *Engine) publishPeer(c *Container, ms []stackmembers.Member) {
 	}
 	e.nodes.members[c.rec.ID] = ms
 	e.nodes.mu.Unlock()
-	go e.refreshPeers(c.rec.ID)
+	e.nodes.refreshing.Go(func() { e.refreshPeers(c.rec.ID) })
 }
 
 // dropPeer forgets c's nested engine's members, as it closes.
@@ -56,7 +59,7 @@ func (e *Engine) dropPeer(c *Container) {
 	delete(e.nodes.members, c.rec.ID)
 	e.nodes.mu.Unlock()
 	if had {
-		go e.refreshPeers(c.rec.ID)
+		e.nodes.refreshing.Go(func() { e.refreshPeers(c.rec.ID) })
 	}
 }
 

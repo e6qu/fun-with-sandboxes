@@ -117,8 +117,9 @@ The checks CI runs, in the order to run them locally:
 
    Most packages come from Nix's binary cache. A first build compiles
    MySQL and MariaDB from source, with the compilation comment their
-   vendors' builds carry (`images/servers.nix`), and Consul and Kubernetes,
-   which no cache holds for darwin.
+   vendors' builds carry (`images/servers.nix`), the catalog's packages
+   at releases nixpkgs lacks (`images/catalog`), and Consul and
+   Kubernetes, which no cache holds for darwin: hours on one machine.
 
    ```bash
    cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e -v -count=1 -timeout 90m ./...
@@ -151,7 +152,14 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   Network.framework experiments; and benchmarks of each interposed system
   call against the native one, of a container's start, part by part, and
   of compiling a profile;
-- `servers`: the MySQL and MariaDB builds, cached by derivation;
+- `prebuilt`: what Nix builds from source that no cache holds, in groups
+  on runners of their own (`scripts/build-images.sh --prebuilt GROUP`):
+  MySQL, MariaDB and the catalog's packages at releases nixpkgs lacks,
+  each group cached by its derivations and handed to `images` as an
+  artifact. A group's run stopped partway, by a failure or a newer push,
+  keeps what it finished, which the next run substitutes. A whole build
+  drops the entries it supersedes, as `images` does, so the repository's
+  10 GB of cache holds what the next run needs;
 - `images`: the catalog's archives, cached under a hash of the files the
   build reads (`scripts/build-images.sh --inputs`), so a push that changes
   none of them skips the build. Otherwise it restores the newest earlier
@@ -160,7 +168,7 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   every archive publishes to a local registry as a darwin image. It hands
   the archives to the run's `e2e` and `publish` jobs as an artifact,
   which another run's cache cannot evict past the repository's 10 GB. It
-  waits for `linux`, `macos` and `servers`, so a change the unit tests
+  waits for `linux`, `macos` and `prebuilt`, so a change the unit tests
   fail spends no image build or end-to-end run;
 - `e2e`: the end-to-end suite, in four shards on runners of their own.
   `scripts/e2e-shard.sh` spreads the tests by their durations in
@@ -207,6 +215,11 @@ connection, never on a fixed sleep.
   in the README's catalog and in the `images` job's registry check in
   `.github/workflows/ci.yml`, and drive it in `tests/e2e/catalog_test.go`
   through the client its users would use.
+- **A newer release.** An image takes `nixpkgs-26.05-darwin`'s package;
+  where that lags upstream, add it to `images/catalog`: nixpkgs-unstable's
+  package when it has the newest release, else its recipe copied there at
+  the release, or the release's own macOS build. GitHub's source archives
+  hash as `git archive` of the tag lays the tree out.
 - **BuildKit.** Change the packages it copies with
   `scripts/sync-buildkit.sh`, and patches in `third_party/buildkit-patches`.
   Never edit `third_party/buildkit` by hand: CI checks it matches the

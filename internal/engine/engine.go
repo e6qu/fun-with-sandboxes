@@ -245,6 +245,7 @@ func (e *Engine) shutdown(stop bool) {
 		}(c)
 	}
 	wg.Wait()
+	e.nodes.refreshing.Wait()
 	e.closeAllEgress()
 	e.closeServices()
 }

@@ -1,0 +1,65 @@
+{
+  lib,
+  buildGoModule,
+  fetchFromGitHub,
+  testers,
+  toxiproxy,
+}:
+
+buildGoModule (finalAttrs: {
+  pname = "toxiproxy";
+  version = "2.13.0";
+
+  src = fetchFromGitHub {
+    owner = "Shopify";
+    repo = "toxiproxy";
+    rev = "v${finalAttrs.version}";
+    sha256 = "sha256-rIcvOvDpxL4KvsyyrB74gbVX6IRA6kZcYpki7QPSwcY=";
+  };
+
+  vendorHash = "sha256-5pEK9fljmJMy/Ii4GA6tqSLROL6yvJJ/wLVRhxBICpw=";
+
+  excludedPackages = [ "test/e2e" ];
+
+  ldflags = [
+    "-s"
+    "-w"
+    "-X github.com/Shopify/toxiproxy/v2.Version=${finalAttrs.version}"
+  ];
+
+  # Fixes tests on Darwin
+  __darwinAllowLocalNetworking = true;
+
+  checkFlags = [
+    "-short"
+    # The toxics' tests time wall-clock latency and bandwidth to within
+    # milliseconds, which a runner building other packages at once misses.
+    "-skip=TestVersionEndpointReturnsVersion|TestFullstreamLatencyBiasDown|TestBandwidthToxic|TestFullstreamLatencyEven|TestTwoLatencyToxics|TestLatencyToxicBandwidth|TestSlicerToxic|TestProxyLatency"
+  ];
+
+  postInstall = ''
+    mv $out/bin/cli $out/bin/toxiproxy-cli
+    mv $out/bin/server $out/bin/toxiproxy-server
+  '';
+
+  passthru.tests = {
+    cliVersion = testers.testVersion {
+      inherit (finalAttrs) version;
+      package = toxiproxy;
+      command = "${toxiproxy}/bin/toxiproxy-cli -version";
+    };
+    serverVersion = testers.testVersion {
+      inherit (finalAttrs) version;
+      package = toxiproxy;
+      command = "${toxiproxy}/bin/toxiproxy-server -version";
+    };
+  };
+
+  meta = {
+    changelog = "https://github.com/Shopify/toxiproxy/releases/tag/v${finalAttrs.version}";
+    description = "Proxy for for simulating network conditions";
+    homepage = "https://github.com/Shopify/toxiproxy";
+    maintainers = with lib.maintainers; [ avnik ];
+    license = lib.licenses.mit;
+  };
+})

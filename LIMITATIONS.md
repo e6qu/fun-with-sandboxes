@@ -29,15 +29,12 @@ what macOS offers an unprivileged process under them. Non-goals are in
   Vault are the vendors' own macOS builds. Where Linux parts are missing
   they differ from upstream's:
   - `fws/kafka` is Apache Kafka in Confluent's layout, without Confluent's
-    own components such as the REST Proxy; `KAFKA_TOOLS_LOG4J_LOGLEVEL`
-    sets nothing.
-  - `fws/meilisearch` serves no mini-dashboard and has no `meilitool`.
+    own components such as the REST Proxy.
   - `fws/busybox` holds separate GNU and other darwin programs, not
     BusyBox's applets, so options differ; its `tar` is libarchive's, as
     macOS's is; its `nc` only checks a port (`nc -z`); it has no `ps`,
     `top` or `vi`. `fws/base` has no package manager: add programs with
     `COPY` or by downloading darwin builds.
-  - `fws/qdrant` serves the older web UI nixpkgs builds.
   - `fws/neo4j` is the Community Edition.
   - `fws/opensearch` is the minimal distribution, without the security,
     k-NN and ML Commons plugins, so `DISABLE_SECURITY_PLUGIN` and the demo

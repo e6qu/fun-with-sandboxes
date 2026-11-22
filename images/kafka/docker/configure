@@ -40,3 +40,15 @@ ub render-properties /etc/confluent/docker/kafka-propertiesSpec.json > /etc/kafk
     echo "logger.l$i.level = ${l#*=}"
   done
 } > /etc/kafka/log4j2.properties
+
+# The tools log to standard error at KAFKA_TOOLS_LOG4J_LOGLEVEL, as
+# Confluent's image has them (/etc/confluent/docker/tool).
+{
+  echo "appender.stderr.type = Console"
+  echo "appender.stderr.name = STDERR"
+  echo "appender.stderr.target = SYSTEM_ERR"
+  echo "appender.stderr.layout.type = PatternLayout"
+  echo "appender.stderr.layout.pattern = [%d] %p %m (%c)%n"
+  echo "rootLogger.level = ${KAFKA_TOOLS_LOG4J_LOGLEVEL:-WARN}"
+  echo "rootLogger.appenderRef.stderr.ref = STDERR"
+} > /etc/kafka/tools-log4j2.properties
