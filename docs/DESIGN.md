@@ -53,11 +53,16 @@ more of the host than under Docker, though it can act on none of it:
   processes.
 - **Shared kernel surfaces.** `sysctl` values, the system clock and the
   Mach host port are global and readable; Seatbelt denies writing them.
-- **The host's system tree.** A container reads everything under `/` but
-  the user's and the machine's data roots (`/Users`, `/Volumes`,
-  `/Library`, `/opt`, `/usr/local`, `/nix`, temporary and per-user
-  directories and others, `seatbelt.DeniedReadRoots`) and the engine's
-  state, of which it gets back only its own root, volumes and files (§3).
+- **The host's system tree.** A container reads, as under chroot, its own
+  root, volumes and files, the system tree every macOS program loads
+  (`seatbelt.SystemReadPaths`: `/System`, `/usr/lib`, `/usr/share`, the
+  dyld and time zone databases, `/dev`) and the few host files a root of
+  its own would hold (`seatbelt.HostReadPaths`: the shells, the time zone,
+  the CA certificates, the services and protocols databases), and nothing
+  else of the host, whatever path a program names. A container granted the
+  user's session reads the host but its data roots
+  (`seatbelt.DeniedReadRoots`) and the engine's state, as graphical
+  applications read fonts, preferences and bundles all over it (§3).
 
 Another stack's files, ports, environment and logs, and the right to signal
 its processes, stay denied. [`LIMITATIONS.md`](../LIMITATIONS.md) lists every
@@ -94,10 +99,10 @@ it was not handed.
 | Dimension | Primitive | Guarantee | Gap (accepted) |
 |---|---|---|---|
 | Filesystem write | Seatbelt `(deny file-write*)` + allow only the container root and its volumes | A container writes only inside its own clone and mounts | — |
-| Filesystem read of host | Seatbelt `(allow file-read* (subpath "/"))`, then `(deny file-read*)` of the user's and machine's data roots (`seatbelt.DeniedReadRoots`) and the engine's state, then allow the container root, its volumes, the container library and its network file | No read of `$HOME`, other stacks' roots, or user data | The rest of the host's system tree is readable |
+| Filesystem read of host | Seatbelt `(deny file-read*)`, then allow the container root, its volumes, the container library and its network file, the system tree (`seatbelt.SystemReadPaths`) and the host files a root would hold (`seatbelt.HostReadPaths`); a container granted the user's session reads the host but its data roots (`seatbelt.DeniedReadRoots`) and the engine's state | No read of the host outside the root, volumes and system tree: not `$HOME`, other stacks' roots, `/private/etc`, `/usr/bin` or shared temporary directories | The system tree is readable |
 | Cross-stack visibility | Per-stack directory tree + per-stack Seatbelt path allowances | Stack A's profile names only A's paths; A cannot read or write B | — |
 | Ports | Engine allocates a disjoint range per stack; Seatbelt `(deny network-bind)` except the assigned ports | Two stacks never clash; a container binds only its grants | Host sees all listening sockets globally |
-| Process signalling | Seatbelt `(deny signal)` and `(deny process-info*)` except same-sandbox; execs start in the container's sandbox; the container library lists the sandbox's processes alone. `--pid host` allows both, and the library lists every process (`FWS_PIDNS=host`). `--pid container:` shares a namespace through the containers' shims (§3a) | A cannot `kill`, inspect or list B's processes | pids are the host's (no PID namespace) |
+| Process signalling | Seatbelt `(deny signal)` and `(deny process-info*)` except same-sandbox; and `(deny sysctl-read)` of the process table's listings (`seatbelt.ProcListings`); execs start in the container's sandbox; the container library lists the sandbox's processes alone, from the table its shim answers with the processes it follows (`pidns.OpTable`). `--pid host` allows both, and the library lists every process (`FWS_PIDNS=host`). `--pid container:` shares a namespace through the containers' shims (§3a) | A cannot `kill`, inspect or list B's processes | pids are the host's (no PID namespace) |
 | Default deny | Seatbelt `(deny default)` on Apple's `system.sb` baseline, each operation class re-allowed by name | No IOKit, Mach registration, preferences, AppleEvents, kernel control sockets or anything else the profile does not name | — |
 | IPC | Seatbelt `ipc-posix-name-prefix` filters; the container library's per-container System V keys | POSIX shared memory and semaphores confined to a per-container name prefix (`--ipc` private); System V keys hashed with it; `none` denies all IPC | a System V key is presented, not confined: a guessed hashed key reaches another container's object |
 | Resource limits | Per-container supervisor (§3a); `setrlimit`, the nice value, the disk I/O tier and a QoS clamp through the spawn helper | Memory, CPU, pids caps, `--ulimit`, priority and disk I/O tiers | Enforced by ending, stopping or killing processes, not by refusing allocations; the container library refuses forks at the pids limit |
@@ -347,10 +352,17 @@ knobs, each enforced by a real mechanism or refused:
   internet access and refused without; the answer reads as from the server
   asked.
 
-  *Routers.* The library connects to a member's address through the host
-  port behind its port, or the member's router for a port without one,
-  refuses a port the member does not expose, and
-  reports a peer's host port as its member address and port. Each shim runs
+  *Routers.* The library connects to a member's address, or to a member's
+  host port, through its own container's router, with a `StreamRelay`
+  request that carries the router's relay key: the router carries it to
+  the member's host port, or the member's router for a port without one,
+  only when the two share a network or a link. Seatbelt lets a container
+  connect to no other port of the block than its own, its router's and the
+  egress proxy's, so network membership is enforced, not presented; it
+  may send datagrams to the block, where routers' relays and members' flow
+  ports lie, and the library asks its own router's relay for a member's UDP
+  port without a host port. The library refuses a port the member does not
+  expose, and reports a peer's host port as its member address and port. Each shim runs
   its container's router on a port of the stack's block that the network
   file names: a client sends a byte naming its request's kind and the two
   bytes of the container port, and the router joins the connection to that

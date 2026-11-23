@@ -62,6 +62,16 @@ func TestPsListsTheContainersProcesses(t *testing.T) {
 	}
 }
 
+// Seatbelt denies a program that skips the library the process table's
+// listing, which names every process on the Mac, as a PID namespace would
+// hide them: the library asks the container's supervisor instead.
+func TestProcessTableDeniedPastTheLibrary(t *testing.T) {
+	out, err := docker(t, "run", "--rm", "fws/toolbox:1", "rawproctable")
+	if err == nil || !strings.Contains(out+err.Error(), "operation not permitted") {
+		t.Errorf("a raw kern.proc.all: %v, %q, want operation not permitted", err, out)
+	}
+}
+
 // On the host's PID namespace a container lists every host process by its
 // host pid, its own main process too, with launchd as pid 1, and signals the
 // engine's other containers; its pids limit still counts its own processes

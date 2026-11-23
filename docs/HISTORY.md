@@ -177,6 +177,24 @@ no VM and no more than microseconds per call.
   port 53; and Podman's `kube play`, `kube generate` and `kube down` run,
   write back and remove Pods and Deployments.
 
+## Upkeep and enforced isolation (PRs #81–#84)
+
+- **Newest releases** (#81, #82): Kubernetes 1.37.2, etcd 3.7.4 and kind
+  0.33.0, and every catalog image at its newest upstream release. The
+  library now shows a script the path it was run by, which fixed Kafka's
+  tool wrappers.
+- **Closer to upstream** (#83): Meilisearch now ships with its default
+  features, including the Lindera dictionaries. OpenSearch now ships with
+  its security plugin. CI's cache was moved within its 10 GB by building
+  Kubernetes and Consul in prebuilt groups.
+- **Enforced isolation** (#84): Seatbelt allow-lists a container's reads,
+  as chroot would, instead of denying a list of host roots. It lets a
+  container connect over TCP only to its own ports, its router and the
+  egress proxy. The router carries each connection to another member only
+  when the two share a network, so network membership is enforced. The
+  process table's listings are denied as well; the container's supervisor
+  answers the library with the container's own processes.
+
 ## Investigations
 
 Findings still worth knowing, each with what the code does since.

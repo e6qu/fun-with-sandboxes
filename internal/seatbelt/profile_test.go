@@ -7,12 +7,13 @@ import (
 
 func spec() Spec {
 	return Spec{
-		Root:         "/Users/u/.fws/stacks/a/containers/c1/root",
-		StateRoot:    "/Users/u/.fws",
-		Volumes:      []Volume{{Path: "/Users/u/.fws/stacks/a/volumes/data"}, {Path: "/Users/u/.fws/stacks/a/volumes/conf", ReadOnly: true}},
-		BindPorts:    []int{41000},
-		ConnectPorts: []int{41001, 41000, 41001},
-		IPCPrefix:    IPCPrefixFor("c1"),
+		Root:          "/Users/u/.fws/stacks/a/containers/c1/root",
+		StateRoot:     "/Users/u/.fws",
+		Volumes:       []Volume{{Path: "/Users/u/.fws/stacks/a/volumes/data"}, {Path: "/Users/u/.fws/stacks/a/volumes/conf", ReadOnly: true}},
+		BindPorts:     []int{41000},
+		ConnectPorts:  []int{41001, 41000, 41001},
+		DatagramPorts: []int{41050},
+		IPCPrefix:     IPCPrefixFor("c1"),
 	}
 }
 
@@ -27,6 +28,7 @@ func TestRenderGrantsOnlyOwnResources(t *testing.T) {
 		`(allow network-bind (local ip "localhost:41000"))`,
 		`(allow network-outbound (remote ip "localhost:41000"))`,
 		`(allow network-outbound (remote ip "localhost:41001"))`,
+		`(allow network-outbound (remote udp "localhost:41050"))`,
 		`(allow process-exec* process-exec-interpreter` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/containers/c1/root")` + "\n" + `  (subpath "/Users/u/.fws/stacks/a/volumes/data")`,
 		`  (literal "/bin/sh")`,
 		`(allow signal (target same-sandbox))`,
@@ -68,10 +70,35 @@ func TestReadOnlyVolumeIsNotWritable(t *testing.T) {
 	}
 }
 
-func TestStateRootDeniedThenRootReallowed(t *testing.T) {
+// A container reads nothing of the host but what it is allowed, as under
+// chroot: its root, the system tree and the few host files a root would
+// hold, and neither the host's top nor the engine's state.
+func TestReadsAreAllowedNotDenied(t *testing.T) {
 	p, _ := Render(spec())
-	deny := strings.Index(p, `(deny file-read*`)
-	allow := deny + strings.Index(p[deny:], `(allow file-read*`)
+	deny := strings.Index(p, "(deny file-read*)")
+	if deny < 0 || deny > strings.Index(p, "(allow file-read*") {
+		t.Fatalf("reads must be denied before any is allowed:\n%s", p)
+	}
+	for _, unwanted := range []string{`(allow file-read* (subpath "/"))`, `(subpath "/Users/u/.fws")`} {
+		if strings.Contains(p, unwanted) {
+			t.Errorf("the profile allows %s", unwanted)
+		}
+	}
+	for _, want := range []string{`(subpath "/Users/u/.fws/stacks/a/containers/c1/root")`, `(subpath "/System")`, `(subpath "/bin/sh")`} {
+		if !strings.Contains(p[deny:], want) {
+			t.Errorf("the profile does not allow %s", want)
+		}
+	}
+}
+
+// A container granted the user's session reads the host but user data and
+// the engine's state, and its root inside them.
+func TestGUIStateRootDeniedThenRootReallowed(t *testing.T) {
+	s := spec()
+	s.GUI = true
+	p, _ := Render(s)
+	deny := strings.Index(p, "(deny file-read*\n")
+	allow := deny + strings.Index(p[deny:], "(allow file-read*")
 	if deny < 0 || allow < deny {
 		t.Fatalf("read allowance must follow the denial so it wins")
 	}
@@ -336,5 +363,23 @@ func TestGUIGrantNamesTheSessionsServices(t *testing.T) {
 		if strings.Contains(p, no) {
 			t.Errorf("a profile with the grant names %s", no)
 		}
+	}
+}
+
+func TestProcessTableListingsDeniedOutsideTheHostsPIDNamespace(t *testing.T) {
+	p, err := Render(spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p, "(deny sysctl-read\n  (sysctl-name-prefix \"kern.proc.all\")") {
+		t.Errorf("profile lets the container list the process table:\n%s", p)
+	}
+	s := spec()
+	s.HostPIDs = true
+	if p, err = Render(s); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(p, "kern.proc.all") {
+		t.Errorf("profile on the host's PID namespace denies the process table:\n%s", p)
 	}
 }

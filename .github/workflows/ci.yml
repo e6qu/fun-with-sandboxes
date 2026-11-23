@@ -184,7 +184,9 @@ jobs:
             export NIX_CONFIG="extra-substituters = file://$dir?trusted=1"
           fi
           paths=$(scripts/build-images.sh --prebuilt ${{ matrix.group }})
-          nix --extra-experimental-features nix-command copy --to "file://$dir" $paths
+          # zstd, not the file store's default xz, which takes many minutes
+          # over a group's closure; the cache compresses the store again.
+          nix --extra-experimental-features nix-command copy --to "file://$dir?compression=zstd" $paths
       - uses: actions/cache/save@v5
         if: steps.cache.outputs.cache-hit != 'true'
         with:
@@ -208,9 +210,12 @@ jobs:
       # A build stopped partway, by a failure or a newer push, keeps the
       # store paths it finished, under a key the next run restores from
       # but does not take for the whole group.
+      # A cancelled run's newer run waits for this one to end, so keeping
+      # what it finished is bounded.
       - name: keep what a stopped build finished
         id: partial
         if: (failure() || cancelled()) && steps.cache.outputs.cache-hit != 'true' && steps.drv.outputs.key != ''
+        timeout-minutes: 5
         run: |
           built=$(nix --extra-experimental-features nix-command path-info --json --all | python3 -c '
           import json, sys
@@ -218,11 +223,12 @@ jobs:
           entries = d.items() if isinstance(d, dict) else ((e["path"], e) for e in d)
           print(" ".join(p for p, i in entries if i and i.get("ultimate")))')
           if [ -n "$built" ]; then
-            nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-prebuilt/${{ matrix.group }}" $built
+            nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-prebuilt/${{ matrix.group }}?compression=zstd" $built
             echo "kept=true" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/cache/save@v5
         if: (failure() || cancelled()) && steps.partial.outputs.kept == 'true'
+        timeout-minutes: 5
         with:
           path: ~/fws-prebuilt/${{ matrix.group }}
           key: ${{ steps.drv.outputs.key }}-partial-${{ github.run_id }}-${{ github.run_attempt }}

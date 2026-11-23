@@ -2389,7 +2389,7 @@ static int fws_uname(struct utsname *u) {
 INTERPOSE(fws_uname, uname);
 
 // The shim's operations (package pidns).
-enum { NS_LIST = 1, NS_KILL = 2, NS_INFO = 3, NS_PATH = 4, NS_ARGS = 5 };
+enum { NS_LIST = 1, NS_KILL = 2, NS_INFO = 3, NS_PATH = 4, NS_ARGS = 5, NS_TABLE = 6 };
 
 struct ns_request {
     int32_t op, pid, a, size;
@@ -2736,6 +2736,51 @@ static size_t own_procs(struct kinfo_proc *kp, size_t n) {
     return kept * sizeof *kp;
 }
 
+// table_op reports whether Seatbelt denies the container the process
+// table's listing op, which names every process on the Mac: the
+// container's supervisor answers it instead.
+static int table_op(int op) {
+    return !host_pids && procs_path[0] && (op == KERN_PROC_ALL || op == KERN_PROC_UID || op == KERN_PROC_RUID || op == KERN_PROC_TTY);
+}
+
+// proc_table returns the entries of listing op of arg, as kern.proc lists
+// them, of the container's processes and its namespace's, which its
+// supervisor follows, in a buffer the caller frees, and their size in
+// bytes in *len; NULL with errno set where it fails.
+static struct kinfo_proc *proc_table(int op, int arg, size_t *len) {
+    size_t cap = 256 * sizeof(struct kinfo_proc);
+    for (int tries = 0; tries < 4; tries++) {
+        struct kinfo_proc *kp = malloc(cap);
+        if (!kp) {
+            errno = ENOMEM;
+            return NULL;
+        }
+        int r = ns_call(NS_TABLE, 0, 0, 0, 0, kp, cap);
+        if (r < 0) {
+            free(kp);
+            return NULL;
+        }
+        if ((size_t)r > cap) {
+            free(kp);
+            cap = (size_t)r + 64 * sizeof(struct kinfo_proc);
+            continue;
+        }
+        size_t n = (size_t)r / sizeof *kp, kept = 0;
+        for (size_t i = 0; i < n; i++) {
+            int keep = op == KERN_PROC_ALL || (op == KERN_PROC_UID && (int)kp[i].kp_eproc.e_ucred.cr_uid == arg) ||
+                       (op == KERN_PROC_RUID && (int)kp[i].kp_eproc.e_pcred.p_ruid == arg) ||
+                       (op == KERN_PROC_TTY && (int)kp[i].kp_eproc.e_tdev == arg);
+            if (!keep) continue;
+            if (kept != i) memmove(&kp[kept], &kp[i], sizeof *kp);
+            kept++;
+        }
+        *len = kept * sizeof *kp;
+        return kp;
+    }
+    errno = EAGAIN;
+    return NULL;
+}
+
 // list_pids writes to buf, of size bytes, the container's processes the
 // process table's listing op of arg holds, those whose parent is ppid when
 // ppid is set, and returns how many it wrote; with no buffer, how many
@@ -2745,22 +2790,31 @@ static int list_pids(int op, int arg, pid_t ppid, pid_t *buf, int size) {
     int mib[4] = {CTL_KERN, KERN_PROC, op, arg};
     u_int miblen = op == KERN_PROC_ALL ? 3 : 4;
     size_t len = 0;
-    if (sysctl(mib, miblen, NULL, &len, NULL, 0) != 0) {
-        return -1;
-    }
-    // Room for processes started since.
-    len += 32 * sizeof(struct kinfo_proc);
-    if (!buf) {
-        return (int)(len / sizeof(struct kinfo_proc));
-    }
-    struct kinfo_proc *kp = malloc(len);
-    if (!kp) {
-        errno = ENOMEM;
-        return -1;
-    }
-    if (sysctl(mib, miblen, kp, &len, NULL, 0) != 0) {
-        free(kp);
-        return -1;
+    struct kinfo_proc *kp;
+    if (table_op(op)) {
+        if (!(kp = proc_table(op, arg, &len))) return -1;
+        if (!buf) {
+            free(kp);
+            return (int)(len / sizeof *kp) + 32;
+        }
+    } else {
+        if (sysctl(mib, miblen, NULL, &len, NULL, 0) != 0) {
+            return -1;
+        }
+        // Room for processes started since.
+        len += 32 * sizeof(struct kinfo_proc);
+        if (!buf) {
+            return (int)(len / sizeof(struct kinfo_proc));
+        }
+        kp = malloc(len);
+        if (!kp) {
+            errno = ENOMEM;
+            return -1;
+        }
+        if (sysctl(mib, miblen, kp, &len, NULL, 0) != 0) {
+            free(kp);
+            return -1;
+        }
     }
     int n = 0, cap = size / (int)sizeof(pid_t), nn;
     pid_t *ns = ns_members(&nn);
@@ -3166,6 +3220,28 @@ static int fws_sysctl(int *name, u_int namelen, void *old, size_t *oldlen, void 
             return r;
         }
         return ns_procargs(mib[2], name[1] == KERN_PROCARGS2, old, oldlen);
+    }
+    if (namelen >= 3 && name[0] == CTL_KERN && name[1] == KERN_PROC && oldlen && !new && table_op(name[2]) &&
+        namelen == (name[2] == KERN_PROC_ALL ? 3u : 4u)) {
+        // The table's listings, which Seatbelt denies the container, come
+        // from its supervisor, holding its processes alone.
+        size_t len;
+        struct kinfo_proc *kp = proc_table(name[2], namelen == 4 ? name[3] : 0, &len);
+        if (!kp) return -1;
+        if (!old) {
+            free(kp);
+            *oldlen = len + 32 * sizeof *kp;
+            return 0;
+        }
+        size_t n = len <= *oldlen ? len : *oldlen / sizeof *kp * sizeof *kp;
+        memcpy(old, kp, n);
+        free(kp);
+        *oldlen = own_procs(old, n);
+        if (n < len) {
+            errno = ENOMEM;
+            return -1;
+        }
+        return 0;
     }
     if (namelen >= 3 && name[0] == CTL_KERN && name[1] == KERN_PROC && old && oldlen && !new) {
         // A listing of one process, group or session names it as the
@@ -4101,10 +4177,11 @@ static int reach(int type, in_addr_t v4, unsigned short port, in_addr_t *a, unsi
         // closed, and an address no member holds is unreachable.
         int member;
         unsigned short router = 0, mh = member_route(v4, type, port, &member, &router);
-        if (!mh && member == 1 && type == SOCK_DGRAM && router) mh = flow_port(router, port, v4, 0);
-        // Another stack's member's datagrams go through the container's
-        // own router's relay to it.
-        if (member == 2 && type == SOCK_DGRAM && router_port) mh = flow_port(router_port, port, v4, 1);
+        // A member's port without a host port, and any port of another
+        // stack's member, takes datagrams through the container's own
+        // router's relay to it: Seatbelt lets the container reach no other
+        // router.
+        if (type == SOCK_DGRAM && router_port && ((!mh && member == 1) || member == 2)) mh = flow_port(router_port, port, v4, 1);
         if (!mh) {
             errno = member ? ECONNREFUSED : EHOSTUNREACH;
             return -1;
@@ -5111,18 +5188,25 @@ static int routed(int fd, const struct sockaddr *sa, socklen_t len, int *r) {
         return 1;
     }
     if (member_block(a) && !own_addr(a)) {
+        // Every connection to a member goes through the container's own
+        // router, which carries it only to a member that shares a network
+        // with the container: Seatbelt lets the container reach no other
+        // member's port or router.
         int member;
         unsigned short router = 0;
-        unsigned short h = member_route(a, SOCK_STREAM, port, &member, &router);
-        if (member == 2) {
-            if (!router_port) return 0;
-            *r = route(fd, a, router_port, port, v6, 1);
-        } else if (h || !member || !router) {
-            return 0;
-        } else {
-            *r = route(fd, a, router, port, v6, 0);
-        }
+        member_route(a, SOCK_STREAM, port, &member, &router);
+        if (!member || !router_port) return 0;
+        *r = route(fd, a, router_port, port, v6, 1);
         if (*r == 0 && p6) set_state(fd, state_of(fd) | NET_P6);
+        return 1;
+    }
+    in_addr_t ma;
+    unsigned short mc;
+    if (a == htonl(INADDR_LOOPBACK) && router_port && !container_port(SOCK_STREAM, port) && port != router_port &&
+        member_of_host_port(SOCK_STREAM, port, &ma, &mc)) {
+        // A member's host port, as its SANDBOX_* variables name it, is the
+        // member's own port at its address, reached the same way.
+        *r = route(fd, ma, router_port, mc, v6, 1);
         return 1;
     }
     if ((v4_local(a) || own_addr(a)) && router_port && !(host_port(SOCK_STREAM, port) && own_addr(a))) {
@@ -5149,10 +5233,11 @@ static int dgram_connect(int fd, const struct sockaddr *sa, socklen_t len);
 
 static int dgram_dest(const struct sockaddr *sa, socklen_t len, in_addr_t *v4, unsigned short *port);
 
-// relay_bind binds an unbound UDP socket about to reach another stack's
-// member to an ephemeral port of the container's own, where the kernel
-// would bind one of its own on the first datagram: the router's relay to
-// the member takes datagrams from the container's ports alone.
+// relay_bind binds an unbound UDP socket about to reach a member through
+// the container's router's relay, another stack's member or a port without
+// a host port, to an ephemeral port of the container's own, where the
+// kernel would bind one of its own on the first datagram: the relay takes
+// datagrams from the container's ports alone.
 static int relay_bind(int fd, const struct sockaddr *sa, socklen_t len) {
     if (!sa || !router_port || (state_of(fd) & NET_UNIX) || sock_type(fd) != SOCK_DGRAM) {
         return 0;
@@ -5161,8 +5246,9 @@ static int relay_bind(int fd, const struct sockaddr *sa, socklen_t len) {
     in_addr_t v4;
     unsigned short port, router = 0;
     int member = 0;
-    if (dgram_dest(sa, len, &v4, &port) == 0 && member_block(v4)) member_route(v4, SOCK_DGRAM, port, &member, &router);
-    if (member != 2) {
+    unsigned short h = 0;
+    if (dgram_dest(sa, len, &v4, &port) == 0 && member_block(v4)) h = member_route(v4, SOCK_DGRAM, port, &member, &router);
+    if (member != 2 && !(member == 1 && !h)) {
         errno = e;
         return 0;
     }

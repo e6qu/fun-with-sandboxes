@@ -90,8 +90,11 @@ what macOS offers an unprivileged process under them. Non-goals are in
 - **Processes have host pids, but pid 1.** There is no unprivileged PID
   namespace. Through the library a container lists only its own processes
   and sees its main process as pid 1 (`kill -HUP 1` works); Seatbelt
-  denies signalling or inspecting any other. Apple's `ps` sees host pids
-  and every process of the user.
+  denies signalling or inspecting any other, and reading the process
+  table's listings (`kern.proc.all`, `uid`, `ruid`, `tty`), which the
+  library asks the container's supervisor for instead. A program without
+  the library, such as Apple's `ps`, lists nothing; one that knows another
+  process's pid still reads its `kern.proc.pid` entry.
 - **A stop kills every process the main process started**, daemons in
   their own session included, as macOS holds the main process responsible
   for them.
@@ -116,7 +119,11 @@ what macOS offers an unprivileged process under them. Non-goals are in
 - **The macOS system tree is readable** (`/System`, `/usr/lib`,
   `/usr/share`), and the host's shells (`/bin/sh`, `bash`, `zsh`, `dash`,
   `/usr/bin/env`) are executable: binaries cannot run without them
-  ([DESIGN](docs/DESIGN.md#accepted-exceptions)).
+  ([DESIGN](docs/DESIGN.md#accepted-exceptions)). Of the rest of the host
+  a container reads only the time zone, the CA certificates and the
+  services and protocols databases, as a root of its own would hold them;
+  a container granted the user's session (`--security-opt seatbelt=gui`)
+  reads the host but user data and other stacks' state.
 
 ## Networking
 
@@ -131,8 +138,8 @@ what macOS offers an unprivileged process under them. Non-goals are in
   these addresses:
   - Servers see clients connect from `127.0.0.1`; a UDP server sees an
     IPv6 client at its IPv4-mapped address.
-  - A program without the library resolves no member name; it uses
-    `$SANDBOX_<SERVICE>_HOST:$SANDBOX_<SERVICE>_PORT_<n>`.
+  - A program without the library reaches no member: its connections go
+    through the container's router, which the library asks.
   - A container keeps its addresses while it exists. There is no
     link-local IPv6 address, and a user-set MAC address is refused.
   - A network without a subnet reports `127.88.0.0/16`, so a program that
@@ -147,10 +154,13 @@ what macOS offers an unprivileged process under them. Non-goals are in
   listener listens on `127.0.0.1` alone. A loopback-only TCP listener is
   unpublished, as in Docker, but stack members still reach it. Programs
   without the library see the host ports.
-- **A stack's block is one reachability domain.** Within a stack, network
-  membership is presented, not enforced: a program without the library
-  reaches any member's host port. A host process that later binds a port
-  in a stack's block is reachable from that stack.
+- **Network membership is enforced for TCP, presented for UDP.** A
+  container connects over TCP to its own ports, its router and the egress
+  proxy alone; its router carries a connection on only to a member it
+  shares a network with. Datagrams may go to any port of the stack's
+  block, where routers' relays lie, so a program without the library
+  reaches a member's UDP host port, and a host process that later binds a
+  UDP port in the block is reachable from that stack.
 - **Stacks meet through their routers.** On a shared network, and through
   legacy links, a datagram across stacks uses a relay port of the sender's
   router, idle-closed after 90 seconds. Without a link, containers on the

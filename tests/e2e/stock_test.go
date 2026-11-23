@@ -254,6 +254,13 @@ func TestSharedNetworks(t *testing.T) {
 	if out := mustDocker(t, "run", "--rm", "fws/python:3.14", "python3", "-c", sharedClient, "e2e-shared-api:8000", "kv:8001"); out != "e2e-shared-api:8000 gaierror\nkv:8001 gaierror\n" {
 		t.Errorf("a client on no shared network printed %q", out)
 	}
+	// Seatbelt holds a program that skips the library, connecting with the
+	// system call itself, from a member's host port even on a shared
+	// network: a container reaches members only through its router.
+	hp := strings.TrimSpace(mustDocker(t, "exec", "e2e-shared-api", "python3", "-c", "import os; print(os.environ['SANDBOX_PORT_8000'])"))
+	if out, err := docker(t, "run", "--rm", "--network", network, "fws/toolbox:1", "rawconnect", hp); err == nil || !strings.Contains(out+err.Error(), "operation not permitted") {
+		t.Errorf("a raw connect to a member's host port %s: %v, %q, want operation not permitted", hp, err, out)
+	}
 	// Datagrams cross too, to a port with a host port and one without, and
 	// their replies come from the member's address and port.
 	udp := "e2e-shared-udp"

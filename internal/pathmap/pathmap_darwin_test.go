@@ -2,6 +2,7 @@ package pathmap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -332,8 +333,24 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The container reaches db through its router, which carries the
+	// connection on to db's host port, as a container's sandbox lets it
+	// reach no other member's port.
+	portDir, err := os.MkdirTemp("/tmp", "fwsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(portDir) })
+	network := filepath.Join(t.TempDir(), "network")
+	r, err := router.Listen("127.0.0.1:0", portDir, func() (*net.UDPConn, error) { return nil, errors.New("no flow ports") },
+		router.Network{File: network, Address: "127.88.0.2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Close() })
+	rp := r.Addr().Port
 	run := func(env ...string) map[string]string {
-		cmd := exec.Command(bin, strconv.Itoa(tcp1), strconv.Itoa(tcp2), strconv.Itoa(udp), strconv.Itoa(peer), strconv.Itoa(tcp3), strconv.Itoa(tcp4))
+		cmd := exec.Command(bin, strconv.Itoa(tcp1), strconv.Itoa(tcp2), strconv.Itoa(udp), strconv.Itoa(rp), strconv.Itoa(tcp3), strconv.Itoa(tcp4))
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -353,7 +370,6 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	network := filepath.Join(t.TempDir(), "network")
 	if err := os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t8080/tcp=%d\t0\tproj_default\t0\n127.88.0.3\tdb proj-db-1\t5432/tcp=%d\t0\tproj_default\t0\t\t127.88.0.9/theirs 127.88.0.2/database\n", tcp1, peer)), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -372,12 +388,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "etc", "hosts"), []byte("127.0.0.1\tlocalhost\n# 10.9.9.9 extra.local\n10.1.2.3\textra.local other  # --add-host\nfd00:5::9\textra.local\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	portDir, err := os.MkdirTemp("/tmp", "fwsp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(portDir) })
-	got := run("DYLD_INSERT_LIBRARIES="+lib, "SANDBOX_ROOT="+root, ports, NetworkVar+"="+network, AddressVar+"=127.88.0.2", PortDirVar+"="+portDir, RouterVar+"=1")
+	got := run("DYLD_INSERT_LIBRARIES="+lib, "SANDBOX_ROOT="+root, ports, NetworkVar+"="+network, AddressVar+"=127.88.0.2", PortDirVar+"="+portDir, RouterVar+"="+strconv.Itoa(rp))
 	for k, want := range map[string]string{
 		"listen6":              "[::]:8080",
 		"client4":              "127.0.0.1:8080",
@@ -545,9 +556,10 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	// profile names them, and handed to the router as they are: a port
 	// found free and bound again later may be another test's by then, and
 	// the probe's datagrams lost.
+	network := filepath.Join(t.TempDir(), "network")
 	var flowConns []*net.UDPConn
 	var flowPorts []int
-	for range 3 {
+	for range 6 {
 		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 		if err != nil {
 			t.Fatal(err)
@@ -562,7 +574,9 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 			return nil, fmt.Errorf("flow port %d asked for, %d given", i+1, len(flowConns))
 		}
 		return flowConns[i], nil
-	}, router.Network{})
+	}, router.Network{File: network, Address: "127.88.0.2", DialFlow: func(_ string, raddr *net.UDPAddr) (net.Conn, error) {
+		return net.DialUDP("udp", nil, raddr)
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,7 +622,6 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 			c.Close()
 		}
 	}()
-	network := filepath.Join(t.TempDir(), "network")
 	rp := r.Addr().Port
 	os.WriteFile(network, []byte(fmt.Sprintf("127.88.0.2\tapp\t\t%d\tproj_default\t0\n127.88.0.3\tpeer\t\t%d\tproj_default\t0\n", rp, rp)), 0o644)
 	lib, err := Build(t.TempDir())

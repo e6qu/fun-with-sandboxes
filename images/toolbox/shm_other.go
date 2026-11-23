@@ -14,3 +14,7 @@ func shmMake(name string) error { return errNoShm }
 func shmOpen(name string) error { return errNoShm }
 
 func ps() error { return errors.New("ps: macOS only") }
+
+func rawConnect(port string) error { return errors.New("rawconnect: macOS only") }
+
+func rawProcTable() error { return errors.New("rawproctable: macOS only") }

@@ -1586,15 +1586,28 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	for _, p := range sortedKeys(net.rec.Ports) {
 		spec.BindPorts = append(spec.BindPorts, net.rec.Ports[p])
 	}
-	// Every port of the stack's block is reachable except the egress proxy,
-	// which only containers with internet access may use.
+	// A container connects to its own ports, its router, which carries
+	// each connection to a member only when the two share a network, and,
+	// given internet access, its stack's egress proxy: as a network
+	// namespace holds it, it reaches no other member's port directly.
+	// Datagrams go to the stack's block, where its routers' relays and
+	// members' flow ports lie, which the routers hand out by membership.
+	if net.rec.RouterPort != 0 {
+		spec.ConnectPorts = append(spec.ConnectPorts, net.rec.RouterPort)
+	}
+	// The proxy starts after the profile is written, on the port its stack
+	// is allocated here first.
 	proxy := ne.egressPort(net.rec.Stack)
-	withEgress := ne.hasEgress(net)
-	for p := s.PortBase; p < s.PortBase+s.BlockSize; p++ {
-		if p == proxy && !withEgress {
-			continue
+	if ne.hasEgress(net) {
+		if proxy, err = ne.alloc.Port(net.rec.Stack, egressKey); err != nil {
+			return seatbelt.Spec{}, err
 		}
-		spec.ConnectPorts = append(spec.ConnectPorts, p)
+		spec.ConnectPorts = append(spec.ConnectPorts, proxy)
+	}
+	for p := s.PortBase; p < s.PortBase+s.BlockSize; p++ {
+		if p != proxy {
+			spec.DatagramPorts = append(spec.DatagramPorts, p)
+		}
 	}
 	return spec, nil
 }

@@ -25,8 +25,23 @@ var SystemReadPaths = []string{
 	"/dev",
 }
 
-// DeniedReadRoots hold user data or other stacks' state; the container root
-// and volumes are re-allowed inside them.
+// HostReadPaths are the host's files outside the system tree a container
+// reads, as a root of its own would hold them: the shells it may run, the
+// link that names /bin/sh's shell, the time zone, the CA certificates and
+// the services and protocols databases, which programs without the
+// container library read at their host paths.
+var HostReadPaths = []string{
+	"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/usr/bin/env",
+	"/private/var/select",
+	"/private/etc/localtime",
+	"/private/etc/ssl",
+	"/private/etc/services",
+	"/private/etc/protocols",
+}
+
+// DeniedReadRoots hold user data or other stacks' state. A container granted
+// the user's session (Spec.GUI) reads the host but these, and its root and
+// volumes inside them; any other reads only what it is allowed.
 var DeniedReadRoots = []string{
 	"/Users",
 	"/Volumes",
@@ -200,9 +215,13 @@ type Spec struct {
 	Volumes   []Volume
 	// BindPorts are the loopback ports the container may listen on.
 	BindPorts []int
-	// ConnectPorts are the loopback ports the container may connect to: its
-	// own and its stack peers'.
+	// ConnectPorts are the loopback ports the container may connect to
+	// over TCP and UDP: its own, its router's and its stack's egress proxy.
 	ConnectPorts []int
+	// DatagramPorts are the loopback ports the container may send UDP
+	// datagrams to besides: its stack's block, where its routers' relays
+	// and its members' flow ports lie.
+	DatagramPorts []int
 	// ReadOnlyRoot denies writes to Root; volumes and tmpfs mounts, which
 	// live outside it, stay as their own entries say.
 	ReadOnlyRoot bool
@@ -245,6 +264,11 @@ type Spec struct {
 	// reaches, such as the API of the engine nested in it.
 	Sockets []string
 }
+
+// ProcListings are the process table's sysctl listings that name processes
+// across the Mac, which a container without the host's PID namespace may
+// not read.
+var ProcListings = []string{"kern.proc.all", "kern.proc.uid", "kern.proc.ruid", "kern.proc.tty"}
 
 // IPCMode is a container's IPC confinement.
 type IPCMode int
@@ -312,7 +336,7 @@ func Render(s Spec) (string, error) {
 	if s.IPC == IPCPrivate && !ipcPrefixOK(s.IPCPrefix) {
 		return "", fmt.Errorf("seatbelt: IPC prefix %q must be letters, digits and dots", s.IPCPrefix)
 	}
-	for _, p := range append(append([]int{}, s.BindPorts...), s.ConnectPorts...) {
+	for _, p := range append(append(append([]int{}, s.BindPorts...), s.ConnectPorts...), s.DatagramPorts...) {
 		if err := checkPort(p); err != nil {
 			return "", err
 		}
@@ -328,6 +352,17 @@ func Render(s Spec) (string, error) {
 	w("(import \"system.sb\")")
 	w("(allow process-fork)")
 	w("(allow sysctl-read)")
+	if !s.HostPIDs {
+		// The process table's listings name every process on the Mac; the
+		// container's supervisor answers its library with the container's
+		// own, as a PID namespace lists them. A listing of one process,
+		// group or session stays, as programs read their own.
+		w("(deny sysctl-read")
+		for _, n := range ProcListings {
+			w("  (sysctl-name-prefix %q)", n)
+		}
+		w(")")
+	}
 	w("(allow file-ioctl)")
 	w("(allow pseudo-tty)")
 	w("(allow ipc-posix* ipc-sysv*)")
@@ -362,14 +397,32 @@ func Render(s Spec) (string, error) {
 	w("  (regex #\"^/dev/fd/\")")
 	w("  (regex #\"^/dev/ttys[0-9]+$\"))")
 
-	// A rule without a filter outranks every filtered rule of its
-	// operation, wherever it stands, so the broad allowance names a subpath.
-	w("(allow file-read* (subpath \"/\"))")
-	w("(deny file-read*")
-	for _, d := range append(append([]string{}, DeniedReadRoots...), s.StateRoot) {
-		w("  (subpath %q)", d)
+	// A container reads its root, its volumes, the system tree and the few
+	// host files a root of its own would hold, as under chroot: nothing else
+	// of the host, whether a program presents its paths through the
+	// container library or not. A container granted the user's session
+	// reads the host but user data and other stacks' state, as graphical
+	// applications read fonts, preferences and bundles all over it. A rule
+	// without a filter outranks every filtered rule of its operation,
+	// wherever it stands, so the broad allowance names a subpath.
+	if s.GUI {
+		w("(allow file-read* (subpath \"/\"))")
+		w("(deny file-read*")
+		for _, d := range append(append([]string{}, DeniedReadRoots...), s.StateRoot) {
+			w("  (subpath %q)", d)
+		}
+		w(")")
+	} else {
+		w("(deny file-read*)")
+		w("(allow file-read*")
+		for _, p := range HostReadPaths {
+			w("  (subpath %q)", p)
+		}
+		w(")")
+		// The links / holds to /private, which a path through /etc, /tmp or
+		// /var resolves.
+		w("(allow file-read-metadata (literal \"/etc\") (literal \"/tmp\") (literal \"/var\"))")
 	}
-	w(")")
 	w("(allow file-read*")
 	w("  (subpath %q)", s.Root)
 	if s.PortDir != "" {
@@ -467,6 +520,9 @@ func Render(s Spec) (string, error) {
 	// node's API server.
 	for _, p := range uniq(append(append([]int{}, s.ConnectPorts...), s.BindPorts...)) {
 		w("(allow network-outbound (remote ip \"localhost:%d\"))", p)
+	}
+	for _, p := range uniq(s.DatagramPorts) {
+		w("(allow network-outbound (remote udp \"localhost:%d\"))", p)
 	}
 
 	w("(deny mach-lookup)")

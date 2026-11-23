@@ -540,12 +540,16 @@ func (r *Router) relay(addr netip.Addr, port int) (int, error) {
 	if r.net.DialFlow == nil {
 		return 0, errRefused
 	}
-	r.umu.Lock()
-	defer r.umu.Unlock()
 	key := relayKey{addr, port}
-	if pc, ok := r.relays[key]; ok {
+	r.umu.Lock()
+	pc, ok := r.relays[key]
+	r.umu.Unlock()
+	if ok {
 		return pc.LocalAddr().(*net.UDPAddr).Port, nil
 	}
+	// The member's flow port is asked for without the lock, which the
+	// container's other flows take meanwhile, and which the member's
+	// router, when it is this one, takes to answer.
 	var upstream int
 	if hp, ok := to.Ports[fmt.Sprintf("%d/udp", port)]; ok {
 		upstream = hp
@@ -556,7 +560,12 @@ func (r *Router) relay(addr netip.Addr, port int) (int, error) {
 	} else {
 		return 0, errRefused
 	}
-	pc, err := r.flow()
+	r.umu.Lock()
+	defer r.umu.Unlock()
+	if pc, ok := r.relays[key]; ok {
+		return pc.LocalAddr().(*net.UDPAddr).Port, nil
+	}
+	pc, err = r.flow()
 	if err != nil {
 		return 0, err
 	}

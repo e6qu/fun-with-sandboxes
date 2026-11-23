@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // call makes a request of the service at sock as the container library
@@ -70,7 +73,7 @@ func TestServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	go Serve(l, file)
+	go Serve(l, file, func() []int { return []int{os.Getpid()} })
 
 	n, _, data := call(t, sock, OpList, 0, 0, 0, 0)
 	listed := map[int]bool{}
@@ -79,6 +82,20 @@ func TestServe(t *testing.T) {
 	}
 	if int(n) != len(listed) || !listed[owner.Process.Pid] || !listed[joiner.Process.Pid] || listed[outsider.Process.Pid] {
 		t.Errorf("listed %v (%d), want the owner's %d and the joiner's %d, not the outsider's %d", listed, n, owner.Process.Pid, joiner.Process.Pid, outsider.Process.Pid)
+	}
+
+	// The table holds the container's processes and the namespace's, not
+	// the outsider's.
+	n, _, data = call(t, sock, OpTable, 0, 0, 0, 0)
+	size := int(unsafe.Sizeof(unix.KinfoProc{}))
+	inTable := map[int]bool{}
+	for i := 0; i+size <= len(data); i += size {
+		kp := (*unix.KinfoProc)(unsafe.Pointer(&data[i]))
+		inTable[int(kp.Proc.P_pid)] = true
+	}
+	if int(n) != len(data) || len(data)%size != 0 || !inTable[os.Getpid()] || !inTable[owner.Process.Pid] || !inTable[joiner.Process.Pid] || inTable[outsider.Process.Pid] {
+		t.Errorf("the table holds %v (%d bytes), want this process %d, the owner's %d and the joiner's %d, not the outsider's %d",
+			inTable, n, os.Getpid(), owner.Process.Pid, joiner.Process.Pid, outsider.Process.Pid)
 	}
 
 	const procPIDTBSDInfo, bsdInfoSize = 3, 136
