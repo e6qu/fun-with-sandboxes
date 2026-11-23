@@ -18,7 +18,7 @@ func makeQuotaRoot(dir, staged, root string, quota int64) error {
 		return err
 	}
 	// APFS keeps a few megabytes of its own on any volume.
-	size := used + used/8 + quota + 32<<20
+	size := used + quota + 32<<20
 	img := quotaImage(dir)
 	if out, err := exec.Command("hdiutil", "create", "-quiet", "-type", "SPARSE", "-fs", "APFS", "-volname", "fws-root",
 		"-size", strconv.FormatInt(size, 10)+"b", img).CombinedOutput(); err != nil {

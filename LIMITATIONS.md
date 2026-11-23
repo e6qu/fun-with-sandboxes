@@ -280,8 +280,8 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   sparse APFS image the engine attaches at the root, sized to the image's
   files and the quota beside them, so writes past it fail with `ENOSPC`.
   The image is copied into it, not cloned, so such a container is slower
-  to create; a few megabytes of APFS's own and an eighth of the image's
-  size are room beyond the quota. Volumes and tmpfs mounts stay outside it.
+  to create; the image's files are counted in whole APFS blocks, and a
+  few megabytes of the volume's own are room beyond the quota. Volumes and tmpfs mounts stay outside it.
 - **tmpfs mounts are directories**, emptied at each start, not
   memory-backed: `rw`, `ro`, `noexec`, `mode`, `uid` and `gid` hold, on
   tmpfs volumes too; `size` and `nr_inodes` are refused.

@@ -33,20 +33,26 @@ func storageQuota(opts map[string]string) (int64, error) {
 	return size, nil
 }
 
-// treeBytes is the size of the files under dir.
+// apfsBlock is the allocation block of an APFS volume.
+const apfsBlock = 4096
+
+// treeBytes is the space the tree under dir takes on an APFS volume: each
+// file's size in whole blocks, and a block for each directory and link.
 func treeBytes(dir string) (int64, error) {
 	var n int64
 	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.Type().IsRegular() {
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			n += info.Size()
+		if !d.Type().IsRegular() {
+			n += apfsBlock
+			return nil
 		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		n += (info.Size() + apfsBlock - 1) / apfsBlock * apfsBlock
 		return nil
 	})
 	return n, err
