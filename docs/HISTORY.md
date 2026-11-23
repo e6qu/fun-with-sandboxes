@@ -208,6 +208,23 @@ no VM and no more than microseconds per call.
   against Create's order, which hung kind's clusters on main; a test now
   holds every function to the engine's lock first.
 
+## Networks, images and the CLI (PR #86)
+
+- **Allow lists**: `fws.egress.allow` on a network or container holds the
+  egress proxy to the hosts, addresses and ports it names, refused with
+  403; `fws.ingress.allow` holds a published port to the source addresses
+  it names.
+- **Bridge options**: `enable_icc`, `enable_ip_masquerade` and
+  `host_binding_ipv4` hold; options the engine took and dropped before
+  are refused.
+- **Routes**: the routing sysctl (`netstat -rn`) showed the host's routes
+  to every container; the library now presents the container's own, its
+  subnets and a default route through its network's gateway.
+- **Images**: Python 3.11–3.15, Node.js 22–26 and their Lambda runtimes;
+  `fws catalog` lists the catalog, and CI checks each tag it lists
+  publishes. `fws-mkimage -env` replaced none of a spec's variables, so
+  an image could carry two of one name.
+
 ## Investigations
 
 Findings still worth knowing, each with what the code does since.

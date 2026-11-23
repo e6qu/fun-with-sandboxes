@@ -17,6 +17,7 @@ its own directory tree, so two stacks never clash and never see each other.
 
 - [`PLAN.md`](PLAN.md) — purpose, constraints, non-goals, roadmap
 - [`docs/DESIGN.md`](docs/DESIGN.md) — the full mechanism
+- [`docs/IMAGES.md`](docs/IMAGES.md) — the image catalog, the container contract, building and publishing images
 - [`docs/SEATBELT.md`](docs/SEATBELT.md) — the macOS sandbox, a tutorial, and how each container's profile confines it
 - [`LIMITATIONS.md`](LIMITATIONS.md) — where it differs from Docker, and why
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — setting up, testing, and changing things
@@ -60,118 +61,28 @@ library and spawn helper with clang from the Xcode Command Line Tools
 
 ## Images
 
-The engine runs on Apple silicon Macs, and its images are macOS-native
-(`darwin/arm64`); Linux images cannot run without a VM. CI publishes the
-catalog each push to `main` passes its tests with, as
-`ghcr.io/e6qu/fws-<name>:<tag>` for `fws/<name>:<tag>`
-(`docker pull ghcr.io/e6qu/fws-postgres:16`). `scripts/build-images.sh`
-builds it from Nix packages into archives for `docker load`
-([CONTRIBUTING](CONTRIBUTING.md)):
-
-| Image | Configured like the official image through |
-|---|---|
-| `fws/postgres:16`, `fws/postgres:18` | `POSTGRES_PASSWORD`, `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_HOST_AUTH_METHOD`, `POSTGRES_INITDB_ARGS`, `/docker-entrypoint-initdb.d/*.sql`, `*.sql.gz` and `*.sh`, run against a server that listens on its socket alone; arguments to `postgres` |
-| `fws/mariadb:11` | `MARIADB_ROOT_PASSWORD` (or the `ALLOW_EMPTY`/`RANDOM` forms), `MARIADB_DATABASE`, `MARIADB_USER`, `MARIADB_PASSWORD`, `MARIADB_ROOT_HOST`, their `MYSQL_` names, `/docker-entrypoint-initdb.d/*.sql` |
-| `fws/redis:8` | arguments to `redis-server` |
-| `fws/mysql:8.4` | `MYSQL_ROOT_PASSWORD` (or `MYSQL_ALLOW_EMPTY_PASSWORD`/`MYSQL_RANDOM_ROOT_PASSWORD`), `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_HOST`, `MYSQL_ONETIME_PASSWORD`, `/etc/mysql/conf.d/*.cnf`, `/docker-entrypoint-initdb.d/*.sql` and `*.sql.gz` |
-| `fws/valkey:9` | arguments to `valkey-server`, or a `.conf` file |
-| `fws/memcached:1.6` | arguments to `memcached` |
-| `fws/seaweedfs:4.54` | the subcommand and its flags, as `mini` (the default: master, volume, filer, S3 on 8333, WebDAV and the admin UI), `server`, `master`, `volume`, `filer`, `s3` or `shell`; `/data` |
-| `fws/mongo:8.3` | `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD` (or their `_FILE` forms), `MONGO_INITDB_DATABASE`, `/docker-entrypoint-initdb.d/*.js` and `*.sh`, run against a server that listens on loopback alone; arguments to `mongod`, which binds every address unless they or its configuration name some; `mongosh` |
-| `fws/etcd:3.7` | arguments to `etcd`, with `etcdctl` and `etcdutl`; clients on 2379, peers on 2380 |
-| `fws/kube-apiserver:1.37`, `fws/kube-controller-manager:1.37`, `fws/kube-scheduler:1.37`, `fws/kubectl:1.37` | Kubernetes 1.37.2, the release kind's node image ships, laid out as its release images are: the command and its flags, run through `/go-runner` (its `--log-file` and `--also-stdout`), with the binary in `/usr/local/bin`; the API server on 6443, the controller manager on 10257, the scheduler on 10259 |
-| `fws/kubelet:1.37` | Kubernetes 1.37.2's kubelet with its darwin parts (`images/kubernetes/kubelet-darwin.patch`): the node's capacity and use from macOS's kernel, and no cgroups; run privileged, it runs its pods on the engine nested in its container, through the CRI that engine serves at `$FWS_ENGINE` |
-| `fws/k3s:1.37` | k3s's image, as Testcontainers' k3s module runs it, from `fws/kind-node`'s parts: `k3s server` brings up a single-node cluster with kubeadm on the node's address on the default bridge network and writes `/etc/rancher/k3s/k3s.yaml`; `k3s kubectl`, `ctr` and `crictl` run against it. `k3s.Run(ctx, "fws/k3s:1.37")` |
-| `fws/kind-node:1.37` | kind's node image from the parts above: `kind create cluster --image fws/kind-node:1.37` runs kubeadm, the kubelet and `fws-kube-proxy` in each node, with the control plane's images loaded into the node's engine under the names kubeadm gives them (see [kind](#kind)) |
-| `fws/pause:3.10.2` | Kubernetes' pause program, the infra container of a CRI pod sandbox |
-| `fws/consul:2.1` | `CONSUL_LOCAL_CONFIG`, `CONSUL_BIND_INTERFACE`, `CONSUL_CLIENT_INTERFACE`; arguments to `consul` (default `agent -dev -client 0.0.0.0`); HTTP on 8500, DNS on 8600 |
-| `fws/vault:2.2` | `VAULT_DEV_ROOT_TOKEN_ID`, `VAULT_DEV_LISTEN_ADDRESS`, `VAULT_LOCAL_CONFIG`, `VAULT_REDIRECT_INTERFACE`, `VAULT_CLUSTER_INTERFACE`; arguments to `vault` (default `server -dev`); port 8200 |
-| `fws/kafka:4.4` | `KAFKA_` variables, written into `/etc/kafka/kafka.properties` as Confluent's images write them (`KAFKA_ADVERTISED_LISTENERS` becomes `advertised.listeners`), `CLUSTER_ID`, and `KAFKA_LOG4J_ROOT_LOGLEVEL` and `KAFKA_LOG4J_LOGGERS` for its log on standard output, through the `/etc/confluent/docker` scripts Testcontainers' module drives; one KRaft broker and controller by default, clients on 9092; Kafka's tools in `/usr/bin` |
-| `fws/mailpit:1.34` | `MP_` variables and arguments to `mailpit`; SMTP on 1025, POP3 on 1110, the web UI and API on 8025 |
-| `fws/meilisearch:1.57` | `MEILI_` variables, such as `MEILI_MASTER_KEY`, and arguments to `meilisearch`, which runs in `/meili_data`; the API on 7700 |
-| `fws/qdrant:1.20` | `QDRANT__` variables over `/qdrant/config`, and `QDRANT_ALLOW_RECOVERY_MODE` as the official entrypoint reads it; storage and snapshots in `/qdrant`; REST and the dashboard on 6333, gRPC on 6334 |
-| `fws/neo4j:2026.10` | `NEO4J_AUTH`, `NEO4J_PLUGINS` and `NEO4J_` settings, written into `/var/lib/neo4j/conf/neo4j.conf` as the official entrypoint writes them (`NEO4J_server_memory_heap_max__size` becomes `server.memory.heap.max_size`), and mounted `/conf`, `/plugins`, `/import`, `/licenses` and `/ssl`; data in `/data`, logs in `/logs`; HTTP on 7474, Bolt on 7687 |
-| `fws/clickhouse:26.10` | `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`, `/docker-entrypoint-initdb.d` and the other variables of the official image's own `entrypoint.sh`, which it runs; configuration in `/etc/clickhouse-server`, data in `/var/lib/clickhouse`; HTTP on 8123, native on 9000 |
-| `fws/influxdb:2.10` | `DOCKER_INFLUXDB_INIT_*` setup and upgrade, `*_FILE` secrets and `/docker-entrypoint-initdb.d` scripts, as the official entrypoint handles them; the influx CLI configured in `/etc/influxdb2`, data in `/var/lib/influxdb2`; the API and UI on 8086 |
-| `fws/opensearch:3.10` | the minimal distribution under the official image's entrypoint script, so dotted variables such as `discovery.type` become settings; runs as user 1000 from `/usr/share/opensearch`; REST on 9200 |
-| `fws/dind:29` | Docker in Docker: run it `--privileged`, and its `dockerd` serves an engine of its own, which the official image's entrypoint arguments, `DOCKER_TLS_CERTDIR` and dockerd's `--host` and TLS flags configure; the Docker CLI with buildx and Compose; 2375, or 2376 with TLS |
-| `fws/toxiproxy:2.13` | arguments to the server at `/toxiproxy`, with `/toxiproxy-cli` beside it; the API on 8474 |
-| `fws/nats:2.15` | arguments to `nats-server`; `/nats-server.conf` serves clients on 4222, monitoring on 8222 and routes on 6222 |
-| `fws/rabbitmq:4` | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`; AMQP on 5672, the Erlang port mapper on 4369 and distribution on 25672 |
-| `fws/dynamodb-local:2` | arguments to DynamoDB Local (default `-sharedDb -dbPath /home/dynamodblocal/data`); port 8000 |
-| `fws/gitea:28` | `GITEA__section__KEY` variables, written into `/data/gitea/conf/app.ini`; HTTP on 3000, SSH on 22 |
-| `fws/nginx:1` | `/usr/share/nginx/html`, and `/etc/nginx/templates/*.template`, rendered into `conf.d` with environment variables substituted; the default server listens on 80 |
-| `fws/python:3.14`, `fws/node:26`, `fws/bun:1` | the language and its package manager (`python3 -m ensurepip` for pip) |
-| `fws/lambda/python:3.14`, `fws/lambda/nodejs:24`, `fws/lambda/java:17` | the handler as the command; functions in `/var/task`, invoked at `POST /2015-03-31/functions/function/invocations` on port 8080 through AWS's Runtime Interface Emulator |
-| `fws/playwright:1.65` | Node.js 24 with `playwright` and its Chromium headless shell |
-| `fws/busybox:1` | a shell, `sh` by default, and the commands scripts run in BusyBox's image (`ls`, `cat`, `grep`, `sed`, `awk`, `find`, `tar`, `gzip`, `wget`, `nc -z`…) as separate programs, since BusyBox builds for Linux alone; `busybox CMD` runs them by name |
-| `fws/base:1` | a base to build `FROM` in place of Alpine or Debian: `bash` by default, `fws/busybox`'s commands, `curl`, `git`, `jq`, `less`, and a CA bundle at `/etc/ssl/certs/ca-certificates.crt`; no package manager, as theirs install Linux binaries |
-| `fws/ryuk:0.14.0` | Testcontainers' reaper (see [Testcontainers](#testcontainers)) |
-| `fws/toolbox:1` | the test suite's small app and probe |
+Containers run macOS programs, so images are `darwin/arm64`; Linux images
+cannot run without a VM. fws comes with a catalog of images built from Nix
+packages, each configured as the official image is: databases (Postgres,
+MySQL, MariaDB, MongoDB, Redis, Valkey, ClickHouse, OpenSearch…), brokers
+(Kafka, RabbitMQ, NATS), services (Vault, Consul, Gitea, nginx, Mailpit),
+languages (Python 3.11–3.15, Node.js 22–26, Bun), the AWS Lambda runtimes,
+Playwright, Docker in Docker, Kubernetes and kind, and `fws/base`, a base
+to build `FROM`. CI publishes them as `ghcr.io/e6qu/fws-<name>:<tag>`
+for `fws/<name>:<tag>`, and `fws catalog` lists them:
 
 ```bash
-scripts/build-images.sh ./images-out
+docker pull ghcr.io/e6qu/fws-postgres:16
 ```
 
 ```bash
-for t in ./images-out/*.tar; do docker load -i "$t"; done
+go install github.com/e6qu/fun-with-sandboxes/cmd/fws@latest && fws catalog
 ```
 
-`cmd/fws-mkimage` turns any Nix closure into an image: it rewrites the
-closure's absolute `/nix/store` library paths and symlinks relative to each
-file, so the image is self-contained wherever its root lands.
-
-### Building images
-
-`docker build`, `docker buildx build` and `docker compose build` run on an
-embedded BuildKit with a darwin worker. Base a Dockerfile on a darwin image;
-`RUN` steps run under the same Seatbelt confinement as containers, with
-internet through a build-only egress proxy:
-
-```bash
-docker buildx build --load -t my/app:1 .
-```
-
-The classic builder stays available with `DOCKER_BUILDKIT=0`.
-
-Images are layered OCI images. The catalog images carry a layer per Nix
-store path, so images that share libraries share those layers; builds add a
-layer per filesystem step on top of their base's layers, and `docker commit`
-adds one. `docker save` writes an OCI image layout that also carries Docker's
-`manifest.json`, `docker load` reads either, and `docker push` sends an
-image's manifest and layers exactly as stored, so its digest survives a push
-and a pull.
-
-## The container contract
-
-macOS gives an unprivileged process no private `/` and no private network
-stack, so a container cannot own `/var/lib/postgresql/data` or port 5432.
-The container library presents both, mapping the container's paths into its
-root and its exposed and published ports onto host ports on loopback, and
-the engine also tells the container where its things are:
-
-| Variable | Meaning |
-|---|---|
-| `SANDBOX_ROOT` | the container's root directory on the host; image paths live under it |
-| `SANDBOX_PORT_<n>` | the loopback host port of container port `<n>`, for a program that loads no library |
-| `SANDBOX_<SERVICE>_PORT_<n>` | the host port of stack peer `<service>`'s port `<n>` |
-| `SANDBOX_<SERVICE>_HOST` | the host to reach that peer on (`127.0.0.1`); through the container library a peer is reachable by name too |
-| `SANDBOX_HOST` | `127.0.0.1`, the host a container's published ports are on |
-| `SANDBOX_STACK` | the stack (Compose project) name |
-| `SANDBOX_IPC_PREFIX` | the prefix POSIX shared memory and semaphore names start with under private IPC, which the container library adds |
-
-A container's processes see `PATH` and `HOME` as the container's own. Containers with
-a network also get `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5, for
-any TCP) and `NO_PROXY` pointing at their stack's egress proxy, with
-credentials that name the container to it; `network_mode: none` and `internal: true`
-networks get none, as in Docker. Volumes and bind
-mounts appear at their destination inside the root. As Docker does, the engine writes
-the container's `/etc/hosts` as it starts, with `localhost`, its
-`--add-host` entries, its hostname at its member address and its legacy
-links, and its `/etc/hostname`; the container library resolves the names
-it lists before any other. A catalog image's entrypoint configures its
-service as the official image's does, on its container ports and paths —
-see `images/postgres/entry` and `internal/sandboxenv`.
+`docker build`, `buildx` and `docker compose build` build `FROM` them on
+an embedded BuildKit with a darwin worker. [`docs/IMAGES.md`](docs/IMAGES.md)
+covers the catalog image by image, the contract an image follows to run
+here, writing Dockerfiles, and how the catalog is built and published.
 
 ## What a container can and cannot do
 

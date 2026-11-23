@@ -38,36 +38,50 @@ func lambdaFunction(t *testing.T, name, image string, files map[string]string, h
 	waitedRun(t, name, "-p", "127.0.0.1::8080", "-v", dir+":/var/task:ro", image, handler)
 }
 
+// Each Python runtime the catalog carries runs a handler under its own
+// release and execution environment, and reports a handler's exception.
 func TestLambdaPython(t *testing.T) {
-	const name = "fws-e2e-lambda-python"
-	lambdaFunction(t, name, "fws/lambda/python:3.14", map[string]string{"app.py": `import sys
+	for _, v := range []string{"3.11", "3.12", "3.13", "3.14"} {
+		name := "fws-e2e-lambda-python-" + strings.ReplaceAll(v, ".", "")
+		lambdaFunction(t, name, "fws/lambda/python:"+v, map[string]string{"app.py": `import os, sys
 def handler(event, context):
     if event.get("fail"):
         raise ValueError("asked to fail")
-    return {"greeting": "hello " + event["name"], "python": "%d.%d" % sys.version_info[:2], "function": context.function_name}
+    return {"greeting": "hello " + event["name"], "python": "%d.%d" % sys.version_info[:2], "function": context.function_name,
+        "env": os.environ["AWS_EXECUTION_ENV"]}
 `}, "app.handler")
-	code, body := invoke(t, name, `{"name":"lambda"}`)
-	var got map[string]string
-	if code != 200 || json.Unmarshal([]byte(body), &got) != nil || got["greeting"] != "hello lambda" || got["python"] != "3.14" || got["function"] == "" {
-		t.Fatalf("invocation: %d %s", code, body)
-	}
-	if _, body := invoke(t, name, `{"fail":true}`); !strings.Contains(body, `"errorType": "ValueError"`) && !strings.Contains(body, `"errorType":"ValueError"`) {
-		t.Fatalf("a failing invocation answered %s", body)
+		code, body := invoke(t, name, `{"name":"lambda"}`)
+		var got map[string]string
+		if code != 200 || json.Unmarshal([]byte(body), &got) != nil || got["greeting"] != "hello lambda" || got["python"] != v ||
+			got["function"] == "" || got["env"] != "AWS_Lambda_python"+v {
+			t.Errorf("python %s invocation: %d %s", v, code, body)
+		}
+		if _, body := invoke(t, name, `{"fail":true}`); !strings.Contains(body, `"errorType": "ValueError"`) && !strings.Contains(body, `"errorType":"ValueError"`) {
+			t.Errorf("python %s: a failing invocation answered %s", v, body)
+		}
+		docker(t, "rm", "-f", name)
 	}
 }
 
+// Each Node.js runtime the catalog carries runs a handler under its own
+// release and execution environment.
 func TestLambdaNode(t *testing.T) {
-	const name = "fws-e2e-lambda-node"
-	lambdaFunction(t, name, "fws/lambda/nodejs:24", map[string]string{"index.mjs": `export const handler = async (event, context) => ({
+	for _, v := range []string{"22", "24"} {
+		name := "fws-e2e-lambda-node-" + v
+		lambdaFunction(t, name, "fws/lambda/nodejs:"+v, map[string]string{"index.mjs": `export const handler = async (event, context) => ({
   greeting: "hello " + event.name,
   node: process.versions.node.split(".")[0],
   requestId: context.awsRequestId,
+  env: process.env.AWS_EXECUTION_ENV,
 });
 `}, "index.handler")
-	code, body := invoke(t, name, `{"name":"lambda"}`)
-	var got map[string]string
-	if code != 200 || json.Unmarshal([]byte(body), &got) != nil || got["greeting"] != "hello lambda" || got["node"] != "24" || got["requestId"] == "" {
-		t.Fatalf("invocation: %d %s", code, body)
+		code, body := invoke(t, name, `{"name":"lambda"}`)
+		var got map[string]string
+		if code != 200 || json.Unmarshal([]byte(body), &got) != nil || got["greeting"] != "hello lambda" || got["node"] != v ||
+			got["requestId"] == "" || got["env"] != "AWS_Lambda_nodejs"+v+".x" {
+			t.Errorf("node %s invocation: %d %s", v, code, body)
+		}
+		docker(t, "rm", "-f", name)
 	}
 }
 

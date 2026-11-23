@@ -406,6 +406,7 @@ func TestContainerPortsAndDualStack(t *testing.T) {
 		"hostent6":             "fd00:5::9",
 		"direct":               "127.0.0.1:8082",
 		"ifaddrs":              "lo0=127.0.0.1,eth0=127.88.0.2",
+		"routes":               "default 1 via 127.88.0.1, 0 off loopback",
 		"ifindex":              "eth0",
 		"ifreq":                "127.88.0.2 en0-hidden",
 		"unix":                 "/probe.sock",

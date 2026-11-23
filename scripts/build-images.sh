@@ -475,17 +475,28 @@ closure "$toxiproxy" > "$build/toxiproxy.closure"
 mkimage $(accounts toxiproxy) -spec images/toxiproxy/image.json -closure "$build/toxiproxy.closure" -pkg "$toxiproxy" \
   -link /toxiproxy=bin/toxiproxy-server -link /toxiproxy-cli=bin/toxiproxy-cli -out "$out/toxiproxy.tar"
 
-python=$(pkg_with python314 python3.14)
-closure "$python" > "$build/python.closure"
-# nixpkgs marks its Python as managed by Nix, which keeps pip from installing
-# into it; the official image's Python takes packages.
-python_marker=$(cd "$python" && ls lib/python3.14/EXTERNALLY-MANAGED)
-mkimage $(accounts python) -spec images/python/image.json -closure "$build/python.closure" -pkg "$python" \
-  -remove "$python/$python_marker" -out "$out/python.tar"
+# The Python and Node.js releases their projects support. nixpkgs marks its
+# Python as managed by Nix, which keeps pip from installing into it; the
+# official image's Python takes packages.
+# Each release's package is kept as python_3_14, node_24 and so on, as
+# macOS's bash has no associative arrays.
+for v in 3.11 3.12 3.13 3.14 3.15; do
+  printf -v "python_${v/./_}" '%s' "$(pkg_with "python${v/./}" "python$v")"
+  p=python_${v/./_}
+  p=${!p}
+  closure "$p" > "$build/python$v.closure"
+  mkimage $(accounts python) -spec images/python/image.json -tag "fws/python:$v" -closure "$build/python$v.closure" -pkg "$p" \
+    -remove "$p/lib/python$v/EXTERNALLY-MANAGED" -out "$out/python-$v.tar"
+done
 
-node=$(pkg_with nodejs_26 node)
-closure "$node" > "$build/node.closure"
-mkimage $(accounts node node 1000 1000 /home/node) -spec images/node/image.json -closure "$build/node.closure" -pkg "$node" -out "$out/node.tar"
+for v in 22 24 26; do
+  printf -v "node_$v" '%s' "$(pkg_with "nodejs_$v" node)"
+  p=node_$v
+  p=${!p}
+  closure "$p" > "$build/node$v.closure"
+  mkimage $(accounts node node 1000 1000 /home/node) -spec images/node/image.json -tag "fws/node:$v" -closure "$build/node$v.closure" \
+    -pkg "$p" -out "$out/node-$v.tar"
+done
 
 bun=$(cat_with bun bun)
 closure "$bun" > "$build/bun.closure"
@@ -526,17 +537,27 @@ mkimage $(accounts rabbitmq rabbitmq 999 999 /var/lib/rabbitmq) -spec images/rab
 # the image's client of the Lambda Runtime API.
 rie=$(pkg_with aws-lambda-rie aws-lambda-rie)
 
-closure "$python" "$rie" > "$build/lambda-python.closure"
-mkimage $(accounts lambda-python sbx_user1051 993 990 /home/sbx_user1051) -spec images/lambda/python/image.json -closure "$build/lambda-python.closure" -pkg "$python" -pkg "$rie" \
-  -remove "$python/$python_marker" \
-  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" -file "/var/runtime/bootstrap=images/lambda/python/bootstrap" \
-  -out "$out/lambda-python.tar"
-
-node24=$(pkg_with nodejs_24 node)
-closure "$node24" "$rie" > "$build/lambda-nodejs.closure"
-mkimage $(accounts lambda-nodejs sbx_user1051 993 990 /home/sbx_user1051) -spec images/lambda/nodejs/image.json -closure "$build/lambda-nodejs.closure" -pkg "$node24" -pkg "$rie" \
-  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.mjs=images/lambda/nodejs/bootstrap.mjs" -file "/var/runtime/bootstrap=images/lambda/nodejs/bootstrap" \
-  -out "$out/lambda-nodejs.tar"
+# The runtimes AWS Lambda offers.
+for v in 3.11 3.12 3.13 3.14; do
+  p=python_${v/./_}
+  p=${!p}
+  closure "$p" "$rie" > "$build/lambda-python$v.closure"
+  mkimage $(accounts lambda-python sbx_user1051 993 990 /home/sbx_user1051) -spec images/lambda/python/image.json -tag "fws/lambda/python:$v" \
+    -env "AWS_EXECUTION_ENV=AWS_Lambda_python$v" -closure "$build/lambda-python$v.closure" -pkg "$p" -pkg "$rie" \
+    -remove "$p/lib/python$v/EXTERNALLY-MANAGED" \
+    -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" -file "/var/runtime/bootstrap=images/lambda/python/bootstrap" \
+    -out "$out/lambda-python-$v.tar"
+done
+node24=$node_24
+for v in 22 24; do
+  p=node_$v
+  p=${!p}
+  closure "$p" "$rie" > "$build/lambda-nodejs$v.closure"
+  mkimage $(accounts lambda-nodejs sbx_user1051 993 990 /home/sbx_user1051) -spec images/lambda/nodejs/image.json -tag "fws/lambda/nodejs:$v" \
+    -env "AWS_EXECUTION_ENV=AWS_Lambda_nodejs$v.x" -closure "$build/lambda-nodejs$v.closure" -pkg "$p" -pkg "$rie" \
+    -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.mjs=images/lambda/nodejs/bootstrap.mjs" -file "/var/runtime/bootstrap=images/lambda/nodejs/bootstrap" \
+    -out "$out/lambda-nodejs-$v.tar"
+done
 
 # The Java runtime's libraries, from Maven Central, checked against their
 # published digests.

@@ -215,15 +215,8 @@ connection, never on a fixed sleep.
 - **The Docker API.** Answer as dockerd does, with the same status codes
   and error text, and add an end-to-end test that drives the change through
   the Docker CLI or Compose.
-- **An image.** Add it to `scripts/build-images.sh` and `images/`, list it
-  in the README's catalog and in the `images` job's registry check in
-  `.github/workflows/ci.yml`, and drive it in `tests/e2e/catalog_test.go`
-  through the client its users would use.
-- **A newer release.** An image takes `nixpkgs-26.05-darwin`'s package;
-  where that lags upstream, add it to `images/catalog`: nixpkgs-unstable's
-  package when it has the newest release, else its recipe copied there at
-  the release, or the release's own macOS build. GitHub's source archives
-  hash as `git archive` of the tag lays the tree out.
+- **An image or a release.** See
+  [IMAGES](docs/IMAGES.md#add-an-image-or-a-release).
 - **BuildKit.** Change the packages it copies with
   `scripts/sync-buildkit.sh`, and patches in `third_party/buildkit-patches`.
   Never edit `third_party/buildkit` by hand: CI checks it matches the

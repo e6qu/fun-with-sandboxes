@@ -11,7 +11,7 @@ what macOS offers an unprivileged process under them. Non-goals are in
   without a VM, so stock Docker Hub images do not run.
 - **Images follow the container contract.** A service finds its root and
   ports at their container paths and port numbers through the container
-  library, or reads them from the `SANDBOX_*` variables (README). Software
+  library, or reads them from the `SANDBOX_*` variables ([IMAGES](docs/IMAGES.md#the-container-contract)). Software
   the library cannot load into needs an entrypoint that configures it from
   the variables.
 - **Only the engine's platform.** A `--platform` or `FROM --platform` other
@@ -150,9 +150,13 @@ what macOS offers an unprivileged process under them. Non-goals are in
   - A network without a subnet reports `127.88.0.0/16`, so a program that
     advertises its first global address (Kubernetes' API server,
     SeaweedFS) finds none: give it a subnet.
-- **Interfaces are presented.** `getifaddrs`, the `SIOCGIF*` ioctls (IPv4)
-  and the routing sysctl list loopback and `eth0`; binding to `eth0`'s
-  index or joining a multicast group on it fails.
+- **Interfaces and routes are presented.** `getifaddrs`, the `SIOCGIF*`
+  ioctls (IPv4) and the routing sysctl list loopback and `eth0`, and the
+  routing table (`netstat -rn`) the host's loopback routes, each IPv4
+  subnet of the container's networks and a default route through its
+  first network's gateway; IPv6 routes are the host's loopback ones alone.
+  Binding to `eth0`'s index or joining a multicast group on it fails.
+  Programs without the library see the host's.
 - **A container's ports are its loopback host ports.** Only exposed or
   published ports have host ports; a listener on any other port, or port
   0, listens on a Unix socket reached through the router. A dual-stack

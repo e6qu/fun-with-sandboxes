@@ -368,6 +368,10 @@ knobs, each enforced by a real mechanism or refused:
   (`NET_RT_IFLIST`, `NET_RT_IFLIST2`) and `SIOCGIF*` ioctls show the host's
   loopback, then `eth0` onwards, indexed after the host's highest, one per
   address on the container's networks, with its mask and IPv6 address.
+  Its routes (`NET_RT_DUMP`, `NET_RT_DUMP2`, `NET_RT_FLAGS`) are the host's
+  through loopback, a route to each IPv4 subnet on its interface, and a
+  default route through the first interface's gateway, the subnet's first
+  address, as on a bridge network; the host's other routes are left out.
 
   *Resolution.* `getaddrinfo` and `gethostbyname` read the container's
   `/etc/hosts` first, then the stack's names, then resolve as the host does.
@@ -642,49 +646,15 @@ environment names it for a program that loads no library.
 
 ## 7. Images: a curated, Nix-built catalog
 
-The catalog is built from Nixpkgs for `aarch64-darwin`
-(`scripts/build-images.sh`):
-
-- **`cmd/fws-mkimage`** copies a Nix closure into the image under
-  `/nix/store`. It rewrites every absolute store reference a Mach-O file
-  loads through (`LC_LOAD_DYLIB`, `LC_RPATH`) to an `@loader_path`-relative
-  one with `install_name_tool`, re-signs the file ad hoc (arm64 macOS refuses
-  modified code otherwise), turns absolute store symlinks into relative ones,
-  and links each package's `bin/` into `/bin`, so the image is
-  self-contained wherever its root lands; the profile denies the host's
-  `/nix`, so the tests prove it. It writes an OCI image with a layer per
-  store path, in sorted order, and a last layer with everything else, so
-  images that share store paths share layers.
-- **Entrypoints.** Where the official image's entrypoint configures the
-  service, the catalog's is a Go program (`images/*/entry`) that does the
-  same on its container ports and `exec`s it; other images run their
-  program directly, or the upstream image's own `#!` scripts (Kafka's
-  `configure`, the Lambda runtimes' `bootstrap`) under the interpreter in
-  the root. A `#!/usr/bin/env` line runs the program the container's `PATH`
-  names, as Apple's `env` cannot load the library
-  (`internal/runtime/script.go`).
-- **Catalog.** Every image under `images/`, among them `fws/postgres`, with
-  `initdb`, `POSTGRES_PASSWORD`, `POSTGRES_DB` and
-  `docker-entrypoint-initdb.d/*.sql` handled as the official image handles
-  them; `fws/redis`; `fws/toolbox`, a small HTTP app backed by its stack's
-  Redis that doubles as the tests' probe; `fws/ryuk`, Testcontainers'
-  reaper built from its release unchanged; databases, brokers and servers
-  (MySQL, MariaDB, MongoDB, Kafka, RabbitMQ, NATS, nginx, Vault, SeaweedFS
-  as the S3 server and others); language runtimes (Node, Bun, Python, the
-  Lambda runtimes); `fws/busybox` and `fws/base`, whose `tar` is
-  libarchive's behind `images/tar`; `fws/dind`; and the Kubernetes images
-  (`kind-node`, the control plane's components, `kubelet`, `kubectl`,
-  `pause`). An `nc` checks a container port through the container library,
-  as Testcontainers' in-container port check runs `nc -z`. macOS allows
-  only 87 System V semaphores machine-wide by default, so the Postgres
-  entrypoint keeps each server's process limits small.
-- **Distribution.** Archives for `docker load`, or any registry as an
-  ordinary image with a `darwin/<arch>` platform:
-  `scripts/publish-images.sh` pushes each archive's OCI layout as
-  `<prefix>/fws-<name>`. CI publishes the catalog to a local registry on
-  every pull request to prove the script, and the end-to-end suite pulls
-  through the engine from an in-process registry. Compose files name these
-  images explicitly; the engine never substitutes an image name.
+The catalog is built from nixpkgs for `aarch64-darwin` by
+`scripts/build-images.sh` and `cmd/fws-mkimage`, which relocates each Nix
+closure so it loads by relative paths, and writes an OCI image with a
+layer per store path; `internal/catalog` lists it, for `fws catalog` and
+CI's publish check. [IMAGES](IMAGES.md) describes the catalog, its build
+and its publication. Compose files name these images explicitly; the
+engine never substitutes one image name for another. macOS allows only 87
+System V semaphores machine-wide by default, so the Postgres entrypoint
+keeps each server's process limits small.
 
 ---
 
@@ -958,14 +928,17 @@ API types from `github.com/moby/moby/api`, so the JSON matches what Docker
 clients decode.
 
 ```
+cmd/fws/              # the command line: fws catalog lists the image catalog
 cmd/fwsd/             # the daemon: Docker Engine, libpod and CRI APIs over a unix socket
 cmd/fws-shim/         # the helper binary: supervisors, exec anchors, egress proxies, docker-init
 cmd/fws-mkimage/      # Nix closure -> darwin image archive
 cmd/fws-kube-proxy/   # kube-proxy for a node whose runtime is the engine
 internal/alloc/       # per-stack port blocks and directories
 internal/api/         # the Docker Engine API (the Compose subset) and Podman's libpod
+internal/bandwidth/   # token buckets for the bandwidth labels, in routers and egress proxies
 internal/buildkit/    # embedded BuildKit with a darwin worker
 internal/containerd/  # a kind node's containerd configuration: registry mirrors and hosts
+internal/catalog/     # the image catalog: names, tags, kinds, where each is published
 internal/cri/         # the Kubernetes Container Runtime Interface
 internal/dockerfile/  # Dockerfile parsing and variable expansion
 internal/egress/      # the per-stack HTTP and SOCKS5 proxy to the internet

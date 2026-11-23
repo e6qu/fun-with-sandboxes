@@ -2995,6 +2995,157 @@ static size_t eth_addr6(char *out, unsigned short index, const struct iface *f) 
     return n;
 }
 
+// host_loopbacks marks, in loop, the host's loopback interfaces, and
+// returns the highest interface index, whose successors the container's
+// interfaces take; -1 where the interface list cannot be read.
+static int host_loopbacks(unsigned char loop[65536 / 8]) {
+    int mib[6] = {CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST, 0};
+    size_t n = 0;
+    char *buf = NULL;
+    for (;;) {
+        if (sysctl(mib, 6, NULL, &n, NULL, 0) == -1) return -1;
+        n += n / 4 + 1024;
+        free(buf);
+        if (!(buf = malloc(n))) return -1;
+        if (sysctl(mib, 6, buf, &n, NULL, 0) == 0) break;
+        if (errno != ENOMEM) {
+            free(buf);
+            return -1;
+        }
+    }
+    int top = 0;
+    for (size_t off = 0; off + sizeof(struct if_msghdr) <= n;) {
+        const struct if_msghdr *m = (const void *)(buf + off);
+        if (m->ifm_msglen == 0) break;
+        if (m->ifm_index > top) top = m->ifm_index;
+        if ((m->ifm_type == RTM_IFINFO || m->ifm_type == RTM_IFINFO2) && (m->ifm_flags & IFF_LOOPBACK)) {
+            loop[m->ifm_index / 8] |= (unsigned char)(1 << (m->ifm_index % 8));
+        }
+        off += m->ifm_msglen;
+    }
+    free(buf);
+    return top;
+}
+
+// rt_route writes at out the route message, rt_msghdr2 for NET_RT_DUMP2
+// and rt_msghdr otherwise, of an IPv4 route to dst/mask through gw, or
+// through the interface itself, on interface index, and returns its
+// length.
+static size_t rt_route(char *out, int dump2, unsigned short index, in_addr_t dst, in_addr_t mask, in_addr_t gw, int has_gw) {
+    size_t head = dump2 ? sizeof(struct rt_msghdr2) : sizeof(struct rt_msghdr);
+    memset(out, 0, head);
+    struct sockaddr_in sd = v4_sockaddr(dst), sm = v4_sockaddr(mask), sg = v4_sockaddr(gw);
+    struct sockaddr_dl link;
+    memset(&link, 0, sizeof link);
+    link.sdl_len = sizeof link;
+    link.sdl_family = AF_LINK;
+    link.sdl_index = index;
+    link.sdl_type = IFT_ETHER;
+    size_t n = head;
+    memcpy(out + n, &sd, sizeof sd);
+    n += RT_ROUNDUP(sizeof sd);
+    if (has_gw) {
+        memcpy(out + n, &sg, sizeof sg);
+        n += RT_ROUNDUP(sizeof sg);
+    } else {
+        memcpy(out + n, &link, sizeof link);
+        n += RT_ROUNDUP(sizeof link);
+    }
+    memcpy(out + n, &sm, sizeof sm);
+    n += RT_ROUNDUP(sizeof sm);
+    int flags = RTF_UP | RTF_STATIC | (has_gw ? RTF_GATEWAY : RTF_CLONING);
+    if (dump2) {
+        struct rt_msghdr2 *m = (struct rt_msghdr2 *)out;
+        m->rtm_msglen = (unsigned short)n;
+        m->rtm_version = RTM_VERSION;
+        m->rtm_type = RTM_GET2;
+        m->rtm_index = index;
+        m->rtm_flags = flags;
+        m->rtm_addrs = RTA_DST | RTA_GATEWAY | RTA_NETMASK;
+    } else {
+        struct rt_msghdr *m = (struct rt_msghdr *)out;
+        m->rtm_msglen = (unsigned short)n;
+        m->rtm_version = RTM_VERSION;
+        m->rtm_type = RTM_GET;
+        m->rtm_index = index;
+        m->rtm_flags = flags;
+        m->rtm_addrs = RTA_DST | RTA_GATEWAY | RTA_NETMASK;
+    }
+    return n;
+}
+
+// rtdump answers a routing sysctl of routes, NET_RT_DUMP, NET_RT_DUMP2 or
+// NET_RT_FLAGS, as the container's network namespace would: the host's
+// routes through its loopback interfaces, then the container's own: on
+// each of its interfaces the route to its subnet, and a default route
+// through its first interface's gateway, the subnet's first address, as
+// a bridge network's is. The host's other routes are not the container's.
+static int rtdump(const int *name, u_int namelen, void *old, size_t *oldlen) {
+    unsigned char loop[65536 / 8] = {0};
+    int top = host_loopbacks(loop);
+    if (top < 0) return -1;
+    int dump2 = name[4] == NET_RT_DUMP2;
+    char *buf = NULL;
+    size_t n = 0;
+    for (;;) {
+        if (sysctl((int *)name, namelen, NULL, &n, NULL, 0) == -1) return -1;
+        n += n / 4 + 1024;
+        free(buf);
+        if (!(buf = malloc(n + MAX_IFACES * 2 * 256))) {
+            errno = ENOMEM;
+            return -1;
+        }
+        if (sysctl((int *)name, namelen, buf, &n, NULL, 0) == 0) break;
+        if (errno != ENOMEM) {
+            free(buf);
+            return -1;
+        }
+    }
+    size_t out = 0;
+    for (size_t off = 0; off + sizeof(struct rt_msghdr) <= n;) {
+        struct rt_msghdr *m = (void *)(buf + off);
+        size_t len = m->rtm_msglen;
+        if (len == 0) break;
+        if (loop[m->rtm_index / 8] & (1 << (m->rtm_index % 8))) {
+            memmove(buf + out, m, len);
+            out += len;
+        }
+        off += len;
+    }
+    // A request of one address family other than IPv4 takes no more.
+    if (name[3] == 0 || name[3] == AF_INET) {
+        struct iface ifs[MAX_IFACES];
+        int nif = own_ifaces(ifs);
+        for (int i = 0; i < nif && top + 1 + i <= 65535; i++) {
+            if (!ifs[i].v4) continue;
+            unsigned short index = (unsigned short)(top + 1 + i);
+            in_addr_t net = ifs[i].addr & ifs[i].mask;
+            out += rt_route(buf + out, dump2, index, net, ifs[i].mask, 0, 0);
+        }
+        for (int i = 0; i < nif && top + 1 + i <= 65535; i++) {
+            if (!ifs[i].v4) continue;
+            in_addr_t gw = htonl(ntohl(ifs[i].addr & ifs[i].mask) + 1);
+            out += rt_route(buf + out, dump2, (unsigned short)(top + 1 + i), 0, 0, gw, 1);
+            break;
+        }
+    }
+    if (!old) {
+        *oldlen = out;
+        free(buf);
+        return 0;
+    }
+    int r = 0;
+    if (*oldlen < out) {
+        errno = ENOMEM;
+        r = -1;
+        out = *oldlen;
+    }
+    memcpy(old, buf, out);
+    *oldlen = out;
+    free(buf);
+    return r;
+}
+
 // iflist answers a routing sysctl of interfaces, NET_RT_IFLIST or
 // NET_RT_IFLIST2, as the container's network namespace would: the host's
 // messages of its loopback interfaces, then the container's, for the
@@ -3212,6 +3363,10 @@ static int fws_sysctl(int *name, u_int namelen, void *old, size_t *oldlen, void 
     if (namelen == 6 && name[0] == CTL_NET && name[1] == PF_ROUTE && name[2] == 0 &&
         (name[4] == NET_RT_IFLIST || name[4] == NET_RT_IFLIST2) && oldlen && !new) {
         return iflist(name, old, oldlen);
+    }
+    if (namelen == 6 && name[0] == CTL_NET && name[1] == PF_ROUTE && name[2] == 0 &&
+        (name[4] == NET_RT_DUMP || name[4] == NET_RT_DUMP2 || name[4] == NET_RT_FLAGS) && oldlen && !new) {
+        return rtdump(name, namelen, old, oldlen);
     }
     if (namelen == 3 && name[0] == CTL_KERN && (name[1] == KERN_PROCARGS || name[1] == KERN_PROCARGS2) && !new && oldlen) {
         int mib[3] = {name[0], name[1], to_host(name[2])};

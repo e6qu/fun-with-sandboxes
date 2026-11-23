@@ -46,7 +46,8 @@ type Spec struct {
 	// Dirs are empty directories to create.
 	Dirs   []string        `json:"dirs"`
 	Config json.RawMessage `json:"config"`
-	// Env are variables added to the config's, from -env.
+	// Env are variables set in the config, from -env, each replacing the
+	// config's of its name.
 	Env []string `json:"-"`
 }
 
@@ -590,7 +591,20 @@ func writeArchive(stage, overlay string, spec Spec, storePaths []string, out, ar
 	if err := json.Unmarshal(spec.Config, &cfg); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	cfg.Env = append(cfg.Env, spec.Env...)
+	// A variable -env names replaces the spec's of that name.
+	for _, kv := range spec.Env {
+		name, _, _ := strings.Cut(kv, "=")
+		replaced := false
+		for i, have := range cfg.Env {
+			if n, _, _ := strings.Cut(have, "="); n == name {
+				cfg.Env[i], replaced = kv, true
+				break
+			}
+		}
+		if !replaced {
+			cfg.Env = append(cfg.Env, kv)
+		}
+	}
 	img, err := mutate.Append(mutate.ConfigMediaType(mutate.MediaType(empty.Image, types.OCIManifestSchema1), types.OCIConfigJSON), adds...)
 	if err != nil {
 		return err
