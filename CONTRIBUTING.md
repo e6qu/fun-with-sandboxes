@@ -15,7 +15,9 @@ start. Two more rules follow:
 
 - **Refuse what cannot be honoured.** An option the engine cannot enforce
   returns a Docker API error; it is never accepted and silently ignored.
-  [LIMITATIONS](LIMITATIONS.md) lists any that still are, as bugs to fix.
+  Only an option that asks for no more confinement than a container already
+  has is accepted and changes nothing; [LIMITATIONS](LIMITATIONS.md) lists
+  them.
 - **Tests run everything they name.** No `t.Skip` for a missing tool:
   install the tool in CI instead.
 
@@ -58,9 +60,10 @@ export DOCKER_HOST=unix://$HOME/.fws/docker.sock
 
 [DESIGN §10](docs/DESIGN.md#10-go-implementation) lists every package.
 Beyond them, `images/` holds the catalog's Nix specs and entry programs,
-`scripts/` builds, publishes and vets them and shards the end-to-end suite,
-`third_party/` holds the patched BuildKit, and `tests/e2e` the end-to-end
-suite, a module of its own.
+`scripts/` builds and publishes the catalog, vets and fuzzes the Go code,
+shards the end-to-end suite and syncs BuildKit, `third_party/` holds the
+patched BuildKit, and `tests/e2e` the end-to-end suite, a module of its
+own.
 
 ## Test
 
@@ -79,7 +82,7 @@ The checks CI runs, in the order to run them locally:
 2. **Vet, staticcheck and govulncheck**, for the macOS build the engine
    ships (`staticcheck.conf` names the checks left out). CI pins
    `honnef.co/go/tools/cmd/staticcheck@v0.8.2` and
-   `golang.org/x/vuln/cmd/govulncheck@v1.9.0`, and runs both on
+   `golang.org/x/vuln/cmd/govulncheck@v1.9.0`, and runs all three on
    `tests/e2e` too, with `-tags e2e`:
 
    ```bash
@@ -115,11 +118,9 @@ The checks CI runs, in the order to run them locally:
    scripts/build-images.sh images-out
    ```
 
-   Most packages come from Nix's binary cache. A first build compiles
-   MySQL and MariaDB from source, with the compilation comment their
-   vendors' builds carry (`images/servers.nix`), the catalog's packages
-   at releases nixpkgs lacks (`images/catalog`), and Consul and
-   Kubernetes, which no cache holds for darwin: hours on one machine.
+   Most packages come from Nix's binary cache. A first build also compiles
+   what no cache holds for darwin, CI's `prebuilt` groups below: hours on
+   one machine.
 
    ```bash
    cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e -v -count=1 -timeout 90m ./...
@@ -152,10 +153,12 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   Network.framework experiments; and benchmarks of each interposed system
   call against the native one, of a container's start, part by part, and
   of compiling a profile;
-- `prebuilt`: what Nix builds from source that no cache holds, in groups
-  on runners of their own (`scripts/build-images.sh --prebuilt GROUP`):
-  MySQL, MariaDB, the catalog's packages at releases nixpkgs lacks,
-  Kubernetes, etcd and Consul, each group cached by its derivations and handed to `images` as an
+- `prebuilt`: what Nix builds from source that no cache holds for darwin,
+  in groups on runners of their own (`scripts/build-images.sh --prebuilt
+  GROUP`): MySQL and MariaDB, with the compilation comment their vendors'
+  builds carry (`images/servers.nix`); the catalog's packages at releases
+  nixpkgs lacks (`images/catalog`); Kubernetes and etcd; and Consul. Each
+  group is cached by its derivations and handed to `images` as an
   artifact. A group's run stopped partway, by a failure or a newer push,
   keeps what it finished, which the next run substitutes. A whole build
   drops the entries it supersedes, as `images` does, so the repository's
@@ -172,8 +175,8 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   beside the prebuilt groups. The whole of it substitutes from
   cache.nixos.org and the prebuilt groups, so no other store paths are
   cached, and the Go jobs keep no cache either. It waits for `linux`,
-  `macos` and `prebuilt`, so a change the unit tests
-  fail spends no image build or end-to-end run;
+  `macos` and `prebuilt`, so a change the unit tests fail spends no image
+  build or end-to-end run;
 - `e2e`: the end-to-end suite, in four shards on runners of their own.
   `scripts/e2e-shard.sh` spreads the tests by their durations in
   `tests/e2e/durations.txt`, seconds per test from an earlier run; a test

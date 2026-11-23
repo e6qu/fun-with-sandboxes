@@ -222,7 +222,7 @@ operation family and then allows what the container owns:
 | Baseline | `(deny default)` with Apple's `system.sb`, then forks, sysctl reads but the process table's listings (`ProcListings`, unless on the host's PID namespace), pseudo-terminals, `file-ioctl`, IPC, inbound network and socket creation, except kernel control and link-layer sockets (domains 32 and 27) |
 | File writes | the container's root (unless read-only), its writable volumes, its port directory, files the engine names (such as the shared-memory ledger) and a few devices |
 | File reads | nothing, then allowed, as under chroot: the container's root and volumes, its port directory, the container library and helper, its stack's network file, the system trees every process needs (`SystemReadPaths`), and the host files a root would hold (`HostReadPaths`: the shells, `/private/var/select`, the time zone, `/private/etc/ssl`, `services`, `protocols`). A container granted the user's session reads everything under `/` but the engine's state directory and the trees that hold user data or other software (`DeniedReadRoots`). Only the libraries may be mapped executable from outside the root |
-| Execution | programs in the root and in volumes not mounted `noexec`, the system shells `popen()` and `system()` hard-code, `/usr/bin/env` for scripts' interpreters (`SystemShells`), and the engine's helper binary `fws-shim`, which the sandbox executes once to start the container's exec anchor |
+| Execution | programs in the root and in volumes not mounted `noexec`, the system shells `popen()` and `system()` hard-code, `/usr/bin/env` for scripts' interpreters (`SystemShells`), and the engine's helper binary `fws-shim`, which starts the container's exec anchor and holds what the anchor and `docker-init` start to the memory limit (`fws-memexec`) |
 | Network | Unix sockets in the root, volumes and port directory, the supervisor's socket and syslog's; binds on the loopback host ports behind the container's ports; TCP connections to those ports, its router's and, when the container has internet access, the egress proxy's, so it reaches another member only through its router, which checks they share a network; UDP datagrams to its stack's block, where the routers' relays lie |
 | Mach services | lookups of a fixed list of Apple services (`MachServices`), and registering and looking up the container's own under its IPC prefix |
 | IPC | POSIX shared memory and semaphores under the container's IPC prefix, and System V IPC, whose keys the container library keeps apart; `--ipc none` denies both, `--ipc host` leaves POSIX names open |
@@ -239,12 +239,11 @@ The engine applies the profile without `sandbox-exec`:
   `sandbox_compile_string`, and keeps the bytecode beside the profile's
   text, keyed by the text and the macOS build. The helper applies it with
   `sandbox_apply`, in microseconds (compiling takes about 15 ms), and then
-  executes the container's program, so no Apple-signed binary sits in
-  between. Where macOS refuses the bytecode, the helper compiles the text
-  itself with `sandbox_init`.
-- That matters because macOS strips `DYLD_INSERT_LIBRARIES` from programs
-  Apple signs. With nothing in between, the container library (see
-  [DESIGN](DESIGN.md)) reaches every container process.
+  executes the container's program. Where macOS refuses the bytecode, the
+  helper compiles the text itself with `sandbox_init`.
+- No Apple-signed binary sits between the helper and the program, so the
+  container library (see [DESIGN](DESIGN.md)) reaches every container
+  process: macOS strips `DYLD_INSERT_LIBRARIES` from programs Apple signs.
 - dyld drops the variable for programs signed with the hardened runtime
   too, as vendors' downloads are. The helper, and the library at every
   exec, replace such a program's signature with an ad hoc one without the
@@ -277,8 +276,8 @@ id=$(docker inspect -f '{{.Id}}' my-container | cut -c1-12)
 cat ~/.fws/stacks/*/c/$id/profile.sb
 ```
 
-Execs and health checks write `exec-<id>.sb` and `health-<id>.sb` beside
-it.
+Execs and health checks run in the main process's sandbox, through its
+anchor, so `profile.sb` confines them too.
 
 To try a command under a container's exact confinement, run it with
 `sandbox-exec -f` on that file. It runs without the container library,
@@ -321,8 +320,8 @@ in `tests/e2e` does the same with whole containers and stacks, for example
 
 Seatbelt confines a process. It does not virtualise one:
 
-- **The host's view stays visible.** A container shares the host's process
-  list, its loopback and its System V IPC keys.
+- **The host's view stays visible.** A container shares the host's pids,
+  its loopback and its System V IPC keys.
 - **Containers run as the engine's user.** Seatbelt stops a container from
   reading or writing what its profile denies. It is still no security
   boundary against code that sets out to attack the host:
