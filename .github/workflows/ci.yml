@@ -90,9 +90,11 @@ jobs:
           # the repository's 10 GB, and Go builds the module in minutes.
           cache: false
       # Each test runs three times under the race detector, so a test that
-      # passes only sometimes, or races, fails here.
+      # passes only sometimes, or races, fails here. internal/pathmap's
+      # probes take seven minutes so on a quick runner and twice that on a
+      # slow one, past go test's default ten.
       - name: unit tests
-        run: go test -race -count=3 ./...
+        run: go test -race -count=3 -timeout 30m ./...
       # The probes again, with the container library and the spawn helper
       # built to trap where their C would act undefined: an out-of-bounds
       # index, a misaligned or null pointer, a signed overflow.
