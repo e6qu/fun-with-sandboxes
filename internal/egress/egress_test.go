@@ -14,9 +14,11 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/net/proxy"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/bandwidth"
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
 
@@ -270,5 +272,45 @@ func (l clientListener) Accept() (net.Conn, error) {
 			return c, nil
 		}
 		c.Close()
+	}
+}
+
+// A member the rates file names is held to its rate on what it receives
+// through the proxy; another member is not.
+func TestHoldsAMemberToItsRate(t *testing.T) {
+	body := strings.Repeat("x", 150_000)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) }))
+	defer up.Close()
+	network := filepath.Join(t.TempDir(), "network")
+	os.WriteFile(network, []byte("127.88.0.2\tslow\t\t0\tproj_default\t0\n127.88.0.3\tfast\t\t0\tproj_default\t0\n"), 0o644)
+	// 800k bits a second is 100 kB a second.
+	os.WriteFile(bandwidth.RatesPath(network), []byte(`{"127.88.0.2":{"Egress":0,"Ingress":800000}}`), 0o644)
+	policy := testPolicy()
+	policy.Members = network
+	policy.Key = []byte("stack key")
+	p, err := Listen("127.0.0.1:0", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	fetch := func(member string) time.Duration {
+		t.Helper()
+		start := time.Now()
+		res, err := memberClient(p, member, Password(policy.Key, member)).Get(up.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if len(b) != len(body) {
+			t.Fatalf("%s read %d bytes", member, len(b))
+		}
+		return time.Since(start)
+	}
+	if d := fetch("127.88.0.2"); d < time.Second {
+		t.Errorf("150 kB at 100 kB a second took %v", d)
+	}
+	if d := fetch("127.88.0.3"); d > 500*time.Millisecond {
+		t.Errorf("a member without a rate took %v", d)
 	}
 }

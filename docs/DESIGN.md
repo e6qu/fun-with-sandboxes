@@ -153,6 +153,13 @@ knobs, each enforced by a real mechanism or refused:
   `hw.perflevel0` and `hw.perflevel1` count them, to the background clamp,
   which macOS schedules on efficiency cores; the stronger of it and the
   engine's clamp holds.
+- **Bandwidth.** A container's `kubernetes.io/egress-bandwidth` and
+  `kubernetes.io/ingress-bandwidth` labels (a pod's annotations, which the
+  CRI copies onto its sandbox) are token buckets in bits a second
+  (`internal/bandwidth`): its router holds the streams it carries for the
+  container, a relay's both ways and a stream to its listener, and the
+  egress proxy, reading the stack's rates beside its network file
+  (`network.rates`), holds each member's upstream connections.
 - **Root size quota.** `--storage-opt size` puts the container's root on a
   sparse APFS disk image (`root.sparseimage` beside it), created with
   `hdiutil` at the image's files' size and the quota beside them and

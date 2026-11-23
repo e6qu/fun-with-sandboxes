@@ -179,6 +179,52 @@ func TestStorageQuota(t *testing.T) {
 	}
 }
 
+// A container's kubernetes.io/ingress-bandwidth label holds what it
+// receives through its router to the rate, as the bandwidth plugin holds a
+// pod's; another container on the network is not held. A rate that is no
+// quantity is refused.
+func TestBandwidthLabels(t *testing.T) {
+	const network, server = "e2e-bandwidth", "e2e-bandwidth-server"
+	docker(t, "network", "rm", network)
+	mustDocker(t, "network", "create", network)
+	t.Cleanup(func() { docker(t, "rm", "-f", server); docker(t, "network", "rm", network) })
+	mustDocker(t, "run", "-d", "--name", server, "--network", network, "fws/python:3.14", "python3", "-c", `import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", str(400_000))
+        self.end_headers()
+        self.wfile.write(b"x" * 400_000)
+print("ready", flush=True)
+http.server.HTTPServer(("0.0.0.0", 8000), H).serve_forever()`)
+	waitLog(t, server, "ready")
+	// 1600k bits a second is 200 kB a second: 400 kB take two seconds.
+	fetch := `import os, time, urllib.request
+os.environ.pop("http_proxy", None); os.environ.pop("HTTP_PROXY", None)
+start = time.time()
+n = len(urllib.request.urlopen("http://` + server + `:8000").read())
+print(n, round(time.time() - start, 1))`
+	elapsed := func(args ...string) float64 {
+		t.Helper()
+		out := mustDocker(t, append(append([]string{"run", "--rm", "--network", network}, args...), "fws/python:3.14", "python3", "-c", fetch)...)
+		var n int
+		var secs float64
+		if _, err := fmt.Sscanf(out, "%d %g", &n, &secs); err != nil || n != 400_000 {
+			t.Fatalf("the client printed %q", out)
+		}
+		return secs
+	}
+	if s := elapsed("--label", "kubernetes.io/ingress-bandwidth=1600k"); s < 1.5 {
+		t.Errorf("400 kB at 200 kB a second took %gs", s)
+	}
+	if s := elapsed(); s > 1.5 {
+		t.Errorf("400 kB without a rate took %gs", s)
+	}
+	if _, err := docker(t, "run", "--rm", "--label", "kubernetes.io/egress-bandwidth=fast", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "kubernetes.io/egress-bandwidth") {
+		t.Errorf("a rate that is no quantity: %v", err)
+	}
+}
+
 func TestReadOnlyRoot(t *testing.T) {
 	if _, err := docker(t, "run", "--rm", "--read-only", "fws/toolbox:1", "put", "/written", "x"); err == nil {
 		t.Fatal("a container wrote to its read-only root")

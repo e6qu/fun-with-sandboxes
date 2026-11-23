@@ -176,8 +176,14 @@ func TestContainerErrors(t *testing.T) {
 	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"Memory":1048576}}`, &e); res.StatusCode != 400 || !strings.Contains(e.Message, "Minimum memory limit allowed is 6MB") {
 		t.Fatalf("memory limit below Docker's minimum: %d %v", res.StatusCode, e)
 	}
-	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"CpusetCpus":"0"}}`, &e); res.StatusCode != 501 || !strings.Contains(e.Message, "cpusets") {
-		t.Fatalf("cpuset: %d %v", res.StatusCode, e)
+	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"CpusetCpus":"0-4096"}}`, &e); res.StatusCode != 400 || !strings.Contains(e.Message, "Requested CPUs are not available") {
+		t.Fatalf("a cpuset past the CPUs: %d %v", res.StatusCode, e)
+	}
+	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"StorageOpt":{"inodes":"10"}}}`, &e); res.StatusCode != 501 || !strings.Contains(e.Message, "storage option inodes") {
+		t.Fatalf("an inode quota: %d %v", res.StatusCode, e)
+	}
+	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","Labels":{"kubernetes.io/egress-bandwidth":"fast"}}`, &e); res.StatusCode != 400 || !strings.Contains(e.Message, "egress-bandwidth") {
+		t.Fatalf("a rate that is no quantity: %d %v", res.StatusCode, e)
 	}
 	if res := call(t, ts, "POST", "/containers/create", `{"Image":"x","HostConfig":{"Ulimits":[{"Name":"nproc","Soft":10,"Hard":10}]}}`, &e); res.StatusCode != 501 || !strings.Contains(e.Message, "nproc") {
 		t.Fatalf("ulimit nproc: %d %v", res.StatusCode, e)

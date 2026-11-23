@@ -268,6 +268,14 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 - **`docker stats` samples the host's `ps` each second**, so a process
   that lives less misses its disk I/O; network I/O is the per-socket
   payload count on `eth0`, without headers.
+- **Bandwidth is set by the `kubernetes.io/egress-bandwidth` and
+  `kubernetes.io/ingress-bandwidth` labels**, or a pod's annotations of
+  those names, in bits a second, as the Kubernetes bandwidth plugin takes
+  them; Docker has no flag for it. They hold the TCP streams the
+  container's router and its stack's egress proxy carry: every connection
+  it makes to a member or the internet, both ways, and connections to its
+  ports that have no host port. A connection to one of its host ports, and
+  UDP, are not held.
 - **`--storage-opt size` puts the root on a disk image of its own**, a
   sparse APFS image the engine attaches at the root, sized to the image's
   files and the quota beside them, so writes past it fail with `ENOSPC`.

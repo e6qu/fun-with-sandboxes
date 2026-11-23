@@ -301,6 +301,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if req.HostConfig == nil {
 		req.HostConfig = &container.HostConfig{}
 	}
+	if _, _, err := containerBandwidth(req.Config.Labels); err != nil {
+		return container.CreateResponse{}, err
+	}
 	if opts.Platform != "" && opts.Platform != image.Platform.OS+"/"+image.Platform.Architecture {
 		return container.CreateResponse{}, unsupported("requested platform %s does not match the engine platform %s/%s", opts.Platform, image.Platform.OS, image.Platform.Architecture)
 	}
@@ -1776,6 +1779,7 @@ func (c *Container) start(e *Engine) error {
 		}
 		cfg.Address = c.rec.Address
 		cfg.Internet = e.hasEgress(c)
+		cfg.Egress, cfg.Ingress, _ = containerBandwidth(c.rec.Config.Labels)
 		d := dnsOf(c.rec.HostConfig)
 		rc, err := containerResolvConf(d)
 		if err != nil {
