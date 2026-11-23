@@ -21,7 +21,9 @@ func makeQuotaRoot(dir, staged, root string, quota int64) error {
 	size := used + quota + 32<<20
 	img := quotaImage(dir)
 	if out, err := exec.Command("hdiutil", "create", "-quiet", "-type", "SPARSE", "-fs", "APFS", "-volname", "fws-root",
-		"-size", strconv.FormatInt(size, 10)+"b", img).CombinedOutput(); err != nil {
+		// hdiutil's "b" is a 512-byte sector, not a byte: the size goes in
+		// kilobytes.
+		"-size", strconv.FormatInt((size+1023)/1024, 10)+"k", img).CombinedOutput(); err != nil {
 		return fmt.Errorf("create the root's disk image: %v: %s", err, out)
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
