@@ -39,8 +39,10 @@ import (
 	"time"
 
 	"golang.org/x/net/icmp"
+	"golang.org/x/time/rate"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
+	"github.com/e6qu/fun-with-sandboxes/internal/bandwidth"
 	"github.com/e6qu/fun-with-sandboxes/internal/members"
 	"github.com/e6qu/fun-with-sandboxes/internal/portproxy"
 )
@@ -185,6 +187,11 @@ type Network struct {
 	// which the router passes on the DNS queries its stack does not
 	// answer, given Internet (serveDNS).
 	Upstream []netip.Addr `json:",omitempty"`
+	// Egress and Ingress hold the TCP streams the router carries for its
+	// container to the container's rates: what it sends, and what it
+	// receives, on the connections it makes and on those to its ports
+	// (package bandwidth). Nil for none.
+	Egress, Ingress *rate.Limiter `json:"-"`
 }
 
 // Listen starts a router on addr for the port directory dir; flow opens a
@@ -431,6 +438,9 @@ func (r *Router) join(c net.Conn) {
 	}
 	var up net.Conn
 	var err error
+	// What the client sends: the container's own on a relay, which it
+	// makes; another's to the container on a stream to its listener.
+	toUp, toClient := r.net.Ingress, r.net.Egress
 	switch kind[0] {
 	case Flow, FlowRelay:
 		r.lookup(c, kind[0] == FlowRelay)
@@ -445,6 +455,7 @@ func (r *Router) join(c net.Conn) {
 		r.serveDNSStream(c)
 		return
 	case StreamRelay:
+		toUp, toClient = r.net.Egress, r.net.Ingress
 		var addr netip.Addr
 		var p int
 		if addr, p, err = r.foreignTarget(c); err == nil {
@@ -474,8 +485,8 @@ func (r *Router) join(c net.Conn) {
 		return
 	}
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(up, c); closeWrite(up); done <- struct{}{} }()
-	go func() { io.Copy(c, up); closeWrite(c); done <- struct{}{} }()
+	go func() { bandwidth.Copy(up, c, toUp); closeWrite(up); done <- struct{}{} }()
+	go func() { bandwidth.Copy(c, up, toClient); closeWrite(c); done <- struct{}{} }()
 	<-done
 	<-done
 }

@@ -211,10 +211,10 @@ them as it does the application.
 
 Each container runs under a supervisor that holds it to `--memory`,
 `--cpus`, `--cpu-quota` and `--pids-limit` without cgroups, and its
-processes start with its `--ulimit`s, `--cpu-shares` priority and
+processes start with its `--ulimit`s, `--cpu-shares` priority, `--cpuset-cpus` placement and
 `--blkio-weight` disk I/O tier; `docker update` changes them live (see
 [LIMITATIONS.md](LIMITATIONS.md) for how each is enforced). Requests the
-engine cannot honour without root or a VM — cpusets, added capabilities,
+engine cannot honour without root or a VM — added capabilities,
 host networking outside a privileged container, network drivers other than
 bridge, devices — fail with an error; [LIMITATIONS.md](LIMITATIONS.md) lists
 each, and the few settings still accepted without effect. `--privileged`

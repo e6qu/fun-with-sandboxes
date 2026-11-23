@@ -38,6 +38,7 @@ require (
 	github.com/twmb/franz-go v1.22.2
 	go.mongodb.org/mongo-driver/v2 v2.10.0
 	golang.org/x/net v0.60.0
+	golang.org/x/sys v0.49.0
 	sigs.k8s.io/kind v0.33.0
 	sigs.k8s.io/yaml v1.4.0
 )
@@ -123,7 +124,6 @@ require (
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	software.sslmate.com/src/go-pkcs12 v0.7.3 // indirect
 )

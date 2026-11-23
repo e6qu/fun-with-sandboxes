@@ -85,12 +85,12 @@ func TestInfluxDB(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	// The image's entrypoint sets InfluxDB up on a server of its own, then
-	// starts the final one, whose /health, which the module waits for,
-	// answers while it still opens its stores; /ready answers 200 once it
-	// serves.
+	// starts the final one, whose /health and /ready answer while every
+	// API request is still 503 starting; the setup API, which needs no
+	// token, answers 200 once the API serves.
 	c, err := tcinfluxdb.Run(ctx, "fws/influxdb:2.10", tcinfluxdb.WithV2Auth("acme", "metrics", "admin", "password123"),
 		tcinfluxdb.WithV2AdminToken("a-token"),
-		testcontainers.WithWaitStrategy(wait.ForHTTP("/ready").WithPort("8086/tcp").WithStatusCodeMatcher(func(code int) bool { return code == 200 })))
+		testcontainers.WithWaitStrategy(wait.ForHTTP("/api/v2/setup").WithPort("8086/tcp").WithStatusCodeMatcher(func(code int) bool { return code == 200 })))
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {
 		t.Fatal(err)

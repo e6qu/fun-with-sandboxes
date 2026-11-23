@@ -317,7 +317,7 @@ func TestSettingsTheEngineRefuses(t *testing.T) {
 	}{
 		{[]string{"--dns", "127.0.0.1"}, "DNS server 127.0.0.1 is not supported"},
 		{[]string{"--oom-score-adj", "500"}, "OOM score adjustments are not supported"},
-		{[]string{"--storage-opt", "size=1G"}, "storage options are not supported"},
+		{[]string{"--storage-opt", "inodes=10"}, "storage option inodes is not supported"},
 		{[]string{"--isolation", "hyperv"}, "invalid isolation"},
 	} {
 		args := append(append([]string{"create"}, c.flags...), "fws/python:3.14", "true")

@@ -234,8 +234,16 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   lowered, not raised: the kernel lets no process raise its own.
 - **`--cpus` and `--cpu-quota`** stop processes with `SIGSTOP` over quota,
   so a parent sees its children stop and continue. `--cpu-shares` sets the
-  nice value, which only root lowers. Cpusets and real-time scheduling are
-  refused.
+  nice value, which only root lowers. Real-time scheduling is refused.
+- **`--cpuset-cpus` holds a container to as many CPUs' time and, for
+  efficiency cores, to them**, as macOS lets no process choose its CPUs.
+  fws numbers the performance cores first, then the efficiency cores
+  (`sysctl hw.perflevel0.logicalcpu`, `hw.perflevel1.logicalcpu`); a set of
+  efficiency cores alone runs the container under the background QoS
+  clamp, which macOS schedules on them, at background's priority and disk
+  tier. Which cores within a level a process runs on is the kernel's
+  choice. `--cpuset-mems` takes `0` alone, the Mac's one memory node. A
+  running container's cpuset cannot change.
 - **`--pids-limit`** counts processes, not threads: `fork` and
   `posix_spawn` fail with `EAGAIN` at the limit, and a process past it by
   a race or `vfork` is killed.
@@ -260,6 +268,20 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 - **`docker stats` samples the host's `ps` each second**, so a process
   that lives less misses its disk I/O; network I/O is the per-socket
   payload count on `eth0`, without headers.
+- **Bandwidth is set by the `kubernetes.io/egress-bandwidth` and
+  `kubernetes.io/ingress-bandwidth` labels**, or a pod's annotations of
+  those names, in bits a second, as the Kubernetes bandwidth plugin takes
+  them; Docker has no flag for it. They hold the TCP streams the
+  container's router and its stack's egress proxy carry: every connection
+  it makes to a member or the internet, both ways, and connections to its
+  ports that have no host port. A connection to one of its host ports, and
+  UDP, are not held.
+- **`--storage-opt size` puts the root on a disk image of its own**, a
+  sparse APFS image the engine attaches at the root, sized to the image's
+  files and the quota beside them, so writes past it fail with `ENOSPC`.
+  The image is copied into it, not cloned, so such a container is slower
+  to create; the image's files are counted in whole APFS blocks, and a
+  few megabytes of the volume's own are room beyond the quota. Volumes and tmpfs mounts stay outside it.
 - **tmpfs mounts are directories**, emptied at each start, not
   memory-backed: `rw`, `ro`, `noexec`, `mode`, `uid` and `gid` hold, on
   tmpfs volumes too; `size` and `nr_inodes` are refused.
@@ -275,7 +297,7 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 - **Refused, having no macOS counterpart**: `--sysctl` beyond those below,
   `--userns`, runtimes other than runc, log drivers other than `json-file`
   and `local`, devices, `--gpus`, device cgroup rules, `--cgroup-parent`,
-  `--oom-score-adj`, `--storage-opt`, Windows-only options, volume drivers
+  `--oom-score-adj`, storage options other than `size`, Windows-only options, volume drivers
   other than `local`, and mount types other than bind, volume, image and
   tmpfs.
 - **Accepted and changing nothing**, as each asks for no more confinement

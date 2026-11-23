@@ -21,6 +21,13 @@ func (e *Engine) Inspect(ref string) (container.InspectResponse, error) {
 		return container.InspectResponse{}, err
 	}
 	links := e.inspectLinks(c)
+	// The engine's lock is taken before a container's, never after, as
+	// Create holds it while it reads its containers' states: the execs
+	// are read before the container is locked.
+	var execIDs []string
+	for id := range e.execsFor(c.rec.ID) {
+		execIDs = append(execIDs, id)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	r := c.rec
@@ -50,10 +57,6 @@ func (e *Engine) Inspect(ref string) (container.InspectResponse, error) {
 	}
 	hc := r.HostConfig
 	hc.Links = links
-	var execIDs []string
-	for id := range e.execsFor(r.ID) {
-		execIDs = append(execIDs, id)
-	}
 	return container.InspectResponse{
 		ID: r.ID, Created: timeString(r.Created), Path: path, Args: args, State: st,
 		Image: r.ImageID, Name: "/" + r.Name, RestartCount: r.State.RestartCount,

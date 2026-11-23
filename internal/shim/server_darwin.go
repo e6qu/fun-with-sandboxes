@@ -19,6 +19,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/alloc"
+	"github.com/e6qu/fun-with-sandboxes/internal/bandwidth"
 	"github.com/e6qu/fun-with-sandboxes/internal/logfile"
 	"github.com/e6qu/fun-with-sandboxes/internal/netstat"
 	"github.com/e6qu/fun-with-sandboxes/internal/pidns"
@@ -212,7 +213,8 @@ func (s *server) run(report func(Ready)) (int, error) {
 			traffic.AddEndpoint(os.Getpid(), uint16(c.LocalAddr().(*net.UDPAddr).Port))
 			return c, nil
 		}
-		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir, flow, router.Network{File: cfg.NetworkFile, Address: cfg.Address, DialFlow: dialFlow, Internet: cfg.Internet, DNS: cfg.DNS, Upstream: cfg.Upstream})
+		r, err := router.Listen(net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Router)), cfg.PortDir, flow, router.Network{File: cfg.NetworkFile, Address: cfg.Address, DialFlow: dialFlow, Internet: cfg.Internet, DNS: cfg.DNS, Upstream: cfg.Upstream,
+			Egress: bandwidth.NewLimiter(cfg.Egress), Ingress: bandwidth.NewLimiter(cfg.Ingress)})
 		if err != nil {
 			closeProxies()
 			report(Ready{Error: err.Error()})

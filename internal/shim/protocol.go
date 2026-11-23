@@ -50,7 +50,10 @@ type Config struct {
 	// which its router passes on the DNS queries its processes send that
 	// its stack does not answer (router.Network.Upstream).
 	Upstream []netip.Addr `json:",omitempty"`
-	ExitPath string
+	// Egress and Ingress are the container's rates in bits a second, which
+	// its router holds the streams it carries to (package bandwidth).
+	Egress, Ingress int64 `json:",omitempty"`
+	ExitPath        string
 	// Tag is the environment entry every process of the container starts
 	// with.
 	Tag string

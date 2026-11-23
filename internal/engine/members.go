@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/bandwidth"
 	stackmembers "github.com/e6qu/fun-with-sandboxes/internal/members"
 )
 
@@ -256,6 +258,9 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 		peerKeys(ms, peers)
 		ms = append(ms, peers...)
 	}
+	if err := writeRates(bandwidth.RatesPath(path), own); err != nil {
+		return err
+	}
 	b := stackmembers.Format(ms)
 	// Every change to the engine's members recomputes every stack's file;
 	// most stay as they were, and are not written again under the lock.
@@ -320,4 +325,38 @@ func (e *Engine) answeringLocked(n, name string, v *Container) *Container {
 		}
 	}
 	return nil
+}
+
+// writeRates writes the rates of the stack's members that have any beside
+// its network file, for its egress proxy, or removes the file when none
+// has.
+func writeRates(path string, own []*Container) error {
+	rates := map[string]bandwidth.Rates{}
+	for _, m := range own {
+		eg, in, _ := containerBandwidth(m.rec.Config.Labels)
+		if (eg != 0 || in != 0) && m.rec.Address != "" {
+			rates[m.rec.Address] = bandwidth.Rates{Egress: eg, Ingress: in}
+		}
+	}
+	if len(rates) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	b, err := json.Marshal(rates)
+	if err != nil {
+		return err
+	}
+	if was, err := os.ReadFile(path); err == nil && bytes.Equal(was, b) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

@@ -12,11 +12,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Past its memory limit a container's largest process is killed, as the
@@ -103,8 +106,122 @@ func TestUlimits(t *testing.T) {
 	if _, err := docker(t, "run", "--rm", "--ulimit", "nproc=10", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "nproc is not supported") {
 		t.Fatalf("ulimit nproc: %v", err)
 	}
-	if _, err := docker(t, "run", "--rm", "--cpuset-cpus", "0", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "cpusets are not supported") {
-		t.Fatalf("cpuset: %v", err)
+}
+
+// A cpuset of efficiency cores alone, which fws numbers after the
+// performance cores, runs the container under the background QoS clamp,
+// which places it on them; one with a performance core does not. A
+// running container's cpuset cannot change, and one past the Mac's CPUs is
+// refused.
+func TestCpuset(t *testing.T) {
+	priority := func(args ...string) int {
+		t.Helper()
+		out := mustDocker(t, append(append([]string{"run", "--rm"}, args...), "fws/toolbox:1", "priority")...)
+		var p int
+		if _, err := fmt.Sscanf(out, "priority %d", &p); err != nil {
+			t.Fatalf("priority printed %q", out)
+		}
+		return p
+	}
+	perf, err := unix.SysctlUint32("hw.perflevel0.logicalcpu")
+	if err != nil {
+		perf = uint32(goruntime.NumCPU())
+	}
+	eff, _ := unix.SysctlUint32("hw.perflevel1.logicalcpu")
+	if p := priority("--cpuset-cpus", "0"); p <= 4 {
+		t.Errorf("a performance core's container ran at priority %d, as on efficiency cores", p)
+	}
+	if eff > 0 {
+		if p := priority("--cpuset-cpus", fmt.Sprintf("%d-%d", perf, perf+eff-1)); p > 4 {
+			t.Errorf("an efficiency cores' container ran at priority %d, above background's 4", p)
+		}
+	} else {
+		t.Log("the Mac reports no efficiency cores")
+	}
+	if _, err := docker(t, "run", "--rm", "--cpuset-cpus", "4096", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "Requested CPUs are not available") {
+		t.Errorf("a cpuset past the CPUs: %v", err)
+	}
+	const name = "fws-e2e-cpuset"
+	mustDocker(t, "run", "-d", "--name", name, "--cpuset-cpus", "0", "fws/toolbox:1", "hold")
+	t.Cleanup(func() { docker(t, "rm", "-f", name) })
+	if _, err := docker(t, "update", "--cpuset-cpus", "0-1", name); err == nil || !strings.Contains(err.Error(), "cpuset of a running container") {
+		t.Errorf("updating a running container's cpuset: %v", err)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.CpusetCpus}}", name)); got != "0" {
+		t.Errorf("inspect reports the cpuset as %q", got)
+	}
+}
+
+// A root of a size quota takes writes up to the size beyond its image's
+// files, as overlay2's quota bounds the writable layer, and fails past it
+// with ENOSPC; the quota survives a stop and start, and the root goes with
+// the container.
+func TestStorageQuota(t *testing.T) {
+	const name = "fws-e2e-quota"
+	mustDocker(t, "run", "-d", "--name", name, "--storage-opt", "size=100M", "fws/python:3.14", "python3", "-c", "import time; time.sleep(600)")
+	t.Cleanup(func() { docker(t, "rm", "-f", name) })
+	write := func(mib int) error {
+		_, err := docker(t, "exec", name, "python3", "-c", fmt.Sprintf("open('/tmp/f%d', 'wb').write(b'0' * (%d << 20))", mib, mib))
+		return err
+	}
+	if err := write(60); err != nil {
+		t.Fatalf("60 MiB under a 100 MiB quota: %v", err)
+	}
+	if err := write(150); err == nil || !strings.Contains(err.Error(), "No space left on device") {
+		t.Errorf("150 MiB more under a 100 MiB quota: %v", err)
+	}
+	mustDocker(t, "restart", "-t", "1", name)
+	if out := mustDocker(t, "exec", name, "python3", "-c", "import os; print(os.path.getsize('/tmp/f60') >> 20)"); out != "60\n" {
+		t.Errorf("the root after a restart: %q", out)
+	}
+	if _, err := docker(t, "run", "--rm", "--storage-opt", "inodes=10", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("an inode quota: %v", err)
+	}
+}
+
+// A container's kubernetes.io/ingress-bandwidth label holds what it
+// receives through its router to the rate, as the bandwidth plugin holds a
+// pod's; another container on the network is not held. A rate that is no
+// quantity is refused.
+func TestBandwidthLabels(t *testing.T) {
+	const network, server = "e2e-bandwidth", "e2e-bandwidth-server"
+	docker(t, "network", "rm", network)
+	mustDocker(t, "network", "create", network)
+	t.Cleanup(func() { docker(t, "rm", "-f", server); docker(t, "network", "rm", network) })
+	mustDocker(t, "run", "-d", "--name", server, "--network", network, "fws/python:3.14", "python3", "-c", `import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", str(400_000))
+        self.end_headers()
+        self.wfile.write(b"x" * 400_000)
+print("ready", flush=True)
+http.server.HTTPServer(("0.0.0.0", 8000), H).serve_forever()`)
+	waitLog(t, server, "ready")
+	// 1600k bits a second is 200 kB a second: 400 kB take two seconds.
+	fetch := `import os, time, urllib.request
+os.environ.pop("http_proxy", None); os.environ.pop("HTTP_PROXY", None)
+start = time.time()
+n = len(urllib.request.urlopen("http://` + server + `:8000").read())
+print(n, round(time.time() - start, 1))`
+	elapsed := func(args ...string) float64 {
+		t.Helper()
+		out := mustDocker(t, append(append([]string{"run", "--rm", "--network", network}, args...), "fws/python:3.14", "python3", "-c", fetch)...)
+		var n int
+		var secs float64
+		if _, err := fmt.Sscanf(out, "%d %g", &n, &secs); err != nil || n != 400_000 {
+			t.Fatalf("the client printed %q", out)
+		}
+		return secs
+	}
+	if s := elapsed("--label", "kubernetes.io/ingress-bandwidth=1600k"); s < 1.5 {
+		t.Errorf("400 kB at 200 kB a second took %gs", s)
+	}
+	if s := elapsed(); s > 1.5 {
+		t.Errorf("400 kB without a rate took %gs", s)
+	}
+	if _, err := docker(t, "run", "--rm", "--label", "kubernetes.io/egress-bandwidth=fast", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "kubernetes.io/egress-bandwidth") {
+		t.Errorf("a rate that is no quantity: %v", err)
 	}
 }
 

@@ -124,6 +124,20 @@ func (e *Engine) Update(ref string, req container.UpdateConfig) (container.Updat
 	if u.BlkioWeight != 0 {
 		r.BlkioWeight = u.BlkioWeight
 	}
+	if u.CpusetCpus != "" || u.CpusetMems != "" {
+		// A process's QoS clamp, which places it on efficiency cores, is
+		// fixed when it starts: a stopped container takes the cpuset at its
+		// next start.
+		if running {
+			return container.UpdateResponse{}, unsupported("changing the cpuset of a running container is not supported: macOS fixes where a process runs when it starts; stop the container, update it and start it again")
+		}
+		if u.CpusetCpus != "" {
+			r.CpusetCpus = u.CpusetCpus
+		}
+		if u.CpusetMems != "" {
+			r.CpusetMems = u.CpusetMems
+		}
+	}
 	if u.CpusetCpus != "" || u.CpusetMems != "" || u.CPURealtimePeriod != 0 || u.CPURealtimeRuntime != 0 ||
 		len(u.BlkioWeightDevice) > 0 || len(u.BlkioDeviceReadBps) > 0 || len(u.BlkioDeviceWriteBps) > 0 ||
 		len(u.BlkioDeviceReadIOps) > 0 || len(u.BlkioDeviceWriteIOps) > 0 || len(u.Devices) > 0 ||

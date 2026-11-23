@@ -1,7 +1,9 @@
 package image
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 
 	"golang.org/x/sys/unix"
 )
@@ -10,7 +12,20 @@ import (
 func (s *Store) Clone(id, dst string) error { return CloneDir(s.Root(id), dst) }
 
 // CloneDir clones the tree at src to dst, which must not exist.
-func CloneDir(src, dst string) error { return unix.Clonefile(src, dst, unix.CLONE_NOFOLLOW) }
+func CloneDir(src, dst string) error {
+	err := unix.Clonefile(src, dst, unix.CLONE_NOFOLLOW)
+	if err != unix.EXDEV {
+		return err
+	}
+	// A clone stays on its volume: across volumes, as to and from a root
+	// on a disk image of its own, the tree is copied, its modes, flags,
+	// extended attributes and ACLs with it.
+	if out, err := exec.Command("ditto", src, dst).CombinedOutput(); err != nil {
+		os.RemoveAll(dst)
+		return fmt.Errorf("copy %s across volumes: %v: %s", src, err, out)
+	}
+	return nil
+}
 
 // CloneTree clones the file, link or whole tree at src to dst, which must
 // not exist, with its modes, flags and extended attributes.

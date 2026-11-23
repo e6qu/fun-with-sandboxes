@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/bandwidth"
 	"github.com/e6qu/fun-with-sandboxes/internal/engine"
 )
 
@@ -64,6 +65,14 @@ func (s *Service) RunPodSandbox(ctx context.Context, req *runtimeapi.RunPodSandb
 		annotationsLabel: encodeLabel(cfg.Annotations),
 		logLabel:         cfg.LogDirectory,
 		configLabel:      encodeLabel(sc),
+	}
+	// The pod's rates, which the bandwidth plugin would take from its
+	// annotations, are the sandbox's, whose router carries the pod's
+	// traffic.
+	for _, k := range []string{bandwidth.EgressLabel, bandwidth.IngressLabel} {
+		if v, ok := cfg.Annotations[k]; ok {
+			labels[k] = v
+		}
 	}
 	config := map[string]any{"Image": img, "Labels": labels}
 	host := map[string]any{}

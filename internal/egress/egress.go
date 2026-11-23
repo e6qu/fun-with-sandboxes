@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/e6qu/fun-with-sandboxes/internal/bandwidth"
 	"github.com/e6qu/fun-with-sandboxes/internal/members"
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
@@ -96,7 +97,9 @@ type Proxy struct {
 	// transports keeps a client's idle connections to itself: a name
 	// reaches a different member, or none, for another client.
 	transports map[string]*http.Transport
-	closed     bool
+	// rates are the stack's members' rates (package bandwidth).
+	rates  *bandwidth.Table
+	closed bool
 }
 
 // Password is the proxy password of the member at address, which the
@@ -192,6 +195,9 @@ func Listen(addr string, policy Policy) (*Proxy, error) {
 		return nil, err
 	}
 	p := &Proxy{l: l, policy: policy, conns: map[net.Conn]struct{}{}, transports: map[string]*http.Transport{}}
+	if policy.Members != "" {
+		p.rates = bandwidth.NewTable(bandwidth.RatesPath(policy.Members))
+	}
 	forward := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.Out.URL = r.In.URL
@@ -272,6 +278,17 @@ func (p *Proxy) fail(w http.ResponseWriter, err error) {
 // the check and the connection. A member client reaches the members it
 // sees by name and member address.
 func (p *Proxy) dial(ctx context.Context, client, addr string) (net.Conn, error) {
+	c, err := p.dialChecked(ctx, client, addr)
+	if err != nil {
+		return nil, err
+	}
+	// What the client sends upstream is its egress, what comes back its
+	// ingress, at the rates the engine gives it.
+	out, in := p.rates.Limiters(client)
+	return bandwidth.Conn(c, out, in), nil
+}
+
+func (p *Proxy) dialChecked(ctx context.Context, client, addr string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
@@ -391,9 +408,11 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 	<-done
 }
 
+// closeWrite half-closes c, a TCP connection or a rate-limited one, and
+// closes any other.
 func closeWrite(c net.Conn) {
-	if tc, ok := c.(*net.TCPConn); ok {
-		tc.CloseWrite()
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		cw.CloseWrite()
 		return
 	}
 	c.Close()

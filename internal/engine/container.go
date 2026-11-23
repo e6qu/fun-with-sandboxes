@@ -168,6 +168,12 @@ func (e *Engine) loadContainers() error {
 		if c.logs, err = openLogStore(filepath.Join(c.dir, "log.jsonl")); err != nil {
 			return err
 		}
+		// A root of a size quota is attached again after the Mac restarts.
+		if _, err := os.Stat(quotaImage(c.dir)); err == nil {
+			if err := attachQuotaRoot(c.dir, c.root()); err != nil {
+				return err
+			}
+		}
 		if c.rec.State.Status == container.StateRunning {
 			if task, err := shim.Connect(e.shimSocket(c)); err == nil {
 				if e.cfg.LiveRestore {
@@ -294,6 +300,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	}
 	if req.HostConfig == nil {
 		req.HostConfig = &container.HostConfig{}
+	}
+	if _, _, err := containerBandwidth(req.Config.Labels); err != nil {
+		return container.CreateResponse{}, err
 	}
 	if opts.Platform != "" && opts.Platform != image.Platform.OS+"/"+image.Platform.Architecture {
 		return container.CreateResponse{}, unsupported("requested platform %s does not match the engine platform %s/%s", opts.Platform, image.Platform.OS, image.Platform.Architecture)
@@ -459,7 +468,18 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			e.releaseStackIfEmptyLocked(stack)
 		}
 	}()
-	if err := os.Rename(stagedRoot, c.root()); err != nil {
+	// A root of a size quota lives on a disk image of its own, which takes
+	// a copy of the image, as a clone stays on its volume.
+	if quota, _ := storageQuota(req.HostConfig.StorageOpt); quota > 0 {
+		if err := makeQuotaRoot(c.dir, stagedRoot, c.root(), quota); err != nil {
+			return container.CreateResponse{}, err
+		}
+		defer func() {
+			if !ok {
+				detachQuotaRoot(c.root())
+			}
+		}()
+	} else if err := os.Rename(stagedRoot, c.root()); err != nil {
 		return container.CreateResponse{}, err
 	}
 	if err := os.Rename(filepath.Join(staged, bornFile), c.bornPath()); err != nil {
@@ -750,12 +770,14 @@ func checkHostConfig(hc *container.HostConfig) error {
 		what string
 	}{
 		{hc.OomScoreAdj != 0, "OOM score adjustments are not supported: macOS ends processes under memory pressure by its own measure"},
-		{len(hc.StorageOpt) > 0, "storage options are not supported: a container's root is a directory, which no size quota holds"},
 		{hc.Cgroup != "", "cgroup sharing is not supported: macOS has no cgroups"},
 	} {
 		if k.set {
 			return unsupported("%s", k.what)
 		}
+	}
+	if _, err := storageQuota(hc.StorageOpt); err != nil {
+		return err
 	}
 	if err := checkDNS(dnsOf(*hc)); err != nil {
 		return err
@@ -1669,7 +1691,7 @@ func (c *Container) start(e *Engine) error {
 	if err != nil {
 		return err
 	}
-	limits.QoSClamp = e.cfg.QoSClamp
+	limits.QoSClamp = max(limits.QoSClamp, e.cfg.QoSClamp)
 	for _, m := range c.rec.Mounts {
 		if m.Type == mount.TypeTmpfs {
 			os.RemoveAll(m.Source)
@@ -1757,6 +1779,7 @@ func (c *Container) start(e *Engine) error {
 		}
 		cfg.Address = c.rec.Address
 		cfg.Internet = e.hasEgress(c)
+		cfg.Egress, cfg.Ingress, _ = containerBandwidth(c.rec.Config.Labels)
 		d := dnsOf(c.rec.HostConfig)
 		rc, err := containerResolvConf(d)
 		if err != nil {
@@ -2235,6 +2258,11 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 		}
 	}
 	c.logs.close()
+	if _, err := os.Stat(quotaImage(c.dir)); err == nil {
+		if err := detachQuotaRoot(c.root()); err != nil && mounted(c.dir, c.root()) {
+			return err
+		}
+	}
 	if err := e.discard(c.dir); err != nil {
 		return err
 	}
