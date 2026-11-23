@@ -11,6 +11,8 @@ import (
 
 	"github.com/moby/moby/api/types/events"
 	"github.com/moby/moby/api/types/network"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/egress"
 )
 
 // Network records a Docker network. Containers reach each other through their
@@ -548,6 +550,11 @@ func (e *Engine) NetworkCreate(req NetworkCreate) (network.CreateResponse, error
 	opts := req.Options
 	if opts == nil {
 		opts = map[string]string{}
+	}
+	if v, ok := opts[egress.AllowKey]; ok {
+		if _, err := egress.ParseAllow(v); err != nil {
+			return network.CreateResponse{}, invalid("option %s: %v", egress.AllowKey, err)
+		}
 	}
 	n := &Network{ID: newID(), Name: req.Name, Driver: req.Driver, Created: time.Now().UTC(), Labels: labels, Options: opts, Internal: req.Internal, Attachable: req.Attachable}
 	if err := e.checkIPAMLocked(n, req.IPAM, req.EnableIPv4, req.EnableIPv6); err != nil {

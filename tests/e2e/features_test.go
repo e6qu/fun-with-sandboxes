@@ -50,6 +50,77 @@ func hostAddress(t *testing.T) string {
 	return ""
 }
 
+// A container's fws.egress.allow label, and its network's option of that
+// name, hold what it reaches through the egress proxy to the hosts they
+// name; a container under neither reaches any host. A list that names
+// nothing is refused.
+func TestEgressAllowLists(t *testing.T) {
+	fetch := func(url string, args ...string) error {
+		_, err := docker(t, append(append([]string{"run", "--rm"}, args...), "fws/toolbox:1", "fetch", url)...)
+		return err
+	}
+	if err := fetch("https://github.com/", "--label", "fws.egress.allow=github.com:443"); err != nil {
+		t.Errorf("a host on the container's list: %v", err)
+	}
+	if err := fetch("https://example.com/", "--label", "fws.egress.allow=github.com:443"); err == nil || !strings.Contains(err.Error(), "Forbidden") {
+		t.Errorf("a host off the container's list: %v", err)
+	}
+	const network = "e2e-egress-allow"
+	docker(t, "network", "rm", network)
+	mustDocker(t, "network", "create", "--opt", "fws.egress.allow=*.github.com,github.com", network)
+	t.Cleanup(func() { docker(t, "network", "rm", network) })
+	if err := fetch("https://github.com/", "--network", network); err != nil {
+		t.Errorf("a host on the network's list: %v", err)
+	}
+	if err := fetch("https://example.com/", "--network", network); err == nil {
+		t.Errorf("a host off the network's list was reached")
+	}
+	// Both lists hold: a host on the container's but off the network's is
+	// refused.
+	if err := fetch("https://example.com/", "--network", network, "--label", "fws.egress.allow=example.com"); err == nil {
+		t.Errorf("a host off the network's list, on the container's, was reached")
+	}
+	if err := fetch("https://example.com/"); err != nil {
+		t.Errorf("a container under no list: %v", err)
+	}
+	if _, err := docker(t, "run", "--rm", "--label", "fws.egress.allow=,", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "names nothing") {
+		t.Errorf("a list that names nothing: %v", err)
+	}
+}
+
+// A container's fws.ingress.allow label holds its published ports to the
+// sources it names: a port allowing loopback serves the host, one allowing
+// another address alone does not.
+func TestIngressAllowList(t *testing.T) {
+	serve := func(name, allow string) string {
+		t.Helper()
+		mustDocker(t, "run", "-d", "--name", name, "-p", "127.0.0.1::8000", "--label", "fws.ingress.allow="+allow,
+			"fws/python:3.14", "python3", "-c", "import http.server; print('ready', flush=True); http.server.test(http.server.SimpleHTTPRequestHandler, port=8000, bind='0.0.0.0')")
+		t.Cleanup(func() { docker(t, "rm", "-f", name) })
+		waitLog(t, name, "ready")
+		return strings.TrimSpace(mustDocker(t, "port", name, "8000"))
+	}
+	get := func(addr string) error {
+		c := http.Client{Timeout: 5 * time.Second}
+		res, err := c.Get("http://" + addr + "/")
+		if err == nil {
+			res.Body.Close()
+		}
+		return err
+	}
+	open := serve("e2e-ingress-open", "127.0.0.1, 10.0.0.0/8")
+	if err := get(open); err != nil {
+		t.Errorf("a source on the list: %v", err)
+	}
+	closed := serve("e2e-ingress-closed", "10.9.9.9")
+	if err := get(closed); err == nil {
+		t.Errorf("a source off the list was served at %s", closed)
+	}
+	if _, err := docker(t, "run", "--rm", "--label", "fws.ingress.allow=host.test", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "not an address or prefix") {
+		t.Errorf("a list of a host name: %v", err)
+	}
+}
+
 func TestEgressReachesTheInternetButNotTheHost(t *testing.T) {
 	// A service on the host's own network address: reachable from the
 	// internet's point of view, but it is the host.

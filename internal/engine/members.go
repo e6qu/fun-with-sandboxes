@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/bandwidth"
+	"github.com/e6qu/fun-with-sandboxes/internal/egress"
 	stackmembers "github.com/e6qu/fun-with-sandboxes/internal/members"
 )
 
@@ -261,6 +262,9 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 	if err := writeRates(bandwidth.RatesPath(path), own); err != nil {
 		return err
 	}
+	if err := e.writeAllowLocked(egress.AllowPath(path), own); err != nil {
+		return err
+	}
 	b := stackmembers.Format(ms)
 	// Every change to the engine's members recomputes every stack's file;
 	// most stay as they were, and are not written again under the lock.
@@ -338,13 +342,51 @@ func writeRates(path string, own []*Container) error {
 			rates[m.rec.Address] = bandwidth.Rates{Egress: eg, Ingress: in}
 		}
 	}
-	if len(rates) == 0 {
+	return writeJSONFile(path, rates)
+}
+
+// writeAllowLocked writes the egress allow lists of the stack's members
+// beside its network file, each member's own label's and its networks'
+// options', for its egress proxy, or removes the file when none has any.
+func (e *Engine) writeAllowLocked(path string, own []*Container) error {
+	lists := map[string][]string{}
+	for _, m := range own {
+		if m.rec.Address == "" {
+			continue
+		}
+		var ls []string
+		if v, ok := m.rec.Config.Labels[egress.AllowKey]; ok {
+			ls = append(ls, v)
+		}
+		names := make([]string, 0, len(m.rec.Networks))
+		for n := range m.rec.Networks {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			if nw, err := e.networkLocked(n); err == nil {
+				if v, ok := nw.Options[egress.AllowKey]; ok {
+					ls = append(ls, v)
+				}
+			}
+		}
+		if len(ls) > 0 {
+			lists[m.rec.Address] = ls
+		}
+	}
+	return writeJSONFile(path, lists)
+}
+
+// writeJSONFile writes v as JSON at path, as it is not already, or removes
+// the file when v is empty.
+func writeJSONFile[V any](path string, v map[string]V) error {
+	if len(v) == 0 {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		return nil
 	}
-	b, err := json.Marshal(rates)
+	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}

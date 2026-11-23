@@ -304,6 +304,14 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if _, _, err := containerBandwidth(req.Config.Labels); err != nil {
 		return container.CreateResponse{}, err
 	}
+	if _, err := ingressAllow(req.Config.Labels); err != nil {
+		return container.CreateResponse{}, err
+	}
+	if v, ok := req.Config.Labels[egress.AllowKey]; ok {
+		if _, err := egress.ParseAllow(v); err != nil {
+			return container.CreateResponse{}, invalid("label %s: %v", egress.AllowKey, err)
+		}
+	}
 	if opts.Platform != "" && opts.Platform != image.Platform.OS+"/"+image.Platform.Architecture {
 		return container.CreateResponse{}, unsupported("requested platform %s does not match the engine platform %s/%s", opts.Platform, image.Platform.OS, image.Platform.Architecture)
 	}
@@ -1791,8 +1799,14 @@ func (c *Container) start(e *Engine) error {
 			cfg.DNS = &dns
 		}
 	}
+	allow, err := ingressAllow(c.rec.Config.Labels)
+	if err != nil {
+		return err
+	}
 	for _, p := range plan {
-		cfg.Publish = append(cfg.Publish, p.binding)
+		b := p.binding
+		b.Allow = allow
+		cfg.Publish = append(cfg.Publish, b)
 	}
 	st.mark("prepare")
 	// The profile compiles while the supervisor starts; its start waits for

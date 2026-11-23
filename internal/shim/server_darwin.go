@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -166,7 +167,19 @@ func (s *server) run(report func(Ready)) (int, error) {
 			cl, port, err = portproxy.ListenUnix(func(p int) string { return router.SocketPath(b.Dir, p) }, b.Lo, b.Hi, b.Upstream,
 				func(r io.Reader) error { _, err := router.ReadClient(r); return err })
 		} else {
-			cl, port, err = portproxy.Listen(b.Proto, b.IP, b.Lo, b.Hi, b.Upstream, dial)
+			var allow func(netip.Addr) bool
+			if len(b.Allow) > 0 {
+				prefixes := b.Allow
+				allow = func(a netip.Addr) bool {
+					for _, p := range prefixes {
+						if p.Contains(a) {
+							return true
+						}
+					}
+					return false
+				}
+			}
+			cl, port, err = portproxy.Listen(b.Proto, b.IP, b.Lo, b.Hi, b.Upstream, dial, allow)
 		}
 		if err != nil {
 			closeProxies()

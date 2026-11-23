@@ -170,6 +170,19 @@ what macOS offers an unprivileged process under them. Non-goals are in
   stack's egress proxy: HTTP(S) via `HTTP_PROXY`/`HTTPS_PROXY`, any TCP via
   SOCKS5 (`ALL_PROXY`). UDP does not leave the machine. `fwsd -egress=false`
   turns the proxy off.
+- **Ingress allow lists hold a container's published ports.** Its
+  `fws.ingress.allow` label names the addresses and CIDR prefixes its
+  published ports take connections and datagrams from; others are
+  refused as they arrive. Docker has no such setting. Members of its
+  stack and networks reach it by membership, not by this list.
+- **Egress allow lists hold what goes through the egress proxy.** A
+  container's `fws.egress.allow` label and its networks' option of that
+  name (`docker network create --opt fws.egress.allow=...`) name the
+  hosts, `*.domains`, addresses and prefixes, each with an optional
+  `:port`, it may reach outside the machine; a destination must be on
+  every list that applies. Docker has no such setting. A name is matched
+  as the client asks for it, an address or prefix against every address
+  it resolves to; UDP, which does not leave the machine, is not on them.
 - **DNS is answered in the container and by its router.** The library
   resolves `/etc/hosts`, the stack's names and the host's resolver, through
   `getaddrinfo`, its async form, `DNSServiceGetAddrInfo` and

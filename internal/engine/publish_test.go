@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/moby/moby/api/types/network"
@@ -38,7 +39,7 @@ func TestNestedBinding(t *testing.T) {
 			t.Fatalf("%s: %v", tc.port, err)
 		}
 		tc.want.port = p
-		if got != tc.want {
+		if !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%s: %+v, want %+v", tc.port, got, tc.want)
 		}
 	}

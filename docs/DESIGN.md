@@ -160,6 +160,17 @@ knobs, each enforced by a real mechanism or refused:
   container, a relay's both ways and a stream to its listener, and the
   egress proxy, reading the stack's rates beside its network file
   (`network.rates`), holds each member's upstream connections.
+- **Ingress allow lists.** A container's `fws.ingress.allow` label, its
+  addresses and prefixes, goes with each published port to its shim, whose
+  port proxy closes a connection, or drops a datagram, from any other
+  source as it arrives.
+- **Egress allow lists.** A container's `fws.egress.allow` label and its
+  networks' driver option of that name are lists of hosts, wildcard
+  domains, addresses and prefixes (`internal/egress/allow.go`); the engine
+  writes each member's lists beside the stack's network file
+  (`network.allow`), and the egress proxy, the one way out of the machine
+  Seatbelt leaves a container, refuses a destination off any of them with
+  `403 Forbidden`.
 - **Root size quota.** `--storage-opt size` puts the container's root on a
   sparse APFS disk image (`root.sparseimage` beside it), created with
   `hdiutil` at the image's files' size and the quota beside them and

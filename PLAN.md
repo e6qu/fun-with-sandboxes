@@ -75,7 +75,8 @@ the e2e tests that prove its claims on macOS.
    - Its process listing is its own. Seatbelt denies process information
      about other sandboxes and the process table's listings, which the
      container's supervisor answers with its own processes (in progress).
-2. **Limits macOS can enforce** (in progress).
+2. **Limits macOS can enforce** (done,
+   [#85](https://github.com/e6qu/fun-with-sandboxes/pull/85)).
    - CPU placement: `--cpuset-cpus` holds a container to as many CPUs'
      time, and a set of efficiency cores to them through the background
      QoS clamp.
@@ -84,7 +85,7 @@ the e2e tests that prove its claims on macOS.
    - Bandwidth: the `kubernetes.io/egress-bandwidth` and
      `ingress-bandwidth` labels and pod annotations, held in the router and
      the egress proxy.
-3. **Networks: ingress, egress and routes.**
+3. **Networks: ingress, egress and routes** (in progress).
    - Egress policy per network and per container: allow-listed hosts and
      ports in the egress proxy, denied elsewhere by Seatbelt.
    - Ingress through published ports, with a source allow-list.

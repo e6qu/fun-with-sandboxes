@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/moby/moby/api/types/network"
 
@@ -93,4 +94,42 @@ func nestedBinding(n *Nested, p network.Port, ip netip.Addr, lo, hi int, upstrea
 		}}, nil
 	}
 	return published{port: p, binding: shim.Binding{Proto: proto, IP: ip, Lo: lo, Hi: hi, Upstream: upstream, Dir: dir}}, nil
+}
+
+// ingressAllowLabel names the sources a container's published ports take
+// connections and datagrams from: comma-separated addresses and CIDR
+// prefixes. Docker has no such setting.
+const ingressAllowLabel = "fws.ingress.allow"
+
+// ingressAllow reads a container's ingress allow list, nil for none.
+func ingressAllow(labels map[string]string) ([]netip.Prefix, error) {
+	v, ok := labels[ingressAllowLabel]
+	if !ok {
+		return nil, nil
+	}
+	var out []netip.Prefix
+	for _, e := range strings.Split(v, ",") {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		var p netip.Prefix
+		var err error
+		if strings.Contains(e, "/") {
+			p, err = netip.ParsePrefix(e)
+		} else {
+			var a netip.Addr
+			if a, err = netip.ParseAddr(e); err == nil {
+				p = netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen())
+			}
+		}
+		if err != nil {
+			return nil, invalid("label %s: %q is not an address or prefix", ingressAllowLabel, e)
+		}
+		out = append(out, p.Masked())
+	}
+	if len(out) == 0 {
+		return nil, invalid("label %s names nothing", ingressAllowLabel)
+	}
+	return out, nil
 }

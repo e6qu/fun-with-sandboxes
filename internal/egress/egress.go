@@ -98,7 +98,9 @@ type Proxy struct {
 	// reaches a different member, or none, for another client.
 	transports map[string]*http.Transport
 	// rates are the stack's members' rates (package bandwidth).
-	rates  *bandwidth.Table
+	rates *bandwidth.Table
+	// allow are the stack's members' egress allow lists.
+	allow  *allowTable
 	closed bool
 }
 
@@ -197,6 +199,7 @@ func Listen(addr string, policy Policy) (*Proxy, error) {
 	p := &Proxy{l: l, policy: policy, conns: map[net.Conn]struct{}{}, transports: map[string]*http.Transport{}}
 	if policy.Members != "" {
 		p.rates = bandwidth.NewTable(bandwidth.RatesPath(policy.Members))
+		p.allow = &allowTable{path: AllowPath(policy.Members)}
 	}
 	forward := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -321,6 +324,16 @@ func (p *Proxy) dialChecked(ctx context.Context, client, addr string) (net.Conn,
 		}
 		if p.policy.Deny(ip) {
 			return nil, fmt.Errorf("%w: %s resolves to %s", ErrDenied, host, ip)
+		}
+	}
+	// The container's allow lists, its own and its networks', each hold
+	// the destination to the hosts it names.
+	if lists := p.allow.lists(client); len(lists) > 0 {
+		n, _ := strconv.Atoi(port)
+		for _, rules := range lists {
+			if !allows(rules, strings.Trim(host, "[]"), ips, n) {
+				return nil, fmt.Errorf("%w: %s is not on the container's egress allow list (%s)", ErrDenied, net.JoinHostPort(host, port), AllowKey)
+			}
 		}
 	}
 	var d net.Dialer
