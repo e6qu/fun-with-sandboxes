@@ -250,7 +250,10 @@ jobs:
   images:
     needs: [prebuilt, macos, linux]
     runs-on: macos-15
-    timeout-minutes: 120
+    # A change to the catalog's inputs realises every package before
+    # fws-mkimage keeps the unchanged archives: from an hour to past two on
+    # a slow day, as on 2026-11-23.
+    timeout-minutes: 180
     # actions: write lets it drop the cache entries its build supersedes.
     permissions:
       contents: read
