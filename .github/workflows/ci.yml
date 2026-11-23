@@ -91,7 +91,7 @@ jobs:
           cache: false
       # Each test runs three times under the race detector, so a test that
       # passes only sometimes, or races, fails here. internal/pathmap's
-      # probes take seven minutes so on a quick runner and twice that on a
+      # probes take seven minutes on a quick runner and twice that on a
       # slow one, past go test's default ten.
       - name: unit tests
         run: go test -race -count=3 -timeout 30m ./...
