@@ -152,6 +152,33 @@ func TestCpuset(t *testing.T) {
 	}
 }
 
+// A root of a size quota takes writes up to the size beyond its image's
+// files, as overlay2's quota bounds the writable layer, and fails past it
+// with ENOSPC; the quota survives a stop and start, and the root goes with
+// the container.
+func TestStorageQuota(t *testing.T) {
+	const name = "fws-e2e-quota"
+	mustDocker(t, "run", "-d", "--name", name, "--storage-opt", "size=100M", "fws/python:3.14", "sleep", "600")
+	t.Cleanup(func() { docker(t, "rm", "-f", name) })
+	write := func(mib int) error {
+		_, err := docker(t, "exec", name, "python3", "-c", fmt.Sprintf("open('/tmp/f%d', 'wb').write(b'0' * (%d << 20))", mib, mib))
+		return err
+	}
+	if err := write(60); err != nil {
+		t.Fatalf("60 MiB under a 100 MiB quota: %v", err)
+	}
+	if err := write(150); err == nil || !strings.Contains(err.Error(), "No space left on device") {
+		t.Errorf("150 MiB more under a 100 MiB quota: %v", err)
+	}
+	mustDocker(t, "restart", "-t", "1", name)
+	if out := mustDocker(t, "exec", name, "python3", "-c", "import os; print(os.path.getsize('/tmp/f60') >> 20)"); out != "60\n" {
+		t.Errorf("the root after a restart: %q", out)
+	}
+	if _, err := docker(t, "run", "--rm", "--storage-opt", "inodes=10", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("an inode quota: %v", err)
+	}
+}
+
 func TestReadOnlyRoot(t *testing.T) {
 	if _, err := docker(t, "run", "--rm", "--read-only", "fws/toolbox:1", "put", "/written", "x"); err == nil {
 		t.Fatal("a container wrote to its read-only root")

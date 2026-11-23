@@ -153,6 +153,12 @@ knobs, each enforced by a real mechanism or refused:
   `hw.perflevel0` and `hw.perflevel1` count them, to the background clamp,
   which macOS schedules on efficiency cores; the stronger of it and the
   engine's clamp holds.
+- **Root size quota.** `--storage-opt size` puts the container's root on a
+  sparse APFS disk image (`root.sparseimage` beside it), created with
+  `hdiutil` at the image's files' size and the quota beside them and
+  attached at the root's path, unprivileged; `ditto` copies the image into
+  it, keeping extended attributes and flags. The engine attaches it again
+  as it loads its containers and detaches it as it removes one.
 - **Machine guards.** With `-machine-guard` (on by default) the engine
   reads every 2 s macOS's memory pressure level
   (`kern.memorystatus_vm_pressure_level`) and the free space of the disk
@@ -721,7 +727,7 @@ memory reservations, swappiness and disabling the OOM killer; a cpuset
 past the Mac's CPUs or memory node, a running container's new cpuset,
 real-time CPU scheduling and per-device block I/O limits; the `nproc`,
 `data`, `as`, `rss` and similar ulimits, and a finite `memlock`; devices,
-cgroups, sysctls, user namespaces and storage options; a capability beyond
+cgroups, sysctls, user namespaces and storage options but `size`; a capability beyond
 Docker's default set but `IPC_LOCK`, and security options; `host`
 networking outside a nested engine; non-`bridge` network drivers; IPAM
 drivers other than the default; and SCTP publishing. Memory, CPU, pids and

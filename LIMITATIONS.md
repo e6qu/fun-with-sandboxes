@@ -268,6 +268,12 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 - **`docker stats` samples the host's `ps` each second**, so a process
   that lives less misses its disk I/O; network I/O is the per-socket
   payload count on `eth0`, without headers.
+- **`--storage-opt size` puts the root on a disk image of its own**, a
+  sparse APFS image the engine attaches at the root, sized to the image's
+  files and the quota beside them, so writes past it fail with `ENOSPC`.
+  The image is copied into it, not cloned, so such a container is slower
+  to create; a few megabytes of APFS's own and an eighth of the image's
+  size are room beyond the quota. Volumes and tmpfs mounts stay outside it.
 - **tmpfs mounts are directories**, emptied at each start, not
   memory-backed: `rw`, `ro`, `noexec`, `mode`, `uid` and `gid` hold, on
   tmpfs volumes too; `size` and `nr_inodes` are refused.
@@ -283,7 +289,7 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 - **Refused, having no macOS counterpart**: `--sysctl` beyond those below,
   `--userns`, runtimes other than runc, log drivers other than `json-file`
   and `local`, devices, `--gpus`, device cgroup rules, `--cgroup-parent`,
-  `--oom-score-adj`, `--storage-opt`, Windows-only options, volume drivers
+  `--oom-score-adj`, storage options other than `size`, Windows-only options, volume drivers
   other than `local`, and mount types other than bind, volume, image and
   tmpfs.
 - **Accepted and changing nothing**, as each asks for no more confinement
