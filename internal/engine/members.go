@@ -126,6 +126,19 @@ func userNetworks(c *Container) []string {
 	return out
 }
 
+// connectingLocked keeps the networks of names whose members reach one
+// another over them, as a network with inter-container communication off
+// does not let them.
+func (e *Engine) connectingLocked(names []string) []string {
+	out := names[:0:0]
+	for _, n := range names {
+		if nw, err := e.networkLocked(n); err != nil || nw.connects() {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // writeNetworkLocked rewrites the network file of the stack and of every
 // other stack: a member that comes or goes on a network stacks share
 // changes the files of all of them.
@@ -224,12 +237,13 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 		member := stackmembers.Member{Address: m.rec.Address, Names: memberNames(m), Ports: ports, Router: m.rec.RouterPort, Links: links[m]}
 		member.Search, member.Ndots = resolverSearch(resolvOf(m.rec.HostConfig, m.rec.Resolver))
 		if member.Foreign = m.rec.Stack != stack; member.Foreign {
-			member.Networks, member.Stack = userNetworks(m), m.rec.Stack
+			member.Networks, member.Stack = e.connectingLocked(userNetworks(m)), m.rec.Stack
 		} else {
 			for n := range m.rec.Networks {
 				member.Networks = append(member.Networks, n)
 			}
 			sort.Strings(member.Networks)
+			member.Networks = e.connectingLocked(member.Networks)
 		}
 		for _, n := range member.Networks {
 			if es := m.rec.Networks[n]; es != nil && es.IPAddress.IsValid() {

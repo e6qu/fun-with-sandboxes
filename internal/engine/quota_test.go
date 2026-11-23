@@ -38,3 +38,24 @@ func TestTreeBytesCountsBlocks(t *testing.T) {
 		t.Errorf("treeBytes = %d, %v; want %d", n, err, 5*apfsBlock)
 	}
 }
+
+func TestCheckNetworkOptions(t *testing.T) {
+	ok := map[string]string{
+		"com.docker.network.bridge.enable_ip_masquerade": "true", "com.docker.network.bridge.enable_icc": "false",
+		"com.docker.network.bridge.host_binding_ipv4": "127.0.0.1", "com.docker.network.bridge.name": "br-x",
+		"com.docker.network.driver.mtu": "1500", "fws.egress.allow": "example.com",
+	}
+	if err := checkNetworkOptions(ok); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]string{
+		"com.docker.network.bridge.enable_icc":        "no",
+		"com.docker.network.bridge.host_binding_ipv4": "::1",
+		"com.docker.network.driver.mtu":               "20",
+		"com.docker.network.bridge.gateway_mode_ipv4": "routed",
+	} {
+		if err := checkNetworkOptions(map[string]string{k: v}); err == nil {
+			t.Errorf("%s=%s accepted", k, v)
+		}
+	}
+}

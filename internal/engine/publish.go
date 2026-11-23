@@ -51,7 +51,7 @@ func (e *Engine) publishPlan(c *Container) ([]published, error) {
 		for _, b := range bindings[p] {
 			ip := b.HostIP
 			if !ip.IsValid() {
-				ip = netip.IPv4Unspecified()
+				ip = e.hostBinding(c)
 			}
 			lo, hi, err := portproxy.HostPortRange(b.HostPort)
 			if err != nil {
@@ -132,4 +132,27 @@ func ingressAllow(labels map[string]string) ([]netip.Prefix, error) {
 		return nil, invalid("label %s names nothing", ingressAllowLabel)
 	}
 	return out, nil
+}
+
+// hostBinding is the host address a container's port publishes on when
+// its binding names none: its network's host_binding_ipv4, as Docker's
+// bridge takes it, or every address.
+func (e *Engine) hostBinding(c *Container) netip.Addr {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	names := make([]string, 0, len(c.rec.Networks))
+	for n := range c.rec.Networks {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if nw, err := e.networkLocked(n); err == nil {
+			if v := nw.Options[optHostBinding]; v != "" {
+				if a, err := netip.ParseAddr(v); err == nil {
+					return a
+				}
+			}
+		}
+	}
+	return netip.IPv4Unspecified()
 }

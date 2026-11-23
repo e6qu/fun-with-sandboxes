@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -551,10 +552,8 @@ func (e *Engine) NetworkCreate(req NetworkCreate) (network.CreateResponse, error
 	if opts == nil {
 		opts = map[string]string{}
 	}
-	if v, ok := opts[egress.AllowKey]; ok {
-		if _, err := egress.ParseAllow(v); err != nil {
-			return network.CreateResponse{}, invalid("option %s: %v", egress.AllowKey, err)
-		}
+	if err := checkNetworkOptions(opts); err != nil {
+		return network.CreateResponse{}, err
 	}
 	n := &Network{ID: newID(), Name: req.Name, Driver: req.Driver, Created: time.Now().UTC(), Labels: labels, Options: opts, Internal: req.Internal, Attachable: req.Attachable}
 	if err := e.checkIPAMLocked(n, req.IPAM, req.EnableIPv4, req.EnableIPv6); err != nil {
@@ -756,3 +755,54 @@ func (e *Engine) NetworkPrune(f Filters) ([]string, error) {
 	}
 	return removed, e.saveNetworksLocked()
 }
+
+// The bridge driver's options the engine takes.
+const (
+	optMasquerade  = "com.docker.network.bridge.enable_ip_masquerade"
+	optICC         = "com.docker.network.bridge.enable_icc"
+	optHostBinding = "com.docker.network.bridge.host_binding_ipv4"
+	optBridgeName  = "com.docker.network.bridge.name"
+	optMTU         = "com.docker.network.driver.mtu"
+)
+
+// checkNetworkOptions refuses a driver option the engine cannot honour.
+// It honours enable_ip_masquerade, false for a network that gives no
+// internet access; enable_icc, false for one whose members do not reach
+// one another over it; host_binding_ipv4, the host address its members'
+// ports publish on by default; the bridge's name, which inspect reports,
+// as no host bridge exists; an MTU, which a network on loopback has no
+// use for; and fws.egress.allow.
+func checkNetworkOptions(opts map[string]string) error {
+	for k, v := range opts {
+		switch k {
+		case egress.AllowKey:
+			if _, err := egress.ParseAllow(v); err != nil {
+				return invalid("option %s: %v", k, err)
+			}
+		case optMasquerade, optICC:
+			if v != "true" && v != "false" {
+				return invalid("option %s: %q is not true or false", k, v)
+			}
+		case optHostBinding:
+			if a, err := netip.ParseAddr(v); err != nil || !a.Is4() {
+				return invalid("option %s: %q is not an IPv4 address", k, v)
+			}
+		case optBridgeName:
+		case optMTU:
+			if n, err := strconv.Atoi(v); err != nil || n < 68 || n > 65535 {
+				return invalid("option %s: %q is not an MTU", k, v)
+			}
+		default:
+			return unsupported("network option %s is not supported", k)
+		}
+	}
+	return nil
+}
+
+// masquerades reports whether the network gives its members internet
+// access, as a bridge with IP masquerading does.
+func (n *Network) masquerades() bool { return !n.Internal && n.Options[optMasquerade] != "false" }
+
+// connects reports whether the network's members reach one another over
+// it, as a bridge with inter-container communication does.
+func (n *Network) connects() bool { return n.Options[optICC] != "false" }

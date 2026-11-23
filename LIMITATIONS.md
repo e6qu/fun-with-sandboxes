@@ -130,7 +130,12 @@ what macOS offers an unprivileged process under them. Non-goals are in
 - **No host network mode**, except inside a privileged container's nested
   engine: every container is confined to its stack's ports.
 - **Bridge networks and the default IPAM driver only.** Overlay, macvlan,
-  ipvlan, other IPAM drivers and IPAM options are refused.
+  ipvlan, other IPAM drivers and IPAM options are refused. Of the bridge
+  driver's options, `enable_ip_masquerade=false` gives the network no
+  internet access, `enable_icc=false` keeps its members from reaching,
+  and resolving, one another over it, `host_binding_ipv4` is its members'
+  default published address, the bridge's name is reported, and an MTU
+  changes nothing; any other option is refused.
 - **Container addresses are presented, not routed.** Members have
   addresses in `127.88.0.0/16`, or in their network's subnets (the default
   bridge holds `172.17.0.0/16`, where `--ip` is refused, as in Docker);
