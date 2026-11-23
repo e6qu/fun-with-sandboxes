@@ -12,11 +12,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Past its memory limit a container's largest process is killed, as the
@@ -103,8 +106,49 @@ func TestUlimits(t *testing.T) {
 	if _, err := docker(t, "run", "--rm", "--ulimit", "nproc=10", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "nproc is not supported") {
 		t.Fatalf("ulimit nproc: %v", err)
 	}
-	if _, err := docker(t, "run", "--rm", "--cpuset-cpus", "0", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "cpusets are not supported") {
-		t.Fatalf("cpuset: %v", err)
+}
+
+// A cpuset of efficiency cores alone, which fws numbers after the
+// performance cores, runs the container under the background QoS clamp,
+// which places it on them; one with a performance core does not. A
+// running container's cpuset cannot change, and one past the Mac's CPUs is
+// refused.
+func TestCpuset(t *testing.T) {
+	priority := func(args ...string) int {
+		t.Helper()
+		out := mustDocker(t, append(append([]string{"run", "--rm"}, args...), "fws/toolbox:1", "priority")...)
+		var p int
+		if _, err := fmt.Sscanf(out, "priority %d", &p); err != nil {
+			t.Fatalf("priority printed %q", out)
+		}
+		return p
+	}
+	perf, err := unix.SysctlUint32("hw.perflevel0.logicalcpu")
+	if err != nil {
+		perf = uint32(goruntime.NumCPU())
+	}
+	eff, _ := unix.SysctlUint32("hw.perflevel1.logicalcpu")
+	if p := priority("--cpuset-cpus", "0"); p <= 4 {
+		t.Errorf("a performance core's container ran at priority %d, as on efficiency cores", p)
+	}
+	if eff > 0 {
+		if p := priority("--cpuset-cpus", fmt.Sprintf("%d-%d", perf, perf+eff-1)); p > 4 {
+			t.Errorf("an efficiency cores' container ran at priority %d, above background's 4", p)
+		}
+	} else {
+		t.Log("the Mac reports no efficiency cores")
+	}
+	if _, err := docker(t, "run", "--rm", "--cpuset-cpus", "4096", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "Requested CPUs are not available") {
+		t.Errorf("a cpuset past the CPUs: %v", err)
+	}
+	const name = "fws-e2e-cpuset"
+	mustDocker(t, "run", "-d", "--name", name, "--cpuset-cpus", "0", "fws/toolbox:1", "hold")
+	t.Cleanup(func() { docker(t, "rm", "-f", name) })
+	if _, err := docker(t, "update", "--cpuset-cpus", "0-1", name); err == nil || !strings.Contains(err.Error(), "cpuset of a running container") {
+		t.Errorf("updating a running container's cpuset: %v", err)
+	}
+	if got := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.HostConfig.CpusetCpus}}", name)); got != "0" {
+		t.Errorf("inspect reports the cpuset as %q", got)
 	}
 }
 

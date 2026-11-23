@@ -147,6 +147,12 @@ knobs, each enforced by a real mechanism or refused:
   `background` or `maintenance`), set with
   `posix_spawnattr_set_qos_clamp_np`, so containers yield the CPU and the
   disk to the user's interactive work.
+- **Cpusets.** `--cpuset-cpus` holds the container to as many CPUs' time as
+  the set names, through the supervisor's CPU quota, and a set of
+  efficiency cores alone, numbered after the performance cores as
+  `hw.perflevel0` and `hw.perflevel1` count them, to the background clamp,
+  which macOS schedules on efficiency cores; the stronger of it and the
+  engine's clamp holds.
 - **Machine guards.** With `-machine-guard` (on by default) the engine
   reads every 2 s macOS's memory pressure level
   (`kern.memorystatus_vm_pressure_level`) and the free space of the disk
@@ -711,7 +717,8 @@ policies follow Docker's back-off.
 
 Requests the engine cannot honour return an error, `501` for a knob only a
 kernel or root could enforce: a swap limit apart from the memory limit,
-memory reservations, swappiness and disabling the OOM killer; cpusets,
+memory reservations, swappiness and disabling the OOM killer; a cpuset
+past the Mac's CPUs or memory node, a running container's new cpuset,
 real-time CPU scheduling and per-device block I/O limits; the `nproc`,
 `data`, `as`, `rss` and similar ulimits, and a finite `memlock`; devices,
 cgroups, sysctls, user namespaces and storage options; a capability beyond

@@ -86,6 +86,26 @@ func containerLimits(r container.Resources) (runtime.Limits, shim.Resources, err
 		}
 		s.NanoCPUs = min(r.CPUQuota*1e9/period, ncpu*1e9)
 	}
+	if r.CpusetMems != "" && r.CpusetMems != "0" {
+		return l, s, invalid("Requested memory nodes are not available - requested %s, available: 0", r.CpusetMems)
+	}
+	if r.CpusetCpus != "" {
+		perf, eff := cpuTopology()
+		cpus, err := parseCpuset(r.CpusetCpus, perf+eff)
+		if err != nil {
+			return l, s, err
+		}
+		// macOS lets no process choose its CPUs: a set holds the container
+		// to as many CPUs' time, and a set of efficiency cores alone, which
+		// fws numbers after the performance cores, to them, as the
+		// background QoS clamp places a process and its children.
+		if n := int64(len(cpus)) * 1e9; n < ncpu*1e9 && (s.NanoCPUs == 0 || n < s.NanoCPUs) {
+			s.NanoCPUs = n
+		}
+		if eff > 0 && cpus[0] >= perf {
+			l.QoSClamp = runtime.QoSBackground
+		}
+	}
 	if r.CPUShares != 0 {
 		if r.CPUShares < 2 {
 			return l, s, invalid("CPU shares must be at least 2")
@@ -96,7 +116,6 @@ func containerLimits(r container.Resources) (runtime.Limits, shim.Resources, err
 		set  bool
 		what string
 	}{
-		{r.CpusetCpus != "" || r.CpusetMems != "", "cpusets are not supported: macOS gives no process a choice of CPUs"},
 		{r.CPURealtimePeriod != 0 || r.CPURealtimeRuntime != 0, "real-time CPU scheduling is not supported: Docker's real-time budget is a cgroup's, which macOS has no counterpart for"},
 		{r.CPUCount != 0 || r.CPUPercent != 0 || r.IOMaximumIOps != 0 || r.IOMaximumBandwidth != 0, "Windows resource limits are not supported"},
 		{len(r.BlkioWeightDevice) > 0 || len(r.BlkioDeviceReadBps) > 0 || len(r.BlkioDeviceWriteBps) > 0 ||

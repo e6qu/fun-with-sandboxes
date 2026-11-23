@@ -1,12 +1,17 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
+	"fmt"
+	"os"
 	"strconv"
 	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/libsystem"
 )
 
 // rawConnect connects to loopback port with the connect system call,
@@ -41,5 +46,34 @@ func rawProcTable() error {
 	if size == 0 {
 		return errors.New("an empty process table")
 	}
+	return nil
+}
+
+// proc_pidinfo's flavors listing a process's threads and reading one
+// (sys/proc_info.h), and pth_priority's offset in proc_threadinfo.
+const (
+	procPIDListThreads = 6
+	procPIDThreadInfo  = 5
+	pthPriorityOffset  = 40
+)
+
+// threadPriority prints the highest base priority of the process's
+// threads, which a QoS clamp lowers: 4 under background's.
+func threadPriority() error {
+	buf := make([]byte, 8*256)
+	n, err := libsystem.ProcPidinfo(os.Getpid(), procPIDListThreads, 0, buf)
+	if err != nil {
+		return err
+	}
+	best := -1
+	info := make([]byte, 160)
+	for i := 0; i+8 <= n; i += 8 {
+		th := binary.LittleEndian.Uint64(buf[i:])
+		if _, err := libsystem.ProcPidinfo(os.Getpid(), procPIDThreadInfo, th, info); err != nil {
+			continue
+		}
+		best = max(best, int(int32(binary.LittleEndian.Uint32(info[pthPriorityOffset:]))))
+	}
+	fmt.Println("priority", best)
 	return nil
 }

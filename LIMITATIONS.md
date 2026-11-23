@@ -234,8 +234,16 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   lowered, not raised: the kernel lets no process raise its own.
 - **`--cpus` and `--cpu-quota`** stop processes with `SIGSTOP` over quota,
   so a parent sees its children stop and continue. `--cpu-shares` sets the
-  nice value, which only root lowers. Cpusets and real-time scheduling are
-  refused.
+  nice value, which only root lowers. Real-time scheduling is refused.
+- **`--cpuset-cpus` holds a container to as many CPUs' time and, for
+  efficiency cores, to them**, as macOS lets no process choose its CPUs.
+  fws numbers the performance cores first, then the efficiency cores
+  (`sysctl hw.perflevel0.logicalcpu`, `hw.perflevel1.logicalcpu`); a set of
+  efficiency cores alone runs the container under the background QoS
+  clamp, which macOS schedules on them, at background's priority and disk
+  tier. Which cores within a level a process runs on is the kernel's
+  choice. `--cpuset-mems` takes `0` alone, the Mac's one memory node. A
+  running container's cpuset cannot change.
 - **`--pids-limit`** counts processes, not threads: `fork` and
   `posix_spawn` fail with `EAGAIN` at the limit, and a process past it by
   a race or `vfork` is killed.

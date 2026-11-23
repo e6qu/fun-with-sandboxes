@@ -347,6 +347,9 @@ func run(op, arg string) error {
 	case "rawconnect":
 		// Connect to a loopback port past the container library.
 		return rawConnect(arg)
+	case "priority":
+		// Print the highest base priority of the process's threads.
+		return threadPriority()
 	case "rawproctable":
 		// Read the process table's listing past the container library.
 		return rawProcTable()

@@ -1669,7 +1669,7 @@ func (c *Container) start(e *Engine) error {
 	if err != nil {
 		return err
 	}
-	limits.QoSClamp = e.cfg.QoSClamp
+	limits.QoSClamp = max(limits.QoSClamp, e.cfg.QoSClamp)
 	for _, m := range c.rec.Mounts {
 		if m.Type == mount.TypeTmpfs {
 			os.RemoveAll(m.Source)
