@@ -125,13 +125,19 @@ func limitsSpec(t *testing.T) (Spec, *syncBuffer) {
 
 func runToEnd(t *testing.T, s Spec) *Process {
 	t.Helper()
+	return runWithin(t, s, 30*time.Second)
+}
+
+// runWithin runs s to its end, failing past d.
+func runWithin(t *testing.T, s Spec, d time.Duration) *Process {
+	t.Helper()
 	p, err := Start(s)
 	if err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-p.Done():
-	case <-time.After(30 * time.Second):
+	case <-time.After(d):
 		t.Fatal("process did not finish")
 	}
 	p.KillAll()
@@ -175,7 +181,10 @@ func probePriority(t *testing.T, clamp QoSClamp) int {
 	t.Helper()
 	s, out := limitsSpec(t)
 	s.Limits = Limits{QoSClamp: clamp}
-	if p := runToEnd(t, s); p.ExitCode() != 0 {
+	// A clamped process yields the CPU and the disk to every other, as
+	// the clamp means it to: while the other packages' tests load the
+	// runner, the probe may wait minutes for either.
+	if p := runWithin(t, s, 5*time.Minute); p.ExitCode() != 0 {
 		t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
 	}
 	_, v, ok := strings.Cut(strings.TrimSpace(out.String()), " priority=")
