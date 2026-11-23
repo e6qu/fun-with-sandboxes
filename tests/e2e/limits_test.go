@@ -158,7 +158,7 @@ func TestCpuset(t *testing.T) {
 // the container.
 func TestStorageQuota(t *testing.T) {
 	const name = "fws-e2e-quota"
-	mustDocker(t, "run", "-d", "--name", name, "--storage-opt", "size=100M", "fws/python:3.14", "sleep", "600")
+	mustDocker(t, "run", "-d", "--name", name, "--storage-opt", "size=100M", "fws/python:3.14", "python3", "-c", "import time; time.sleep(600)")
 	t.Cleanup(func() { docker(t, "rm", "-f", name) })
 	write := func(mib int) error {
 		_, err := docker(t, "exec", name, "python3", "-c", fmt.Sprintf("open('/tmp/f%d', 'wb').write(b'0' * (%d << 20))", mib, mib))
