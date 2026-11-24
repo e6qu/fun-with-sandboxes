@@ -430,10 +430,33 @@ static void parse_shm(const char *v);
 // a program that loses its way between the container's paths and the
 // host's is read.
 static int tracing;
+// trace formats its line by hand: it runs on the path mapping, where a
+// locale-aware printf could wait on a lock setlocale holds.
 static void trace(const char *call, const char *path, const char *mapped, long extra, int r) {
     if (!tracing) return;
     int e = errno;
-    dprintf(2, "fws: %s %s -> %s [%lx] = %d\n", call, path ? path : "(null)", mapped ? mapped : "(null)", extra, r);
+    char line[3 * PATH_MAX];
+    size_t n = 0;
+    const char *parts[] = {"fws: ", call, " ", path ? path : "(null)", " -> ", mapped ? mapped : "(null)", " [", NULL};
+    for (int i = 0; parts[i]; i++) {
+        size_t l = strnlen(parts[i], sizeof line - n - 48);
+        memcpy(line + n, parts[i], l);
+        n += l;
+    }
+    unsigned long x = (unsigned long)extra;
+    char hex[16];
+    size_t h = 0;
+    do {
+        hex[h++] = "0123456789abcdef"[x & 15];
+        x >>= 4;
+    } while (x);
+    while (h) line[n++] = hex[--h];
+    memcpy(line + n, "] = ", 4);
+    n += 4;
+    if (r < 0) line[n++] = '-';
+    n += put_num(line + n, r < 0 ? 0ull - (unsigned long long)r : (unsigned long long)r);
+    line[n++] = '\n';
+    write(2, line, n);
     errno = e;
 }
 
@@ -4316,6 +4339,12 @@ static const unsigned char *relay_key(void) {
 // ask_router asks the router at loopback port router for UDP port port's
 // flow port, or with foreign set, the container's own router for its relay
 // to UDP port port of another stack's member at addr.
+// ROUTER_WAIT is how long, in seconds, the library waits on a router's
+// answer to a request of its own; CONNECT_WAIT is how long it waits on a
+// connection the router makes for a program, as long as macOS lets a TCP
+// connect take.
+enum { ROUTER_WAIT = 10, CONNECT_WAIT = 75 };
+
 static unsigned short ask_router(unsigned short router, unsigned short port, in_addr_t addr, int foreign) {
     int s = lib_socket(AF_INET, SOCK_STREAM);
     if (s < 0) {
@@ -4337,6 +4366,11 @@ static unsigned short ask_router(unsigned short router, unsigned short port, in_
         req[6 + RELAY_KEY] = (unsigned char)port;
         n = (ssize_t)sizeof req;
     }
+    // The router answers from its own table at once; one that does not
+    // within ROUTER_WAIT is taken as gone, not waited on for good.
+    struct timeval wait = {ROUTER_WAIT, 0};
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &wait, sizeof wait);
     int ok = connect(s, (struct sockaddr *)&r, sizeof r) == 0 && write(s, req, (size_t)n) == n && read(s, ans, 1) == 1 && ans[0] == 0 &&
              read(s, ans + 1, 2) == 2;
     close(s);
@@ -5344,8 +5378,16 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
         req[6 + RELAY_KEY] = (unsigned char)port;
         n = sizeof req;
     }
+    // The program's own receive timeout comes back once the router has
+    // answered; until then the wait is a connect's, bounded as one is.
+    struct timeval had;
+    socklen_t hl = sizeof had;
+    int keep = getsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &had, &hl) == 0;
+    struct timeval wait = {CONNECT_WAIT, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
     int ok = connect(fd, (struct sockaddr *)&r, sizeof r) == 0 && write(fd, req, n) == (ssize_t)n && read(fd, &ans, 1) == 1;
-    int e = errno;
+    int e = errno == EAGAIN ? ETIMEDOUT : errno;
+    if (keep) setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &had, sizeof had);
     if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl);
     if (!ok) {
         errno = e;
@@ -6332,6 +6374,18 @@ static void copy_state(int from, int to) {
         set_name(unix_names, to, unix_names[from]);
         set_name(unix_peers, to, unix_peers[from]);
         set_peer(to, acc_peers[from]);
+        // A copy of an ICMP socket is one too, with its own copy of the
+        // relay's end, which its close then releases as the original's
+        // releases its own.
+        net_icmp[to] = 0;
+        if (net_icmp[from]) {
+            int peer = fcntl(icmp_peer[from], F_DUPFD_CLOEXEC, 0);
+            if (peer >= 0) {
+                icmp_peer[to] = peer;
+                icmp_dest[to] = icmp_dest[from];
+                net_icmp[to] = net_icmp[from];
+            }
+        }
     }
 }
 
