@@ -633,7 +633,7 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	if err != nil {
 		return nil, err
 	}
-	env, err := e.environment(c, ne, net, extra, tty, linkEnv(links))
+	env, err := e.environment(c, ne, net, extra, tty, linkEnv(links), id.Home)
 	if err != nil {
 		return nil, err
 	}
@@ -1438,8 +1438,10 @@ func engineVariable(k string) bool {
 // ne runs: the image and container variables with PATH mapped into the
 // root, plus the variables through which the service learns its root, its
 // own ports and its peers' ports, with net's stack's egress proxy and
-// ports.
-func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []string, tty bool, links []string) ([]string, error) {
+// ports. HOME, where the image and the request name none, is home, the
+// process's user's home directory as /etc/passwd names it, as Docker
+// gives it.
+func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []string, tty bool, links []string, home string) ([]string, error) {
 	root := c.root()
 	vars := map[string]string{}
 	var order []string
@@ -1451,7 +1453,10 @@ func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []s
 		vars[k] = v
 	}
 	set("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	set("HOME=" + filepath.Join(root, "root"))
+	if home == "" {
+		home = "/root"
+	}
+	set("HOME=" + filepath.Join(root, home))
 	set("HOSTNAME=" + hostnameOf(c))
 	if tty {
 		set("TERM=xterm")
