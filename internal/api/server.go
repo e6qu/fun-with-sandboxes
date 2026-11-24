@@ -967,8 +967,9 @@ func (s *Server) buildPrune(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, report)
 }
 
-// systemDF serves GET /system/df in API 1.51's shape, the build cache
-// holding the classic builder's steps and BuildKit's records.
+// systemDF serves GET /system/df, in the shape the request's API version
+// takes, the build cache holding the classic builder's steps and
+// BuildKit's records.
 func (s *Server) systemDF(w http.ResponseWriter, r *http.Request) {
 	want := map[string]bool{}
 	for _, t := range r.URL.Query()["type"] {
@@ -992,6 +993,10 @@ func (s *Server) systemDF(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u.BuildCache = append(u.BuildCache, records...)
+	}
+	if cmpVersion(apiVersion(r), "1.52") >= 0 {
+		writeJSON(w, http.StatusOK, diskUsageFor(r, u, want))
+		return
 	}
 	writeJSON(w, http.StatusOK, u)
 }

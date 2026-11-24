@@ -502,8 +502,8 @@ COPY --from=docker /bin/docker /bin/docker
 	}
 }
 
-// Playwright in a dev container on the catalog's Playwright image, with
-// the commands the CLI runs added from fws/base: a test in the workspace,
+// Playwright in a dev container on the catalog's Playwright image, which
+// carries the commands the CLI runs in it: a test in the workspace,
 // run by devcontainer exec as a developer runs it, requires the image's
 // playwright package, drives its Chromium and saves a screenshot to the
 // workspace.
@@ -519,12 +519,7 @@ func TestDevcontainerPlaywright(t *testing.T) {
   await browser.close();
 })().catch((e) => { console.error(e); process.exit(1); });
 `,
-		".devcontainer/Dockerfile": `FROM fws/playwright:1.65
-COPY --from=fws/base:1 /nix/store /nix/store
-COPY --from=fws/base:1 /bin /bin
-COPY --from=fws/base:1 /usr/bin/env /usr/bin/env
-`,
-		".devcontainer/devcontainer.json": `{"build": {"dockerfile": "Dockerfile"}}
+		".devcontainer/devcontainer.json": `{"image": "fws/playwright:1.65"}
 `,
 	})
 	out, err := devcontainer(t, "exec", "--workspace-folder", dir, "node", "page.js")

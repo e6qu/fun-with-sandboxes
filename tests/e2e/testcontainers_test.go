@@ -149,7 +149,9 @@ func TestTestcontainersLifecycle(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "tree")
 	os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
 	os.WriteFile(filepath.Join(dir, "sub", "leaf.txt"), []byte("leaf\n"), 0o644)
-	if err := c.CopyDirToContainer(ctx, dir, "/tmp", 0o755); err != nil {
+	// The path names the directory as it lands: testcontainers-go unpacks
+	// it into the path's parent, under its own name.
+	if err := c.CopyDirToContainer(ctx, dir, "/tmp/tree", 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if got := cat("/tmp/tree/sub/leaf.txt"); got != "leaf\n" {
