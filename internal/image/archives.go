@@ -70,17 +70,16 @@ func (s *Store) fromArchive(ref string) bool {
 	}
 	a.mu.Lock()
 	path, ok := a.byName[n]
-	var l *archiveLoad
-	if ok {
-		if l = a.loads[path]; l == nil {
-			l = &archiveLoad{}
-			a.loads[path] = l
-		}
-	}
-	a.mu.Unlock()
 	if !ok {
+		a.mu.Unlock()
 		return false
 	}
+	l := a.loads[path]
+	if l == nil {
+		l = &archiveLoad{}
+		a.loads[path] = l
+	}
+	a.mu.Unlock()
 	l.once.Do(func() { _, l.err = s.loadPath(path) })
 	return l.err == nil
 }

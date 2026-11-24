@@ -508,9 +508,9 @@ func libpodPortMappings(ports map[string][]map[string]string) []portMapping {
 	sort.Strings(keys)
 	for _, k := range keys {
 		num, proto, _ := strings.Cut(k, "/")
-		cp, _ := strconv.Atoi(num)
+		cp, _ := strconv.ParseUint(num, 10, 16)
 		for _, b := range ports[k] {
-			hp, err := strconv.Atoi(b["HostPort"])
+			hp, err := strconv.ParseUint(b["HostPort"], 10, 16)
 			if err != nil {
 				continue
 			}

@@ -100,6 +100,19 @@ func TestIsGitURL(t *testing.T) {
 	}
 }
 
+// A Git context's ref that git would take as an option, such as one that
+// names a program for it to run, is refused before git runs.
+func TestGitContextRefusesOptionRef(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ctx")
+	err := gitContext(t.Context(), "https://example.com/r.git#--upload-pack=touch "+dir, dir)
+	if KindOf(err) != KindInvalid || !strings.Contains(err.Error(), "invalid refspec") {
+		t.Fatalf("got %v, want an invalid refspec error", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "git")); !os.IsNotExist(err) {
+		t.Errorf("the checkout was made: %v", err)
+	}
+}
+
 // A remote tarball, compressed or not, unpacks as the context, and a remote
 // plain file is the Dockerfile.
 func TestFetchRemoteTarballAndDockerfile(t *testing.T) {

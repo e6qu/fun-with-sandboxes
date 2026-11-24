@@ -10,10 +10,10 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -323,14 +323,14 @@ func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals m
 		return nil, invalid("line %d: FROM requires an image", in.Line)
 	}
 	s := &stage{name: name, root: filepath.Join(b.dir, "s"+strconv.Itoa(len(b.stages))), args: map[string]string{}, shell: []string{"/bin/sh", "-c"}}
+	prev := b.stageNamed(ref)
 	switch {
 	case ref == "scratch":
 		if err := os.MkdirAll(s.root, 0o755); err != nil {
 			return nil, err
 		}
 		s.key = cacheKey("scratch")
-	case b.stageNamed(ref) != nil:
-		prev := b.stageNamed(ref)
+	case prev != nil:
 		if err := image.CloneDir(prev.root, s.root); err != nil {
 			return nil, err
 		}
@@ -750,14 +750,11 @@ func (b *builder) copy(ctx context.Context, s *stage, in dockerfile.Instruction,
 		if err != nil {
 			return err
 		}
-		matches, err := filepath.Glob(pattern)
+		matches, err := globIn(srcRoot, pattern)
 		if err != nil || len(matches) == 0 {
 			return notFound("%s failed: file not found in build context or excluded by .dockerignore: stat %s: file does not exist", in.Cmd, src)
 		}
 		for _, m := range matches {
-			if !within(m, srcRoot) {
-				return invalid("%s failed: %s is outside the build context", in.Cmd, src)
-			}
 			if in.Cmd == "ADD" && isArchive(m) {
 				if err := os.MkdirAll(destHost, 0o755); err != nil {
 					return err
@@ -899,6 +896,35 @@ func (b *builder) applyCached(s *stage, e cacheEntry) error {
 	return nil
 }
 
+// globIn expands pattern, a path in root, to the paths in root it matches.
+// Glob follows the host's links where a wildcard stands for a directory,
+// which can lead out of root, as to the engine user's home from a context
+// that holds a link to it: each match's directory is resolved again in
+// root, as Docker resolves the context's links, and a match that is not
+// there once resolved is dropped.
+func globIn(root, pattern string) ([]string, error) {
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+	out := matches[:0]
+	for _, m := range matches {
+		rel, err := filepath.Rel(root, m)
+		if err != nil || !filepath.IsLocal(rel) {
+			continue
+		}
+		dir, err := rootfs.Join(root, filepath.Dir(rel))
+		if err != nil {
+			return nil, err
+		}
+		m = filepath.Join(dir, filepath.Base(rel))
+		if _, err := os.Lstat(m); err == nil && within(m, root) && !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
 // copyInto copies a file, symlink or directory's contents to dst, a path
 // in root, applying mode when it is non-zero. It resolves each target in
 // root, so a link the root holds below dst leads on inside it, not out to
@@ -1007,8 +1033,7 @@ func (b *builder) download(ctx context.Context, src, dest string, destIsDir bool
 		return fmt.Errorf("%s", res.Status)
 	}
 	if destIsDir {
-		u, _ := url.Parse(src)
-		name := path.Base(u.Path)
+		name := path.Base(req.URL.Path)
 		if name == "/" || name == "." || name == "" {
 			return errors.New("cannot determine a file name for the download")
 		}

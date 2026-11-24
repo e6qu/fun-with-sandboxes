@@ -781,7 +781,7 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 		img  v1.Image
 		tags []string
 	}
-	var order []v1.Hash
+	var order []*entry
 	found := map[v1.Hash]*entry{}
 	for _, d := range im.Manifests {
 		img, err := platformImage(idx, d)
@@ -796,7 +796,7 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 		if !ok {
 			e = &entry{img: img}
 			found[dg] = e
-			order = append(order, dg)
+			order = append(order, e)
 		}
 		if t := annotatedName(d.Annotations); t != "" {
 			n, err := Normalize(t)
@@ -807,8 +807,8 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 		}
 	}
 	var out []Image
-	for _, dg := range order {
-		added, err := s.Add(found[dg].img, found[dg].tags, "")
+	for _, e := range order {
+		added, err := s.Add(e.img, e.tags, "")
 		if err != nil {
 			return nil, err
 		}

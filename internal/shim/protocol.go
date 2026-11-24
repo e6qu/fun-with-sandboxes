@@ -23,9 +23,10 @@ const Role = "shim"
 type Config struct {
 	ID string
 	// Spec is the main process; its streams are the shim's to make.
-	Spec      runtime.Spec
-	TTY       bool
-	Console   [2]uint `json:",omitempty"`
+	Spec runtime.Spec
+	TTY  bool
+	// Console is the terminal's rows and columns.
+	Console   [2]uint16 `json:",omitempty"`
 	OpenStdin bool
 	LogPath   string
 	Socket    string

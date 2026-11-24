@@ -252,7 +252,7 @@ func (s *server) run(report func(Ready)) (int, error) {
 			return 1, err
 		}
 		if cfg.Console[0] > 0 && cfg.Console[1] > 0 {
-			pty.Setsize(master, &pty.Winsize{Rows: uint16(cfg.Console[0]), Cols: uint16(cfg.Console[1])})
+			pty.Setsize(master, &pty.Winsize{Rows: cfg.Console[0], Cols: cfg.Console[1]})
 		}
 		spec.TTY = slave
 		s.master, s.stdin = master, master

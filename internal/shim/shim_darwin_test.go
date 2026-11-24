@@ -218,7 +218,7 @@ func TestStdin(t *testing.T) {
 }
 
 func TestTTY(t *testing.T) {
-	h := launch(t, []string{"tty"}, func(c *Config) { c.TTY, c.Console = true, [2]uint{24, 80} })
+	h := launch(t, []string{"tty"}, func(c *Config) { c.TTY, c.Console = true, [2]uint16{24, 80} })
 	if e := h.wait(); e.ExitCode != 0 {
 		t.Fatalf("exit %+v", e)
 	}

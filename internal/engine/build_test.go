@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -49,5 +51,36 @@ func TestArgsOnOneLine(t *testing.T) {
 	want := [][2]string{{"a", "1"}, {"b", "from-cli"}, {"c", "looked-up-c"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("args = %v, want %v", got, want)
+	}
+}
+
+// A COPY wildcard that stands for a context's link to a host directory
+// matches what the link's target holds in the context, not on the host.
+func TestGlobInStaysInRoot(t *testing.T) {
+	root, host := t.TempDir(), t.TempDir()
+	for _, p := range []string{filepath.Join(host, "secret"), filepath.Join(root, "d", "secret")} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(host, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/d", filepath.Join(root, "inroot")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := globIn(root, filepath.Join(root, "*", "secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(root, "d", "secret")}
+	if !slices.Equal(got, want) {
+		t.Errorf("globIn = %q, want %q", got, want)
+	}
+	if got, err := globIn(root, root); err != nil || !slices.Equal(got, []string{root}) {
+		t.Errorf("globIn of the root = %q, %v", got, err)
 	}
 }
