@@ -36,7 +36,10 @@ offers an unprivileged process. Non-goals are in
     macOS's is; its `nc` only checks a port (`nc -z`); it has no `ps`,
     `top` or `vi`. `fws/base` has no package manager: add programs with
     `COPY` or by downloading darwin builds.
-  - `fws/playwright` carries Chromium and Firefox, not WebKit. Playwright's
+  - `fws/playwright` carries Chromium's headless shell and Firefox, not
+    Chromium itself, which aborts as it starts under the container's
+    profile (so `channel: 'chromium'` and headed Chromium are absent), nor
+    WebKit. Playwright's
     WebKit on macOS starts its web content, network and GPU processes as
     XPC services, which launchd runs: the container's profile denies the
     lookup, and a process launchd started would run outside the

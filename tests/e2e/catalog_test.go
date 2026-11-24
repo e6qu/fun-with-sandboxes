@@ -607,7 +607,7 @@ func TestPlaywright(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "page.js"), []byte(`const { chromium, firefox } = require("playwright");
 (async () => {
-  for (const [name, type, options] of [["chromium", chromium, {}], ["chromium-channel", chromium, { channel: "chromium" }], ["firefox", firefox, {}]]) {
+  for (const [name, type, options] of [["chromium", chromium, {}], ["firefox", firefox, {}]]) {
     const browser = await type.launch(options);
     const page = await browser.newPage();
     await page.setContent("<title>rendered in fws</title><p id=p>painted</p>");
@@ -622,7 +622,7 @@ func TestPlaywright(t *testing.T) {
 	if err != nil {
 		t.Fatalf("playwright: %q, %v", out, err)
 	}
-	for _, name := range []string{"chromium", "chromium-channel", "firefox"} {
+	for _, name := range []string{"chromium", "firefox"} {
 		if !strings.Contains(out, name+" title rendered in fws text painted") || !strings.Contains(out, name+" screenshot true") {
 			t.Errorf("playwright with %s: %q", name, out)
 		}
@@ -642,7 +642,6 @@ export default defineConfig({
   use: { video: "on" },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "chromium-channel", use: { ...devices["Desktop Chrome"], channel: "chromium" } },
     { name: "firefox", use: { ...devices["Desktop Firefox"] } },
   ],
 });
@@ -659,11 +658,11 @@ test("renders and screenshots a page", async ({ page, browserName }, testInfo) =
 });
 `), 0o644)
 	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "fws/playwright:1.65", "npx", "playwright", "test")
-	if err != nil || !strings.Contains(out, "3 passed") {
+	if err != nil || !strings.Contains(out, "2 passed") {
 		t.Fatalf("npx playwright test: %q, %v", out, err)
 	}
 	// Each test's output directory ends with its project's name.
-	for _, project := range []string{"chromium", "chromium-channel", "firefox"} {
+	for _, project := range []string{"chromium", "firefox"} {
 		for _, f := range []string{"page.png", "video.webm"} {
 			found, _ := filepath.Glob(filepath.Join(dir, "test-results", "*-"+project, f))
 			if len(found) != 1 {

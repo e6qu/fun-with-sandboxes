@@ -352,7 +352,8 @@ func TestTestcontainersCompose(t *testing.T) {
 	}
 	defer down()
 	if err := stack.WaitForService("app", wait.ForHTTP("/healthz").WithPort("8080/tcp")).Up(ctx, tccompose.Wait(true)); err != nil {
-		t.Fatalf("up: %v", err)
+		logs, _ := docker(t, "logs", name+"-db-1")
+		t.Fatalf("up: %v\nthe db container's log:\n%s", err, logs)
 	}
 	if got := strings.Join(stack.Services(), " "); got != "app cache db" {
 		t.Errorf("the stack's services: %q", got)

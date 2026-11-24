@@ -556,7 +556,7 @@ for v in 3.11 3.12 3.13 3.14 3.15; do
   closure "$p" > "$build/python$v.closure"
   accounts python
   mkimage "${acct[@]}" -spec images/python/image.json -tag "fws/python:$v" -closure "$build/python$v.closure" -pkg "$p" \
-    -remove "$p/lib/python$v/EXTERNALLY-MANAGED" -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/python-$v.tar"
+    -remove "$p/lib/python$v/EXTERNALLY-MANAGED" -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/python-$v.tar"
 done
 
 # Node.js as its official images, on Debian's buildpack-deps, carry it:
@@ -588,7 +588,7 @@ for v in 22 24 26; do
   accounts node node 1000 1000 /home/node
   mkimage "${acct[@]}" -spec images/node/image.json -tag "fws/node:$v" -closure "$build/node$v.closure" \
     "${node_args[@]}" "${toolchain_args[@]}" -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env \
-    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/node-$v.tar"
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/node-$v.tar"
 done
 
 # Bun as its official image lays it out: bun and bunx in /usr/local/bin,
@@ -617,7 +617,7 @@ for f in "$rust"/bin/*; do rust_args+=(-link "/usr/local/cargo/bin/${f##*/}=../.
 accounts rust
 mkimage "${acct[@]}" -spec images/rust/image.json -closure "$build/rust.closure" "${rust_args[@]}" "${toolchain_args[@]}" \
   -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env \
-  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/rust.tar"
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/rust.tar"
 
 gitea=$(cat_with gitea gitea)
 gitea_data=$(cat_out gitea.data)
@@ -673,7 +673,7 @@ for v in 3.11 3.12 3.13 3.14; do
     -env "AWS_EXECUTION_ENV=AWS_Lambda_python$v" -closure "$build/lambda-python$v.closure" -pkg "$p" -pkg "$rie" \
     -remove "$p/lib/python$v/EXTERNALLY-MANAGED" \
     -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" -file "/var/runtime/bootstrap=images/lambda/python/bootstrap" \
-    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/lambda-python-$v.tar"
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/lambda-python-$v.tar"
 done
 # shellcheck disable=SC2154 # set through printf -v above
 node24=$node_24
@@ -685,7 +685,7 @@ for v in 22 24; do
   mkimage "${acct[@]}" -spec images/lambda/nodejs/image.json -tag "fws/lambda/nodejs:$v" \
     -env "AWS_EXECUTION_ENV=AWS_Lambda_nodejs$v.x" -closure "$build/lambda-nodejs$v.closure" -pkg "$p" -pkg "$rie" \
     -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.mjs=images/lambda/nodejs/bootstrap.mjs" -file "/var/runtime/bootstrap=images/lambda/nodejs/bootstrap" \
-    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/lambda-nodejs-$v.tar"
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/lambda-nodejs-$v.tar"
 done
 
 # The Java runtime's libraries, from Maven Central, checked against their
@@ -709,19 +709,20 @@ closure "$jdk17" "$rie" > "$build/lambda-java.closure"
 accounts lambda-java sbx_user1051 993 990 /home/sbx_user1051
 mkimage "${acct[@]}" -spec images/lambda/java/image.json -closure "$build/lambda-java.closure" -pkg "$jdk17" -pkg "$rie" \
   -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/lib=$lib" -file "/var/runtime/bootstrap=images/lambda/java/bootstrap" \
-  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/lambda-java.tar"
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/lambda-java.tar"
 
 # Playwright on Node.js 24: the playwright packages and its test runner,
 # @playwright/test, of the version pinned here, and the mac-arm64 browsers
 # its browsers.json names (revision, and Chrome's version), laid out under
 # /ms-playwright as `playwright install` lays them out, marker files
-# included: Chromium and its headless shell, Chrome for Testing's builds;
-# Firefox, Playwright's build with its Juggler protocol; and the ffmpeg that
+# included: Chromium's headless shell, Chrome for Testing's build, which
+# headless launches use; Firefox, Playwright's build with its Juggler protocol; and the ffmpeg that
 # records videos. Each comes from Playwright's CDN at the path its registry
 # (server/registry/index.ts) names, checked against the digest pinned here.
 # Playwright's WebKit is left out (LIMITATIONS): it starts its web content
 # and network processes as XPC services, which launchd runs outside the
-# container's sandbox.
+# container's sandbox. So is Chromium itself, which aborts as it starts
+# under the container's profile.
 pw_version=1.65.1
 pw_browsers="$build/playwright/browsers"
 mkdir -p "$build/playwright/modules" "$pw_browsers"
@@ -742,7 +743,6 @@ while read -r dir sum path; do
   unzip -q "$build/playwright/$dir.zip" -d "$pw_browsers/$dir"
   touch "$pw_browsers/$dir/INSTALLATION_COMPLETE" "$pw_browsers/$dir/DEPENDENCIES_VALIDATED"
 done <<'BROWSERS'
-chromium-1255 43609676a41e29d1c7667935eb914a422eca98b2e49dcbfd6f3e9794202de12a cft/159.0.8154.6/mac-arm64/chrome-mac-arm64.zip
 chromium_headless_shell-1255 b08e7beaf02a19e2ee5ed6955f9c3853ab9176cd5bb57ba87afbb82e9f81cc29 cft/159.0.8154.6/mac-arm64/chrome-headless-shell-mac-arm64.zip
 firefox-1572 9691b4a07405d8faf8a44f6378d66db480d36159d9e9c4ed1d6066687697e1f2 firefox/1572/firefox-mac-arm64.zip
 ffmpeg-1013 63e48ce8d4a6d9d496383e5ac557b26466e719fa29126bbbd5f5f7016ac9229c ffmpeg/1013/ffmpeg-mac-arm64.zip
@@ -757,7 +757,7 @@ mkimage "${acct[@]}" -spec images/playwright/image.json -closure "$build/playwri
   -file "/entry=$build/playwright-entry" -file "/usr/lib/node_modules=$build/playwright/modules/node_modules" \
   -link /bin/playwright=../usr/lib/node_modules/@playwright/test/cli.js \
   -link /usr/bin/playwright=../lib/node_modules/@playwright/test/cli.js \
-  -file "/ms-playwright=$pw_browsers" -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/playwright.tar"
+  -file "/ms-playwright=$pw_browsers" -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/playwright.tar"
 
 "$build/fws-mkimage" -reuse -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"
 
@@ -788,7 +788,7 @@ for p in "${base_pkgs[@]}"; do base_args+=(-pkg "$p"); done
 accounts base
 mkimage "${acct[@]}" -spec images/base/image.json -closure "$build/base.closure" \
   "${base_args[@]}" -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env \
-  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/base.tar"
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/base.tar"
 
 # Ryuk, Testcontainers' reaper, built from its 0.14.0 release.
 ryuk_commit=b3726afd6cc2c36628abcc08e9cabac43f587384
@@ -811,7 +811,7 @@ for c in kube-apiserver kube-controller-manager kube-scheduler kubectl; do
   accounts "$c" nonroot 65532 65532 /home/nonroot
   mkimage "${acct[@]}" -spec "images/$c/image.json" -closure "$build/kubernetes.closure" \
     -file "/go-runner=$go_runner/bin/go-runner" -file "/usr/local/bin/$c=$k8s/bin/$c" \
-    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/$c.tar"
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/$c.tar"
 done
 pause=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/pause.nix --argstr nixpkgs "$nixpkgs")
 closure "$pause" > "$build/pause.closure"
@@ -823,7 +823,7 @@ closure "${deps[@]}" > "$build/kubelet.closure"
 accounts kubelet
 mkimage "${acct[@]}" -spec images/kubelet/image.json -closure "$build/kubelet.closure" \
   -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" -file "/usr/local/bin/fws-kube-proxy=$build/fws-kube-proxy" \
-  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/kubelet.tar"
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/kubelet.tar"
 
 # kind's node image from the parts above: kubeadm, the kubelet, kubectl
 # and fws-kube-proxy, the control plane's images, which the entrypoint
@@ -872,7 +872,7 @@ node_files=(-pkg "$coreutils" -pkg "$gnutar" -pkg "$bash" -link /bin/sh=bash
   -file "/kind/manifests/default-cni.yaml=$here/images/kind-node/manifests/default-cni.yaml"
   -file "/kind/manifests/default-storage.yaml=$here/images/kind-node/manifests/default-storage.yaml"
   -file "/kind/manifests/k3s-storage.yaml=$here/images/kind-node/manifests/k3s-storage.yaml"
-  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt")
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt)
 accounts kind-node
 mkimage "${acct[@]}" -spec images/kind-node/image.json -closure "$build/kind-node.closure" "${node_files[@]}" -out "$out/kind-node.tar"
 

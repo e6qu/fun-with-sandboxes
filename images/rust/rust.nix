@@ -33,6 +33,13 @@ pkgs.stdenvNoCC.mkDerivation {
     for d in */; do
       ${pkgs.bash}/bin/bash "$d/install.sh" --prefix="$out" --disable-ldconfig
     done
+    # The tools in rustlib's bin, rust-objcopy among them, which a release
+    # build strips debug info with, load LLVM from rustlib's lib by
+    # @rpath, where the installers leave none: it is the toolchain's own.
+    for f in "$out"/lib/libLLVM*.dylib; do
+      [ -e "$f" ] || continue
+      ln -sf "../../../$(basename "$f")" "$out/lib/rustlib/${target}/lib/$(basename "$f")"
+    done
     runHook postInstall
   '';
   # The release's binaries load only macOS's libraries and their own, by
