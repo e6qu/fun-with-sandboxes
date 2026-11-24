@@ -12,6 +12,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	tccompose "github.com/testcontainers/testcontainers-go/modules/compose"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // project is a Compose project in a directory of its own.
@@ -327,5 +331,73 @@ func TestSettingsTheEngineRefuses(t *testing.T) {
 				docker(t, "rm", strings.TrimSpace(out))
 			}
 		}
+	}
+}
+
+// Testcontainers' Compose module brings up the suite's stack in process,
+// through Docker Compose's library rather than its CLI: it waits for the
+// app's HTTP endpoint, finds each service's container, whose published
+// ports reach the app and Postgres, and takes the stack down with its
+// volumes.
+func TestTestcontainersCompose(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	const name = "fws-e2e-tc-compose"
+	stack, err := tccompose.NewDockerComposeWith(tccompose.WithStackFiles("testdata/compose.yaml"), tccompose.StackIdentifier(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	down := func() error {
+		return stack.Down(context.Background(), tccompose.RemoveOrphans(true), tccompose.RemoveVolumes(true))
+	}
+	defer down()
+	if err := stack.WaitForService("app", wait.ForHTTP("/healthz").WithPort("8080/tcp")).Up(ctx, tccompose.Wait(true)); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if got := strings.Join(stack.Services(), " "); got != "app cache db" {
+		t.Errorf("the stack's services: %q", got)
+	}
+	app, err := stack.ServiceContainer(ctx, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := app.PortEndpoint(ctx, "8080/tcp", "http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The app counts in the stack's Redis, which it reaches by its service
+	// name.
+	for want := 1; want <= 2; want++ {
+		var got struct{ Hits int }
+		if body := httpGet(t, endpoint+"/counter"); json.Unmarshal([]byte(body), &got) != nil || got.Hits != want {
+			t.Fatalf("/counter answered %q, want %d hits", body, want)
+		}
+	}
+	db, err := stack.ServiceContainer(ctx, "db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostPort, err := db.PortEndpoint(ctx, "5432/tcp", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, "postgres://postgres:secret@"+hostPort+"/app?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var one int
+	err = conn.QueryRow(ctx, "SELECT 1").Scan(&one)
+	conn.Close(ctx)
+	if err != nil || one != 1 {
+		t.Fatalf("SELECT 1: %d, %v", one, err)
+	}
+	if err := down(); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	if out := mustDocker(t, "ps", "-aq", "--filter", "label=com.docker.compose.project="+name); strings.TrimSpace(out) != "" {
+		t.Errorf("down left the stack's containers:\n%s", out)
+	}
+	if out := mustDocker(t, "volume", "ls", "-q", "--filter", "label=com.docker.compose.project="+name); strings.TrimSpace(out) != "" {
+		t.Errorf("down left the stack's volumes:\n%s", out)
 	}
 }

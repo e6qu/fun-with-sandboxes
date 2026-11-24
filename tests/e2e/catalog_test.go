@@ -20,6 +20,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	_ "github.com/go-sql-driver/mysql"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/testcontainers/testcontainers-go"
+	tcdynamodb "github.com/testcontainers/testcontainers-go/modules/dynamodb"
+	tcnginx "github.com/testcontainers/testcontainers-go/modules/nginx"
 )
 
 func httpGet(t *testing.T, url string) string {
@@ -306,6 +309,111 @@ func TestDynamoDBLocal(t *testing.T) {
 	}
 }
 
+// Testcontainers' DynamoDB module runs fws/dynamodb-local as it runs
+// amazon/dynamodb-local: its entrypoint is java with DynamoDB Local's
+// native libraries, and its command the jar, both named relative to the
+// image's working directory. WithSharedDB reuses the container by name,
+// so a second Run finds the first's container and its table.
+func TestDynamoDBModule(t *testing.T) {
+	ctx := context.Background()
+	c, err := tcdynamodb.Run(ctx, "fws/dynamodb-local:2", tcdynamodb.WithSharedDB(), tcdynamodb.WithDisableTelemetry())
+	testcontainers.CleanupContainer(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientOf := func(c *tcdynamodb.DynamoDBContainer) *dynamodb.Client {
+		t.Helper()
+		hostPort, err := c.ConnectionString(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return dynamodb.New(dynamodb.Options{
+			Region: "us-east-1", BaseEndpoint: aws.String("http://" + hostPort),
+			Credentials: credentials.NewStaticCredentialsProvider("local", "local", ""),
+		})
+	}
+	client := clientOf(c)
+	if _, err := client.CreateTable(ctx, &dynamodb.CreateTableInput{
+		TableName:            aws.String("notes"),
+		AttributeDefinitions: []types.AttributeDefinition{{AttributeName: aws.String("id"), AttributeType: types.ScalarAttributeTypeS}},
+		KeySchema:            []types.KeySchemaElement{{AttributeName: aws.String("id"), KeyType: types.KeyTypeHash}},
+		BillingMode:          types.BillingModePayPerRequest,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String("notes"), Item: map[string]types.AttributeValue{
+		"id": &types.AttributeValueMemberS{Value: "1"}, "body": &types.AttributeValueMemberS{Value: "shared"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := tcdynamodb.Run(ctx, "fws/dynamodb-local:2", tcdynamodb.WithSharedDB(), tcdynamodb.WithDisableTelemetry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.GetContainerID() != c.GetContainerID() {
+		testcontainers.CleanupContainer(t, again)
+		t.Fatalf("WithSharedDB made a second container, %s beside %s", again.GetContainerID(), c.GetContainerID())
+	}
+	got, err := clientOf(again).GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String("notes"), Key: map[string]types.AttributeValue{"id": &types.AttributeValueMemberS{Value: "1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, ok := got.Item["body"].(*types.AttributeValueMemberS); !ok || b.Value != "shared" {
+		t.Fatalf("the reused container's item %v", got.Item)
+	}
+}
+
+// Testcontainers' nginx module runs fws/nginx with a server of the
+// test's in conf.d, WithCustomConfig, and with a main configuration of
+// the test's in place of the image's, WithConfigFile, as it runs the
+// official image.
+func TestNginxModule(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	get := func(t *testing.T, c *tcnginx.Container) string {
+		t.Helper()
+		endpoint, err := c.HTTPEndpoint(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return httpGet(t, endpoint+"/")
+	}
+	t.Run("custom config", func(t *testing.T) {
+		snippet := filepath.Join(dir, "default.conf")
+		os.WriteFile(snippet, []byte("server {\n    listen 80;\n    location / { return 200 \"from the module's server\\n\"; }\n}\n"), 0o644)
+		c, err := tcnginx.Run(ctx, "fws/nginx:1", tcnginx.WithCustomConfig(snippet))
+		testcontainers.CleanupContainer(t, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body := get(t, c); body != "from the module's server\n" {
+			t.Errorf("the server of the module's conf.d answered %q", body)
+		}
+	})
+	t.Run("config file", func(t *testing.T) {
+		main := filepath.Join(dir, "nginx.conf")
+		os.WriteFile(main, []byte(`pid /tmp/nginx.pid;
+error_log stderr;
+events {}
+http {
+    access_log off;
+    server {
+        listen 80;
+        location / { return 200 "from the module's nginx.conf\n"; }
+    }
+}
+`), 0o644)
+		c, err := tcnginx.Run(ctx, "fws/nginx:1", tcnginx.WithConfigFile(main))
+		testcontainers.CleanupContainer(t, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body := get(t, c); body != "from the module's nginx.conf\n" {
+			t.Errorf("nginx with the module's nginx.conf answered %q", body)
+		}
+	})
+}
+
 func TestRabbitMQ(t *testing.T) {
 	const name = "fws-e2e-rabbitmq"
 	waitedRun(t, name, "-p", "127.0.0.1::5672", "-e", "RABBITMQ_DEFAULT_USER=e2e", "-e", "RABBITMQ_DEFAULT_PASS=e2e-pass", "fws/rabbitmq:4")
@@ -341,23 +449,80 @@ func TestRabbitMQ(t *testing.T) {
 	}
 }
 
-// Playwright drives the image's Chromium headless shell.
+// Playwright's library drives each browser the image carries, from a
+// script that requires playwright through the image's NODE_PATH: Chromium's
+// headless shell, Chromium itself in its new headless mode, and Firefox.
 func TestPlaywright(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "page.js"), []byte(`const { chromium } = require("playwright");
+	os.WriteFile(filepath.Join(dir, "page.js"), []byte(`const { chromium, firefox } = require("playwright");
 (async () => {
-  const browser = await chromium.launch();
-  const page = await browser.newPage();
-  await page.setContent("<title>rendered in fws</title><p id=p>painted</p>");
-  console.log("title", await page.title(), "text", await page.textContent("#p"));
-  const shot = await page.screenshot();
-  console.log("screenshot", shot.length > 1000);
-  await browser.close();
+  for (const [name, type, options] of [["chromium", chromium, {}], ["chromium-channel", chromium, { channel: "chromium" }], ["firefox", firefox, {}]]) {
+    const browser = await type.launch(options);
+    const page = await browser.newPage();
+    await page.setContent("<title>rendered in fws</title><p id=p>painted</p>");
+    console.log(name, "title", await page.title(), "text", await page.textContent("#p"));
+    const shot = await page.screenshot();
+    console.log(name, "screenshot", shot.length > 1000);
+    await browser.close();
+  }
 })().catch((e) => { console.error(e); process.exit(1); });
 `), 0o644)
 	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "fws/playwright:1.65", "node", "page.js")
-	if err != nil || !strings.Contains(out, "title rendered in fws text painted") || !strings.Contains(out, "screenshot true") {
+	if err != nil {
 		t.Fatalf("playwright: %q, %v", out, err)
+	}
+	for _, name := range []string{"chromium", "chromium-channel", "firefox"} {
+		if !strings.Contains(out, name+" title rendered in fws text painted") || !strings.Contains(out, name+" screenshot true") {
+			t.Errorf("playwright with %s: %q", name, out)
+		}
+	}
+}
+
+// `npx playwright test` runs the image's @playwright/test over a project
+// that mounts only its config and specs, as Microsoft's image runs one:
+// each browser project launches its browser headless, renders a page,
+// screenshots it and records a video of it through the image's ffmpeg.
+func TestPlaywrightTest(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "playwright.config.ts"), []byte(`import { defineConfig, devices } from "@playwright/test";
+
+export default defineConfig({
+  reporter: "list",
+  use: { video: "on" },
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "chromium-channel", use: { ...devices["Desktop Chrome"], channel: "chromium" } },
+    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
+  ],
+});
+`), 0o644)
+	os.MkdirAll(filepath.Join(dir, "tests"), 0o755)
+	os.WriteFile(filepath.Join(dir, "tests", "page.spec.ts"), []byte(`import { test, expect } from "@playwright/test";
+
+test("renders and screenshots a page", async ({ page, browserName }, testInfo) => {
+  await page.setContent("<title>rendered in fws</title><p id=p style='font-size:40px'>painted by " + browserName + "</p>");
+  await expect(page).toHaveTitle("rendered in fws");
+  await expect(page.locator("#p")).toHaveText("painted by " + browserName);
+  const shot = await page.screenshot({ path: testInfo.outputPath("page.png") });
+  expect(shot.length).toBeGreaterThan(1000);
+});
+`), 0o644)
+	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "fws/playwright:1.65", "npx", "playwright", "test")
+	if err != nil || !strings.Contains(out, "3 passed") {
+		t.Fatalf("npx playwright test: %q, %v", out, err)
+	}
+	// Each test's output directory ends with its project's name.
+	for _, project := range []string{"chromium", "chromium-channel", "firefox"} {
+		for _, f := range []string{"page.png", "video.webm"} {
+			found, _ := filepath.Glob(filepath.Join(dir, "test-results", "*-"+project, f))
+			if len(found) != 1 {
+				t.Errorf("%s: %s %v", project, f, found)
+				continue
+			}
+			if fi, err := os.Stat(found[0]); err != nil || fi.Size() == 0 {
+				t.Errorf("%s: %s empty: %v", project, found[0], err)
+			}
+		}
 	}
 }
 

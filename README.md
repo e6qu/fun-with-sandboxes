@@ -152,8 +152,47 @@ leaves behind when it exits:
 docker tag fws/ryuk:0.14.0 testcontainers/ryuk:0.14.0
 ```
 
-Testcontainers for Go 0.45 runs Ryuk 0.14.0; other Testcontainers releases
-name other Ryuk versions.
+Each Testcontainers library names the Ryuk it runs; tag the catalog's
+build under each name your tests use:
+
+| Library | Release | Ryuk it runs |
+| --- | --- | --- |
+| Testcontainers for Go | 0.45 | `testcontainers/ryuk:0.14.0` |
+| Testcontainers for Java | 2.0.5 | `testcontainers/ryuk:0.14.0` |
+| Testcontainers for Node.js, under Node or Bun | 12.2.2 | `testcontainers/ryuk:0.14.0` |
+| Testcontainers for Python | 4.15.0 | `testcontainers/ryuk:0.8.1` |
+| testcontainers-rs | 0.27 | none: containers go when dropped |
+
+```bash
+docker tag fws/ryuk:0.14.0 testcontainers/ryuk:0.8.1
+```
+
+Every library reads `DOCKER_HOST`; a reaper mounts the socket that names,
+unless `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` names another. Containers'
+ports are on loopback, so the default host, `localhost`, reaches them;
+`TESTCONTAINERS_HOST_OVERRIDE` is not needed.
+
+```bash
+export DOCKER_HOST=unix://$HOME/.fws/docker.sock
+```
+
+Catalog images take the place of Docker Hub's by name: pass
+`fws/postgres:16` where a module defaults to `postgres`. Testcontainers
+for Java checks that a substitute is compatible, so name what it stands
+for:
+
+```java
+var pg = new PostgreSQLContainer(
+    DockerImageName.parse("fws/postgres:16").asCompatibleSubstituteFor("postgres"));
+```
+
+Testcontainers for Java runs startup checks the engine fails: its
+server-version check reads the engine's own version, and its
+file-mounting check runs `alpine`, a Linux image. Turn them off with
+`TESTCONTAINERS_CHECKS_DISABLE=true`, or `checks.disable=true` in
+`~/.testcontainers.properties`. It runs Ryuk privileged, which here gives
+the reaper an engine of its own that it does not use;
+`TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED=false` saves starting it.
 
 ## Podman
 

@@ -37,8 +37,10 @@ import (
 // writes. kind load docker-image and image-archive put images in the
 // nodes' engines; a Deployment's pods run on the worker, a pod reaches
 // them through their Service by name, and the host through its node port,
-// which the worker publishes as kind's extraPortMappings do. kind export logs collects the
-// nodes' logs, and kind deletes the cluster.
+// which the worker publishes as kind's extraPortMappings do. An
+// application applied with kubectl is driven as kind's users drive one
+// (kindWorkloads). kind export logs collects the nodes' logs, and kind
+// deletes the cluster.
 func TestKindCluster(t *testing.T) {
 	const name = "fws-e2e"
 	provider := cluster.NewProvider(cluster.ProviderWithDocker(), cluster.ProviderWithLogger(cmd.NewLogger()))
@@ -175,6 +177,8 @@ func TestKindCluster(t *testing.T) {
 		}
 	}
 
+	kindWorkloads(t, nodes, kubectl, mustKubectl)
+
 	// kind export logs: each node's journal, the kubelet's log, its images
 	// by crictl and its /var/log.
 	for _, n := range nodes {
@@ -207,6 +211,204 @@ func TestKindCluster(t *testing.T) {
 	if pods, _ := filepath.Glob(filepath.Join(logs, nodes[1], "pods", "default_web-*")); len(pods) != 2 {
 		t.Errorf("kind export logs: the worker's pod logs: %q", pods)
 	}
+}
+
+// appsManifest is an application as a user applies it with kubectl apply,
+// without Helm or an Ingress: its configuration and a secret as volumes,
+// a claim on the default storage class, and a Deployment behind a
+// Service.
+const appsManifest = `apiVersion: v1
+kind: Namespace
+metadata:
+  name: apps
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: site
+  namespace: apps
+data:
+  index.html: |
+    served from a ConfigMap
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: token
+  namespace: apps
+stringData:
+  token: s3cr3t
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+  namespace: apps
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: site
+  namespace: apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: site}
+  template:
+    metadata:
+      labels: {app: site}
+    spec:
+      containers:
+      - name: nginx
+        image: fws/nginx:1
+        ports: [{containerPort: 80}]
+        volumeMounts:
+        - {name: site, mountPath: /usr/share/nginx/html}
+        - {name: token, mountPath: /etc/token, readOnly: true}
+      volumes:
+      - name: site
+        configMap: {name: site}
+      - name: token
+        secret: {secretName: token}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: site
+  namespace: apps
+spec:
+  selector: {app: site}
+  ports: [{port: 80}]
+`
+
+// kindWorkloads drives a kind cluster as its users do from kubectl: it
+// applies appsManifest; reads the Secret and ConfigMap through the pod's
+// volumes with kubectl exec and through the Service, by its DNS name from
+// a pod of another namespace and through kubectl port-forward; rolls the
+// Deployment out to a new revision, scales it up and back, and rolls it
+// back; runs a Job to completion and reads its log; writes and reads a
+// claim of the default storage class from two pods in turn; and copies a
+// file into a pod and back out with kubectl cp.
+func kindWorkloads(t *testing.T, nodes []string, kubectl func(...string) (string, error), mustKubectl func(...string) string) {
+	t.Helper()
+	cp := nodes[0]
+	manifest := filepath.Join(t.TempDir(), "apps.yaml")
+	if err := os.WriteFile(manifest, []byte(appsManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustDocker(t, "cp", manifest, cp+":/tmp/apps.yaml")
+	mustKubectl("apply", "-f", "/tmp/apps.yaml")
+	if out := mustKubectl("apply", "-f", "/tmp/apps.yaml"); strings.Contains(out, "created") || strings.Contains(out, "configured") {
+		t.Errorf("applying the unchanged manifest again changed it:\n%s", out)
+	}
+	if _, err := kubectl("rollout", "status", "-n", "apps", "--timeout=3m", "deployment/site"); err != nil {
+		out, _ := kubectl("describe", "pods", "-n", "apps", "-l", "app=site")
+		t.Fatalf("the applied Deployment's rollout: %v\n%s", err, tail(out, 40))
+	}
+	// The pod's image has a shell but no cat: the shell reads the files.
+	read := `while IFS= read -r l; do echo "$l"; done < "$1"`
+	if out, err := kubectl("exec", "-n", "apps", "deployment/site", "--", "sh", "-c", read, "sh", "/etc/token/token"); err != nil || out != "s3cr3t\n" {
+		t.Errorf("the Secret through the pod's volume, by kubectl exec: %q, %v", out, err)
+	}
+	if out, err := kubectl("exec", "-n", "apps", "deployment/site", "--", "sh", "-c", read, "sh", "/usr/share/nginx/html/index.html"); err != nil || out != "served from a ConfigMap\n" {
+		t.Errorf("the ConfigMap through the pod's volume, by kubectl exec: %q, %v", out, err)
+	}
+
+	// The Service by its DNS name, from a pod of another namespace.
+	mustKubectl("run", "site-fetcher", "--image=fws/toolbox:1", "--restart=OnFailure", "--", "fetch", "http://site.apps.svc.cluster.local/")
+	if _, err := kubectl("wait", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=2m", "pod/site-fetcher"); err != nil {
+		out, _ := kubectl("logs", "site-fetcher")
+		t.Errorf("a pod of the default namespace fetching site.apps: %v\n%s", err, out)
+	}
+
+	// kubectl port-forward, through the kubelet to the runtime's stream
+	// server: kubectl runs on the control-plane node, listening on its
+	// address on kind's network, and a container there fetches through it.
+	mustDocker(t, "exec", "-d", cp, "kubectl", "port-forward", "-n", "apps", "--address", "0.0.0.0", "service/site", "18080:80")
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(2 * time.Second) {
+		out, err := docker(t, "run", "--rm", "--network", "kind", "fws/base:1", "curl", "-sf", "http://"+cp+":18080/")
+		if err == nil && out == "served from a ConfigMap\n" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("the Service through kubectl port-forward: %q, %v", out, err)
+			break
+		}
+	}
+	// nginx logs each request it served to its standard output.
+	if out := mustKubectl("logs", "-n", "apps", "deployment/site"); !strings.Contains(out, `"GET / HTTP/1.1" 200`) {
+		t.Errorf("kubectl logs of the Deployment:\n%s", tail(out, 10))
+	}
+
+	// A rollout to a new revision, a scale up and down, and a rollback.
+	mustKubectl("set", "env", "-n", "apps", "deployment/site", "REVISION=2")
+	mustKubectl("rollout", "status", "-n", "apps", "--timeout=3m", "deployment/site")
+	mustKubectl("scale", "-n", "apps", "deployment/site", "--replicas=3")
+	mustKubectl("rollout", "status", "-n", "apps", "--timeout=3m", "deployment/site")
+	if out := mustKubectl("get", "deployment", "-n", "apps", "site", "-o", "jsonpath={.status.readyReplicas} {.status.updatedReplicas}"); out != "3 3" {
+		t.Errorf("the Deployment scaled to 3: ready and updated %q", out)
+	}
+	if out := mustKubectl("get", "pods", "-n", "apps", "-l", "app=site", "-o", `jsonpath={range .items[*]}{.spec.containers[0].env[?(@.name=="REVISION")].value} {end}`); strings.TrimSpace(out) != "2 2 2" {
+		t.Errorf("the pods of the new revision: %q", out)
+	}
+	mustKubectl("scale", "-n", "apps", "deployment/site", "--replicas=1")
+	mustKubectl("rollout", "undo", "-n", "apps", "deployment/site")
+	mustKubectl("rollout", "status", "-n", "apps", "--timeout=3m", "deployment/site")
+	if out := mustKubectl("get", "deployment", "-n", "apps", "site", "-o", "jsonpath={.metadata.annotations.deployment\\.kubernetes\\.io/revision} {.status.readyReplicas}"); out != "3 1" {
+		t.Errorf("the rolled-back Deployment's revision and ready replicas: %q", out)
+	}
+
+	// A Job runs to completion, and its log is kubectl's to read.
+	mustKubectl("create", "job", "once", "-n", "apps", "--image=fws/busybox:1", "--", "sh", "-c", "echo job ran")
+	if _, err := kubectl("wait", "-n", "apps", "--for=condition=Complete", "--timeout=2m", "job/once"); err != nil {
+		out, _ := kubectl("describe", "job", "-n", "apps", "once")
+		t.Errorf("the Job: %v\n%s", err, tail(out, 30))
+	} else if out := mustKubectl("logs", "-n", "apps", "job/once"); out != "job ran\n" {
+		t.Errorf("the Job's log: %q", out)
+	}
+
+	// The claim binds to a volume of the default storage class's
+	// provisioner once a pod uses it; what one pod writes there, the next
+	// reads.
+	claimPod := func(name, script string) {
+		t.Helper()
+		mustKubectl("run", name, "-n", "apps", "--image=fws/busybox:1", "--restart=Never", "--overrides",
+			`{"spec":{"containers":[{"name":"`+name+`","image":"fws/busybox:1","command":["sh","-c",`+fmt.Sprintf("%q", script)+`],"volumeMounts":[{"name":"data","mountPath":"/data"}]}],"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"data"}}]}}`)
+		if _, err := kubectl("wait", "-n", "apps", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=3m", "pod/"+name); err != nil {
+			out, _ := kubectl("describe", "pod", "-n", "apps", name)
+			pvc, _ := kubectl("describe", "pvc", "-n", "apps", "data")
+			t.Fatalf("the pod %s of the claim: %v\n%s\n%s", name, err, tail(out, 30), tail(pvc, 20))
+		}
+	}
+	claimPod("writer", "echo kept on the claim > /data/note")
+	if out := mustKubectl("get", "pvc", "-n", "apps", "data", "-o", "jsonpath={.status.phase} {.spec.storageClassName}"); out != "Bound standard" {
+		t.Errorf("the claim: %q", out)
+	}
+	claimPod("reader", "cat /data/note")
+	if out := mustKubectl("logs", "-n", "apps", "reader"); out != "kept on the claim\n" {
+		t.Errorf("what the reader read from the claim: %q", out)
+	}
+
+	// kubectl cp, which runs tar in the pod, copies a file in and out.
+	mustKubectl("run", "shell", "-n", "apps", "--image=fws/busybox:1", "--restart=Never", "--command", "--", "sleep", "3600")
+	mustKubectl("wait", "-n", "apps", "--for=condition=Ready", "--timeout=2m", "pod/shell")
+	mustKubectl("cp", "/tmp/apps.yaml", "apps/shell:/tmp/copied.yaml")
+	if out := mustKubectl("exec", "-n", "apps", "shell", "--", "cat", "/tmp/copied.yaml"); out != appsManifest {
+		t.Errorf("the file kubectl cp copied into the pod reads:\n%s", tail(out, 10))
+	}
+	mustKubectl("cp", "apps/shell:/tmp/copied.yaml", "/tmp/back.yaml")
+	back := filepath.Join(t.TempDir(), "back.yaml")
+	mustDocker(t, "cp", cp+":/tmp/back.yaml", back)
+	if b, err := os.ReadFile(back); err != nil || string(b) != appsManifest {
+		t.Errorf("the file kubectl cp copied out of the pod: %v\n%s", err, tail(string(b), 10))
+	}
+	mustKubectl("delete", "namespace", "apps", "--timeout=2m")
 }
 
 // apiGet fetches path from the API server of kubeconfig's current

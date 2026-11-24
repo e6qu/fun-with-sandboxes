@@ -445,6 +445,23 @@ jobs:
         run: |
           npm install -g @devcontainers/cli@0.90.0
           devcontainer --version
+      # Testcontainers for Node.js runs under Bun as well as Node
+      # (testcontainers_langs_test.go).
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.5
+      # The runner ships Python, Java with Maven, Node.js and rustup, which
+      # Testcontainers for Python, Java, Node.js and Rust run on; a test
+      # whose toolchain is missing skips, so each is named here.
+      - name: check the Testcontainers languages' toolchains
+        run: |
+          rustup default stable
+          python3 --version
+          java -version
+          mvn -v
+          node --version
+          bun --version
+          cargo --version
       # A runner that dies takes its job's log with it. The suite runs in
       # the background, and each snapshot keeps its output so far and the
       # runner's memory, disk and busiest processes as an artifact.
