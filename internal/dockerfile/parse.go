@@ -106,7 +106,19 @@ func continues(l string, escape rune) bool {
 	return strings.HasSuffix(t, string(escape))
 }
 
-var takesFlags = map[string]bool{"FROM": true, "COPY": true, "ADD": true, "RUN": true, "HEALTHCHECK": true}
+// flagsOf are the options each instruction takes in the classic builder;
+// any other is refused, as dockerd's classic builder refuses it, rather
+// than dropped.
+var flagsOf = map[string]map[string]bool{
+	"FROM":        {"platform": true},
+	"COPY":        {"from": true, "chown": true, "chmod": true},
+	"ADD":         {"chown": true, "chmod": true},
+	"RUN":         {},
+	"HEALTHCHECK": {"interval": true, "timeout": true, "start-period": true, "start-interval": true, "retries": true},
+}
+
+// buildKitFlags are RUN's options that only BuildKit implements.
+var buildKitFlags = map[string]bool{"mount": true, "network": true, "security": true}
 
 func parseInstruction(l string, line int) (Instruction, error) {
 	word, rest, _ := strings.Cut(l, " ")
@@ -118,12 +130,21 @@ func parseInstruction(l string, line int) (Instruction, error) {
 	if strings.Contains(rest, "<<") && (ins.Cmd == "RUN" || ins.Cmd == "COPY") && heredoc.MatchString(rest) {
 		return ins, fmt.Errorf("line %d: heredocs are not supported", line)
 	}
-	if takesFlags[ins.Cmd] {
+	if allowed, ok := flagsOf[ins.Cmd]; ok {
 		for strings.HasPrefix(rest, "--") {
 			tok, after, _ := strings.Cut(rest, " ")
 			k, v, ok := strings.Cut(strings.TrimPrefix(tok, "--"), "=")
 			if !ok {
 				v = "true"
+			}
+			switch {
+			case ins.Cmd == "RUN" && buildKitFlags[k]:
+				return ins, fmt.Errorf("line %d: the --%s option requires BuildKit", line, k)
+			case !allowed[k]:
+				return ins, fmt.Errorf("line %d: unknown flag: %s", line, k)
+			}
+			if _, dup := ins.Flags[k]; dup {
+				return ins, fmt.Errorf("line %d: Duplicate flag specified: %s", line, k)
 			}
 			ins.Flags[k] = v
 			rest = strings.TrimSpace(after)

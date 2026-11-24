@@ -51,7 +51,9 @@ offers an unprivileged process. Non-goals are in
   builds; a `RUN` step runs what the darwin image holds, so one that runs
   a Linux package manager (`apt-get`, `apk`, `yum`) fails. Steps run under
   Seatbelt, with internet through a build-only egress proxy (none with
-  `--network none`).
+  `--network none`). The classic builder (`DOCKER_BUILDKIT=0`) refuses
+  `RUN --mount`, `--network` and `--security`, and any option it does not
+  implement or that is given twice, as dockerd's does.
 
 ## Isolation
 

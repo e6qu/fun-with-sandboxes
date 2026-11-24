@@ -128,3 +128,20 @@ func TestExpandExpandsTheWord(t *testing.T) {
 		t.Fatalf("Expand = %q, %v", got, err)
 	}
 }
+
+// The classic builder refuses an option it does not implement, or one
+// given twice, as dockerd's does, rather than dropping it.
+func TestParseRefusesFlagsItCannotHonour(t *testing.T) {
+	for df, want := range map[string]string{
+		"FROM a\nRUN --mount=type=cache,target=/c true\n": "the --mount option requires BuildKit",
+		"FROM a\nCOPY --link x /x\n":                      "unknown flag: link",
+		"FROM a\nCOPY --chown=1 --chown=2 x /x\n":         "Duplicate flag specified: chown",
+	} {
+		if _, err := Parse(strings.NewReader(df)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want %q", df, err, want)
+		}
+	}
+	if _, err := Parse(strings.NewReader("FROM --platform=darwin/arm64 a\nCOPY --from=b --chown=1 --chmod=644 x /x\n")); err != nil {
+		t.Errorf("flags the classic builder takes: %v", err)
+	}
+}
