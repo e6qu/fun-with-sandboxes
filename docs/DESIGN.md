@@ -811,7 +811,9 @@ count is the number of listed processes.
 
 `docker cp` resolves paths as the container's processes do, and refuses any
 result outside the container's root and mounts. It archives mounts as their
-contents rather than as the symlinks that implement them.
+contents rather than as the symlinks that implement them. Into a container
+with a `--read-only` root it writes only on read-write mounts, as dockerd
+does.
 
 ---
 

@@ -41,7 +41,7 @@ type Service struct {
 	// SessionAffinity ClientIP keeps each client on the endpoint it
 	// reached while it comes back within AffinitySeconds of its last
 	// connection or UDP flow; empty or None takes the endpoints by turns.
-	SessionAffinity string `json:"sessionAffinity,omitempty"`
+	SessionAffinity SessionAffinity `json:"sessionAffinity,omitempty"`
 	// AffinitySeconds is ClientIP affinity's timeout; 0 is
 	// Kubernetes' default, three hours.
 	AffinitySeconds int `json:"sessionAffinityTimeout,omitempty"`
@@ -54,15 +54,46 @@ type Service struct {
 // ServicePort is a TCP or UDP port of a service and the endpoints behind it: the
 // addresses of members on the service's network, and their ports.
 type ServicePort struct {
-	Port int `json:"port"`
-	// Protocol is TCP or UDP; empty is TCP.
-	Protocol string `json:"protocol"`
+	Port     int             `json:"port"`
+	Protocol ServiceProtocol `json:"protocol"`
 	// NodePort, when set, is the port of the engine's node where the
 	// service port answers too, as a NodePort Service's does: for an
 	// engine nested in a privileged container, that container's port,
 	// which the members of its networks reach.
 	NodePort  int              `json:"nodePort,omitempty"`
 	Endpoints []netip.AddrPort `json:"endpoints"`
+}
+
+// SessionAffinity is a service's session affinity, as Kubernetes spells
+// it; checkService takes either in any case, and empty for None.
+type SessionAffinity string
+
+const (
+	AffinityNone     SessionAffinity = "None"
+	AffinityClientIP SessionAffinity = "ClientIP"
+)
+
+func (a SessionAffinity) clientIP() bool {
+	return strings.EqualFold(string(a), string(AffinityClientIP))
+}
+
+func (a SessionAffinity) valid() bool {
+	return a == "" || a.clientIP() || strings.EqualFold(string(a), string(AffinityNone))
+}
+
+// ServiceProtocol is a service port's protocol, as Kubernetes spells it;
+// checkService takes either in any case, and empty for TCP.
+type ServiceProtocol string
+
+const (
+	ProtocolTCP ServiceProtocol = "TCP"
+	ProtocolUDP ServiceProtocol = "UDP"
+)
+
+func (p ServiceProtocol) udp() bool { return strings.EqualFold(string(p), string(ProtocolUDP)) }
+
+func (p ServiceProtocol) valid() bool {
+	return p == "" || p.udp() || strings.EqualFold(string(p), string(ProtocolTCP))
 }
 
 // ClusterDomain is the domain of the services' names.
@@ -239,7 +270,7 @@ func (s Service) clusterIPv4() (netip.Addr, bool) {
 // affinity is how long the service keeps a client's endpoint, 0 for no
 // affinity.
 func (s Service) affinity() time.Duration {
-	if !strings.EqualFold(s.SessionAffinity, "ClientIP") {
+	if !s.SessionAffinity.clientIP() {
 		return 0
 	}
 	if s.AffinitySeconds == 0 {
@@ -307,7 +338,7 @@ func checkService(s Service) error {
 			return invalid("service %s/%s: external IP %v: the service has no cluster IP of its family", s.Namespace, s.Name, a)
 		}
 	}
-	if a := s.SessionAffinity; a != "" && !strings.EqualFold(a, "None") && !strings.EqualFold(a, "ClientIP") {
+	if a := s.SessionAffinity; !a.valid() {
 		return invalid("service %s/%s: session affinity %q is neither None nor ClientIP", s.Namespace, s.Name, a)
 	}
 	if s.AffinitySeconds < 0 || s.AffinitySeconds > maxAffinity {
@@ -317,7 +348,7 @@ func checkService(s Service) error {
 		if p.Port < 1 || p.Port > 65535 || p.NodePort < 0 || p.NodePort > 65535 {
 			return invalid("service %s/%s: port %d (node port %d) is out of range", s.Namespace, s.Name, p.Port, p.NodePort)
 		}
-		if p.Protocol != "" && !strings.EqualFold(p.Protocol, "tcp") && !strings.EqualFold(p.Protocol, "udp") {
+		if !p.Protocol.valid() {
 			return unsupported("service %s/%s: port %d/%s: only TCP and UDP ports are supported", s.Namespace, s.Name, p.Port, p.Protocol)
 		}
 		for _, ep := range p.Endpoints {
@@ -382,11 +413,29 @@ func (e *Engine) SetServices(network string, svcs []Service) error {
 		sv.mu.Unlock()
 		return err
 	}
-	want := map[serviceKey]bool{}
+	// The ports that go, and the node ports that change, close first, so a
+	// service can take a node port another gives up in the same update.
+	want := map[serviceKey]int{}
+	for _, s := range svcs {
+		for _, p := range s.Ports {
+			want[serviceKey{network, s.Namespace, s.Name, p.Port, p.udp()}] = p.NodePort
+		}
+	}
+	for k, sl := range sv.listeners {
+		if k.network != network {
+			continue
+		}
+		switch np, ok := want[k]; {
+		case !ok:
+			sl.close()
+			delete(sv.listeners, k)
+		case sl.nodePort != np:
+			sl.closeNode()
+		}
+	}
 	for _, s := range svcs {
 		for _, p := range s.Ports {
 			k := serviceKey{network, s.Namespace, s.Name, p.Port, p.udp()}
-			want[k] = true
 			sl := sv.listeners[k]
 			if sl == nil && p.udp() {
 				pc, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -409,13 +458,10 @@ func (e *Engine) SetServices(network string, svcs []Service) error {
 				sv.listeners[k] = sl
 				go e.serveService(network, sl, l, remoteAddr)
 			}
-			if sl.nodePort != p.NodePort {
-				sl.closeNode()
-				if p.NodePort != 0 {
-					if err := e.serveOnNode(network, sl, p.NodePort); err != nil {
-						sv.mu.Unlock()
-						return fmt.Errorf("service %s/%s: node port %d/%s: %w", s.Namespace, s.Name, p.NodePort, p.proto(), err)
-					}
+			if p.NodePort != 0 && sl.nodePort != p.NodePort {
+				if err := e.serveOnNode(network, sl, p.NodePort); err != nil {
+					sv.mu.Unlock()
+					return fmt.Errorf("service %s/%s: node port %d/%s: %w", s.Namespace, s.Name, p.NodePort, p.proto(), err)
 				}
 			}
 			sl.mu.Lock()
@@ -424,12 +470,6 @@ func (e *Engine) SetServices(network string, svcs []Service) error {
 			}
 			sl.svc, sl.eps = s, append([]netip.AddrPort(nil), p.Endpoints...)
 			sl.mu.Unlock()
-		}
-	}
-	for k, sl := range sv.listeners {
-		if k.network == network && !want[k] {
-			sl.close()
-			delete(sv.listeners, k)
 		}
 	}
 	if len(svcs) == 0 {
@@ -624,7 +664,7 @@ func (e *Engine) dialEndpoint(network string, sl *serviceListener, client netip.
 }
 
 // udp reports whether the port is a UDP one.
-func (p ServicePort) udp() bool { return strings.EqualFold(p.Protocol, "udp") }
+func (p ServicePort) udp() bool { return p.Protocol.udp() }
 
 func (p ServicePort) proto() string {
 	if p.udp() {

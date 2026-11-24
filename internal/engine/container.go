@@ -796,6 +796,11 @@ func checkHostConfig(hc *container.HostConfig) error {
 	if err := checkDNS(dnsOf(hc)); err != nil {
 		return err
 	}
+	for _, h := range hc.ExtraHosts {
+		if _, _, err := addHost(h); err != nil {
+			return err
+		}
+	}
 	if hc.VolumeDriver != "" && hc.VolumeDriver != "local" {
 		return unsupported("volume driver %q is not supported; only \"local\" is", hc.VolumeDriver)
 	}

@@ -136,8 +136,6 @@ func (e *Engine) ImageList(f Filters) []imagetypes.Summary {
 	return out
 }
 
-// matchReference matches a reference filter, which may omit the tag, against
-// a stored tag.
 // matching keeps the references any of the patterns match.
 func matching(patterns, refs []string) []string {
 	out := []string{}
@@ -152,6 +150,8 @@ func matching(patterns, refs []string) []string {
 	return out
 }
 
+// matchReference matches a reference filter, which may omit the tag, against
+// a stored reference.
 func matchReference(pattern, ref string) bool {
 	if ok, _ := path.Match(pattern, ref); ok {
 		return true
@@ -244,6 +244,10 @@ func (e *Engine) ImagePrune(f Filters) (imagetypes.PruneReport, error) {
 		danglingOnly = d
 	}
 	report := imagetypes.PruneReport{ImagesDeleted: []imagetypes.DeleteResponse{}}
+	// A bad until filter fails the prune whether or not an image reaches it.
+	if _, err := f.until(time.Time{}); err != nil {
+		return report, err
+	}
 	for _, img := range e.images.List() {
 		if danglingOnly && !isDangling(img) {
 			continue
@@ -268,7 +272,9 @@ func (e *Engine) ImagePrune(f Filters) (imagetypes.PruneReport, error) {
 		for _, t := range r.Untagged {
 			report.ImagesDeleted = append(report.ImagesDeleted, imagetypes.DeleteResponse{Untagged: t})
 		}
-		report.ImagesDeleted = append(report.ImagesDeleted, imagetypes.DeleteResponse{Deleted: r.Image.ID})
+		if r.Deleted {
+			report.ImagesDeleted = append(report.ImagesDeleted, imagetypes.DeleteResponse{Deleted: r.Image.ID})
+		}
 		report.SpaceReclaimed += r.Freed
 	}
 	// The classic builder's cache is what dockerd keeps as dangling

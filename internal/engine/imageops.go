@@ -86,15 +86,17 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 		return "", err
 	}
 	os.Remove(dst)
-	if err := image.CloneDir(c.root(), dst); err != nil {
-		return "", err
-	}
+	// The store takes dst over once Extend succeeds; a clone or an Extend
+	// that fails part way leaves it to remove.
 	ok := false
 	defer func() {
 		if !ok {
 			os.RemoveAll(dst)
 		}
 	}()
+	if err := image.CloneDir(c.root(), dst); err != nil {
+		return "", err
+	}
 	baseRoot := e.images.Root(base.ID)
 	// The /proc create placed stays out of the image, as Docker's init
 	// layer keeps it out, unless the image had one, which stays as it was.
@@ -148,11 +150,11 @@ func (e *Engine) Commit(ctx context.Context, opts CommitOptions) (string, error)
 	cfg.Created = v1.Time{Time: now}
 	cfg.Author = opts.Author
 	cfg.History = append(cfg.History, v1.History{Created: cfg.Created, CreatedBy: argv, Comment: opts.Comment, Author: opts.Author})
-	ok = true
 	img, err := e.images.Extend(base.ID, []string{diff.Name()}, dst, cfg, tags)
 	if err != nil {
 		return "", err
 	}
+	ok = true
 	e.publishContainer(c, events.ActionCommit, map[string]string{"comment": opts.Comment, "imageID": img.ID})
 	return img.ID, nil
 }

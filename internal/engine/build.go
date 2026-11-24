@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -58,6 +59,9 @@ type stage struct {
 	// configOnly marks a stage that edits a config alone, as docker commit
 	// and import changes do: WORKDIR makes no directory.
 	configOnly bool
+	// cmdSet marks a stage whose own CMD ENTRYPOINT keeps, as the classic
+	// builder keeps it; an inherited one ENTRYPOINT drops.
+	cmdSet bool
 	// key chains the stage's instructions from its base, keying the build
 	// cache.
 	key     string
@@ -405,14 +409,19 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 	record := func() error {
 		created := time.Now().UTC()
 		if b.cache != nil {
-			e, ok := b.cached(key)
-			if !ok && emptyLayer {
+			// A step that changed files put its entry already, --no-cache
+			// or not; one that did not is put here, afresh under --no-cache.
+			e, ok := b.cache.get(key)
+			switch {
+			case emptyLayer && (!ok || b.opts.NoCache):
 				var err error
 				if e, err = b.cache.put(key, created, ""); err != nil {
 					return err
 				}
+				created = e.Created
+			case ok:
+				created = e.Created
 			}
-			created = e.Created
 		}
 		s.key = key
 		s.cfg.History = append(s.cfg.History, v1.History{Created: v1.Time{Time: created}, CreatedBy: in.Cmd + " " + in.Raw, EmptyLayer: emptyLayer})
@@ -547,10 +556,12 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		cfg.Shell = s.shell
 	case "CMD":
 		cfg.Cmd = b.command(s, in)
+		s.cmdSet = true
 	case "ENTRYPOINT":
 		cfg.Entrypoint = b.command(s, in)
-		// Docker drops an inherited CMD when a stage sets ENTRYPOINT.
-		cfg.Cmd = nil
+		if !s.cmdSet {
+			cfg.Cmd = nil
+		}
 	case "HEALTHCHECK":
 		hc, start, err := healthcheck(s, in)
 		if err != nil {
@@ -1004,10 +1015,11 @@ func (b *builder) ensureStack() (int, error) {
 		return 0, nil
 	}
 	if b.stack == "" {
-		b.stack = "build-" + strings.ToLower(filepath.Base(b.dir))
-		if _, err := b.e.alloc.Stack(b.stack); err != nil {
+		stack := "build-" + strings.ToLower(filepath.Base(b.dir))
+		if _, err := b.e.alloc.Stack(stack); err != nil {
 			return 0, err
 		}
+		b.stack = stack
 		port, err := b.e.ensureEgress(b.stack)
 		if err != nil {
 			return 0, err
@@ -1020,7 +1032,9 @@ func (b *builder) ensureStack() (int, error) {
 func (b *builder) releaseStack() {
 	if b.stack != "" {
 		b.e.closeEgress(b.stack)
-		b.e.alloc.Release(b.stack)
+		if err := b.e.alloc.Release(b.stack); err != nil {
+			log.Printf("build: release stack %s: %v", b.stack, err)
+		}
 	}
 }
 
@@ -1044,6 +1058,9 @@ func (b *builder) runStep(ctx context.Context, s *stage, in dockerfile.Instructi
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(s.root, "root"), 0o755); err != nil {
+		return err
+	}
 	env := append(b.runEnv(s, proxy), id.Env()...)
 	spec := seatbelt.Spec{Root: s.root, StateRoot: b.e.stateRoot(), IPCPrefix: seatbelt.IPCPrefixFor(s.root), Libraries: []string{lib}}
 	if proxy != 0 {
@@ -1065,10 +1082,11 @@ func (b *builder) runStep(ctx context.Context, s *stage, in dockerfile.Instructi
 		<-proc.Done()
 	}
 	proc.KillAll()
-	if err := procs.KillTagged("SANDBOX_ROOT=" + s.root); err != nil {
-		return err
-	}
+	killErr := procs.KillTagged("SANDBOX_ROOT=" + s.root)
 	proc.DrainIO(outputDrain)
+	if killErr != nil {
+		return killErr
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1104,9 +1122,7 @@ func (b *builder) runEnv(s *stage, proxy int) []string {
 		}
 	}
 	vars["PATH"] = strings.Join(mapped, ":")
-	home := filepath.Join(s.root, "root")
-	os.MkdirAll(home, 0o755)
-	set("HOME", home)
+	set("HOME", filepath.Join(s.root, "root"))
 	set("SANDBOX_ROOT", s.root)
 	set("SANDBOX_IPC_PREFIX", seatbelt.IPCPrefixFor(s.root))
 	set("SANDBOX_HOST", "127.0.0.1")

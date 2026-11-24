@@ -12,9 +12,30 @@ import (
 // to accepted values.
 type Filters map[string][]string
 
+// boolFilters are the filters that take a boolean, which dockerd refuses
+// to read as anything but true, false, 1 or 0.
+var boolFilters = []string{"dangling", "all"}
+
 // ParseFilters accepts both encodings the Docker CLI has used:
 // {"label":{"a=b":true}} and {"label":["a=b"]}.
 func ParseFilters(raw string) (Filters, error) {
+	f, err := parseFilters(raw)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range boolFilters {
+		for _, v := range f[k] {
+			switch strings.ToLower(v) {
+			case "true", "false", "1", "0":
+			default:
+				return nil, invalid("invalid filter '%s=%s'", k, v)
+			}
+		}
+	}
+	return f, nil
+}
+
+func parseFilters(raw string) (Filters, error) {
 	f := Filters{}
 	if raw == "" {
 		return f, nil

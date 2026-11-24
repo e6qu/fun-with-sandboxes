@@ -120,7 +120,18 @@ func TestServices(t *testing.T) {
 			t.Errorf("the node port answered %q", b)
 		}
 	}
+	// A node port moves from one service to another in one update.
 	svc.Ports[0].NodePort = 0
+	other := Service{Name: "web2", Namespace: "default", ClusterIP: netip.MustParseAddr("10.96.0.11"),
+		Ports: []ServicePort{{Port: 80, NodePort: nodePort, Endpoints: svc.Ports[0].Endpoints}}}
+	if err := e.SetServices("pods", []Service{other, svc}); err != nil {
+		t.Fatalf("a node port moving between services: %v", err)
+	}
+	if res, err := client.Get("http://127.0.0.1:" + strconv.Itoa(nodePort) + "/"); err != nil {
+		t.Errorf("the moved node port: %v", err)
+	} else {
+		res.Body.Close()
+	}
 	if err := e.SetServices("pods", []Service{svc}); err != nil {
 		t.Fatal(err)
 	}

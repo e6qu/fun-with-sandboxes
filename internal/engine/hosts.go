@@ -150,6 +150,25 @@ func firstAddresses(address string, nets map[string]*network.EndpointSettings) [
 	return []string{address}
 }
 
+// addHost reads an --add-host entry, host:ip, as the hosts file holds it:
+// host-gateway names the host, on loopback here, and an IPv6 address may
+// stand in brackets. Anything else is refused, as it would otherwise reach
+// /etc/hosts as written, newlines and all.
+func addHost(h string) (name, ip string, err error) {
+	name, ip, ok := strings.Cut(h, ":")
+	if !ok || name == "" || ip == "" || strings.ContainsAny(name, " \t\r\n#") {
+		return "", "", invalid("invalid --add-host %q: want host:ip", h)
+	}
+	if ip == "host-gateway" {
+		return name, "127.0.0.1", nil
+	}
+	a, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(ip, "["), "]"))
+	if err != nil {
+		return "", "", invalid("invalid IP address in add-host: %q", ip)
+	}
+	return name, a.String(), nil
+}
+
 // writeHostsFiles writes the container's /etc/hosts and /etc/hostname, as
 // Docker does: localhost, its --add-host entries, where host-gateway names
 // the host, on loopback here, the container's hostname at its addresses,
@@ -163,12 +182,9 @@ func writeHostsFiles(root, hostname, domain string, addresses, extra, links []st
 	var b strings.Builder
 	b.WriteString("127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n")
 	for _, h := range extra {
-		name, ip, ok := strings.Cut(h, ":")
-		if !ok || name == "" || ip == "" {
-			return invalid("invalid --add-host %q: want host:ip", h)
-		}
-		if ip == "host-gateway" {
-			ip = "127.0.0.1"
+		name, ip, err := addHost(h)
+		if err != nil {
+			return err
 		}
 		fmt.Fprintf(&b, "%s\t%s\n", ip, name)
 	}
