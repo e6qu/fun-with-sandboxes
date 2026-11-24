@@ -22,14 +22,26 @@ type Exec struct {
 	cfg         container.ExecCreateRequest
 	detachKeys  []byte
 
-	mu       sync.Mutex
-	started  bool
-	running  bool
-	exitCode *int
+	mu    sync.Mutex
+	phase execPhase
+	// exitCode is the process's, once phase is execExited.
+	exitCode int
 	pid      int
 	master   *os.File
 	done     chan struct{}
 }
+
+// execPhase is where an exec is in its life; it only moves forward.
+type execPhase uint8
+
+const (
+	execCreated execPhase = iota
+	// execStarting: ExecStart took the exec and has not yet run its
+	// process, or failed before it could.
+	execStarting
+	execRunning
+	execExited
+)
 
 func (e *Engine) ExecCreate(ref string, req container.ExecCreateRequest) (string, error) {
 	c, err := e.Container(ref)
@@ -95,11 +107,11 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 		return err
 	}
 	x.mu.Lock()
-	if x.started {
+	if x.phase != execCreated {
 		x.mu.Unlock()
 		return conflict("exec %s has already been started", id)
 	}
-	x.started = true
+	x.phase = execStarting
 	x.mu.Unlock()
 	if !c.isRunning() {
 		return conflict("container %s is not running", c.rec.ID)
@@ -168,15 +180,14 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 		if master != nil {
 			master.Close()
 		}
-		code := 126
 		x.mu.Lock()
-		x.exitCode = &code
+		x.phase, x.exitCode = execExited, 126
 		x.mu.Unlock()
 		close(x.done)
 		return invalid("exec failed: %v", err)
 	}
 	x.mu.Lock()
-	x.running, x.pid, x.master = true, proc.Pid(), master
+	x.phase, x.pid, x.master = execRunning, proc.Pid(), master
 	x.mu.Unlock()
 	// The exec counts against the container's limits from its start.
 	c.mu.Lock()
@@ -222,7 +233,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 		}
 		code := proc.ExitCode()
 		x.mu.Lock()
-		x.running, x.exitCode, x.master = false, &code, nil
+		x.phase, x.exitCode, x.master = execExited, code, nil
 		x.mu.Unlock()
 		close(x.done)
 		e.publishContainer(c, events.ActionExecDie, map[string]string{"execID": id, "exitCode": itoa(code)})
@@ -243,8 +254,13 @@ func (e *Engine) ExecInspect(id string) (container.ExecInspectResponse, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	pc := &container.ExecProcessConfig{Tty: x.cfg.Tty, Entrypoint: x.cfg.Cmd[0], Arguments: x.cfg.Cmd[1:], User: x.cfg.User}
+	var code *int
+	if x.phase == execExited {
+		c := x.exitCode
+		code = &c
+	}
 	return container.ExecInspectResponse{
-		ID: x.ID, Running: x.running, ExitCode: x.exitCode, ProcessConfig: pc,
+		ID: x.ID, Running: x.phase == execRunning, ExitCode: code, ProcessConfig: pc,
 		OpenStdin: x.cfg.AttachStdin, OpenStdout: x.cfg.AttachStdout, OpenStderr: x.cfg.AttachStderr,
 		ContainerID: x.containerID, Pid: x.pid, DetachKeys: x.detachKeys,
 	}, nil
@@ -362,7 +378,7 @@ func (e *Engine) ExecRemove(id string, force bool) error {
 		return err
 	}
 	x.mu.Lock()
-	running, pid := x.running, x.pid
+	running, pid := x.phase == execRunning, x.pid
 	x.mu.Unlock()
 	if running {
 		if !force {

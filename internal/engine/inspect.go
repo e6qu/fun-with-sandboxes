@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/storage"
 )
@@ -112,7 +113,7 @@ func (c *Container) endpoint(name string) *network.EndpointSettings {
 	if err != nil {
 		return es
 	}
-	es.IPAddress, es.IPPrefixLen, es.Gateway, es.MacAddress = a, netip.MustParsePrefix(memberSubnet).Bits(), netip.MustParseAddr(memberGateway), macOf(a)
+	es.IPAddress, es.IPPrefixLen, es.Gateway, es.MacAddress = a, memberSubnet.Bits(), memberGateway, macOf(a)
 	return es
 }
 
@@ -120,7 +121,7 @@ func (c *Container) mountPoints() []container.MountPoint {
 	out := []container.MountPoint{}
 	for _, m := range c.rec.Mounts {
 		mp := container.MountPoint{Type: m.Type, Name: m.Name, Source: m.Source, Destination: m.Destination, RW: m.RW}
-		if m.Type == "volume" {
+		if m.Type == mount.TypeVolume {
 			mp.Driver = "local"
 		}
 		mode := "rw"
@@ -172,6 +173,12 @@ func (c *Container) status() string {
 		return fmt.Sprintf("Restarting (%d) %s ago", s.ExitCode, humanDuration(time.Since(s.FinishedAt)))
 	case container.StateCreated:
 		return "Created"
+	case container.StatePaused:
+		return "Up " + humanDuration(time.Since(s.StartedAt)) + " (Paused)"
+	case container.StateRemoving:
+		return "Removal In Progress"
+	case container.StateDead:
+		return "Dead"
 	}
 	return string(s.Status)
 }

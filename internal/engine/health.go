@@ -2,6 +2,7 @@ package engine
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/moby/moby/api/types/container"
@@ -19,12 +20,38 @@ const (
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
+// minHealthDuration is the shortest interval, timeout and start period
+// dockerd takes; zero leaves its default.
+const minHealthDuration = time.Millisecond
+
+// checkHealthcheck refuses a health check dockerd's create refuses.
+func checkHealthcheck(hc *container.HealthConfig) error {
+	if hc == nil {
+		return nil
+	}
+	for _, d := range []struct {
+		name string
+		v    time.Duration
+	}{{"Interval", hc.Interval}, {"Timeout", hc.Timeout}, {"StartPeriod", hc.StartPeriod}, {"StartInterval", hc.StartInterval}} {
+		if d.v != 0 && d.v < minHealthDuration {
+			return invalid("%s in Healthcheck cannot be less than %s", d.name, minHealthDuration)
+		}
+	}
+	if hc.Retries < 0 {
+		return invalid("Retries in Healthcheck cannot be negative")
+	}
+	return nil
+}
+
+// healthArgv is the command of a health check's test. CMD-SHELL joins its
+// words into one script, as dockerd does, so a test of the word alone runs
+// an empty one rather than indexing past it.
 func healthArgv(test []string) []string {
 	switch test[0] {
 	case "CMD":
 		return test[1:]
 	case "CMD-SHELL":
-		return []string{"/bin/sh", "-c", test[1]}
+		return []string{"/bin/sh", "-c", strings.Join(test[1:], " ")}
 	}
 	return test
 }
@@ -76,7 +103,9 @@ func (e *Engine) monitorHealth(c *Container, hc container.HealthConfig, stop, do
 		res := &container.HealthcheckResult{Start: begin, End: time.Now(), ExitCode: code, Output: output}
 
 		c.mu.Lock()
-		if c.rec.State.Health == nil || c.healthStop == nil {
+		// A run that ended while the probe ran, and the next run's monitor,
+		// own the health from here.
+		if c.rec.State.Health == nil || c.healthStop != stop {
 			c.mu.Unlock()
 			return
 		}

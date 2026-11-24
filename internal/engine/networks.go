@@ -54,7 +54,7 @@ func (n *Network) pools(v4 bool) []Pool {
 	if v4 {
 		first = n.Pool
 	}
-	if first.Subnet != "" {
+	if first.Subnet.IsValid() {
 		out = append(out, first)
 	}
 	for _, p := range n.More {
@@ -71,34 +71,33 @@ func (n *Network) allPools() []Pool { return append(n.pools(true), n.pools(false
 // Pool is a subnet of the default IPAM driver, with its gateway, the
 // range containers' addresses come from and the addresses reserved for
 // other hosts. Auto marks one the engine chose, which takes no address a
-// container names, as Docker's do not.
+// container names, as Docker's do not. A pool holds a subnet or is zero,
+// and checkPoolLocked fills one with a gateway inside it; its fields
+// encode as the strings an engine before them stored.
 type Pool struct {
-	Subnet       string            `json:"subnet,omitempty"`
-	Gateway      string            `json:"gateway,omitempty"`
-	IPRange      string            `json:"ipRange,omitempty"`
-	AuxAddresses map[string]string `json:"auxAddresses,omitempty"`
-	Auto         bool              `json:"auto,omitempty"`
+	Subnet       netip.Prefix          `json:"subnet,omitzero"`
+	Gateway      netip.Addr            `json:"gateway,omitzero"`
+	IPRange      netip.Prefix          `json:"ipRange,omitzero"`
+	AuxAddresses map[string]netip.Addr `json:"auxAddresses,omitempty"`
+	Auto         bool                  `json:"auto,omitempty"`
 }
 
 // memberSubnet holds the member addresses of networks created without a
 // subnet, and memberGateway is their gateway, which no member holds.
-const (
-	memberSubnet  = "127.88.0.0/16"
-	memberGateway = "127.88.0.1"
+var (
+	memberSubnet  = netip.MustParsePrefix("127.88.0.0/16")
+	memberGateway = netip.MustParseAddr("127.88.0.1")
 )
 
-func (p Pool) is4() bool { return netip.MustParsePrefix(p.Subnet).Addr().Is4() }
+func (p Pool) is4() bool { return p.Subnet.Addr().Is4() }
 
 func (p Pool) config() network.IPAMConfig {
-	c := network.IPAMConfig{Subnet: netip.MustParsePrefix(p.Subnet), Gateway: netip.MustParseAddr(p.Gateway)}
-	if p.IPRange != "" {
-		c.IPRange = netip.MustParsePrefix(p.IPRange)
-	}
+	c := network.IPAMConfig{Subnet: p.Subnet, Gateway: p.Gateway, IPRange: p.IPRange}
 	for name, a := range p.AuxAddresses {
 		if c.AuxAddress == nil {
 			c.AuxAddress = map[string]netip.Addr{}
 		}
-		c.AuxAddress[name] = netip.MustParseAddr(a)
+		c.AuxAddress[name] = a
 	}
 	return c
 }
@@ -109,7 +108,7 @@ func (n *Network) ipamConfig() []network.IPAMConfig {
 	out := []network.IPAMConfig{}
 	v4 := n.pools(true)
 	if len(v4) == 0 && n.Driver == "bridge" && !n.IPv4Disabled {
-		out = append(out, network.IPAMConfig{Subnet: netip.MustParsePrefix(memberSubnet), Gateway: netip.MustParseAddr(memberGateway)})
+		out = append(out, network.IPAMConfig{Subnet: memberSubnet, Gateway: memberGateway})
 	}
 	for _, p := range append(v4, n.pools(false)...) {
 		out = append(out, p.config())
@@ -198,9 +197,9 @@ func (e *Engine) checkIPAMLocked(n *Network, ipam *network.IPAM, ipv4, ipv6 *boo
 	n.Pool, n.IPv6, n.More = Pool{}, Pool{}, nil
 	for _, p := range pools {
 		switch {
-		case p.is4() && n.Subnet == "":
+		case p.is4() && !n.Subnet.IsValid():
 			n.Pool = p
-		case !p.is4() && n.IPv6.Subnet == "":
+		case !p.is4() && !n.IPv6.Subnet.IsValid():
 			n.IPv6 = p
 		default:
 			n.More = append(n.More, p)
@@ -251,31 +250,31 @@ func (e *Engine) checkPoolLocked(c network.IPAMConfig, siblings []Pool) (Pool, e
 		taken = append(taken, o.allPools()...)
 	}
 	for _, p := range taken {
-		if netip.MustParsePrefix(p.Subnet).Overlaps(subnet) {
+		if p.Subnet.Overlaps(subnet) {
 			return Pool{}, forbidden("invalid pool request: Pool overlaps with other one on this address space")
 		}
 	}
-	p := Pool{Subnet: subnet.String(), Gateway: subnet.Addr().Next().String()}
+	p := Pool{Subnet: subnet, Gateway: subnet.Addr().Next()}
 	if c.Gateway.IsValid() {
 		if !subnet.Contains(c.Gateway) {
 			return Pool{}, invalid("no matching subnet for gateway %s", c.Gateway)
 		}
-		p.Gateway = c.Gateway.String()
+		p.Gateway = c.Gateway
 	}
 	if r := c.IPRange; r.IsValid() {
 		if r.Masked() != r || r.Addr().Is4() != subnet.Addr().Is4() || r.Bits() < subnet.Bits() || !subnet.Contains(r.Addr()) {
 			return Pool{}, invalid("no matching subnet for range %s", r)
 		}
-		p.IPRange = r.String()
+		p.IPRange = r
 	}
 	for name, a := range c.AuxAddress {
 		if !subnet.Contains(a) {
 			return Pool{}, invalid("no matching subnet for aux-address %s", a)
 		}
 		if p.AuxAddresses == nil {
-			p.AuxAddresses = map[string]string{}
+			p.AuxAddresses = map[string]netip.Addr{}
 		}
-		p.AuxAddresses[name] = a.String()
+		p.AuxAddresses[name] = a
 	}
 	return p, nil
 }
@@ -317,7 +316,7 @@ next:
 	for _, c := range candidates {
 		for _, o := range e.networks {
 			for _, p := range o.pools(true) {
-				if netip.MustParsePrefix(p.Subnet).Overlaps(c) {
+				if p.Subnet.Overlaps(c) {
 					continue next
 				}
 			}
@@ -343,7 +342,7 @@ func (e *Engine) ulaSubnetLocked() (netip.Prefix, error) {
 		free := true
 		for _, o := range e.networks {
 			for _, p := range o.pools(false) {
-				if netip.MustParsePrefix(p.Subnet).Overlaps(subnet) {
+				if p.Subnet.Overlaps(subnet) {
 					free = false
 				}
 			}
@@ -371,7 +370,7 @@ func (e *Engine) assignNetAddressLocked(n *Network, id string, s *network.Endpoi
 	if static4.IsValid() && n.IPv4Disabled {
 		return invalid("network %s is IPv6-only: a container takes no IPv4 address on it", n.Name)
 	}
-	if (static4.IsValid() && (n.Subnet == "" || n.Pool.Auto)) || (static6.IsValid() && (n.IPv6.Subnet == "" || n.IPv6.Auto)) {
+	if (static4.IsValid() && (!n.Subnet.IsValid() || n.Pool.Auto)) || (static6.IsValid() && (!n.IPv6.Subnet.IsValid() || n.IPv6.Auto)) {
 		return invalid("user specified IP address is supported only when connecting to networks with user configured subnets")
 	}
 	if pools := n.pools(true); len(pools) > 0 {
@@ -403,13 +402,12 @@ func (e *Engine) pickAddressLocked(n *Network, pools []Pool, id string, static n
 	v4 := pools[0].is4()
 	taken := map[netip.Addr]bool{}
 	for _, p := range pools {
-		subnet := netip.MustParsePrefix(p.Subnet)
-		taken[netip.MustParseAddr(p.Gateway)], taken[subnet.Addr()] = true, true
+		taken[p.Gateway], taken[p.Subnet.Addr()] = true, true
 		if v4 {
-			taken[broadcast(subnet)] = true
+			taken[broadcast(p.Subnet)] = true
 		}
 		for _, a := range p.AuxAddresses {
-			taken[netip.MustParseAddr(a)] = true
+			taken[a] = true
 		}
 	}
 	for _, o := range e.containers {
@@ -419,23 +417,23 @@ func (e *Engine) pickAddressLocked(n *Network, pools []Pool, id string, static n
 	}
 	if static.IsValid() {
 		for _, p := range pools {
-			if subnet := netip.MustParsePrefix(p.Subnet); static.Is4() == v4 && subnet.Contains(static) {
+			if static.Is4() == v4 && p.Subnet.Contains(static) {
 				if taken[static] {
 					return netip.Addr{}, 0, netip.Addr{}, forbidden("Address already in use")
 				}
-				return static, subnet.Bits(), netip.MustParseAddr(p.Gateway), nil
+				return static, p.Subnet.Bits(), p.Gateway, nil
 			}
 		}
 		return netip.Addr{}, 0, netip.Addr{}, invalid("no configured subnet or ip-range contain the IP address %s", static)
 	}
 	for _, p := range pools {
-		subnet, pool := netip.MustParsePrefix(p.Subnet), netip.MustParsePrefix(p.Subnet)
-		if p.IPRange != "" {
-			pool = netip.MustParsePrefix(p.IPRange)
+		pool := p.Subnet
+		if p.IPRange.IsValid() {
+			pool = p.IPRange
 		}
 		for a := pool.Addr(); pool.Contains(a); a = a.Next() {
 			if !taken[a] {
-				return a, subnet.Bits(), netip.MustParseAddr(p.Gateway), nil
+				return a, p.Subnet.Bits(), p.Gateway, nil
 			}
 		}
 	}
@@ -479,7 +477,7 @@ func (e *Engine) loadNetworks() error {
 	// which Kubernetes takes for a node's, as it takes no loopback one. An
 	// engine whose state predates it gives it the subnet unless a network
 	// of its own took it.
-	if b, err := e.networkLocked("bridge"); err == nil && b.Subnet == "" {
+	if b, err := e.networkLocked("bridge"); err == nil && !b.Subnet.IsValid() {
 		if p, err := e.checkPoolLocked(network.IPAMConfig{Subnet: bridgeSubnet}, nil); err == nil {
 			p.Auto = true
 			b.Pool = p
@@ -679,13 +677,16 @@ func (e *Engine) NetworkConnect(ref string, req network.ConnectRequest) error {
 	if _, err := e.checkNetworkLocked(n.Name); err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, ok := c.rec.Networks[n.Name]; ok {
-		return conflict("endpoint with name %s already exists in network %s", c.rec.Name, n.Name)
-	}
 	if err := checkMAC(req.EndpointConfig); err != nil {
 		return err
+	}
+	// The container's lock is released before the network files are
+	// written: a nested engine's publishLocked reads every member's state
+	// under its lock, c's among them.
+	c.mu.Lock()
+	if _, ok := c.rec.Networks[n.Name]; ok {
+		c.mu.Unlock()
+		return conflict("endpoint with name %s already exists in network %s", c.rec.Name, n.Name)
 	}
 	s := &network.EndpointSettings{}
 	if req.EndpointConfig != nil {
@@ -694,11 +695,14 @@ func (e *Engine) NetworkConnect(ref string, req network.ConnectRequest) error {
 	s.NetworkID, s.EndpointID = n.ID, newID()
 	s.DNSNames = uniqStrings(append(append([]string{c.rec.Name}, s.Aliases...), c.rec.Service))
 	if err := e.assignNetAddressLocked(n, c.rec.ID, s); err != nil {
+		c.mu.Unlock()
 		return err
 	}
 	c.rec.Networks[n.Name] = s
+	err = c.save()
+	c.mu.Unlock()
 	e.events.publish(events.NetworkEventType, events.ActionConnect, n.ID, map[string]string{"container": c.rec.ID, "name": n.Name, "type": n.Driver})
-	if err := c.save(); err != nil {
+	if err != nil {
 		return err
 	}
 	return e.writeNetworkLocked(c.rec.Stack)
@@ -718,14 +722,17 @@ func (e *Engine) NetworkDisconnect(ref, containerRef string, force bool) error {
 		}
 		return err
 	}
+	// As NetworkConnect, unlocked before the network files are written.
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if _, ok := c.rec.Networks[n.Name]; !ok {
+		c.mu.Unlock()
 		return invalid("container %s is not connected to network %s", c.rec.Name, n.Name)
 	}
 	delete(c.rec.Networks, n.Name)
+	err = c.save()
+	c.mu.Unlock()
 	e.events.publish(events.NetworkEventType, events.ActionDisconnect, n.ID, map[string]string{"container": c.rec.ID, "name": n.Name, "type": n.Driver})
-	if err := c.save(); err != nil {
+	if err != nil {
 		return err
 	}
 	return e.writeNetworkLocked(c.rec.Stack)

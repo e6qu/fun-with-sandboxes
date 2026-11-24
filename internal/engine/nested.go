@@ -177,7 +177,7 @@ func (e *Engine) openNested(c *Container) error {
 		return err
 	}
 	e.nested[c.rec.ID] = &nestedEngine{e: sub, serve: srv}
-	go e.refreshPeers("")
+	e.nodes.refreshing.Go(func() { e.refreshPeers("") })
 	return nil
 }
 

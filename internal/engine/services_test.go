@@ -28,7 +28,7 @@ func TestServices(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := &Engine{alloc: a, containers: map[string]*Container{}, networks: map[string]*Network{
-		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: "10.244.0.0/24", Gateway: "10.244.0.1"}},
+		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: netip.MustParsePrefix("10.244.0.0/24"), Gateway: netip.MustParseAddr("10.244.0.1")}},
 	}}
 	defer e.closeServices()
 	pod := func(stack, ip, body string) {
@@ -198,7 +198,7 @@ func TestServiceEndpointsBeyondTheNetwork(t *testing.T) {
 	defer srv.Close()
 	asked := make(chan netip.AddrPort, 1)
 	e := &Engine{alloc: a, containers: map[string]*Container{}, networks: map[string]*Network{
-		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: "10.244.0.0/24", Gateway: "10.244.0.1"}},
+		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: netip.MustParsePrefix("10.244.0.0/24"), Gateway: netip.MustParseAddr("10.244.0.1")}},
 	}, cfg: Config{Nested: &Nested{Dial: func(ap netip.AddrPort) (net.Conn, error) {
 		asked <- ap
 		return net.Dial("tcp", srv.Listener.Addr().String())
@@ -236,7 +236,7 @@ func TestUDPService(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := &Engine{cfg: Config{Root: root}, alloc: a, containers: map[string]*Container{}, networks: map[string]*Network{
-		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: "10.244.0.0/24", Gateway: "10.244.0.1"}},
+		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: netip.MustParsePrefix("10.244.0.0/24"), Gateway: netip.MustParseAddr("10.244.0.1")}},
 	}}
 	defer e.closeServices()
 	pod := func(stack, ip string) {
@@ -343,7 +343,7 @@ func TestServiceAffinity(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := &Engine{alloc: a, containers: map[string]*Container{}, networks: map[string]*Network{
-		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: "10.244.0.0/24", Gateway: "10.244.0.1"}},
+		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: netip.MustParsePrefix("10.244.0.0/24"), Gateway: netip.MustParseAddr("10.244.0.1")}},
 	}}
 	defer e.closeServices()
 	member := func(stack, ip string, ports map[string]int) {
@@ -485,7 +485,7 @@ func TestServiceAddresses(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := &Engine{alloc: a, containers: map[string]*Container{}, networks: map[string]*Network{
-		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: "10.244.0.0/24", Gateway: "10.244.0.1"}},
+		"n1": {ID: "n1", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: netip.MustParsePrefix("10.244.0.0/24"), Gateway: netip.MustParseAddr("10.244.0.1")}},
 	}}
 	defer e.closeServices()
 	addr, err := e.assignAddressLocked("pod")

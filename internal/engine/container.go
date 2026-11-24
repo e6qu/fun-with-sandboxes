@@ -318,6 +318,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if err := checkHostConfig(req.HostConfig); err != nil {
 		return container.CreateResponse{}, err
 	}
+	if err := checkHealthcheck(req.Config.Healthcheck); err != nil {
+		return container.CreateResponse{}, err
+	}
 	if r := opts.Resolver; r != nil {
 		if err := checkDNS(dnsSettings{Search: r.Search, Options: r.Options}); err != nil {
 			return container.CreateResponse{}, err
@@ -472,6 +475,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	ok := false
 	defer func() {
 		if !ok {
+			if c.logs != nil {
+				c.logs.close()
+			}
 			os.RemoveAll(c.dir)
 			e.releaseStackIfEmptyLocked(stack)
 		}
@@ -1151,6 +1157,8 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 
 	for i := range mounts {
 		m := &mounts[i]
+		// The loops above refuse every other type.
+		//exhaustive:ignore
 		switch m.Type {
 		case mount.TypeBind:
 			src, err := e.hostPath(m.Source)
@@ -1421,12 +1429,11 @@ func engineVariable(k string) bool {
 	return strings.HasPrefix(k, "FWS_") || k == "DYLD_INSERT_LIBRARIES"
 }
 
-// environment is the process environment: the image and container variables
-// with PATH mapped into the root, plus the variables through which the
-// service learns its root, its own ports and its peers' ports; net is the
-// container whose network it is on.
-// environment is c's environment on net's network, which engine ne runs:
-// its egress proxy and ports are net's stack's.
+// environment is c's process environment on net's network, which engine
+// ne runs: the image and container variables with PATH mapped into the
+// root, plus the variables through which the service learns its root, its
+// own ports and its peers' ports, with net's stack's egress proxy and
+// ports.
 func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []string, tty bool, links []string) ([]string, error) {
 	root := c.root()
 	vars := map[string]string{}
@@ -1460,7 +1467,7 @@ func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []s
 		set(kv)
 	}
 	vars["PATH"] = mapPath(root, vars["PATH"])
-	if h := vars["HOME"]; !strings.HasPrefix(h, root) {
+	if h := vars["HOME"]; h != root && !strings.HasPrefix(h, root+"/") {
 		vars["HOME"] = filepath.Join(root, h)
 	}
 	home, err := rootfs.Join(root, strings.TrimPrefix(vars["HOME"], root))
@@ -1651,14 +1658,8 @@ func (e *Engine) Start(ref string) error {
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	running := c.rec.State.Status == container.StateRunning || c.starting
-	c.mu.Unlock()
-	if running {
-		return notModified("container already started")
-	}
 	err = c.start(e)
-	if err != nil && c.rec.HostConfig.AutoRemove {
+	if err != nil && KindOf(err) != KindNotModified && c.rec.HostConfig.AutoRemove {
 		// dockerd removes an auto-remove container whose start fails; a
 		// client waiting for its removal would otherwise wait forever.
 		e.Remove(c.rec.ID, RemoveOptions{Force: true, RemoveVolumes: true})
@@ -1666,8 +1667,15 @@ func (e *Engine) Start(ref string) error {
 	return err
 }
 
+// start starts a run of the container unless one is running or starting:
+// the check and the mark are one step under its lock, so two requests, or
+// a request and a restart, never launch two shims for one container.
 func (c *Container) start(e *Engine) error {
 	c.mu.Lock()
+	if c.starting || c.rec.State.Status == container.StateRunning {
+		c.mu.Unlock()
+		return notModified("container already started")
+	}
 	if c.restarting != nil {
 		c.restarting.Stop()
 		c.restarting = nil
@@ -2019,17 +2027,27 @@ func (e *Engine) ended(c *Container, exit shim.Exit, done chan struct{}) {
 			}
 		}
 		c.mu.Lock()
+		// A start or a stop that came between the run's end and here has
+		// the container's state from then on.
+		if c.rec.State.Status != container.StateExited || c.starting || c.rec.State.ManualStop {
+			c.mu.Unlock()
+			return
+		}
 		c.rec.State.Status = container.StateRestarting
 		c.rec.State.RestartCount++
 		c.save()
 		c.restarting = time.AfterFunc(delay, func() {
-			if err := c.start(e); err != nil {
-				c.logs.append("stderr", fmt.Sprintf("restart failed: %v\n", err))
-				c.mu.Lock()
+			err := c.start(e)
+			if err == nil || KindOf(err) == KindNotModified {
+				return
+			}
+			c.logs.append("stderr", fmt.Sprintf("restart failed: %v\n", err))
+			c.mu.Lock()
+			if c.rec.State.Status == container.StateRestarting {
 				c.rec.State.Status = container.StateExited
 				c.save()
-				c.mu.Unlock()
 			}
+			c.mu.Unlock()
 		})
 		c.mu.Unlock()
 		return
@@ -2233,6 +2251,12 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 		return err
 	}
 	c.mu.Lock()
+	// A start under way launches its shim in the container's directory,
+	// which removal would delete beneath it.
+	if c.starting {
+		c.mu.Unlock()
+		return conflict("cannot remove container \"/%s\": container is starting: wait until it runs, then stop it or force remove it", c.Name())
+	}
 	if c.restarting != nil {
 		c.restarting.Stop()
 		c.restarting = nil
@@ -2263,9 +2287,9 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 		return nil
 	}
 	delete(e.containers, c.rec.ID)
-	if err := e.writeNetworkLocked(c.rec.Stack); err != nil {
-		return err
-	}
+	// The container is gone from the engine from here, so what it held is
+	// freed whether or not its stack's network file is written.
+	netErr := e.writeNetworkLocked(c.rec.Stack)
 	for id, x := range e.execs {
 		if x.containerID == c.rec.ID {
 			delete(e.execs, id)
@@ -2292,7 +2316,7 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 	e.releaseStackIfEmptyLocked(c.rec.Stack)
 	close(c.removed)
 	e.publishContainer(c, events.ActionDestroy, nil)
-	return nil
+	return netErr
 }
 
 func (e *Engine) releaseStackIfEmptyLocked(stack string) {

@@ -95,6 +95,9 @@ func (g *pauseGuard) step(l level, running []guardCandidate, skip map[string]boo
 				return c.id, nil
 			}
 		}
+	case levelWarning:
+		// Between the thresholds the guard holds: it pauses no more and
+		// resumes none yet, so a measure hovering at one does not flap.
 	case levelNormal:
 		resume, g.paused = g.paused, nil
 	}
