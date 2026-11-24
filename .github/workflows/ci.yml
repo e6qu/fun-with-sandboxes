@@ -27,6 +27,7 @@ jobs:
           # Off: Go's caches, near 1.4 GB, would crowd the catalog's out of
           # the repository's 10 GB, and Go builds the module in minutes.
           cache: false
+      - uses: ./.github/actions/go-modules
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: cross-build
@@ -94,6 +95,7 @@ jobs:
           # Off: Go's caches, near 1.4 GB, would crowd the catalog's out of
           # the repository's 10 GB, and Go builds the module in minutes.
           cache: false
+      - uses: ./.github/actions/go-modules
       # Each test runs three times under the race detector, so a test that
       # passes only sometimes, or races, fails here. internal/pathmap's
       # probes take seven minutes on a quick runner and twice that on a
@@ -293,6 +295,7 @@ jobs:
           # Off: Go's caches, near 1.4 GB, would crowd the catalog's out of
           # the repository's 10 GB, and Go builds the module in minutes.
           cache: false
+      - uses: ./.github/actions/go-modules
       - name: the archives' inputs
         id: key
         run: |
@@ -451,6 +454,7 @@ jobs:
           # Off: Go's caches, near 1.4 GB, would crowd the catalog's out of
           # the repository's 10 GB, and Go builds the module in minutes.
           cache: false
+      - uses: ./.github/actions/go-modules
       - uses: actions/download-artifact@v7
         with:
           name: fws-images
@@ -609,6 +613,7 @@ jobs:
           # Off: Go's caches, near 1.4 GB, would crowd the catalog's out of
           # the repository's 10 GB, and Go builds the module in minutes.
           cache: false
+      - uses: ./.github/actions/go-modules
       - uses: actions/download-artifact@v7
         with:
           name: fws-images
