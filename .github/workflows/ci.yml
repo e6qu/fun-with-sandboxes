@@ -300,10 +300,12 @@ jobs:
           echo "key=images-$(xargs shasum -a 256 < "$RUNNER_TEMP/inputs" | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
       # The archives a run with the same inputs built: the cache keeps them
       # between runs, and this run's jobs take them from its artifact below.
+      # The cache holds the catalog as scripts/catalog-store.sh packs it,
+      # each layer once, which the archives' duplicates would not fit.
       - uses: actions/cache/restore@v5
         id: images
         with:
-          path: ~/fws-images
+          path: ~/fws-store
           key: ${{ steps.key.outputs.key }}
       - uses: cachix/install-nix-action@v31
         if: steps.images.outputs.cache-hit != 'true'
@@ -332,9 +334,18 @@ jobs:
       - uses: actions/cache/restore@v5
         if: steps.images.outputs.cache-hit != 'true'
         with:
-          path: ~/fws-images
+          path: ~/fws-store
           key: ${{ steps.key.outputs.key }}
           restore-keys: images-
+      # An earlier catalog's archives, which the build keeps where their
+      # inputs are unchanged (fws-mkimage -reuse).
+      - name: the earlier catalog's archives
+        if: steps.images.outputs.cache-hit != 'true'
+        run: |
+          if [ -d ~/fws-store ]; then
+            scripts/catalog-store.sh unpack ~/fws-store ~/fws-images
+            rm -rf ~/fws-store
+          fi
       - name: build images
         if: steps.images.outputs.cache-hit != 'true'
         run: |
@@ -384,10 +395,16 @@ jobs:
               gh cache delete --repo "$GITHUB_REPOSITORY" "$k" || true
             fi
           done
+      - name: pack the catalog
+        if: steps.images.outputs.cache-hit != 'true'
+        run: |
+          scripts/catalog-store.sh pack ~/fws-images ~/fws-store
+          rm -rf ~/fws-images
+          du -sh ~/fws-store
       - uses: actions/cache/save@v5
         if: steps.images.outputs.cache-hit != 'true'
         with:
-          path: ~/fws-images
+          path: ~/fws-store
           key: ${{ steps.key.outputs.key }}
       # What the repository's 10 GB of cache holds, largest first: a run
       # that finds a prebuilt group or the catalog evicted shows why.
@@ -401,10 +418,14 @@ jobs:
       # The run's own copy for its e2e and publish jobs: an artifact of the
       # run, which another run's cache cannot evict, as it can the cache
       # entry, past the repository's 10 GB.
+      # One tar, which keeps the store's links, where the artifact's zip
+      # of the directory would copy each linked layer again.
+      - name: the catalog as one file
+        run: tar -cf ~/fws-catalog.tar -C ~/fws-store .
       - uses: actions/upload-artifact@v6
         with:
           name: fws-images
-          path: ~/fws-images
+          path: ~/fws-catalog.tar
           retention-days: 3
           compression-level: 0
           if-no-files-found: error
@@ -433,7 +454,14 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: fws-images
-          path: ~/fws-images
+          path: ~/fws-artifact
+      - name: the catalog's archives
+        run: |
+          mkdir ~/fws-store
+          tar -xf ~/fws-artifact/fws-catalog.tar -C ~/fws-store
+          rm -rf ~/fws-artifact
+          scripts/catalog-store.sh unpack ~/fws-store ~/fws-images
+          rm -rf ~/fws-store
       - name: install the Docker CLI, Docker Compose and buildx
         run: |
           brew install docker docker-compose docker-buildx podman podman-compose cri-tools
@@ -584,7 +612,14 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: fws-images
-          path: ~/fws-images
+          path: ~/fws-artifact
+      - name: the catalog's archives
+        run: |
+          mkdir ~/fws-store
+          tar -xf ~/fws-artifact/fws-catalog.tar -C ~/fws-store
+          rm -rf ~/fws-artifact
+          scripts/catalog-store.sh unpack ~/fws-store ~/fws-images
+          rm -rf ~/fws-store
       - name: log in to ghcr.io
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -183,8 +183,11 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   none of them skips the build. Otherwise it restores the newest earlier
   catalog and keeps each archive whose inputs are unchanged (`fws-mkimage
   -reuse`), so a change to one image rebuilds that one, and then checks
-  every archive publishes to a local registry as a darwin image. It hands
-  the archives to the run's `e2e` and `publish` jobs as an artifact,
+  every archive publishes to a local registry as a darwin image. The
+  cache and the artifact hold the catalog as `scripts/catalog-store.sh`
+  packs it, each layer once, as the images' archives repeat the layers
+  they share; the jobs that take it unpack it into archives again. It
+  hands the catalog to the run's `e2e` and `publish` jobs as an artifact,
   which another run's cache cannot evict past the repository's 10 GB, and
   drops the earlier catalog before it saves its own, as two would not fit
   beside the prebuilt groups. The whole of it substitutes from
