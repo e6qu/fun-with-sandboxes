@@ -441,7 +441,7 @@ func TestDiskIOCounted(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if written = uint64(st.DiskWritten); written >= mib<<20 || time.Now().After(deadline) {
+		if written = st.DiskWritten; written >= mib<<20 || time.Now().After(deadline) {
 			break
 		}
 	}

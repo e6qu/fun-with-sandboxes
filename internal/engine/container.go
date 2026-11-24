@@ -451,7 +451,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	networks := map[string]*network.EndpointSettings{}
 	if net == nil && node == nil {
 		var err error
-		if networks, err = e.resolveNetworksLocked(stack, name, service, req); err != nil {
+		if networks, err = e.resolveNetworksLocked(name, service, req); err != nil {
 			return container.CreateResponse{}, err
 		}
 	}
@@ -928,7 +928,7 @@ func exposedPorts(cfg container.Config, hc *container.HostConfig) []network.Port
 	return out
 }
 
-func (e *Engine) resolveNetworksLocked(stack, name, service string, req container.CreateRequest) (map[string]*network.EndpointSettings, error) {
+func (e *Engine) resolveNetworksLocked(name, service string, req container.CreateRequest) (map[string]*network.EndpointSettings, error) {
 	out := map[string]*network.EndpointSettings{}
 	add := func(netName string, es *network.EndpointSettings) error {
 		if netName == "default" {

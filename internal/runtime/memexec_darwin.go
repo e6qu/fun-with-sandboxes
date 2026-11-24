@@ -27,23 +27,25 @@ const memExecRole = "memexec"
 
 func init() {
 	if os.Getenv(RoleVar) == memExecRole {
-		os.Exit(runMemExec(os.Args))
+		runMemExec(os.Args)
+		// It returns only where it could not exec; 127 is a shell's status
+		// for a command that would not run.
+		os.Exit(127)
 	}
 }
 
-func runMemExec(args []string) int {
+func runMemExec(args []string) {
 	if len(args) < 4 {
 		fmt.Fprintln(os.Stderr, "fws-memexec: usage: fws-memexec MiB PATH ARGV0 [ARG...]")
-		return 127
+		return
 	}
 	mib, err := strconv.Atoi(args[1])
 	if err != nil || mib <= 0 {
 		fmt.Fprintf(os.Stderr, "fws-memexec: a memory limit of %q MiB\n", args[1])
-		return 127
+		return
 	}
 	err = libsystem.ExecLimited(args[2], args[3:], withoutVars(os.Environ(), RoleVar), mib)
 	fmt.Fprintf(os.Stderr, "exec %s: %v\n", args[2], err)
-	return 127
 }
 
 // memoryLimited returns how to start path with argv and env so that it

@@ -1,7 +1,5 @@
 package runtime
 
-import "strconv"
-
 // Resource limit numbers, as macOS's sys/resource.h defines them.
 const (
 	RlimitCPU     = 0
@@ -27,17 +25,4 @@ func ForkCeiling(max uint64) uint64 {
 		return max
 	}
 	return max - reserve
-}
-
-var rlimitNames = map[int]string{
-	RlimitCPU: "cpu", RlimitFsize: "fsize", RlimitData: "data", RlimitStack: "stack",
-	RlimitCore: "core", RlimitAS: "as", RlimitMemlock: "memlock", RlimitNofile: "nofile",
-}
-
-// RlimitName is the name docker run --ulimit uses for a resource.
-func RlimitName(r int) string {
-	if n, ok := rlimitNames[r]; ok {
-		return n
-	}
-	return "resource " + strconv.Itoa(r)
 }

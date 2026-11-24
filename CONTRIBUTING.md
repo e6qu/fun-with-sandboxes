@@ -100,7 +100,8 @@ The checks CI runs, in the order to run them locally:
    ```
 
    `scripts/lint.sh` runs the checks beyond those, at pinned versions:
-   ineffassign, nilness, exhaustive (a `switch` over one of the module's
+   ineffassign, nilness, unparam, unconvert, deadcode, exhaustive (a
+   `switch` over one of the module's
    enum types names every value or has a `default`; mark one partial by
    design with a comment saying why and `//exhaustive:ignore` alone on
    the line above it), ShellCheck over `scripts/` and actionlint over the

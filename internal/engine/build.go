@@ -580,7 +580,7 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 			cfg.Cmd = nil
 		}
 	case "HEALTHCHECK":
-		hc, start, err := healthcheck(s, in)
+		hc, start, err := healthcheck(in)
 		if err != nil {
 			return err
 		}
@@ -624,7 +624,7 @@ func (b *builder) command(s *stage, in dockerfile.Instruction) []string {
 	return append(append([]string(nil), s.shell...), in.Raw)
 }
 
-func healthcheck(s *stage, in dockerfile.Instruction) (*v1.HealthConfig, time.Duration, error) {
+func healthcheck(in dockerfile.Instruction) (*v1.HealthConfig, time.Duration, error) {
 	hc := &v1.HealthConfig{}
 	var start time.Duration
 	for k, v := range in.Flags {
