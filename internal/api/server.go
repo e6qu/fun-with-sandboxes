@@ -177,7 +177,10 @@ func (s *Server) routes() {
 		return s.e.Rename(r.PathValue("id"), r.URL.Query().Get("name"))
 	}, http.StatusNoContent))
 	m.HandleFunc("POST /containers/{id}/resize", s.simple(func(r *http.Request) error {
-		h, w := sizeParams(r)
+		h, w, err := sizeParams(r)
+		if err != nil {
+			return err
+		}
 		return s.e.Resize(r.PathValue("id"), h, w)
 	}, http.StatusOK))
 	m.HandleFunc("POST /containers/{id}/wait", s.containerWait)
@@ -221,7 +224,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /containers/{id}/exec", s.execCreate)
 	m.HandleFunc("POST /exec/{id}/start", s.execStart)
 	m.HandleFunc("POST /exec/{id}/resize", s.simple(func(r *http.Request) error {
-		h, w := sizeParams(r)
+		h, w, err := sizeParams(r)
+		if err != nil {
+			return err
+		}
 		return s.e.ExecResize(r.PathValue("id"), h, w)
 	}, http.StatusOK))
 	m.HandleFunc("GET /exec/{id}/json", func(w http.ResponseWriter, r *http.Request) {
@@ -371,12 +377,13 @@ func (s *Server) simple(fn func(*http.Request) error, status int) http.HandlerFu
 	}
 }
 
+// boolParam reads a flag as dockerd does: any value but these is true.
 func boolParam(v string) bool {
-	switch strings.ToLower(v) {
-	case "1", "true", "yes":
-		return true
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "0", "no", "false", "none":
+		return false
 	}
-	return false
+	return true
 }
 
 func timeoutParam(r *http.Request) *int {
@@ -391,10 +398,19 @@ func timeoutParam(r *http.Request) *int {
 	return &n
 }
 
-func sizeParams(r *http.Request) (uint16, uint16) {
-	h, _ := strconv.Atoi(r.URL.Query().Get("h"))
-	w, _ := strconv.Atoi(r.URL.Query().Get("w"))
-	return uint16(h), uint16(w)
+// sizeParams reads a resize's height and width, which dockerd rejects
+// when either is missing or does not fit a terminal's 16 bits.
+func sizeParams(r *http.Request) (uint16, uint16, error) {
+	q := r.URL.Query()
+	h, err := strconv.ParseUint(q.Get("h"), 10, 16)
+	if err != nil {
+		return 0, 0, &engine.Error{Kind: engine.KindInvalid, Msg: err.Error()}
+	}
+	w, err := strconv.ParseUint(q.Get("w"), 10, 16)
+	if err != nil {
+		return 0, 0, &engine.Error{Kind: engine.KindInvalid, Msg: err.Error()}
+	}
+	return uint16(h), uint16(w), nil
 }
 
 func (s *Server) containerList(w http.ResponseWriter, r *http.Request) {
@@ -637,11 +653,26 @@ func (s *Server) execStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if _, err := s.e.ExecInspect(id); err != nil {
+	x, err := s.e.ExecInspect(id)
+	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
 	if req.Detach {
+		// A detached start answers before the exec runs, so the
+		// conflicts ExecStart would report are answered here, as
+		// dockerd answers them.
+		if x.Running || x.ExitCode != nil {
+			writeError(w, http.StatusConflict, "exec "+id+" has already been started")
+			return
+		}
+		if c, err := s.e.Inspect(x.ContainerID); err != nil {
+			writeEngineError(w, err)
+			return
+		} else if c.State == nil || !c.State.Running {
+			writeError(w, http.StatusConflict, "container "+x.ContainerID+" is not running")
+			return
+		}
 		go s.e.ExecStart(id, req.Tty, req.ConsoleSize, engine.ExecIO{Stdout: io.Discard, Stderr: io.Discard})
 		w.WriteHeader(http.StatusOK)
 		return
@@ -861,7 +892,7 @@ func writeEngineError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, err.Error())
 	case engine.KindForbidden:
 		writeError(w, http.StatusForbidden, err.Error())
-	default:
+	case engine.KindInternal:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}
 }

@@ -210,7 +210,7 @@ func (s *Server) build(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts.Registries = creds
-	quiet := q.Get("q") == "1" || q.Get("q") == "true"
+	quiet := boolParam(q.Get("q"))
 	// Read the upload to its end before returning: the tar reader stops at
 	// the archive's end marker, and with full duplex on, unread body left to
 	// the server races its read of the next request on the connection.

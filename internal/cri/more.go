@@ -64,6 +64,9 @@ func (s *Service) StreamPodSandboxMetrics(req *runtimeapi.StreamPodSandboxMetric
 
 // containerEventType is the CRI event an engine action is, if any.
 func containerEventType(a events.Action) (runtimeapi.ContainerEventType, bool) {
+	// CRI has events for the four lifecycle steps only; the kubelet
+	// relists for the rest.
+	//exhaustive:ignore
 	switch a {
 	case events.ActionCreate:
 		return runtimeapi.ContainerEventType_CONTAINER_CREATED_EVENT, true

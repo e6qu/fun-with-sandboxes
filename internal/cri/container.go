@@ -179,7 +179,7 @@ func containerState(st *container.State) runtimeapi.ContainerState {
 		return runtimeapi.ContainerState_CONTAINER_CREATED
 	case container.StateRunning, container.StatePaused, container.StateRestarting:
 		return runtimeapi.ContainerState_CONTAINER_RUNNING
-	case container.StateExited, container.StateDead:
+	case container.StateExited, container.StateDead, container.StateRemoving:
 		return runtimeapi.ContainerState_CONTAINER_EXITED
 	}
 	return runtimeapi.ContainerState_CONTAINER_UNKNOWN

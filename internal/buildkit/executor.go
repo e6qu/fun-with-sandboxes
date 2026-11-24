@@ -57,7 +57,6 @@ type run struct {
 	volumes []seatbelt.Volume
 	mounts  []pathmap.Mount
 	proxy   int
-	done    chan struct{}
 }
 
 func newExecutor(opt execOpt) (*seatbeltExecutor, error) {
@@ -257,7 +256,7 @@ func (x *seatbeltExecutor) Run(ctx context.Context, id string, rootMount executo
 			return nil, err
 		}
 	}
-	r := &run{root: root, volumes: vols, mounts: mm.mounts, proxy: proxy, done: make(chan struct{})}
+	r := &run{root: root, volumes: vols, mounts: mm.mounts, proxy: proxy}
 	if id != "" {
 		x.mu.Lock()
 		x.runs[id] = r
@@ -268,7 +267,6 @@ func (x *seatbeltExecutor) Run(ctx context.Context, id string, rootMount executo
 			x.mu.Unlock()
 		}()
 	}
-	defer close(r.done)
 	err = x.exec(ctx, r, process, started)
 	// The step ends with its main process: what it started outside its
 	// process group goes too, found by the root its environment names.
@@ -356,20 +354,36 @@ func (x *seatbeltExecutor) exec(ctx context.Context, r *run, process executor.Pr
 			go io.Copy(master, process.Stdin)
 		}
 		go io.Copy(writerOrDiscard(process.Stdout), master)
-		go func() {
-			for ws := range process.Resize {
-				pty.Setsize(master, &pty.Winsize{Rows: uint16(ws.Rows), Cols: uint16(ws.Cols)})
-			}
-		}()
+		// BuildKit may never send on or close Resize, so the
+		// forwarding ends with the process.
+		if process.Resize != nil {
+			go func() {
+				for {
+					select {
+					case ws, ok := <-process.Resize:
+						if !ok {
+							return
+						}
+						pty.Setsize(master, &pty.Winsize{Rows: uint16(ws.Rows), Cols: uint16(ws.Cols)})
+					case <-proc.Done():
+						return
+					}
+				}
+			}()
+		}
 	}
+	signals := process.Signal
 	for wait := true; wait; {
 		select {
 		case <-proc.Done():
 			wait = false
-		case sig, ok := <-process.Signal:
-			if ok {
-				proc.Signal(sig)
+		case sig, ok := <-signals:
+			if !ok {
+				// A closed channel is always ready: stop selecting it.
+				signals = nil
+				continue
 			}
+			proc.Signal(sig)
 		case <-ctx.Done():
 			proc.KillAll()
 			<-proc.Done()

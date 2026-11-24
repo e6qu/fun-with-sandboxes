@@ -1,9 +1,11 @@
 package buildkit
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -251,9 +253,14 @@ func (s *Service) ServeGRPC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "connection cannot be hijacked", http.StatusInternalServerError)
 		return
 	}
-	conn, _, err := hj.Hijack()
+	conn, rw, err := hj.Hijack()
 	if err != nil {
 		return
+	}
+	// A client that sends its HTTP/2 preface without waiting for the 101
+	// has it in the server's read buffer, not on the connection.
+	if rw.Reader.Buffered() > 0 {
+		conn = bufferedConn{Conn: conn, r: rw.Reader}
 	}
 	resp := &http.Response{StatusCode: http.StatusSwitchingProtocols, ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{}}
 	resp.Header.Set("Connection", "Upgrade")
@@ -265,6 +272,13 @@ func (s *Service) ServeGRPC(w http.ResponseWriter, r *http.Request) {
 	//lint:ignore SA1019 net/http serves no hijacked connection (Service.h2)
 	s.h2.ServeConn(conn, &http2.ServeConnOpts{Handler: s.grpc})
 }
+
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 // ServeSession attaches a client's session, through which BuildKit reads the
 // build context and secrets and writes local outputs.
