@@ -54,8 +54,14 @@ func (a *Appender) Close() error {
 	return a.f.Close()
 }
 
+// maxLine is the longest entry LineWriter writes: dockerd splits a longer
+// line into entries of this length, the last one holding its newline.
+const maxLine = 16 * 1024
+
 // LineWriter turns a byte stream into log entries, one per line, keeping
-// the newline as Docker's json-file driver does.
+// the newline as Docker's json-file driver does. Write always succeeds: a
+// line the log fails to take is lost, as dockerd's are, rather than stall
+// the container's output.
 type LineWriter struct {
 	Stream string
 	To     *Appender
@@ -68,14 +74,16 @@ func (w *LineWriter) Write(p []byte) (int, error) {
 	defer w.mu.Unlock()
 	w.buf = append(w.buf, p...)
 	for {
-		i := bytes.IndexByte(w.buf, '\n')
-		if i < 0 {
-			break
+		n := bytes.IndexByte(w.buf, '\n') + 1
+		if n == 0 || n > maxLine {
+			if len(w.buf) < maxLine {
+				return len(p), nil
+			}
+			n = maxLine
 		}
-		w.To.Append(w.Stream, string(w.buf[:i+1]))
-		w.buf = w.buf[i+1:]
+		w.To.Append(w.Stream, string(w.buf[:n]))
+		w.buf = w.buf[n:]
 	}
-	return len(p), nil
 }
 
 // Flush writes a final line without a newline.

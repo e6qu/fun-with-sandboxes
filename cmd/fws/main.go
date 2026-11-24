@@ -75,7 +75,7 @@ func pick(filters []string) []catalog.Image {
 	for _, i := range catalog.Images {
 		for _, f := range filters {
 			f = strings.TrimPrefix(f, "fws/")
-			if f == i.Kind || f == i.Name {
+			if catalog.Kind(f) == i.Kind || f == i.Name {
 				out = append(out, i)
 				break
 			}

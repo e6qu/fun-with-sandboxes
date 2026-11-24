@@ -300,3 +300,62 @@ func TestHandedOutImagesKeepTheirTags(t *testing.T) {
 		t.Fatalf("the store's record: %+v, %v", got.RepoTags, err)
 	}
 }
+
+func TestApplyLayerRefusesWhiteoutOfParent(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "tree")
+	if err := os.MkdirAll(filepath.Join(dir, "etc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".wh..", "etc/.wh..", "etc/.wh.", "etc/.wh.."} {
+		if err := ApplyLayer(dir, layer(t, entry{name: name})); err == nil {
+			t.Errorf("whiteout %q applied", name)
+		}
+		if err := ExtractLayer(t.TempDir(), layer(t, entry{name: name})); err == nil {
+			t.Errorf("whiteout %q extracted", name)
+		}
+	}
+	if !exists(filepath.Join(dir, "etc")) {
+		t.Fatal("a whiteout removed the tree")
+	}
+}
+
+func TestApplyLayerHardLinksSymlinkItself(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(outside, []byte("s"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := ApplyLayer(dir, layer(t,
+		entry{name: "l", typ: tar.TypeSymlink, link: outside},
+		entry{name: "h", typ: tar.TypeLink, link: "l"},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(filepath.Join(dir, "h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("hard link reached the file outside the root")
+	}
+}
+
+func TestOpaqueWhiteoutKeepsItsOwnLayer(t *testing.T) {
+	dir := t.TempDir()
+	if err := ApplyLayer(dir, layer(t, entry{name: "x/old", body: "o"}, entry{name: "x/sub/old", body: "o"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyLayer(dir, layer(t,
+		entry{name: "x/new", body: "n"},
+		entry{name: "x/sub/new", body: "n"},
+		entry{name: "x/.wh..wh..opq"},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]bool{"x/old": false, "x/sub/old": false, "x/new": true, "x/sub/new": true} {
+		if exists(filepath.Join(dir, p)) != want {
+			t.Errorf("%s exists = %v, want %v", p, !want, want)
+		}
+	}
+}

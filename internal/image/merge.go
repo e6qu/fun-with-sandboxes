@@ -50,9 +50,13 @@ func MergeLayer(dir, dst string, clone func(src, dst string) error) error {
 		if err := checkParents(dst, filepath.ToSlash(rel)); err != nil {
 			return nil
 		}
+		hidden, err := whiteoutTarget(d.Name())
+		if err != nil {
+			return err
+		}
 		parent := filepath.Join(dst, filepath.Dir(rel))
-		if d.Name() != opaqueWhiteout {
-			return os.RemoveAll(filepath.Join(parent, strings.TrimPrefix(d.Name(), whiteoutPrefix)))
+		if hidden != "" {
+			return os.RemoveAll(filepath.Join(parent, hidden))
 		}
 		if fi, err := os.Lstat(parent); err != nil || !fi.IsDir() {
 			return nil

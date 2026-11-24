@@ -83,6 +83,15 @@ func hashTree(h hash.Hash, root string) error {
 		fmt.Fprintf(h, "store\x00%s\x00", root)
 		return nil
 	}
+	// copyTree follows a root that is a link, so its digest does too.
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	if root == storeDir || strings.HasPrefix(root, storeDir+"/") {
+		fmt.Fprintf(h, "store\x00%s\x00", root)
+		return nil
+	}
 	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

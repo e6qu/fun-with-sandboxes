@@ -1,7 +1,8 @@
 // Command entry runs Valkey inside a fwsd container as the official
 // image's entrypoint does: options or a .conf file as the first argument
 // run valkey-server with them, and valkey-server runs as the valkey user
-// under umask 0077. The server listens on the container's port 6379,
+// under umask 0077, with protected mode off unless a config file it is
+// given sets it. The server listens on the container's port 6379,
 // which the container library puts on its host port.
 package main
 
@@ -12,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -34,6 +36,7 @@ func main() {
 		args = append([]string{"valkey-server"}, args...)
 	}
 	if args[0] == "valkey-server" {
+		args = unprotected(args)
 		wd, err := os.Getwd()
 		if err != nil {
 			log.Fatal(err)
@@ -50,6 +53,44 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Fatal(syscall.Exec(bin, args, os.Environ()))
+}
+
+// unprotected turns protected mode off, as the official image does, where
+// no config file, the argument after valkey-server, sets protected-mode: a
+// server without a password otherwise refuses clients other than the
+// loopback's.
+func unprotected(args []string) []string {
+	rest := args[1:]
+	var conf []string
+	if len(rest) > 0 {
+		// A relative path is the working directory's, which is the
+		// process's own on the host too.
+		p := rest[0]
+		if filepath.IsAbs(p) {
+			p = sandboxenv.Path(p)
+		}
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			b, err := os.ReadFile(p)
+			if err == nil && protectedModeSet(string(b)) {
+				return args
+			}
+			conf, rest = rest[:1], rest[1:]
+		}
+	}
+	out := append([]string{args[0]}, conf...)
+	out = append(out, "--protected-mode", "no")
+	return append(out, rest...)
+}
+
+// protectedModeSet reports whether a config file sets protected-mode on a
+// line of its own, as the official image's grep '^protected-mode' finds it.
+func protectedModeSet(conf string) bool {
+	for _, line := range strings.Split(conf, "\n") {
+		if strings.HasPrefix(line, "protected-mode") {
+			return true
+		}
+	}
+	return false
 }
 
 func ping(addr string) error {

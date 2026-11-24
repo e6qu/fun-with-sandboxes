@@ -648,7 +648,11 @@ func (s *Store) writeLayer(l v1.Layer) error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	h := sha256.New()
+	h, err := hasher(dg)
+	if err != nil {
+		tmp.Close()
+		return fmt.Errorf("layer %s: %w", dg, err)
+	}
 	_, err = io.Copy(io.MultiWriter(tmp, h), rc)
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
@@ -657,7 +661,7 @@ func (s *Store) writeLayer(l v1.Layer) error {
 		return err
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != dg.Hex {
-		return fmt.Errorf("layer %s downloaded with digest sha256:%s", dg, got)
+		return fmt.Errorf("layer %s downloaded with digest %s:%s", dg, dg.Algorithm, got)
 	}
 	return os.Rename(tmp.Name(), s.blobPath(dg))
 }
@@ -755,6 +759,9 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 	err = Extract(dir, f, false)
 	f.Close()
 	if err != nil {
+		return nil, err
+	}
+	if err := noLinks(dir); err != nil {
 		return nil, err
 	}
 	// The layout stores blobs under the names they come with, which go on

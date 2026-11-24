@@ -28,6 +28,10 @@ type Instruction struct {
 	Line int
 }
 
+// knownDirectives are the parser directives the Dockerfile reference
+// defines.
+var knownDirectives = map[string]bool{"syntax": true, "escape": true, "check": true}
+
 var directive = regexp.MustCompile(`^#\s*([a-zA-Z][a-zA-Z0-9]*)\s*=\s*(.+?)\s*$`)
 
 // Parse reads a Dockerfile.
@@ -44,10 +48,11 @@ func Parse(r io.Reader) ([]Instruction, error) {
 	}
 
 	i := 0
-	// Parser directives sit at the very top, before any other line.
+	// Parser directives sit at the very top, before any other line. An
+	// unknown one is a comment, after which no directive is read.
 	for ; i < len(lines); i++ {
 		m := directive.FindStringSubmatch(lines[i])
-		if m == nil {
+		if m == nil || !knownDirectives[strings.ToLower(m[1])] {
 			break
 		}
 		if strings.EqualFold(m[1], "escape") {

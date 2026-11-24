@@ -42,10 +42,23 @@ def post(path, payload, headers=None):
         res.read()
 
 
+class FaultError(Exception):
+    """An error of the function's setup, which AWS's runtime interface
+    client reports under a Runtime.* type of its own."""
+
+    def __init__(self, error_type, message):
+        super().__init__(message)
+        self.error_type = error_type
+
+
+def error_type(exc):
+    return exc.error_type if isinstance(exc, FaultError) else type(exc).__name__
+
+
 def error_payload(exc):
     return {
         "errorMessage": str(exc),
-        "errorType": type(exc).__name__,
+        "errorType": error_type(exc),
         "requestId": "",
         # The runtime's own frames are not the function's.
         "stackTrace": traceback.format_list(
@@ -76,12 +89,19 @@ class LambdaContext:
 def load_handler(spec):
     module_path, _, function = spec.rpartition(".")
     if not module_path or not function:
-        raise ValueError("Bad handler '%s': not enough values to unpack (expected 2, got 1)" % spec)
+        raise FaultError(
+            "Runtime.MalformedHandlerName", "Bad handler '%s': not enough values to unpack (expected 2, got 1)" % spec
+        )
     sys.path.insert(0, host_path(os.environ.get("LAMBDA_TASK_ROOT", "/var/task")))
-    module = importlib.import_module(module_path.replace("/", "."))
+    try:
+        module = importlib.import_module(module_path.replace("/", "."))
+    except ImportError as exc:
+        raise FaultError("Runtime.ImportModuleError", "Unable to import module '%s': %s" % (module_path, exc))
+    except SyntaxError as exc:
+        raise FaultError("Runtime.UserCodeSyntaxError", "Syntax error in module '%s': %s" % (module_path, exc))
     handler = getattr(module, function, None)
     if handler is None:
-        raise AttributeError("Handler '%s' missing on module '%s'" % (function, module_path))
+        raise FaultError("Runtime.HandlerNotFound", "Handler '%s' missing on module '%s'" % (function, module_path))
     return handler
 
 
@@ -91,11 +111,12 @@ def main():
         handler = load_handler(spec)
     except Exception as exc:
         traceback.print_exc()
-        post("/init/error", error_payload(exc), {"Lambda-Runtime-Function-Error-Type": "Runtime.ImportModuleError"})
+        post("/init/error", error_payload(exc), {"Lambda-Runtime-Function-Error-Type": error_type(exc)})
         sys.exit(1)
     while True:
         with request("GET", API + "/invocation/next") as res:
-            headers = dict(res.headers.items())
+            # The message's lookups ignore case, as HTTP's header names do.
+            headers = res.headers
             body = res.read()
         request_id = headers.get("Lambda-Runtime-Aws-Request-Id")
         trace = headers.get("Lambda-Runtime-Trace-Id")

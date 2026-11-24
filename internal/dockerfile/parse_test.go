@@ -110,3 +110,21 @@ func TestExpand(t *testing.T) {
 		}
 	}
 }
+
+func TestUnknownDirectiveEndsDirectives(t *testing.T) {
+	ins, err := Parse(strings.NewReader("# foo=bar\n# escape=`\nFROM scratch\nCOPY a \\\n  b\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ins) != 2 || ins[1].Raw != "a   b" {
+		t.Fatalf("instructions %+v", ins)
+	}
+}
+
+func TestExpandExpandsTheWord(t *testing.T) {
+	env := map[string]string{"B": "b"}
+	got, err := Expand("${A:-$B} ${B:+x$B}", func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	if err != nil || got != "b xb" {
+		t.Fatalf("Expand = %q, %v", got, err)
+	}
+}

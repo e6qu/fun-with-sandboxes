@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"debug/macho"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -252,8 +253,13 @@ func copyStorePath(stage, storePath string) error {
 	})
 }
 
-// copyTree copies a file, or a directory and everything in it.
+// copyTree copies a file, or a directory and everything in it, following
+// src where it is a link.
 func copyTree(src, dst string) error {
+	src, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return err
+	}
 	fi, err := os.Stat(src)
 	if err != nil {
 		return err
@@ -301,7 +307,12 @@ func copyFile(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fi.Mode().Perm()|0o200)
+	// A file the stage holds already, such as a store path's link that a
+	// spec's file replaces, goes first rather than be written through.
+	if err := os.Remove(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fi.Mode().Perm()|0o200)
 	if err != nil {
 		return err
 	}
@@ -637,15 +648,24 @@ func writeArchive(stage, overlay string, spec Spec, storePaths []string, out, ar
 			return err
 		}
 	}
-	f, err := os.Create(out)
+	// The archive takes its name once whole: a catalog's directory loads
+	// every *.tar in it, a half-written one too.
+	f, err := os.CreateTemp(filepath.Dir(out), "."+filepath.Base(out)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	if err := image.WriteArchive(f, []image.ArchiveEntry{{Image: img, Tags: []string{spec.Tag}}}); err != nil {
-		f.Close()
+	defer os.Remove(f.Name())
+	err = image.WriteArchive(f, []image.ArchiveEntry{{Image: img, Tags: []string{spec.Tag}}})
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		return err
 	}
-	return f.Close()
+	if err := os.Chmod(f.Name(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), out)
 }
 
 // layerSource is a tree a layer takes the entries include accepts from, by
@@ -658,11 +678,16 @@ type layerSource struct {
 // writeLayer writes the entries of sources as a deterministic layer tar,
 // in lexical order of their paths; of entries at the same path, the
 // later source's.
-func writeLayer(path string, sources ...layerSource) error {
+func writeLayer(path string, sources ...layerSource) (err error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
 	tw := tar.NewWriter(f)
 	from := map[string]string{}
 	for _, src := range sources {
@@ -723,8 +748,5 @@ func writeLayer(path string, sources ...layerSource) error {
 			}
 		}
 	}
-	if err := tw.Close(); err != nil {
-		return err
-	}
-	return f.Close()
+	return tw.Close()
 }

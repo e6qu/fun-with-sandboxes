@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,5 +41,31 @@ func TestLineWriterSplitsLines(t *testing.T) {
 	}
 	if len(got) != 3 || got[0] != "one\n" || got[1] != "two\n" || got[2] != "three" || notified != 3 {
 		t.Fatalf("entries %q, %d notifications", got, notified)
+	}
+}
+
+func TestLineWriterSplitsLongLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log.jsonl")
+	a, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &LineWriter{Stream: "stdout", To: a}
+	w.Write([]byte(strings.Repeat("x", maxLine+1) + "\n"))
+	a.Close()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lens []int
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var e Entry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatal(err)
+		}
+		lens = append(lens, len(e.Log))
+	}
+	if len(lens) != 2 || lens[0] != maxLine || lens[1] != 2 {
+		t.Fatalf("entry lengths %v", lens)
 	}
 }

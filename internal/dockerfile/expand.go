@@ -39,17 +39,16 @@ func Expand(s string, lookup func(string) (string, bool)) (string, error) {
 				return "", fmt.Errorf("bad substitution %q", "${"+expr+"}")
 			}
 			v, ok := lookup(name)
-			switch mod {
-			case ":-":
-				if !ok || v == "" {
-					v = word
+			set := ok && v != ""
+			if mod == ":-" && !set || mod == ":+" && set {
+				// The word is itself expanded, as ${A:-$B} takes B.
+				w, err := Expand(word, lookup)
+				if err != nil {
+					return "", err
 				}
-			case ":+":
-				if ok && v != "" {
-					v = word
-				} else {
-					v = ""
-				}
+				v = w
+			} else if mod == ":+" {
+				v = ""
 			}
 			b.WriteString(v)
 			continue
