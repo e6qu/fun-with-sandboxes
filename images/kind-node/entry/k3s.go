@@ -290,7 +290,7 @@ func k3sServer(args []string) {
 			log.Fatalf("kubeadm init: %v", err)
 		}
 	}
-	for _, m := range []string{"/kind/manifests/default-cni.yaml", "/kind/manifests/default-storage.yaml"} {
+	for _, m := range []string{"/kind/manifests/default-cni.yaml", "/kind/manifests/k3s-storage.yaml"} {
 		if err := retry(n, time.Minute, "kubectl", "--kubeconfig="+adminKubeconfig, "apply", "-f", m); err != nil {
 			log.Fatalf("applying %s: %v", m, err)
 		}

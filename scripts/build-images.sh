@@ -804,6 +804,7 @@ node_files=(-pkg "$coreutils" -pkg "$gnutar" -pkg "$bash" -link /bin/sh=bash
   -file "/kind/version=$build/kind-version" -file "/kind/images.txt=$build/kind-images.txt" "${images[@]}"
   -file "/kind/manifests/default-cni.yaml=$here/images/kind-node/manifests/default-cni.yaml"
   -file "/kind/manifests/default-storage.yaml=$here/images/kind-node/manifests/default-storage.yaml"
+  -file "/kind/manifests/k3s-storage.yaml=$here/images/kind-node/manifests/k3s-storage.yaml"
   -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt")
 accounts kind-node
 mkimage "${acct[@]}" -spec images/kind-node/image.json -closure "$build/kind-node.closure" "${node_files[@]}" -out "$out/kind-node.tar"

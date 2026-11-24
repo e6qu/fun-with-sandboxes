@@ -261,7 +261,8 @@ offers an unprivileged process. Non-goals are in
   not ready and names what it does not apply.
 - **`fws/k3s` is kubeadm's cluster under k3s's names.** `k3s agent`,
   joining servers, Traefik, ServiceLB, the Helm controller, the embedded
-  registry and etcd snapshots are absent. Its node needs an address
+  registry and etcd snapshots are absent. Its default storage class, `local-path`, is
+  the controller manager's host-path provisioner. Its node needs an address
   outside loopback: the default bridge or a network with a subnet.
 
 ## Resources

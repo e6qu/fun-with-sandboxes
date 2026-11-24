@@ -1,0 +1,13 @@
+# k3s's default StorageClass, local-path, as k3s names it: here the
+# controller manager's host-path provisioner, as kind's standard class,
+# provisions its volumes in the node, where k3s's local-path provisioner
+# would.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: kubernetes.io/host-path
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
