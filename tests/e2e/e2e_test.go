@@ -40,7 +40,17 @@ func TestMain(m *testing.M) {
 	os.Exit(run(m))
 }
 
+// pollClient is for a loop that asks a server until it answers: an attempt
+// a connection accepts and nothing answers ends, as a port forwarder's
+// does before the server behind it listens, rather than block the loop
+// past its deadline.
+var pollClient = &http.Client{Timeout: 5 * time.Second}
+
 func run(m *testing.M) int {
+	// No request of the suite's waits without end: Go's default client has
+	// no timeout, and one request that hangs holds the shard to its job's
+	// limit with no test failed.
+	http.DefaultClient.Timeout = 2 * time.Minute
 	images := os.Getenv("FWS_E2E_IMAGES")
 	imagesDir = images
 	if images == "" {

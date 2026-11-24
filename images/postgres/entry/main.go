@@ -37,6 +37,15 @@ var serverSettings = []string{
 	"dynamic_shared_memory_type=mmap",
 }
 
+// socketDir is the directory of the server's sockets as the container
+// names it, which the server and psql are given rather than its host path:
+// each checks a socket's path against macOS's 103-byte limit before it
+// binds or connects, and a container root deep in the engine's data
+// directory (a Compose project's stacks/<project>/c/<id>/r) takes a host
+// path past it, where the container library binds and connects a long
+// one through its directory.
+const socketDir = "/var/run/postgresql"
+
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("entry: ")
@@ -55,7 +64,7 @@ func main() {
 		log.Fatal(syscall.Exec(prog, args, os.Environ()))
 	}
 	pgdata := sandboxenv.Path(getenv("PGDATA", "/var/lib/postgresql/data"))
-	sockets := sandboxenv.Path("/var/run/postgresql")
+	sockets := sandboxenv.Path(socketDir)
 	if err := os.MkdirAll(sockets, 0o755); err != nil {
 		log.Fatal(err)
 	}
@@ -68,13 +77,13 @@ func main() {
 	if len(args) > 0 && args[0] == "postgres" {
 		args = args[1:]
 	}
-	if err := initialise(pgdata, user, sockets, args); err != nil {
+	if err := initialise(pgdata, user, socketDir, args); err != nil {
 		log.Fatal(err)
 	}
 	postgres := bin("postgres")
 	// nixpkgs builds libpq with /tmp as its default socket directory, so
 	// the image's psql finds the server there with no host named.
-	server := append([]string{postgres}, serverArgs(pgdata, "*", sockets+","+sandboxenv.Path("/tmp"))...)
+	server := append([]string{postgres}, serverArgs(pgdata, "*", socketDir+",/tmp")...)
 	log.Fatal(syscall.Exec(postgres, append(server, args...), os.Environ()))
 }
 

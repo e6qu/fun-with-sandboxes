@@ -96,10 +96,12 @@ func (m *mobyInstance) Export(ctx context.Context, src *exporter.Source, info ex
 	}
 	defer done(context.WithoutCancel(ctx))
 
+	began := time.Now()
 	desc, remotes, err := m.e.writer.Commit(ctx, src, info.SessionID, info.InlineCache, &opts, info.CompatibilityVersion, m.Type())
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	slow(began, "committing the image's layers")
 	var layers content.Provider = m.e.content
 	if remotes != nil && remotes.Ref != nil {
 		layers = remotes.Ref.Provider
@@ -108,14 +110,18 @@ func (m *mobyInstance) Export(ctx context.Context, src *exporter.Source, info ex
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	began = time.Now()
 	root, err := m.cloneRoot(ctx, src, info)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	slow(began, "cloning the image's root")
+	began = time.Now()
 	stored, err := m.e.store.Add(img, m.names, root)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	slow(began, "storing the image")
 	// Image IDs are config digests, as in dockerd's classic store, whose moby
 	// exporter reports the ID as the image's digest too.
 	return map[string]string{

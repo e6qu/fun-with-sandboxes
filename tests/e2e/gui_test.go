@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -423,7 +422,7 @@ nohup "$node" .devcontainer/serve.js "$1" > /tmp/serve.log 2>&1 &
 		installed, _ = docker(t, "exec", w.id, "ls", "/root/.vscode-server/extensions")
 		settings, _ = docker(t, "exec", w.id, "cat", "/root/.vscode-server/data/Machine/settings.json")
 		attached, _ = docker(t, "exec", w.id, "cat", "/tmp/attached")
-		if res, err := http.Get("http://127.0.0.1:" + port + "/"); err == nil {
+		if res, err := pollClient.Get("http://127.0.0.1:" + port + "/"); err == nil {
 			b, _ := io.ReadAll(res.Body)
 			res.Body.Close()
 			forwarded = string(b)

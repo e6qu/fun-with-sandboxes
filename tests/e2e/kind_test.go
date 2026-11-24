@@ -163,7 +163,7 @@ func TestKindCluster(t *testing.T) {
 	// the worker's.
 	hostAddr := strings.TrimSpace(mustDocker(t, "port", nodes[1], fmt.Sprintf("%d/tcp", nodePort)))
 	for deadline := time.Now().Add(time.Minute); ; time.Sleep(2 * time.Second) {
-		res, err := http.Get("http://" + hostAddr + "/")
+		res, err := pollClient.Get("http://" + hostAddr + "/")
 		if err == nil {
 			res.Body.Close()
 			if res.StatusCode == http.StatusOK {

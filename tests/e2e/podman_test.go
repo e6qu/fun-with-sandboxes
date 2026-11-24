@@ -241,7 +241,7 @@ spec:
 	}
 	healthz := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
 	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(500 * time.Millisecond) {
-		res, err := http.Get(healthz)
+		res, err := pollClient.Get(healthz)
 		if err == nil {
 			res.Body.Close()
 			if res.StatusCode == http.StatusOK {

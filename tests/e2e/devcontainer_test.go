@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -262,7 +261,7 @@ func TestDevcontainerAppPort(t *testing.T) {
 	})
 	var body string
 	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		res, err := http.Get("http://127.0.0.1:" + port + "/index.txt")
+		res, err := pollClient.Get("http://127.0.0.1:" + port + "/index.txt")
 		if err != nil {
 			continue
 		}
@@ -471,19 +470,17 @@ RUN echo 'dev:x:1000:1000:dev:/home/dev:/bin/bash' >> /etc/passwd && echo 'dev:x
 
 // Docker outside of Docker, as the docker-outside-of-docker feature sets
 // it up on Linux: the engine's socket mounted into the dev container, with
-// a darwin Docker CLI copied from fws/dind, drives the engine that runs
-// the container. The container finds itself, and runs a sibling that
-// mounts the workspace by its host path, which remoteEnv hands in.
+// fws/dind's darwin Docker CLI, drives the engine that runs the container
+// (the CLI overrides the image's command, so no daemon of its own starts).
+// The container finds itself, and runs a sibling that mounts the workspace
+// by its host path, which remoteEnv hands in. The Dockerfile builds on
+// fws/dind rather than copying its store into another image: a layer of
+// the whole store took four minutes to export on a CI runner.
 func TestDevcontainerDockerOutsideOfDocker(t *testing.T) {
 	sock := strings.TrimPrefix(dockerHost, "unix://")
 	dir, res := devcontainerUp(t, map[string]string{
 		"README": "from the workspace\n",
-		// /bin/docker is a relative link into the image's store, which
-		// holds the CLI's closure.
-		".devcontainer/Dockerfile": `FROM fws/dind:29 AS docker
-FROM fws/base:1
-COPY --from=docker /nix/store /nix/store
-COPY --from=docker /bin/docker /bin/docker
+		".devcontainer/Dockerfile": `FROM fws/dind:29
 `,
 		".devcontainer/devcontainer.json": `{
   "build": {"dockerfile": "Dockerfile"},
@@ -570,7 +567,7 @@ func TestDevcontainerVSCodeServer(t *testing.T) {
 	})
 	var version string
 	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(500 * time.Millisecond) {
-		res, err := http.Get("http://127.0.0.1:" + port + "/version")
+		res, err := pollClient.Get("http://127.0.0.1:" + port + "/version")
 		if err != nil {
 			continue
 		}
