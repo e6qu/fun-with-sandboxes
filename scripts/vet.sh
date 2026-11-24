@@ -5,9 +5,10 @@
 # scripts/sync-buildkit.sh copies it, so its findings are left to upstream.
 # Compile errors there still fail the build step.
 set -uo pipefail
-cd "$(dirname "$0")/.."
-pkgs=$(go list ./... | grep -v /third_party/)
-out=$(go vet $pkgs 2>&1)
+cd "$(dirname "$0")/.." || exit
+pkgs=()
+while read -r p; do pkgs+=("$p"); done < <(go list ./... | grep -v /third_party/)
+out=$(go vet "${pkgs[@]}" 2>&1)
 own=$(printf '%s\n' "$out" | grep -v -e '^third_party/buildkit/' -e '^#' -e '^$' || true)
 if [ -n "$own" ]; then
   printf '%s\n' "$own"

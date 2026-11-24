@@ -31,6 +31,8 @@ You need:
 - **the Xcode Command Line Tools** (`xcode-select --install`), whose clang
   builds the container library and the spawn helper;
 - **[Nix](https://nixos.org/download)**, to build the image catalog;
+- **[ShellCheck](https://www.shellcheck.net)** (`brew install shellcheck`),
+  for `scripts/lint.sh`;
 - for the end-to-end suite, **the Docker CLI, Docker Compose, buildx,
   Podman, `podman-compose`, `crictl`** and **the Dev Containers CLI**:
 
@@ -97,6 +99,17 @@ The checks CI runs, in the order to run them locally:
    GOOS=darwin GOARCH=arm64 govulncheck ./...
    ```
 
+   `scripts/lint.sh` runs the checks beyond those, at pinned versions:
+   ineffassign, nilness, exhaustive (a `switch` over one of the module's
+   enum types names every value or has a `default`; mark one partial by
+   design with a comment saying why and `//exhaustive:ignore` alone on
+   the line above it), ShellCheck over `scripts/` and actionlint over the
+   workflows. None of them adds anything to what the engine runs:
+
+   ```bash
+   GOOS=darwin GOARCH=arm64 scripts/lint.sh
+   ```
+
 3. **Fuzzing**, of each `Fuzz` target for the time given; a failing input
    lands in its package's `testdata/fuzz` and runs with the tests after:
 
@@ -142,7 +155,8 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
 `main` and by hand:
 
 - `linux`: formatting, the cross-build, vet, the portable unit tests,
-  staticcheck and govulncheck (the end-to-end module's too), 30 s of each
+  staticcheck, `scripts/lint.sh` and govulncheck (the end-to-end
+  module's too), 30 s of each
   fuzz target, that the shards hold every test once, and that
   `third_party/buildkit` matches its sync script;
 - `macos`, on macOS 15 and 26: the unit tests; the probes again with the

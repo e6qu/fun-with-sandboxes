@@ -46,8 +46,13 @@ jobs:
       - name: staticcheck (darwin)
         run: |
           GOBIN="$RUNNER_TEMP/bin" go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
-          GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/staticcheck" $(go list ./... | grep -v /third_party/)
+          mapfile -t pkgs < <(go list ./... | grep -v /third_party/)
+          GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/staticcheck" "${pkgs[@]}"
           (cd tests/e2e && GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/staticcheck" -tags e2e ./...)
+      # ineffassign, nilness, exhaustive, ShellCheck and actionlint
+      # (scripts/lint.sh); ShellCheck comes with the runner's image.
+      - name: lint (darwin)
+        run: GOOS=darwin GOARCH=arm64 GOBIN="$RUNNER_TEMP/bin" scripts/lint.sh
       # Known vulnerabilities in the code the engine and the suite call,
       # the standard library's included, for the build that ships.
       - name: govulncheck (darwin)
@@ -185,10 +190,14 @@ jobs:
           if [ -d "$dir" ]; then
             export NIX_CONFIG="extra-substituters = file://$dir?trusted=1"
           fi
-          paths=$(scripts/build-images.sh --prebuilt ${{ matrix.group }})
+          # A failed build fails the step here; macOS's bash 3.2 has no
+          # mapfile.
+          out=$(scripts/build-images.sh --prebuilt "${{ matrix.group }}")
+          paths=()
+          while read -r p; do [ -z "$p" ] || paths+=("$p"); done <<< "$out"
           # zstd, not the file store's default xz, which takes many minutes
           # over a group's closure; the cache compresses the store again.
-          nix --extra-experimental-features nix-command copy --to "file://$dir?compression=zstd" $paths
+          nix --extra-experimental-features nix-command copy --to "file://$dir?compression=zstd" "${paths[@]}"
       - uses: actions/cache/save@v5
         if: steps.cache.outputs.cache-hit != 'true'
         with:
@@ -219,13 +228,15 @@ jobs:
         if: (failure() || cancelled()) && steps.cache.outputs.cache-hit != 'true' && steps.drv.outputs.key != ''
         timeout-minutes: 5
         run: |
-          built=$(nix --extra-experimental-features nix-command path-info --json --all | python3 -c '
+          out=$(nix --extra-experimental-features nix-command path-info --json --all | python3 -c '
           import json, sys
           d = json.load(sys.stdin)
           entries = d.items() if isinstance(d, dict) else ((e["path"], e) for e in d)
-          print(" ".join(p for p, i in entries if i and i.get("ultimate")))')
-          if [ -n "$built" ]; then
-            nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-prebuilt/${{ matrix.group }}?compression=zstd" $built
+          print("\n".join(p for p, i in entries if i and i.get("ultimate")))')
+          built=()
+          while read -r p; do [ -z "$p" ] || built+=("$p"); done <<< "$out"
+          if [ "${#built[@]}" -gt 0 ]; then
+            nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-prebuilt/${{ matrix.group }}?compression=zstd" "${built[@]}"
             echo "kept=true" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/cache/save@v5
@@ -430,9 +441,13 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/e2e"
           export FWS_E2E_IMAGES=~/fws-images
-          export FWS_E2E_RUN=$(../../scripts/e2e-shard.sh 4 ${{ matrix.shard }})
+          FWS_E2E_RUN=$(../../scripts/e2e-shard.sh 4 "${{ matrix.shard }}")
+          export FWS_E2E_RUN
+          # The quoted scripts expand their variables in sh, not here.
+          # shellcheck disable=SC2016
           nohup sh -c 'go test -tags e2e -v -count=1 -timeout 75m -run "$FWS_E2E_RUN" ./...; echo $? > "$RUNNER_TEMP/e2e/exit"' \
             > "$RUNNER_TEMP/e2e/test.log" 2>&1 < /dev/null &
+          # shellcheck disable=SC2016
           nohup sh -c 'while [ ! -e "$RUNNER_TEMP/e2e/exit" ]; do
               date; df -h /; sysctl vm.swapusage kern.memorystatus_level; vm_stat
               ps -o pid,ppid,pgid,stat,rss,%cpu,etime,comm -p "$(pgrep -d, -f "Runner\.|provjobd")"

@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 time=${1:-30s}
 grep -rl --include='*_test.go' '^func Fuzz' internal cmd images | sort | while read -r f; do
   pkg=./$(dirname "$f")
-  for target in $(sed -n 's/^func \(Fuzz[A-Za-z0-9_]*\)(.*/\1/p' "$f"); do
+  sed -n 's/^func \(Fuzz[A-Za-z0-9_]*\)(.*/\1/p' "$f" | while read -r target; do
     echo "== $pkg $target"
     log=$(mktemp)
     if ! go test -run '^$' -fuzz "^$target\$" -fuzztime "$time" "$pkg" 2>&1 | tee "$log"; then
