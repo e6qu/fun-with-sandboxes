@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -81,10 +82,17 @@ func serveAnchor() int {
 func awaitExit(pid int) {
 	kq, err := unix.Kqueue()
 	if err != nil {
+		pollExit(pid)
 		return
 	}
+	defer unix.Close(kq)
 	ev := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_ONESHOT, Fflags: unix.NOTE_EXIT}
 	if _, err := unix.Kevent(kq, []unix.Kevent_t{ev}, nil, nil); err != nil {
+		// ESRCH: it has exited already. Any other failure leaves the
+		// process running, which the anchor outlives by polling for it.
+		if !errors.Is(err, unix.ESRCH) {
+			pollExit(pid)
+		}
 		return
 	}
 	out := make([]unix.Kevent_t, 1)
@@ -93,6 +101,13 @@ func awaitExit(pid int) {
 		if n > 0 || (err != nil && !errors.Is(err, syscall.EINTR)) {
 			return
 		}
+	}
+}
+
+// pollExit returns once pid no longer exists.
+func pollExit(pid int) {
+	for unix.Kill(pid, 0) != unix.ESRCH {
+		time.Sleep(250 * time.Millisecond)
 	}
 }
 
