@@ -391,10 +391,35 @@ func relocate(stage string) error {
 			return fmt.Errorf("install_name_tool %s: %v: %s", p, err, out)
 		}
 		if out, err := exec.Command("codesign", "--force", "--sign", "-", p).CombinedOutput(); err != nil {
-			return fmt.Errorf("codesign %s: %v: %s", p, err, out)
+			return fmt.Errorf("codesign %s: %v: %s; %s", p, err, out, describeMachO(p))
 		}
 		return nil
 	})
+}
+
+// describeMachO says what a file codesign refused looks like, and whether
+// codesign takes it at a second try, so that a failure on a CI runner
+// shows whether the file or the signing went wrong.
+func describeMachO(p string) string {
+	var b strings.Builder
+	if fi, err := os.Stat(p); err == nil {
+		fmt.Fprintf(&b, "%d bytes", fi.Size())
+	}
+	if f, err := os.Open(p); err == nil {
+		head := make([]byte, 16)
+		n, _ := io.ReadFull(f, head)
+		f.Close()
+		fmt.Fprintf(&b, ", starting %x", head[:n])
+	}
+	if out, err := exec.Command("lipo", "-info", p).CombinedOutput(); err == nil {
+		fmt.Fprintf(&b, "; lipo: %s", strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("codesign", "--force", "--sign", "-", p).CombinedOutput(); err != nil {
+		fmt.Fprintf(&b, "; a second codesign fails too: %s", strings.TrimSpace(string(out)))
+	} else {
+		b.WriteString("; a second codesign succeeds")
+	}
+	return b.String()
 }
 
 func loaderRel(stage, file, ref string) string {
