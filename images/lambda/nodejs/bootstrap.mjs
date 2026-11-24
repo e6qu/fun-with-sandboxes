@@ -10,6 +10,11 @@ import { pathToFileURL } from "node:url";
 
 const API = `http://${process.env.AWS_LAMBDA_RUNTIME_API}/2018-06-01/runtime`;
 
+// The Runtime Interface Emulator keeps AWS_EXECUTION_ENV, a variable the
+// Lambda platform reserves, from the runtime's environment and sets none,
+// so the runtime names itself, as Lambda names it.
+process.env.AWS_EXECUTION_ENV = `AWS_Lambda_nodejs${process.versions.node.split(".")[0]}.x`;
+
 // SANDBOX_ROOT holds the container's root on the host.
 function hostPath(p) {
   const root = process.env.SANDBOX_ROOT ?? "";

@@ -64,7 +64,8 @@ def handler(event, context):
 }
 
 // Each Node.js runtime the catalog carries runs a handler under its own
-// release and execution environment.
+// release and execution environment, which the runtime sets, as the
+// Runtime Interface Emulator passes none.
 func TestLambdaNode(t *testing.T) {
 	for _, v := range []string{"22", "24"} {
 		name := "fws-e2e-lambda-node-" + v
@@ -100,6 +101,7 @@ public class App implements RequestHandler<App.Request, App.Response> {
         public String greeting;
         public String java;
         public String requestId;
+        public String env;
     }
 
     public Response handleRequest(Request in, Context ctx) {
@@ -107,6 +109,7 @@ public class App implements RequestHandler<App.Request, App.Response> {
         r.greeting = "hello " + in.name;
         r.java = System.getProperty("java.specification.version");
         r.requestId = ctx.getAwsRequestId();
+        r.env = System.getenv("AWS_EXECUTION_ENV");
         return r;
     }
 }
@@ -124,7 +127,8 @@ CMD ["example.App::handleRequest"]
 	waitedRun(t, name, "-p", "127.0.0.1::8080", "e2e/lambda-java:1")
 	code, body := invoke(t, name, `{"name":"lambda"}`)
 	var got map[string]string
-	if code != 200 || json.Unmarshal([]byte(body), &got) != nil || got["greeting"] != "hello lambda" || got["java"] != "17" || got["requestId"] == "" {
+	if code != 200 || json.Unmarshal([]byte(body), &got) != nil || got["greeting"] != "hello lambda" || got["java"] != "17" || got["requestId"] == "" ||
+		got["env"] != "AWS_Lambda_java17" {
 		t.Fatalf("invocation: %d %s", code, body)
 	}
 }

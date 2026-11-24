@@ -14,6 +14,11 @@ import urllib.request
 
 API = "http://" + os.environ["AWS_LAMBDA_RUNTIME_API"] + "/2018-06-01/runtime"
 
+# The Runtime Interface Emulator keeps AWS_EXECUTION_ENV, a variable the
+# Lambda platform reserves, from the runtime's environment and sets none,
+# so the runtime names itself, as Lambda names it.
+os.environ["AWS_EXECUTION_ENV"] = "AWS_Lambda_python%d.%d" % sys.version_info[:2]
+
 
 def host_path(p):
     """Map a path inside the container to the host, where SANDBOX_ROOT

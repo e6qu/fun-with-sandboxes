@@ -1,3 +1,7 @@
 #!/bin/sh
 # The Lambda runtime: the Runtime API client runs the function _HANDLER names.
+# The Runtime Interface Emulator keeps AWS_EXECUTION_ENV, which the Lambda
+# platform reserves, from the runtime's environment, so the runtime names
+# itself, as Lambda names it.
+export AWS_EXECUTION_ENV=AWS_Lambda_java17
 exec java -XX:+TieredCompilation -XX:TieredStopAtLevel=1 -cp '/var/runtime/lib/*' fws.lambda.Bootstrap "$@"
