@@ -241,36 +241,46 @@ int main(int argc, char **argv) {
     printf("ifaddrs=%s\n", list);
 
     // The routing table, as netstat -rn reads it: the container's default
-    // route through its network's gateway, and none of the host's routes
-    // off loopback.
+    // route through its network's gateway, and none on an interface the
+    // container does not have, as the host's off loopback are.
     {
         int mib[6] = {CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_DUMP2, 0};
         size_t len = 0;
         char *rt = NULL;
-        int defaults = 0, others = 0;
+        int defaults = 0, others = 0, got = 0;
         char gwtext[INET_ADDRSTRLEN] = "none";
-        if (sysctl(mib, 6, NULL, &len, NULL, 0) == 0 && (rt = malloc(len)) && sysctl(mib, 6, rt, &len, NULL, 0) == 0) {
-            for (size_t off = 0; off + sizeof(struct rt_msghdr2) <= len;) {
-                struct rt_msghdr2 *m = (void *)(rt + off);
-                if (m->rtm_msglen == 0) break;
-                struct sockaddr *sa = (void *)(m + 1);
-                struct sockaddr_in dst = {0}, gw = {0};
-                for (int bit = 0; bit < RTAX_MAX; bit++) {
-                    if (!(m->rtm_addrs & (1 << bit))) continue;
-                    if (bit == RTAX_DST && sa->sa_family == AF_INET) memcpy(&dst, sa, sizeof dst);
-                    if (bit == RTAX_GATEWAY && sa->sa_family == AF_INET) memcpy(&gw, sa, sizeof gw);
-                    size_t l = sa->sa_len ? (1 + ((sa->sa_len - 1) | (sizeof(uint32_t) - 1))) : sizeof(uint32_t);
-                    sa = (void *)((char *)sa + l);
+        // The table may grow between the two calls, as connections to
+        // loopback addresses clone routes.
+        for (int tries = 0; tries < 8 && !got && sysctl(mib, 6, NULL, &len, NULL, 0) == 0; tries++) {
+            len += len / 4 + 1024;
+            free(rt);
+            if (!(rt = malloc(len))) break;
+            got = sysctl(mib, 6, rt, &len, NULL, 0) == 0;
+        }
+        for (size_t off = 0; got && off + sizeof(struct rt_msghdr2) <= len;) {
+            struct rt_msghdr2 *m = (void *)(rt + off);
+            if (m->rtm_msglen < sizeof *m || m->rtm_msglen > len - off) break;
+            char *end = rt + off + m->rtm_msglen;
+            struct sockaddr *sa = (void *)(m + 1);
+            struct sockaddr_in dst = {0}, gw = {0};
+            for (int bit = 0; bit < RTAX_MAX && (char *)sa < end; bit++) {
+                if (!(m->rtm_addrs & (1 << bit))) continue;
+                // Darwin pads each address to 4 bytes, on arm64 too.
+                size_t l = sa->sa_len ? 1 + ((sa->sa_len - 1u) | (sizeof(uint32_t) - 1)) : sizeof(uint32_t);
+                if (sa->sa_family == AF_INET && sa->sa_len >= sizeof dst && (char *)sa + sizeof dst <= end) {
+                    if (bit == RTAX_DST) memcpy(&dst, sa, sizeof dst);
+                    if (bit == RTAX_GATEWAY) memcpy(&gw, sa, sizeof gw);
                 }
-                in_addr_t d = ntohl(dst.sin_addr.s_addr);
-                if (dst.sin_family == AF_INET && d == 0 && (m->rtm_flags & RTF_GATEWAY)) {
-                    defaults++;
-                    inet_ntop(AF_INET, &gw.sin_addr, gwtext, sizeof gwtext);
-                } else if (dst.sin_family == AF_INET && (d >> 24) != 127) {
-                    others++;
-                }
-                off += m->rtm_msglen;
+                sa = (void *)((char *)sa + l);
             }
+            char ifn[IF_NAMESIZE];
+            if (dst.sin_family == AF_INET && dst.sin_addr.s_addr == 0 && (m->rtm_flags & RTF_GATEWAY)) {
+                defaults++;
+                inet_ntop(AF_INET, &gw.sin_addr, gwtext, sizeof gwtext);
+            } else if (!if_indextoname(m->rtm_index, ifn)) {
+                others++;
+            }
+            off += m->rtm_msglen;
         }
         free(rt);
         printf("routes=default %d via %s, %d off loopback\n", defaults, gwtext, others);
