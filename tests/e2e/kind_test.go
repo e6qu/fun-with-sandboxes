@@ -236,8 +236,8 @@ kind: Secret
 metadata:
   name: token
   namespace: apps
-stringData:
-  token: s3cr3t
+data:
+  token: czNjcjN0
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -312,7 +312,9 @@ func kindWorkloads(t *testing.T, nodes []string, kubectl func(...string) (string
 		t.Fatalf("the applied Deployment's rollout: %v\n%s", err, tail(out, 40))
 	}
 	// The pod's image has a shell but no cat: the shell reads the files.
-	read := `while IFS= read -r l; do echo "$l"; done < "$1"`
+	// A last line without a newline, as the Secret's value has, is read
+	// too.
+	read := `while IFS= read -r l || [ -n "$l" ]; do echo "$l"; done < "$1"`
 	if out, err := kubectl("exec", "-n", "apps", "deployment/site", "--", "sh", "-c", read, "sh", "/etc/token/token"); err != nil || out != "s3cr3t\n" {
 		t.Errorf("the Secret through the pod's volume, by kubectl exec: %q, %v", out, err)
 	}
