@@ -364,7 +364,7 @@ func (x *seatbeltExecutor) exec(ctx context.Context, r *run, process executor.Pr
 						if !ok {
 							return
 						}
-						pty.Setsize(master, &pty.Winsize{Rows: uint16(ws.Rows), Cols: uint16(ws.Cols)})
+						pty.Setsize(master, &pty.Winsize{Rows: uint16(min(ws.Rows, 65535)), Cols: uint16(min(ws.Cols, 65535))})
 					case <-proc.Done():
 						return
 					}

@@ -245,6 +245,22 @@ no VM and no more than microseconds per call.
   review stopped at lo0's address messages, which are shorter than an
   interface's; the probes caught it on the first macOS run.
 
+## A second review, and the tools around it (PR #87)
+
+- **More static checks**: unparam, unconvert, deadcode and gosec joined
+  `scripts/lint.sh`. gosec gates on a subset of its rules: its unchecked
+  error, integer conversion, decompression and walk findings were read
+  one by one, and the two real conversions fixed; the rules left out
+  flag what the engine exists to do, running and opening what
+  containers ask for. nilaway was tried and fixed what it found, but its
+  remaining reports are correlations it cannot follow, and it has no
+  per-line suppression to gate on.
+- **Security**: a COPY wildcard followed a context link out to the host,
+  and a git build context's ref could be a `git fetch` option such as
+  `--upload-pack`, a host command.
+- **Dev containers**: a mount's unowned files showed as root's, so a
+  non-root remote user's Git refused its workspace.
+
 ## Investigations
 
 Findings still worth knowing, each with what the code does since.

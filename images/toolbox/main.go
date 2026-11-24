@@ -66,7 +66,7 @@ func run(op, arg string) error {
 	case "registry":
 		// A registry that keeps what is pushed to it in memory, listening at
 		// arg, as a kind cluster's local registry does.
-		return http.ListenAndServe(arg, registry.New())
+		return serveHTTP(arg, registry.New())
 	case "env":
 		env := os.Environ()
 		sort.Strings(env)
@@ -430,7 +430,13 @@ func serve() error {
 		json.NewEncoder(w).Encode(map[string]any{"stack": os.Getenv("SANDBOX_STACK"), "hits": n})
 	})
 	fmt.Printf("toolbox listening on 127.0.0.1:%s\n", port)
-	return http.ListenAndServe("127.0.0.1:"+port, nil)
+	return serveHTTP("127.0.0.1:"+port, nil)
+}
+
+// serveHTTP answers HTTP at addr with a deadline on each request's headers, so
+// a client that stalls holds no connection for good.
+func serveHTTP(addr string, h http.Handler) error {
+	return (&http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 30 * time.Second}).ListenAndServe()
 }
 
 // incr sends a Redis INCR in the RESP protocol and returns the new value.
