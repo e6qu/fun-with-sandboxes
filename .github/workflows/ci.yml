@@ -107,6 +107,18 @@ jobs:
         env:
           FWS_CFLAGS: -fsanitize=undefined -fsanitize-trap=undefined -g
         run: go test -count=1 ./internal/pathmap ./internal/runtime ./internal/shim ./internal/seatbelt
+      # The container library and spawn helper under warnings beyond the
+      # -Wall -Werror they build with, and clang's static analyzer over the
+      # helper; neither changes what they compile to. The library's
+      # interposed functions keep their originals' parameters, used or not,
+      # and its analyzer reports its process-long buffers as leaks.
+      - name: C warnings and static analysis
+        working-directory: internal/pathmap/src
+        run: |
+          for f in fwsroot.c spawn.c; do
+            xcrun clang -fsyntax-only -Wall -Wextra -Wno-unused-parameter -Wshadow -Wsign-compare -Werror "$f"
+          done
+          xcrun clang --analyze -Xclang -analyzer-werror -o /dev/null spawn.c
       # The path mapping's fuzzer (internal/pathmap/testdata/fuzz) for two
       # minutes, under AddressSanitizer and UndefinedBehaviorSanitizer, from
       # a seed it prints, which FWS_PATH_FUZZ_SEED replays.

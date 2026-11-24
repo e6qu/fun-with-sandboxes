@@ -219,7 +219,9 @@ connection, never on a fixed sleep.
   it to `sandbox_darwin_test.go`.
 - **The container library.** `internal/pathmap/src/fwsroot.c` runs inside
   every container process, so:
-  - It builds with `-Wall -Werror`.
+  - It builds with `-Wall -Werror`; CI also compiles it, and the spawn
+    helper, with `-Wextra -Wshadow -Wsign-compare`, and runs clang's
+    static analyzer over the helper.
   - Its path and socket mapping takes no lock libSystem may hold, so it
     calls no `snprintf`, `strtoul` or other locale-aware function there.
   - It keeps no thread-local state.
