@@ -9,8 +9,8 @@
     "Env": [
       "PATH=/bin",
       "TZ=UTC",
-      "NPM_CONFIG_PREFIX=/usr",
-      "NODE_PATH=/usr/lib/node_modules",
+      "NPM_CONFIG_PREFIX=/usr/local",
+      "NODE_PATH=/usr/local/lib/node_modules",
       "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright",
       "MOZ_DISABLE_CONTENT_SANDBOX=1",
       "MOZ_DISABLE_GPU_SANDBOX=1",

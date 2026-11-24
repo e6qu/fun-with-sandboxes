@@ -165,11 +165,17 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 		spec.Files[dst] = src
 	}
 	for dst, src := range spec.Files {
+		if err := outsideHostTrees("file", dst); err != nil {
+			return err
+		}
 		if err := copyTree(src, filepath.Join(stage, dst)); err != nil {
 			return err
 		}
 	}
 	for _, d := range spec.Dirs {
+		if err := outsideHostTrees("dir", d); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(filepath.Join(stage, d), 0o755); err != nil {
 			return err
 		}
@@ -184,6 +190,9 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 		if !ok || filepath.IsAbs(target) {
 			return fmt.Errorf("-link %q: want image-path=relative-target", l)
 		}
+		if err := outsideHostTrees("link", at); err != nil {
+			return err
+		}
 		p := filepath.Join(stage, at)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			return err
@@ -194,6 +203,22 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 		}
 	}
 	return writeArchive(stage, overlay, spec, paths, out, arch)
+}
+
+// hostTrees are the trees the container library (fwsroot.c's host_trees)
+// leaves to the host in every container: the dynamic loader and libSystem
+// read them there. A file an image puts in one is in no container's view.
+var hostTrees = []string{"/System", "/usr/lib", "/dev", "/private/var/db", "/var/db", "/Library/Apple"}
+
+// outsideHostTrees refuses an image path in a host tree.
+func outsideHostTrees(kind, p string) error {
+	clean := filepath.Clean("/" + p)
+	for _, t := range hostTrees {
+		if clean == t || strings.HasPrefix(clean, t+"/") {
+			return fmt.Errorf("%s %s: %s is the host's in every container, so the image's would never be seen", kind, p, t)
+		}
+	}
+	return nil
 }
 
 func readLines(path string) ([]string, error) {

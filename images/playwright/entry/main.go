@@ -3,8 +3,11 @@
 // library maps, so a docker exec, which starts no entrypoint, finds the
 // same: PLAYWRIGHT_BROWSERS_PATH names the browsers the image carries,
 // NODE_PATH its playwright and @playwright/test packages, and
-// NPM_CONFIG_PREFIX /usr, whose bin holds the playwright command, so
-// `npx playwright test` runs the image's runner. A host path in any of
+// NPM_CONFIG_PREFIX /usr/local, whose lib/node_modules holds them and
+// whose bin the playwright command, so `npx playwright test` runs the
+// image's runner. Not /usr: /usr/lib is a host tree, which the container
+// library leaves to the host, so the packages there were in no container's
+// view (fws-mkimage now refuses a file there). A host path in any of
 // them would reach the shell npx runs the command with in its PATH, where
 // it names no container path. The runner and a spec's import of
 // @playwright/test resolve to one copy of the package, which the runner

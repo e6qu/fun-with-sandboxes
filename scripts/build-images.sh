@@ -754,9 +754,9 @@ closure "$node24" "$coreutils" > "$build/playwright.closure"
 accounts playwright pwuser 1000 1000 /home/pwuser
 mkimage "${acct[@]}" -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" -pkg "$coreutils" \
   -link /usr/bin/env=../../bin/env \
-  -file "/entry=$build/playwright-entry" -file "/usr/lib/node_modules=$build/playwright/modules/node_modules" \
-  -link /bin/playwright=../usr/lib/node_modules/@playwright/test/cli.js \
-  -link /usr/bin/playwright=../lib/node_modules/@playwright/test/cli.js \
+  -file "/entry=$build/playwright-entry" -file "/usr/local/lib/node_modules=$build/playwright/modules/node_modules" \
+  -link /bin/playwright=../usr/local/lib/node_modules/@playwright/test/cli.js \
+  -link /usr/local/bin/playwright=../lib/node_modules/@playwright/test/cli.js \
   -file "/ms-playwright=$pw_browsers" -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/playwright.tar"
 
 "$build/fws-mkimage" -reuse -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"

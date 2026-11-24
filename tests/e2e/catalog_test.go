@@ -661,6 +661,10 @@ test("renders and screenshots a page", async ({ page, browserName }, testInfo) =
 	if err != nil || !strings.Contains(out, "2 passed") {
 		t.Fatalf("npx playwright test: %q, %v", out, err)
 	}
+	// npx runs the image's runner, from its global prefix, and fetches none.
+	if strings.Contains(out, "will be installed") {
+		t.Errorf("npx fetched playwright rather than run the image's: %q", out)
+	}
 	// Each test's output directory ends with its project's name.
 	for _, project := range []string{"chromium", "firefox"} {
 		for _, f := range []string{"page.png", "video.webm"} {
