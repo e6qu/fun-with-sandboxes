@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -201,23 +202,38 @@ exports.run = async () => {
 	}
 }
 
-// VS Code on the host, with Microsoft's Dev Containers extension, opens a
-// folder in a dev container of the engine's: the extension creates the
-// container through the Docker CLI, installs VS Code's server in it and
-// connects the window to it.
-func TestVSCodeDevContainersExtension(t *testing.T) {
+// devContainerWindow is a VS Code window on the host that Microsoft's Dev
+// Containers extension has connected to a dev container of the engine's.
+type devContainerWindow struct {
+	// data is VS Code's user data directory, which names its processes.
+	data string
+	// id is the dev container's.
+	id     string
+	window *exec.Cmd
+	exited chan struct{}
+}
+
+// openInDevContainer opens a project folder made of files in a dev
+// container from VS Code on the host, with env added to VS Code's
+// environment: the extension creates the container through the Docker CLI,
+// installs VS Code's server in it and connects the window to it. It
+// returns once the server serves the window, and fails the test with
+// every log that tells why if it does not. The project is at
+// /workspaces/project in the container.
+func openInDevContainer(t *testing.T, files map[string]string, env ...string) *devContainerWindow {
+	t.Helper()
 	dir := unzipped(t, "fws-e2e-vscode-host-", "https://update.code.visualstudio.com/latest/darwin-arm64/stable")
 	const app = "Visual Studio Code.app"
 	cli := filepath.Join(dir, app, "Contents", "Resources", "app", "bin", "code")
 	data, exts, work := filepath.Join(dir, "data"), filepath.Join(dir, "extensions"), filepath.Join(dir, "project")
-	if err := os.MkdirAll(filepath.Join(work, ".devcontainer"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(work, ".devcontainer", "devcontainer.json"), []byte(`{"name": "fws e2e", "image": "fws/base:1"}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(work, "README"), []byte("from the workspace\n"), 0o644); err != nil {
-		t.Fatal(err)
+	for name, body := range files {
+		p := filepath.Join(work, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// The extension says each step it takes, and each command it runs in
 	// the container, at this level of its log.
@@ -228,7 +244,9 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 		t.Fatal(err)
 	}
 	code := func(args ...string) *exec.Cmd {
-		return exec.Command(cli, append([]string{"--user-data-dir", data, "--extensions-dir", exts}, args...)...)
+		cmd := exec.Command(cli, append([]string{"--user-data-dir", data, "--extensions-dir", exts}, args...)...)
+		cmd.Env = append(os.Environ(), env...)
+		return cmd
 	}
 	if out, err := code("--install-extension", "ms-vscode-remote.remote-containers").CombinedOutput(); err != nil {
 		t.Fatalf("installing the Dev Containers extension: %v\n%s", err, out)
@@ -240,37 +258,43 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 	// volume starts empty, so the server that comes up is the one the
 	// extension installed; no Linux build could run in the container.
 	docker(t, "volume", "rm", "-f", "vscode")
-	t.Cleanup(func() { docker(t, "volume", "rm", "-f", "vscode") })
 
 	uri := "vscode-remote://dev-container+" + hex.EncodeToString([]byte(work)) + "/workspaces/project"
 	window := code("--new-window", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", "--disable-updates",
 		"--disable-telemetry", "--use-mock-keychain", "--wait", "--folder-uri", uri)
-	var output strings.Builder
+	var output lockedBuffer
 	window.Stdout, window.Stderr = &output, &output
 	if err := window.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	w := &devContainerWindow{data: data, window: window, exited: make(chan struct{})}
+	go func() { window.Wait(); close(w.exited) }()
+	t.Cleanup(func() {
 		exec.Command("pkill", "-f", data).Run()
-		window.Wait()
+		select {
+		case <-w.exited:
+		case <-time.After(time.Minute):
+			window.Process.Kill()
+		}
 		if ids, _ := docker(t, "ps", "-aq", "--filter", "label=devcontainer.local_folder="+work); strings.TrimSpace(ids) != "" {
 			docker(t, append([]string{"rm", "-f", "-v"}, strings.Fields(ids)...)...)
 		}
-	}()
+		docker(t, "volume", "rm", "-f", "vscode")
+	})
 
 	// The extension has made the container, and the window works in it,
 	// when VS Code's server there listens and has launched the window's
 	// extension host, which it does once the window has connected through
 	// the extension's forwarded port. The extension copies the server's
 	// output into its own log, on the host.
-	var id, serverLog string
+	var serverLog string
 	up := func() bool {
 		return strings.Contains(serverLog, "Extension host agent listening") && strings.Contains(serverLog, "Launched Extension Host Process")
 	}
 	for deadline := time.Now().Add(4 * time.Minute); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
-		if id == "" {
+		if w.id == "" {
 			ids, _ := docker(t, "ps", "-q", "--filter", "label=devcontainer.local_folder="+work)
-			id = strings.TrimSpace(ids)
+			w.id = strings.TrimSpace(ids)
 			continue
 		}
 		serverLog = extensionLog(data)
@@ -278,41 +302,256 @@ func TestVSCodeDevContainersExtension(t *testing.T) {
 			break
 		}
 	}
-	if id == "" || !up() {
-		// Every log of the window, the last of each: the extension's own,
-		// and the window's, where what the extension waits on shows.
-		var logs strings.Builder
-		filepath.Walk(filepath.Join(data, "logs"), func(p string, fi os.FileInfo, err error) error {
-			if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
-				return nil
-			}
-			keep := int64(4000)
-			switch {
-			case strings.Contains(p, "remoteContainers-"):
-				// The extension's trace, whole: each step it took.
-				keep = 1 << 20
-			case strings.Contains(p, "renderer"), strings.Contains(p, "exthost.log"):
-				keep = 12000
-			}
-			b, _ := os.ReadFile(p)
-			if int64(len(b)) > keep {
-				b = b[int64(len(b))-keep:]
-			}
-			fmt.Fprintf(&logs, "== %s (%d bytes)\n%s\n", strings.TrimPrefix(p, data), fi.Size(), b)
-			return nil
-		})
+	if w.id == "" || !up() {
 		var listing string
-		if id != "" {
-			top, _ := docker(t, "top", id)
-			listing, _ = docker(t, "exec", id, "/bin/sh", "-c", "exec 2>&1; ls -la /root/.vscode-server /tmp /tmp/devcontainers-* | head -80")
-			listing = top + "\n" + listing + "\nThe helper's channel, replayed with the container's node:\n" + helperChannel(t, id) + "\nThe extension's helper, run by hand:\n" + helperRun(t, id)
+		if w.id != "" {
+			top, _ := docker(t, "top", w.id)
+			listing, _ = docker(t, "exec", w.id, "/bin/sh", "-c", "exec 2>&1; ls -la /root/.vscode-server /tmp /tmp/devcontainers-* | head -80")
+			listing = top + "\n" + listing + "\nThe helper's channel, replayed with the container's node:\n" + helperChannel(t, w.id) + "\nThe extension's helper, run by hand:\n" + helperRun(t, w.id)
 		}
 		t.Fatalf("the Dev Containers extension did not bring VS Code's server up in a container (container %q).\nIn the container:\n%s\nVS Code printed:\n%s\nThe extension's logs:\n%s\nThe extension's code, where it logs its last steps:\n%s",
-			id, listing, output.String(), logs.String(), extensionCode(exts))
+			w.id, listing, output.String(), windowLogs(data), extensionCode(exts))
 	}
-	if out, err := docker(t, "exec", id, "cat", "/workspaces/project/README"); err != nil || out != "from the workspace\n" {
+	return w
+}
+
+// windowLogs is every log of the windows of the user data directory data,
+// the last of each: the extension's own, whole, and the window's, where
+// what the extension waits on shows.
+func windowLogs(data string) string {
+	var logs strings.Builder
+	filepath.Walk(filepath.Join(data, "logs"), func(p string, fi os.FileInfo, err error) error {
+		if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
+			return nil
+		}
+		keep := int64(4000)
+		switch {
+		case strings.Contains(p, "remoteContainers-"):
+			// The extension's trace, whole: each step it took.
+			keep = 1 << 20
+		case strings.Contains(p, "renderer"), strings.Contains(p, "exthost.log"):
+			keep = 12000
+		}
+		b, _ := os.ReadFile(p)
+		if int64(len(b)) > keep {
+			b = b[int64(len(b))-keep:]
+		}
+		fmt.Fprintf(&logs, "== %s (%d bytes)\n%s\n", strings.TrimPrefix(p, data), fi.Size(), b)
+		return nil
+	})
+	return logs.String()
+}
+
+// inContainer is what the dev container's files, VS Code server's logs and
+// processes show, for a test that failed to find what it looked for there.
+func (w *devContainerWindow) inContainer(t *testing.T) string {
+	t.Helper()
+	out, _ := docker(t, "exec", w.id, "/bin/sh", "-c", "exec 2>&1; ls -la /tmp /root /root/.vscode-server /root/.vscode-server/extensions; cat /root/.gitconfig /etc/gitconfig; for f in $(find /root/.vscode-server/data/logs -name '*.log' | head -20); do echo \"== $f\"; tail -n 40 \"$f\"; done")
+	top, _ := docker(t, "top", w.id)
+	return top + "\n" + out + "\nThe extension's log:\n" + extensionLog(w.data)
+}
+
+// quit quits VS Code as a user does: its main process takes SIGTERM as a
+// request to quit, which closes its windows and deactivates the
+// extensions, and the window's launcher then returns.
+func (w *devContainerWindow) quit(t *testing.T) {
+	t.Helper()
+	pids, _ := exec.Command("pgrep", "-f", w.data).Output()
+	for _, pid := range strings.Fields(string(pids)) {
+		cmdline, _ := exec.Command("ps", "-o", "command=", "-p", pid).Output()
+		// Not the helpers, whose own executables live in the bundle's
+		// frameworks, nor the launcher, which runs the CLI script.
+		if c := string(cmdline); strings.Contains(c, ".app/Contents/MacOS/") && !strings.Contains(c, "Helper") && !strings.Contains(c, "cli.js") {
+			exec.Command("kill", "-TERM", pid).Run()
+		}
+	}
+	select {
+	case <-w.exited:
+	case <-time.After(time.Minute):
+		t.Errorf("VS Code did not quit within a minute of SIGTERM")
+	}
+}
+
+// VS Code on the host, with Microsoft's Dev Containers extension, opens a
+// folder in a dev container of the engine's: the extension creates the
+// container through the Docker CLI, installs VS Code's server in it and
+// connects the window to it.
+func TestVSCodeDevContainersExtension(t *testing.T) {
+	w := openInDevContainer(t, map[string]string{
+		".devcontainer/devcontainer.json": `{"name": "fws e2e", "image": "fws/base:1"}` + "\n",
+		"README":                          "from the workspace\n",
+	})
+	if out, err := docker(t, "exec", w.id, "cat", "/workspaces/project/README"); err != nil || out != "from the workspace\n" {
 		t.Errorf("the workspace in the container: %q, %v", out, err)
 	}
+}
+
+// What a devcontainer.json asks of VS Code itself, beyond what the Dev
+// Containers CLI does: the extensions customizations.vscode.extensions
+// names are installed in the container's VS Code server, from the
+// Marketplace, and its settings become the server's machine settings;
+// postAttachCommand runs once the window attaches; forwardPorts forwards a
+// port of the container that nothing publishes to the same port on the
+// host, as portsAttributes' requireLocalPort demands; and quitting VS Code
+// stops the container, the default shutdownAction.
+func TestVSCodeDevContainersCustomizations(t *testing.T) {
+	port := fmt.Sprint(freePort(t))
+	w := openInDevContainer(t, map[string]string{
+		".devcontainer/devcontainer.json": `{
+  "image": "fws/base:1",
+  "customizations": {"vscode": {
+    "extensions": ["editorconfig.editorconfig"],
+    "settings": {"fws.e2e.setting": "from devcontainer.json"}
+  }},
+  "forwardPorts": [` + port + `],
+  "portsAttributes": {"` + port + `": {"label": "fws e2e", "onAutoForward": "silent", "requireLocalPort": true}},
+  "postAttachCommand": "sh .devcontainer/attached.sh ` + port + `"
+}
+`,
+		// A server on the port, run by the node VS Code's server brings,
+		// as fws/base has none of its own.
+		".devcontainer/attached.sh": `echo attached > /tmp/attached
+node=$(ls /root/.vscode-server/bin/*/node | head -1)
+nohup "$node" .devcontainer/serve.js "$1" > /tmp/serve.log 2>&1 &
+`,
+		".devcontainer/serve.js": `require("http").createServer((req, res) => res.end("forwarded\n")).listen(Number(process.argv[2]));
+`,
+	})
+
+	var installed, settings, attached, forwarded string
+	for deadline := time.Now().Add(3 * time.Minute); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
+		installed, _ = docker(t, "exec", w.id, "ls", "/root/.vscode-server/extensions")
+		settings, _ = docker(t, "exec", w.id, "cat", "/root/.vscode-server/data/Machine/settings.json")
+		attached, _ = docker(t, "exec", w.id, "cat", "/tmp/attached")
+		if res, err := http.Get("http://127.0.0.1:" + port + "/"); err == nil {
+			b, _ := io.ReadAll(res.Body)
+			res.Body.Close()
+			forwarded = string(b)
+		}
+		if strings.Contains(installed, "editorconfig.editorconfig-") && strings.Contains(settings, "from devcontainer.json") && attached == "attached\n" && forwarded == "forwarded\n" {
+			break
+		}
+	}
+	if !strings.Contains(installed, "editorconfig.editorconfig-") {
+		t.Errorf("the server's extensions: %q, want EditorConfig's", installed)
+	}
+	if !strings.Contains(settings, "from devcontainer.json") {
+		t.Errorf("the server's machine settings: %q", settings)
+	}
+	if attached != "attached\n" {
+		t.Errorf("postAttachCommand left %q", attached)
+	}
+	if forwarded != "forwarded\n" {
+		t.Errorf("the forwarded port %s on the host answered %q", port, forwarded)
+	}
+	if t.Failed() {
+		t.Fatalf("in the container:\n%s", w.inContainer(t))
+	}
+
+	w.quit(t)
+	var running string
+	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); time.Sleep(time.Second) {
+		if running = strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.State.Running}}", w.id)); running == "false" {
+			break
+		}
+	}
+	if running != "false" {
+		t.Errorf("the dev container still runs a minute after VS Code quit; the extension's log:\n%s", extensionLog(w.data))
+	}
+}
+
+// The Dev Containers extension lends the container the host user's Git
+// and SSH: it copies the host's Git configuration into the container,
+// answers Git's credential requests there with the host's credential
+// helper, and forwards the host's SSH agent to a socket in the container.
+// The host's helper reads a file the container cannot, so only the
+// extension's forwarding answers with it; the agent holds a key made for
+// the test.
+func TestVSCodeDevContainersForwardsCredentials(t *testing.T) {
+	// The host user's home for VS Code: its .gitconfig, which the
+	// extension copies, and whose helper the host's Git runs.
+	home, err := os.MkdirTemp(os.Getenv("HOME"), "fws-e2e-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(home) })
+	if err := os.WriteFile(filepath.Join(home, "credential"), []byte("username=fws-e2e\npassword=from-the-host\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[user]\n\tname = fws e2e\n\temail = e2e@fws.invalid\n[credential]\n\thelper = \"!f() { cat '"+filepath.Join(home, "credential")+"'; }; f\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// An SSH agent holding a key of its own. Its socket's path is short,
+	// as a Unix socket's must be.
+	agentDir, err := os.MkdirTemp("/tmp", "fws-e2e-agent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(agentDir) })
+	sock, key := filepath.Join(agentDir, "agent.sock"), filepath.Join(agentDir, "key")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "fws-e2e-agent", "-f", key).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v\n%s", err, out)
+	}
+	agent := exec.Command("ssh-agent", "-D", "-a", sock)
+	if err := agent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { agent.Process.Kill(); agent.Wait() })
+	add := exec.Command("ssh-add", key)
+	add.Env = append(os.Environ(), "SSH_AUTH_SOCK="+sock)
+	var out []byte
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if _, err := os.Stat(sock); err == nil {
+			out, err = add.CombinedOutput()
+			if err != nil {
+				t.Fatalf("ssh-add: %v\n%s", err, out)
+			}
+			break
+		}
+	}
+	if out == nil {
+		t.Fatalf("ssh-agent made no socket at %s", sock)
+	}
+
+	w := openInDevContainer(t, map[string]string{
+		".devcontainer/devcontainer.json": `{"image": "fws/base:1"}` + "\n",
+		// Lists the agent's identities: SSH2_AGENTC_REQUEST_IDENTITIES,
+		// answered by SSH2_AGENT_IDENTITIES_ANSWER (12), its count and the
+		// keys with their comments.
+		"agent.js": `const c = require("net").connect(process.env.SSH_AUTH_SOCK);
+let b = Buffer.alloc(0);
+c.on("connect", () => c.write(Buffer.from([0, 0, 0, 1, 11])));
+c.on("data", (d) => {
+  b = Buffer.concat([b, d]);
+  if (b.length >= 4 && b.length >= 4 + b.readUInt32BE(0)) {
+    console.log("answer", b[4], "keys", b.readUInt32BE(5), "comment", b.includes("fws-e2e-agent"));
+    c.end();
+  }
+});
+c.on("error", (e) => { console.log("error", e.message); process.exit(1); });
+`,
+	}, "HOME="+home, "SSH_AUTH_SOCK="+sock)
+
+	// The extension's helper in the container, which the credential helper
+	// it configures and the agent's socket talk to, is reached through a
+	// socket its terminals name in REMOTE_CONTAINERS_IPC; a docker exec
+	// finds it by its name.
+	var name, credential, identities string
+	for deadline := time.Now().Add(2 * time.Minute); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
+		name, _ = docker(t, "exec", w.id, "git", "config", "--global", "user.name")
+		credential, _ = docker(t, "exec", w.id, "/bin/sh", "-c",
+			`REMOTE_CONTAINERS_IPC=$(ls /tmp/vscode-remote-containers-ipc-*.sock | head -1) && export REMOTE_CONTAINERS_IPC && printf 'protocol=https\nhost=example.com\n\n' | git credential fill`)
+		identities, _ = docker(t, "exec", w.id, "/bin/sh", "-c",
+			`SSH_AUTH_SOCK=$(ls /tmp/vscode-ssh-auth-*.sock | head -1) && export SSH_AUTH_SOCK && exec "$(ls /root/.vscode-server/bin/*/node | head -1)" /workspaces/project/agent.js`)
+		if name == "fws e2e\n" && strings.Contains(credential, "password=from-the-host") && identities == "answer 12 keys 1 comment true\n" {
+			return
+		}
+	}
+	t.Errorf("the host's Git configuration in the container: user.name %q", name)
+	t.Errorf("git credential fill in the container: %q, want the host helper's password", credential)
+	t.Errorf("the forwarded SSH agent: %q, want the host agent's one key", identities)
+	t.Fatalf("in the container:\n%s", w.inContainer(t))
 }
 
 // extensionLog is the Dev Containers extension's log in the window's logs

@@ -19,6 +19,7 @@ package main
 import (
 	"log"
 	"os"
+	"strings"
 	"syscall"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/execpath"
@@ -32,11 +33,23 @@ func main() {
 	if len(args) == 0 {
 		args = []string{"node"}
 	}
-	env := append(os.Environ(),
-		"PLAYWRIGHT_BROWSERS_PATH="+sandboxenv.Path("/ms-playwright"),
-		"NODE_PATH="+sandboxenv.Path("/usr/lib/node_modules"),
-		"NPM_CONFIG_PREFIX="+sandboxenv.Path("/usr"),
-	)
+	// The image's configuration names these as container paths, for a
+	// docker exec, which starts no entrypoint; they are replaced, not
+	// added to, as getenv returns a variable's first entry.
+	set := map[string]string{
+		"PLAYWRIGHT_BROWSERS_PATH": sandboxenv.Path("/ms-playwright"),
+		"NODE_PATH":                sandboxenv.Path("/usr/lib/node_modules"),
+		"NPM_CONFIG_PREFIX":        sandboxenv.Path("/usr"),
+	}
+	var env []string
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); set[k] == "" {
+			env = append(env, kv)
+		}
+	}
+	for k, v := range set {
+		env = append(env, k+"="+v)
+	}
 	prog, err := execpath.Resolve(sandboxenv.Root(), args[0], env)
 	if err != nil {
 		log.Fatal(err)

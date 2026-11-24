@@ -2106,8 +2106,18 @@ static void own(struct stat *st, const char *path, int fd, int nofollow) {
         return;
     }
     if (!(st->st_flags & META_FLAG)) {
-        st->st_uid = 0;
-        st->st_gid = 0;
+        // A file no image or container gave an owner: the root's are
+        // root's, as an image's unrecorded owner is. A mount's, the host's
+        // own files under a bind or a volume, are the user who looks, as a
+        // Mac's shared files are in Docker's VM, so a workspace is its
+        // user's: Git refuses a repository another user owns.
+        if (path && path[0] == '/' && in_mount(path)) {
+            st->st_uid = fake_euid;
+            st->st_gid = fake_egid;
+        } else {
+            st->st_uid = 0;
+            st->st_gid = 0;
+        }
         return;
     }
     st->st_flags &= ~(uint32_t)META_FLAG;

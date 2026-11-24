@@ -664,9 +664,13 @@ chromium_headless_shell-1255 b08e7beaf02a19e2ee5ed6955f9c3853ab9176cd5bb57ba87af
 firefox-1572 9691b4a07405d8faf8a44f6378d66db480d36159d9e9c4ed1d6066687697e1f2 firefox/1572/firefox-mac-arm64.zip
 ffmpeg-1013 63e48ce8d4a6d9d496383e5ac557b26466e719fa29126bbbd5f5f7016ac9229c ffmpeg/1013/ffmpeg-mac-arm64.zip
 BROWSERS
-closure "$node24" > "$build/playwright.closure"
+# coreutils for the commands a dev container's tools run in it (cat,
+# mkdir, sleep), as Microsoft's Debian-based image has them.
+coreutils=$(pkg_with coreutils dirname)
+closure "$node24" "$coreutils" > "$build/playwright.closure"
 accounts playwright pwuser 1000 1000 /home/pwuser
-mkimage "${acct[@]}" -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" \
+mkimage "${acct[@]}" -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" -pkg "$coreutils" \
+  -link /usr/bin/env=../../bin/env \
   -file "/entry=$build/playwright-entry" -file "/usr/lib/node_modules=$build/playwright/modules/node_modules" \
   -link /bin/playwright=../usr/lib/node_modules/@playwright/test/cli.js \
   -link /usr/bin/playwright=../lib/node_modules/@playwright/test/cli.js \

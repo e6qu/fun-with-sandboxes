@@ -97,12 +97,20 @@ here, writing Dockerfiles, and how the catalog is built and published.
 
 The Dev Containers CLI (`devcontainer up`, `exec`) and VS Code's Dev
 Containers extension drive the engine as they drive Docker: a
-`devcontainer.json` on a darwin image, a Dockerfile or a Compose service,
-with features, lifecycle commands, the workspace mount and `appPort`; the
-extension installs VS Code's macOS server in the container itself. The
-image needs the commands they run in it (`sh`, `sleep`, `cat`, `mkdir`,
-`tar`, as `fws/base` has), and features install with darwin tools, not
-`apt-get`.
+`devcontainer.json` on a darwin image, a Dockerfile or a Compose service
+(with `runServices`), with features, every lifecycle command from
+`initializeCommand` on the host to `postAttachCommand`, `containerUser`
+and `remoteUser`, `containerEnv` and `remoteEnv`, `mounts`, the workspace
+mount and `appPort`, and reopening and rebuilding the container. The
+extension installs VS Code's macOS server in the container itself, with
+the extensions and settings of `customizations.vscode`, forwards
+`forwardPorts`, lends the container the host's Git credentials and SSH
+agent, and stops the container when VS Code quits. Docker outside of
+Docker is the engine's socket in `mounts` and a darwin Docker CLI in the
+image, copied from `fws/dind`. The image needs the commands they run in it
+(`sh`, `sleep`, `cat`, `mkdir`, `tar`, as `fws/base` has), and features
+install with darwin tools, not `apt-get`
+([LIMITATIONS](LIMITATIONS.md#images)).
 
 `--security-opt seatbelt=gui` grants a container the user's login session
 besides: the window server, pasteboard, Launch Services, fonts, input

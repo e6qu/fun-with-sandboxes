@@ -63,6 +63,16 @@ offers an unprivileged process. Non-goals are in
   `--network none`). The classic builder (`DOCKER_BUILDKIT=0`) refuses
   `RUN --mount`, `--network` and `--security`, and any option it does not
   implement or that is given twice, as dockerd's does.
+- **Dev container features install darwin programs.** The containers.dev
+  collection's features (`common-utils`, `docker-outside-of-docker`,
+  `docker-in-docker`, `node`, `python` and the rest) install Linux
+  packages or binaries and fail; a feature whose `install.sh` fetches or
+  builds darwin programs works. Docker outside of Docker is the engine's
+  socket in `mounts` with a darwin Docker CLI copied from `fws/dind`.
+  VS Code's server in a dev container is its macOS build, so an extension
+  published for Linux alone does not run there. The Dev Containers CLI
+  applies `updateRemoteUserUID` on Linux hosts alone; here every process
+  runs as the engine's user, who owns the workspace on the host.
 
 ## Isolation
 
