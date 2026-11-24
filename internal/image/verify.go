@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -23,6 +24,33 @@ func hasher(h v1.Hash) (hash.Hash, error) {
 		return sha512.New(), nil
 	}
 	return nil, fmt.Errorf("unsupported digest algorithm %q", h.Algorithm)
+}
+
+// noLinks refuses an unpacked layout whose index.json, oci-layout or
+// blobs are anything but files: the layout is read through those names,
+// and a symbolic link among them would have the store read a file of the
+// host's. Other entries, such as the directories of the format before
+// Docker 25 with their links between layers, the layout never reads.
+func noLinks(dir string) error {
+	for _, name := range []string{"index.json", "oci-layout"} {
+		if fi, err := os.Lstat(filepath.Join(dir, name)); err == nil && !fi.Mode().IsRegular() {
+			return fmt.Errorf("archive entry %s is not a file", name)
+		}
+	}
+	err := filepath.WalkDir(filepath.Join(dir, "blobs"), func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && !d.Type().IsRegular() {
+			rel, _ := filepath.Rel(dir, p)
+			return fmt.Errorf("archive entry %s is not a file or directory", filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // verifyBlobs checks that every blob of the OCI image layout at dir hashes
@@ -64,6 +92,11 @@ func verifyBlob(path string, want v1.Hash) error {
 		return err
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil {
+		return err
+	} else if !fi.Mode().IsRegular() {
+		return fmt.Errorf("archive blob %s is not a file", want)
+	}
 	if _, err := io.Copy(h, f); err != nil {
 		return fmt.Errorf("archive blob %s: %w", want, err)
 	}

@@ -63,7 +63,9 @@ case "${1:-}" in
     echo go.mod
     echo go.sum
     git ls-files images
-    # The module's own packages, file by file; go.sum pins the rest.
+    # The module's own packages, file by file; go.sum pins the rest. The
+    # template's $d is Go's, not the shell's.
+    # shellcheck disable=SC2016
     GOOS=darwin GOARCH=arm64 go list -deps -f '{{if .Module}}{{if eq .Module.Path "github.com/e6qu/fun-with-sandboxes"}}{{$d := .Dir}}{{range .GoFiles}}{{$d}}/{{.}}
 {{end}}{{range .CgoFiles}}{{$d}}/{{.}}
 {{end}}{{range .CFiles}}{{$d}}/{{.}}
@@ -187,6 +189,18 @@ iana=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#iana-etc")
 # Mozilla's CA bundle, for the images that carry one.
 cacert=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#cacert")
 closure() { nix-store -qR "$@" "$dash" | sort -u; }
+
+# deps_of PATH... sets deps to the closure of PATH..., the paths themselves
+# left out.
+deps_of() {
+  local p q skip
+  deps=()
+  while read -r p; do
+    skip=
+    for q in "$@"; do [ "$p" = "$q" ] && skip=1; done
+    [ -n "$skip" ] || deps+=("$p")
+  done < <(nix-store -qR "$@")
+}
 # /bin/nc answers the in-container port check Testcontainers runs, which
 # reads /proc/net/tcp on Linux.
 mkimage() {
@@ -196,7 +210,7 @@ mkimage() {
 
 # accounts NAME [USER UID GID HOME]... writes the /etc/passwd and
 # /etc/group of image NAME, which hold root, nobody and the users the
-# official image has, and prints the -file arguments that add them.
+# official image has, and sets acct to the -file arguments that add them.
 accounts() {
   local d="$build/etc-$1"
   shift
@@ -208,62 +222,72 @@ accounts() {
     printf '%s:x:%s:\n' "$1" "$3" >> "$d/group"
     shift 4
   done
-  echo "-file /etc/passwd=$d/passwd -file /etc/group=$d/group"
+  acct=(-file "/etc/passwd=$d/passwd" -file "/etc/group=$d/group")
 }
 
 for v in 16 18; do
   pg=$(pkg_with "postgresql_$v" postgres)
   closure "$pg" > "$build/pg$v.closure"
-  mkimage $(accounts postgres postgres 999 999 /var/lib/postgresql) -spec images/postgres/image.json -tag "fws/postgres:$v" -closure "$build/pg$v.closure" -pkg "$pg" \
+  accounts postgres postgres 999 999 /var/lib/postgresql
+  mkimage "${acct[@]}" -spec images/postgres/image.json -tag "fws/postgres:$v" -closure "$build/pg$v.closure" -pkg "$pg" \
     -file "/entry=$build/postgres-entry" -out "$out/postgres-$v.tar"
 done
 
 redis=$(cat_with redis redis-server)
 closure "$redis" > "$build/redis.closure"
-mkimage $(accounts redis redis 999 999 /data) -spec images/redis/image.json -closure "$build/redis.closure" -pkg "$redis" \
+accounts redis redis 999 999 /data
+mkimage "${acct[@]}" -spec images/redis/image.json -closure "$build/redis.closure" -pkg "$redis" \
   -file "/entry=$build/redis-entry" -out "$out/redis.tar"
 
 nginx=$(cat_with nginx nginx)
 closure "$nginx" > "$build/nginx.closure"
-mkimage $(accounts nginx nginx 101 101 /nonexistent) -spec images/nginx/image.json -closure "$build/nginx.closure" -pkg "$nginx" \
+accounts nginx nginx 101 101 /nonexistent
+mkimage "${acct[@]}" -spec images/nginx/image.json -closure "$build/nginx.closure" -pkg "$nginx" \
   -file "/entry=$build/nginx-entry" -file "/usr/share/nginx/html/index.html=$nginx/html/index.html" -out "$out/nginx.tar"
 
 mariadb=$(server_with mariadb mariadbd)
 closure "$mariadb" > "$build/mariadb.closure"
-mkimage $(accounts mariadb mysql 999 999 /var/lib/mysql) -spec images/mariadb/image.json -closure "$build/mariadb.closure" -pkg "$mariadb" \
+accounts mariadb mysql 999 999 /var/lib/mysql
+mkimage "${acct[@]}" -spec images/mariadb/image.json -closure "$build/mariadb.closure" -pkg "$mariadb" \
   -file "/entry=$build/mariadb-entry" -out "$out/mariadb.tar"
 
 mysql=$(server_with mysql mysqld)
 closure "$mysql" > "$build/mysql.closure"
-mkimage $(accounts mysql mysql 999 999 /var/lib/mysql) -spec images/mysql/image.json -closure "$build/mysql.closure" -pkg "$mysql" \
+accounts mysql mysql 999 999 /var/lib/mysql
+mkimage "${acct[@]}" -spec images/mysql/image.json -closure "$build/mysql.closure" -pkg "$mysql" \
   -file "/entry=$build/mysql-entry" -file "/etc/my.cnf=images/mysql/my.cnf" -out "$out/mysql.tar"
 
 valkey=$(cat_with valkey valkey-server)
 closure "$valkey" > "$build/valkey.closure"
-mkimage $(accounts valkey valkey 999 999 /data) -spec images/valkey/image.json -closure "$build/valkey.closure" -pkg "$valkey" \
+accounts valkey valkey 999 999 /data
+mkimage "${acct[@]}" -spec images/valkey/image.json -closure "$build/valkey.closure" -pkg "$valkey" \
   -file "/entry=$build/valkey-entry" -out "$out/valkey.tar"
 
 memcached=$(pkg_with memcached memcached)
 closure "$memcached" > "$build/memcached.closure"
-mkimage $(accounts memcached memcache 11211 11211 /home/memcache) -spec images/memcached/image.json -closure "$build/memcached.closure" -pkg "$memcached" \
+accounts memcached memcache 11211 11211 /home/memcache
+mkimage "${acct[@]}" -spec images/memcached/image.json -closure "$build/memcached.closure" -pkg "$memcached" \
   -file "/entry=$build/memcached-entry" -out "$out/memcached.tar"
 
 seaweedfs=$(cat_with seaweedfs weed)
 closure "$seaweedfs" > "$build/seaweedfs.closure"
-mkimage $(accounts seaweedfs seaweed 1000 1000 /home/seaweed) -spec images/seaweedfs/image.json -closure "$build/seaweedfs.closure" -pkg "$seaweedfs" \
+accounts seaweedfs seaweed 1000 1000 /home/seaweed
+mkimage "${acct[@]}" -spec images/seaweedfs/image.json -closure "$build/seaweedfs.closure" -pkg "$seaweedfs" \
   -link /usr/bin/weed=../../bin/weed -file "/etc/seaweedfs/filer.toml=images/seaweedfs/filer.toml" -file "/entry=$build/seaweedfs-entry" \
   -out "$out/seaweedfs.tar"
 
 nats=$(cat_with nats-server nats-server)
 closure "$nats" > "$build/nats.closure"
-mkimage $(accounts nats) -spec images/nats/image.json -closure "$build/nats.closure" -pkg "$nats" \
+accounts nats
+mkimage "${acct[@]}" -spec images/nats/image.json -closure "$build/nats.closure" -pkg "$nats" \
   -file "/nats-server.conf=images/nats/nats-server.conf" -out "$out/nats.tar"
 
 # etcd as its release image lays it out: the binaries in /usr/local/bin,
 # built here at the release nixpkgs does not package yet.
 etcd=$(output_with etcd -f images/etcd/etcd.nix --argstr nixpkgs "$nixpkgs")
 closure "$etcd" > "$build/etcd.closure"
-mkimage $(accounts etcd) -spec images/etcd/image.json -closure "$build/etcd.closure" -pkg "$etcd" \
+accounts etcd
+mkimage "${acct[@]}" -spec images/etcd/image.json -closure "$build/etcd.closure" -pkg "$etcd" \
   -link /usr/local/bin/etcd=../../../bin/etcd -link /usr/local/bin/etcdctl=../../../bin/etcdctl -link /usr/local/bin/etcdutl=../../../bin/etcdutl \
   -out "$out/etcd.tar"
 
@@ -271,12 +295,14 @@ mkimage $(accounts etcd) -spec images/etcd/image.json -closure "$build/etcd.clos
 # Vault's as HashiCorp builds it, and an entrypoint at their scripts' path.
 consul=$(pkg_with consul consul)
 closure "$consul" > "$build/consul.closure"
-mkimage $(accounts consul consul 100 1000 /home/consul) -spec images/consul/image.json -closure "$build/consul.closure" -pkg "$consul" \
+accounts consul consul 100 1000 /home/consul
+mkimage "${acct[@]}" -spec images/consul/image.json -closure "$build/consul.closure" -pkg "$consul" \
   -file "/usr/local/bin/docker-entrypoint.sh=$build/consul-entry" -out "$out/consul.tar"
 
 vault=$(cat_with vault-bin vault)
 closure "$vault" > "$build/vault.closure"
-mkimage $(accounts vault vault 100 1000 /home/vault) -spec images/vault/image.json -closure "$build/vault.closure" -pkg "$vault" \
+accounts vault vault 100 1000 /home/vault
+mkimage "${acct[@]}" -spec images/vault/image.json -closure "$build/vault.closure" -pkg "$vault" \
   -file "/usr/local/bin/docker-entrypoint.sh=$build/vault-entry" -out "$out/vault.tar"
 
 # MongoDB's own build of the server, mongosh, and the tools the official
@@ -290,7 +316,8 @@ coreutils=$(pkg_with coreutils dirname)
 gnugrep=$(pkg_with gnugrep grep)
 bash=$(pkg_with bash bash)
 closure "$mongodb" "$mongosh" "$openssl" "$findutils" "$coreutils" "$gnugrep" "$bash" > "$build/mongo.closure"
-mkimage $(accounts mongo mongodb 999 999 /data/db) -spec images/mongo/image.json -closure "$build/mongo.closure" -pkg "$mongodb" -pkg "$mongosh" \
+accounts mongo mongodb 999 999 /data/db
+mkimage "${acct[@]}" -spec images/mongo/image.json -closure "$build/mongo.closure" -pkg "$mongodb" -pkg "$mongosh" \
   -pkg "$openssl" -pkg "$findutils" -pkg "$coreutils" -pkg "$gnugrep" -pkg "$bash" \
   -file "/usr/local/bin/docker-entrypoint.sh=$build/mongo-entry" -out "$out/mongo.tar"
 
@@ -312,21 +339,24 @@ for f in "$kafka"/bin/kafka-*.sh; do
   kafka_tools+=(-file "/usr/bin/$n=$build/kafka-tools/$n")
 done
 closure "$kafka" "$coreutils" "$gnused" "$bash" > "$build/kafka.closure"
-mkimage $(accounts kafka appuser 1000 1000 /home/appuser) -spec images/kafka/image.json -closure "$build/kafka.closure" -pkg "$kafka" \
+accounts kafka appuser 1000 1000 /home/appuser
+mkimage "${acct[@]}" -spec images/kafka/image.json -closure "$build/kafka.closure" -pkg "$kafka" \
   -pkg "$coreutils" -pkg "$gnused" -pkg "$bash" "${kafka_tools[@]}" \
   -file "/usr/bin/ub=$build/ub" -file "/etc/confluent/docker=images/kafka/docker" -out "$out/kafka.tar"
 
 # Mailpit as its image runs it, from /mailpit.
 mailpit=$(cat_with mailpit mailpit)
 closure "$mailpit" > "$build/mailpit.closure"
-mkimage $(accounts mailpit) -spec images/mailpit/image.json -closure "$build/mailpit.closure" -pkg "$mailpit" \
+accounts mailpit
+mkimage "${acct[@]}" -spec images/mailpit/image.json -closure "$build/mailpit.closure" -pkg "$mailpit" \
   -link /mailpit=bin/mailpit -out "$out/mailpit.tar"
 
 # Meilisearch as its image runs it: /bin/meilisearch, linked from
 # /meilisearch, and /bin/meilitool, in /meili_data.
 meilisearch=$(cat_with meilisearch meilisearch)
 closure "$meilisearch" > "$build/meilisearch.closure"
-mkimage $(accounts meilisearch) -spec images/meilisearch/image.json -closure "$build/meilisearch.closure" -pkg "$meilisearch" \
+accounts meilisearch
+mkimage "${acct[@]}" -spec images/meilisearch/image.json -closure "$build/meilisearch.closure" -pkg "$meilisearch" \
   -link /meilisearch=bin/meilisearch -out "$out/meilisearch.tar"
 
 # Qdrant laid out in /qdrant as its image lays it out: the binary, the
@@ -341,7 +371,8 @@ cp "$qdrant_src/docs/redoc/master/openapi.json" "$build/qdrant-static/openapi.js
 coreutils=$(pkg_with coreutils dirname)
 bash=$(pkg_with bash bash)
 closure "$qdrant" "$coreutils" "$bash" > "$build/qdrant.closure"
-mkimage $(accounts qdrant) -spec images/qdrant/image.json -closure "$build/qdrant.closure" -pkg "$qdrant" -pkg "$coreutils" -pkg "$bash" \
+accounts qdrant
+mkimage "${acct[@]}" -spec images/qdrant/image.json -closure "$build/qdrant.closure" -pkg "$qdrant" -pkg "$coreutils" -pkg "$bash" \
   -link /usr/bin/env=../../bin/env -link /qdrant/qdrant=../bin/qdrant -file "/qdrant/config=$qdrant_src/config" \
   -file "/qdrant/entrypoint.sh=$qdrant_src/tools/entrypoint.sh" -file "/qdrant/static=$build/qdrant-static" -out "$out/qdrant.tar"
 
@@ -368,7 +399,8 @@ mkdir "$build/neo4j-conf"
 cp "$neo4j_home"/conf/* "$build/neo4j-conf"
 chmod 777 "$build"/neo4j-conf/*
 closure "$neo4j" "$coreutils" "$bash" > "$build/neo4j.closure"
-mkimage $(accounts neo4j neo4j 7474 7474 /var/lib/neo4j) -spec images/neo4j/image.json -closure "$build/neo4j.closure" -pkg "$neo4j" \
+accounts neo4j neo4j 7474 7474 /var/lib/neo4j
+mkimage "${acct[@]}" -spec images/neo4j/image.json -closure "$build/neo4j.closure" -pkg "$neo4j" \
   -pkg "$coreutils" -pkg "$bash" -link /usr/bin/env=../../bin/env "${neo4j_args[@]}" \
   -link /var/lib/neo4j/data=../../../data -link /var/lib/neo4j/logs=../../../logs -file "/var/lib/neo4j/conf=$build/neo4j-conf" \
   -file "/startup/docker-entrypoint.sh=$build/neo4j-entry" -file "/startup/neo4j-plugins.json=images/neo4j/neo4j-plugins.json" \
@@ -392,7 +424,8 @@ wget=$(pkg_with wget wget)
 # The time zones Debian's tzdata installs, which ClickHouse resolves TZ in.
 tzdata=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#tzdata.out")
 closure "$clickhouse" "$coreutils" "$bash" "$gnugrep" "$gzip" "$wget" > "$build/clickhouse.closure"
-mkimage $(accounts clickhouse clickhouse 101 101 /var/lib/clickhouse) -spec images/clickhouse/image.json -closure "$build/clickhouse.closure" \
+accounts clickhouse clickhouse 101 101 /var/lib/clickhouse
+mkimage "${acct[@]}" -spec images/clickhouse/image.json -closure "$build/clickhouse.closure" \
   -pkg "$clickhouse" -pkg "$coreutils" -pkg "$bash" -pkg "$gnugrep" -pkg "$gzip" -pkg "$wget" -link /usr/bin/env=../../bin/env \
   -file "/etc/clickhouse-server/config.xml=$build/clickhouse/config.xml" -file "/etc/clickhouse-server/users.xml=$build/clickhouse/users.xml" \
   -file "/etc/clickhouse-server/config.d/docker_related_config.xml=$build/clickhouse/docker_related_config.xml" \
@@ -407,7 +440,8 @@ debianutils=$(pkg_with debianutils run-parts)
 coreutils=$(pkg_with coreutils dirname)
 bash=$(pkg_with bash bash)
 closure "$influxd" "$influx" "$debianutils" "$coreutils" "$bash" > "$build/influxdb.closure"
-mkimage $(accounts influxdb influxdb 1000 1000 /home/influxdb) -spec images/influxdb/image.json -closure "$build/influxdb.closure" \
+accounts influxdb influxdb 1000 1000 /home/influxdb
+mkimage "${acct[@]}" -spec images/influxdb/image.json -closure "$build/influxdb.closure" \
   -pkg "$influxd" -pkg "$influx" -pkg "$debianutils" -pkg "$coreutils" -pkg "$bash" -link /usr/bin/env=../../bin/env \
   -file "/etc/defaults/influxdb2/config.yml=images/influxdb/default-config.yml" -file "/entrypoint.sh=$build/influxdb-entry" \
   -out "$out/influxdb.tar"
@@ -446,7 +480,8 @@ PATH="$gnused/bin:$coreutils/bin:$gnugrep/bin:$PATH" DISABLE_INSTALL_DEMO_CONFIG
 "$gnused/bin/sed" -i "s|$home|/usr/share/opensearch|g" "$home/config/jvm.options"
 mkdir -p "$home/data" "$home/logs"
 closure "$jre" "$coreutils" "$bash" "$gnugrep" > "$build/opensearch.closure"
-mkimage $(accounts opensearch opensearch 1000 1000 /usr/share/opensearch) -spec images/opensearch/image.json -closure "$build/opensearch.closure" \
+accounts opensearch opensearch 1000 1000 /usr/share/opensearch
+mkimage "${acct[@]}" -spec images/opensearch/image.json -closure "$build/opensearch.closure" \
   -pkg "$coreutils" -pkg "$bash" -pkg "$gnugrep" -link /usr/bin/env=../../bin/env -link "/usr/share/opensearch/jdk=../../..$jre" \
   -file "/usr/share/opensearch=$home" -out "$out/opensearch.tar"
 
@@ -461,7 +496,8 @@ compose=$(cat_out docker-compose)
 coreutils=$(pkg_with coreutils dirname)
 wget=$(pkg_with wget wget)
 closure "$docker" "$podman" "$buildx" "$compose" "$coreutils" "$wget" > "$build/dind.closure"
-mkimage $(accounts dind) -spec images/dind/image.json -closure "$build/dind.closure" -pkg "$docker" -pkg "$podman" -pkg "$coreutils" -pkg "$wget" \
+accounts dind
+mkimage "${acct[@]}" -spec images/dind/image.json -closure "$build/dind.closure" -pkg "$docker" -pkg "$podman" -pkg "$coreutils" -pkg "$wget" \
   -link /usr/local/bin/docker=../../../bin/docker -link /usr/bin/env=../../bin/env \
   -link "/usr/local/libexec/docker/cli-plugins/docker-buildx=../../../../..$buildx/libexec/docker/cli-plugins/docker-buildx" \
   -link "/usr/local/libexec/docker/cli-plugins/docker-compose=../../../../..$compose/libexec/docker/cli-plugins/docker-compose" \
@@ -472,24 +508,39 @@ mkimage $(accounts dind) -spec images/dind/image.json -closure "$build/dind.clos
 # beside it.
 toxiproxy=$(cat_with toxiproxy toxiproxy-server)
 closure "$toxiproxy" > "$build/toxiproxy.closure"
-mkimage $(accounts toxiproxy) -spec images/toxiproxy/image.json -closure "$build/toxiproxy.closure" -pkg "$toxiproxy" \
+accounts toxiproxy
+mkimage "${acct[@]}" -spec images/toxiproxy/image.json -closure "$build/toxiproxy.closure" -pkg "$toxiproxy" \
   -link /toxiproxy=bin/toxiproxy-server -link /toxiproxy-cli=bin/toxiproxy-cli -out "$out/toxiproxy.tar"
 
-python=$(pkg_with python314 python3.14)
-closure "$python" > "$build/python.closure"
-# nixpkgs marks its Python as managed by Nix, which keeps pip from installing
-# into it; the official image's Python takes packages.
-python_marker=$(cd "$python" && ls lib/python3.14/EXTERNALLY-MANAGED)
-mkimage $(accounts python) -spec images/python/image.json -closure "$build/python.closure" -pkg "$python" \
-  -remove "$python/$python_marker" -out "$out/python.tar"
+# The Python and Node.js releases their projects support. nixpkgs marks its
+# Python as managed by Nix, which keeps pip from installing into it; the
+# official image's Python takes packages.
+# Each release's package is kept as python_3_14, node_24 and so on, as
+# macOS's bash has no associative arrays.
+for v in 3.11 3.12 3.13 3.14 3.15; do
+  printf -v "python_${v/./_}" '%s' "$(pkg_with "python${v/./}" "python$v")"
+  p=python_${v/./_}
+  p=${!p}
+  closure "$p" > "$build/python$v.closure"
+  accounts python
+  mkimage "${acct[@]}" -spec images/python/image.json -tag "fws/python:$v" -closure "$build/python$v.closure" -pkg "$p" \
+    -remove "$p/lib/python$v/EXTERNALLY-MANAGED" -out "$out/python-$v.tar"
+done
 
-node=$(pkg_with nodejs_26 node)
-closure "$node" > "$build/node.closure"
-mkimage $(accounts node node 1000 1000 /home/node) -spec images/node/image.json -closure "$build/node.closure" -pkg "$node" -out "$out/node.tar"
+for v in 22 24 26; do
+  printf -v "node_$v" '%s' "$(pkg_with "nodejs_$v" node)"
+  p=node_$v
+  p=${!p}
+  closure "$p" > "$build/node$v.closure"
+  accounts node node 1000 1000 /home/node
+  mkimage "${acct[@]}" -spec images/node/image.json -tag "fws/node:$v" -closure "$build/node$v.closure" \
+    -pkg "$p" -out "$out/node-$v.tar"
+done
 
 bun=$(cat_with bun bun)
 closure "$bun" > "$build/bun.closure"
-mkimage $(accounts bun bun 1000 1000 /home/bun) -spec images/bun/image.json -closure "$build/bun.closure" -pkg "$bun" -out "$out/bun.tar"
+accounts bun bun 1000 1000 /home/bun
+mkimage "${acct[@]}" -spec images/bun/image.json -closure "$build/bun.closure" -pkg "$bun" -out "$out/bun.tar"
 
 gitea=$(cat_with gitea gitea)
 gitea_data=$(cat_out gitea.data)
@@ -497,7 +548,8 @@ git=$(pkg_with git git)
 # Gitea's repository hooks are bash scripts, as in the official image.
 bash=$(pkg_with bash bash)
 closure "$gitea" "$gitea_data" "$git" "$bash" > "$build/gitea.closure"
-mkimage $(accounts gitea git 1000 1000 /data/git) -spec images/gitea/image.json -closure "$build/gitea.closure" -pkg "$gitea" -pkg "$git" -pkg "$bash" \
+accounts gitea git 1000 1000 /data/git
+mkimage "${acct[@]}" -spec images/gitea/image.json -closure "$build/gitea.closure" -pkg "$gitea" -pkg "$git" -pkg "$bash" \
   -env "GITEA_DATA=$gitea_data" -file "/entry=$build/gitea-entry" -out "$out/gitea.tar"
 
 dynamodb=$(pkg_with dynamodb-local dynamodb-local)
@@ -508,7 +560,8 @@ for p in $(nix-store -qR "$dynamodb"); do
 done
 [ -n "$jre" ] || { echo "DynamoDB Local's closure holds no Java runtime" >&2; exit 1; }
 closure "$dynamodb" > "$build/dynamodb.closure"
-mkimage $(accounts dynamodb dynamodblocal 1000 1000 /home/dynamodblocal) -spec images/dynamodb/image.json -closure "$build/dynamodb.closure" -pkg "$jre" \
+accounts dynamodb dynamodblocal 1000 1000 /home/dynamodblocal
+mkimage "${acct[@]}" -spec images/dynamodb/image.json -closure "$build/dynamodb.closure" -pkg "$jre" \
   -env "DYNAMODB_HOME=$dynamodb/share/dynamodb-local" -file "/entry=$build/dynamodb-entry" -out "$out/dynamodb.tar"
 
 rabbitmq=$(cat_with rabbitmq-server rabbitmq-server)
@@ -518,7 +571,8 @@ gnused=$(pkg_with gnused sed)
 gnugrep=$(pkg_with gnugrep grep)
 gawk=$(pkg_with gawk awk)
 closure "$rabbitmq" "$coreutils" "$gnused" "$gnugrep" "$gawk" > "$build/rabbitmq.closure"
-mkimage $(accounts rabbitmq rabbitmq 999 999 /var/lib/rabbitmq) -spec images/rabbitmq/image.json -closure "$build/rabbitmq.closure" -pkg "$rabbitmq" \
+accounts rabbitmq rabbitmq 999 999 /var/lib/rabbitmq
+mkimage "${acct[@]}" -spec images/rabbitmq/image.json -closure "$build/rabbitmq.closure" -pkg "$rabbitmq" \
   -pkg "$coreutils" -pkg "$gnused" -pkg "$gnugrep" -pkg "$gawk" \
   -file "/entry=$build/rabbitmq-entry" -out "$out/rabbitmq.tar"
 
@@ -526,17 +580,30 @@ mkimage $(accounts rabbitmq rabbitmq 999 999 /var/lib/rabbitmq) -spec images/rab
 # the image's client of the Lambda Runtime API.
 rie=$(pkg_with aws-lambda-rie aws-lambda-rie)
 
-closure "$python" "$rie" > "$build/lambda-python.closure"
-mkimage $(accounts lambda-python sbx_user1051 993 990 /home/sbx_user1051) -spec images/lambda/python/image.json -closure "$build/lambda-python.closure" -pkg "$python" -pkg "$rie" \
-  -remove "$python/$python_marker" \
-  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" -file "/var/runtime/bootstrap=images/lambda/python/bootstrap" \
-  -out "$out/lambda-python.tar"
-
-node24=$(pkg_with nodejs_24 node)
-closure "$node24" "$rie" > "$build/lambda-nodejs.closure"
-mkimage $(accounts lambda-nodejs sbx_user1051 993 990 /home/sbx_user1051) -spec images/lambda/nodejs/image.json -closure "$build/lambda-nodejs.closure" -pkg "$node24" -pkg "$rie" \
-  -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.mjs=images/lambda/nodejs/bootstrap.mjs" -file "/var/runtime/bootstrap=images/lambda/nodejs/bootstrap" \
-  -out "$out/lambda-nodejs.tar"
+# The runtimes AWS Lambda offers.
+for v in 3.11 3.12 3.13 3.14; do
+  p=python_${v/./_}
+  p=${!p}
+  closure "$p" "$rie" > "$build/lambda-python$v.closure"
+  accounts lambda-python sbx_user1051 993 990 /home/sbx_user1051
+  mkimage "${acct[@]}" -spec images/lambda/python/image.json -tag "fws/lambda/python:$v" \
+    -env "AWS_EXECUTION_ENV=AWS_Lambda_python$v" -closure "$build/lambda-python$v.closure" -pkg "$p" -pkg "$rie" \
+    -remove "$p/lib/python$v/EXTERNALLY-MANAGED" \
+    -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" -file "/var/runtime/bootstrap=images/lambda/python/bootstrap" \
+    -out "$out/lambda-python-$v.tar"
+done
+# shellcheck disable=SC2154 # set through printf -v above
+node24=$node_24
+for v in 22 24; do
+  p=node_$v
+  p=${!p}
+  closure "$p" "$rie" > "$build/lambda-nodejs$v.closure"
+  accounts lambda-nodejs sbx_user1051 993 990 /home/sbx_user1051
+  mkimage "${acct[@]}" -spec images/lambda/nodejs/image.json -tag "fws/lambda/nodejs:$v" \
+    -env "AWS_EXECUTION_ENV=AWS_Lambda_nodejs$v.x" -closure "$build/lambda-nodejs$v.closure" -pkg "$p" -pkg "$rie" \
+    -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.mjs=images/lambda/nodejs/bootstrap.mjs" -file "/var/runtime/bootstrap=images/lambda/nodejs/bootstrap" \
+    -out "$out/lambda-nodejs-$v.tar"
+done
 
 # The Java runtime's libraries, from Maven Central, checked against their
 # published digests.
@@ -556,7 +623,8 @@ mkdir -p "$build/lambda-java/classes"
 "$jdk17/bin/javac" --release 17 -cp "$lib/*" -d "$build/lambda-java/classes" images/lambda/java/src/fws/lambda/Bootstrap.java
 "$jdk17/bin/jar" --create --file "$lib/fws-lambda-runtime.jar" -C "$build/lambda-java/classes" .
 closure "$jdk17" "$rie" > "$build/lambda-java.closure"
-mkimage $(accounts lambda-java sbx_user1051 993 990 /home/sbx_user1051) -spec images/lambda/java/image.json -closure "$build/lambda-java.closure" -pkg "$jdk17" -pkg "$rie" \
+accounts lambda-java sbx_user1051 993 990 /home/sbx_user1051
+mkimage "${acct[@]}" -spec images/lambda/java/image.json -closure "$build/lambda-java.closure" -pkg "$jdk17" -pkg "$rie" \
   -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/lib=$lib" -file "/var/runtime/bootstrap=images/lambda/java/bootstrap" \
   -out "$out/lambda-java.tar"
 
@@ -584,7 +652,8 @@ curl -fsSL --retry 5 -o "$build/playwright/shell.zip" \
 echo "$pw_sum  $build/playwright/shell.zip" | shasum -a 256 -c - >/dev/null
 unzip -q "$build/playwright/shell.zip" -d "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
 closure "$node24" > "$build/playwright.closure"
-mkimage $(accounts playwright pwuser 1000 1000 /home/pwuser) -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" \
+accounts playwright pwuser 1000 1000 /home/pwuser
+mkimage "${acct[@]}" -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" \
   -file "/entry=$build/playwright-entry" -file "/usr/lib/node_modules=$build/playwright/modules/node_modules" \
   -file "/ms-playwright=$build/playwright/browsers" -out "$out/playwright.tar"
 
@@ -605,8 +674,11 @@ for p in coreutils:ls findutils:find diffutils:diff gnugrep:grep gnused:sed gawk
   busybox_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
 done
 closure "${busybox_pkgs[@]}" > "$build/busybox.closure"
-mkimage $(accounts busybox) -spec images/busybox/image.json -closure "$build/busybox.closure" \
-  $(printf -- '-pkg %s ' "${busybox_pkgs[@]}") -file "/bin/busybox=$build/busybox" \
+busybox_args=()
+for p in "${busybox_pkgs[@]}"; do busybox_args+=(-pkg "$p"); done
+accounts busybox
+mkimage "${acct[@]}" -spec images/busybox/image.json -closure "$build/busybox.closure" \
+  "${busybox_args[@]}" -file "/bin/busybox=$build/busybox" \
   -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env -out "$out/busybox.tar"
 
 # A general base for images built FROM it, in place of Alpine or Debian,
@@ -618,8 +690,11 @@ for p in bash:bash curl:curl git:git jq:jq less:less; do
   base_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
 done
 closure "${base_pkgs[@]}" > "$build/base.closure"
-mkimage $(accounts base) -spec images/base/image.json -closure "$build/base.closure" \
-  $(printf -- '-pkg %s ' "${base_pkgs[@]}") -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env \
+base_args=()
+for p in "${base_pkgs[@]}"; do base_args+=(-pkg "$p"); done
+accounts base
+mkimage "${acct[@]}" -spec images/base/image.json -closure "$build/base.closure" \
+  "${base_args[@]}" -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env \
   -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/base.tar"
 
 # Ryuk, Testcontainers' reaper, built from its 0.14.0 release.
@@ -637,18 +712,23 @@ chmod -R u+w "$build/ryuk-src"
 # data files the build references, not the other components.
 k8s=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/kubernetes.nix --argstr nixpkgs "$nixpkgs")
 go_runner=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/go-runner.nix --argstr nixpkgs "$nixpkgs")
-closure $(nix-store -qR "$k8s" | grep -v "^$k8s$") > "$build/kubernetes.closure"
+deps_of "$k8s"
+closure "${deps[@]}" > "$build/kubernetes.closure"
 for c in kube-apiserver kube-controller-manager kube-scheduler kubectl; do
-  mkimage $(accounts "$c" nonroot 65532 65532 /home/nonroot) -spec "images/$c/image.json" -closure "$build/kubernetes.closure" \
+  accounts "$c" nonroot 65532 65532 /home/nonroot
+  mkimage "${acct[@]}" -spec "images/$c/image.json" -closure "$build/kubernetes.closure" \
     -file "/go-runner=$go_runner/bin/go-runner" -file "/usr/local/bin/$c=$k8s/bin/$c" \
     -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/$c.tar"
 done
 pause=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/pause.nix --argstr nixpkgs "$nixpkgs")
 closure "$pause" > "$build/pause.closure"
-mkimage $(accounts pause) -spec images/pause/image.json -closure "$build/pause.closure" -file "/pause=$pause/bin/pause" -out "$out/pause.tar"
+accounts pause
+mkimage "${acct[@]}" -spec images/pause/image.json -closure "$build/pause.closure" -file "/pause=$pause/bin/pause" -out "$out/pause.tar"
 kubelet=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/kubelet.nix --argstr nixpkgs "$nixpkgs")
-closure $(nix-store -qR "$kubelet" | grep -v "^$kubelet$") > "$build/kubelet.closure"
-mkimage $(accounts kubelet) -spec images/kubelet/image.json -closure "$build/kubelet.closure" \
+deps_of "$kubelet"
+closure "${deps[@]}" > "$build/kubelet.closure"
+accounts kubelet
+mkimage "${acct[@]}" -spec images/kubelet/image.json -closure "$build/kubelet.closure" \
   -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" -file "/usr/local/bin/fws-kube-proxy=$build/fws-kube-proxy" \
   -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/kubelet.tar"
 
@@ -682,7 +762,8 @@ echo "$k8s_version" > "$build/kind-version"
 # bash, which kind runs in a node to restart containerd once it has patched
 # containerd's configuration, and sh, as which it runs too.
 bash=$(pkg_with bash bash)
-closure "$coreutils" "$gnutar" "$bash" $(nix-store -qR "$k8s" "$kubelet" | grep -v -e "^$k8s$" -e "^$kubelet$") > "$build/kind-node.closure"
+deps_of "$k8s" "$kubelet"
+closure "$coreutils" "$gnutar" "$bash" "${deps[@]}" > "$build/kind-node.closure"
 images=()
 for c in kube-apiserver kube-controller-manager kube-scheduler etcd pause; do
   images+=(-file "/kind/images/$c.tar=$out/$c.tar")
@@ -698,12 +779,14 @@ node_files=(-pkg "$coreutils" -pkg "$gnutar" -pkg "$bash" -link /bin/sh=bash
   -file "/kind/manifests/default-cni.yaml=$here/images/kind-node/manifests/default-cni.yaml"
   -file "/kind/manifests/default-storage.yaml=$here/images/kind-node/manifests/default-storage.yaml"
   -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt")
-mkimage $(accounts kind-node) -spec images/kind-node/image.json -closure "$build/kind-node.closure" "${node_files[@]}" -out "$out/kind-node.tar"
+accounts kind-node
+mkimage "${acct[@]}" -spec images/kind-node/image.json -closure "$build/kind-node.closure" "${node_files[@]}" -out "$out/kind-node.tar"
 
 # k3s as its image runs it, from the same parts: /bin/k3s is the
 # entrypoint, whose k3s server brings up a single-node cluster with kubeadm
 # and writes k3s's kubeconfig, as Testcontainers' k3s module reads it.
-mkimage $(accounts k3s) -spec images/k3s/image.json -closure "$build/kind-node.closure" "${node_files[@]}" \
+accounts k3s
+mkimage "${acct[@]}" -spec images/k3s/image.json -closure "$build/kind-node.closure" "${node_files[@]}" \
   -file "/bin/k3s=$build/kind-node-entry" -out "$out/k3s.tar"
 
 # An image the catalog no longer has leaves its archive behind.

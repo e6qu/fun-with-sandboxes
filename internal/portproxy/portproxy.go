@@ -23,6 +23,8 @@ type proxy struct {
 	// header reads what the connecting side writes before a connection's
 	// stream, which the target does not take.
 	header func(io.Reader) error
+	// allow, when set, takes a connection from the clients it reports.
+	allow  func(net.Addr) bool
 	wg     sync.WaitGroup
 	mu     sync.Mutex
 	conns  map[net.Conn]struct{}
@@ -35,11 +37,14 @@ func (p *proxy) serve() {
 		if err != nil {
 			return
 		}
-		if !p.track(c) {
+		if p.allow != nil && !p.allow(c.RemoteAddr()) {
+			c.Close()
+			continue
+		}
+		if !p.start(c) {
 			c.Close()
 			return
 		}
-		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
 			defer p.untrack(c)
@@ -54,11 +59,29 @@ func (p *proxy) serve() {
 				c.Close()
 				return
 			}
-			p.track(up)
+			// After Close, an untracked upstream would hold the pipe, and
+			// Close's wait, open until the container ends it.
+			if !p.track(up) {
+				up.Close()
+				return
+			}
 			defer p.untrack(up)
 			pipe(c, up)
 		}()
 	}
+}
+
+// start tracks a connection whose goroutine Close waits for; the count
+// rises under the lock Close takes, so Close never waits as it rises.
+func (p *proxy) start(c net.Conn) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return false
+	}
+	p.conns[c] = struct{}{}
+	p.wg.Add(1)
+	return true
 }
 
 func (p *proxy) track(c net.Conn) bool {
@@ -143,20 +166,30 @@ type FlowDialer func(raddr *net.UDPAddr) (net.Conn, error)
 
 // Listen binds the first port from lo to hi the host lets it, TCP or UDP
 // by proto, and forwards what arrives there to upstream; UDP flows send from
-// the sockets dial opens.
-func Listen(proto string, ip netip.Addr, lo, hi int, upstream string, dial FlowDialer) (io.Closer, int, error) {
+// the sockets dial opens. With allow, it takes connections and datagrams
+// from the sources allow reports alone.
+func Listen(proto string, ip netip.Addr, lo, hi int, upstream string, dial FlowDialer, allow func(netip.Addr) bool) (io.Closer, int, error) {
+	var accept func(*net.UDPAddr) bool
+	var acceptTCP func(net.Addr) bool
+	if allow != nil {
+		accept = func(a *net.UDPAddr) bool { return allow(addrOf(a)) }
+		acceptTCP = func(a net.Addr) bool {
+			t, ok := a.(*net.TCPAddr)
+			return ok && allow(addrOf(&net.UDPAddr{IP: t.IP}))
+		}
+	}
 	var err error
 	for port := lo; port <= hi; port++ {
 		addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
 		if proto == "udp" {
 			var pc net.PacketConn
 			if pc, err = net.ListenPacket("udp", addr); err == nil {
-				return ServeUDP(pc, upstream, dial, nil), pc.LocalAddr().(*net.UDPAddr).Port, nil
+				return ServeUDP(pc, upstream, dial, accept), pc.LocalAddr().(*net.UDPAddr).Port, nil
 			}
 		} else {
 			var l net.Listener
 			if l, err = net.Listen("tcp", addr); err == nil {
-				px := &proxy{l: l, target: upstream, conns: map[net.Conn]struct{}{}}
+				px := &proxy{l: l, target: upstream, conns: map[net.Conn]struct{}{}, allow: acceptTCP}
 				go px.serve()
 				return px, l.Addr().(*net.TCPAddr).Port, nil
 			}
@@ -340,4 +373,10 @@ func (p *udpProxy) Close() error {
 	p.mu.Unlock()
 	p.wg.Wait()
 	return err
+}
+
+// addrOf is a UDP address's IP, unmapped.
+func addrOf(a *net.UDPAddr) netip.Addr {
+	ip, _ := netip.AddrFromSlice(a.IP)
+	return ip.Unmap()
 }

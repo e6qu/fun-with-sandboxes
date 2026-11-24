@@ -320,17 +320,17 @@ static void *dns_run(void *arg) {
 }
 
 static DNSServiceErrorType fws_DNSServiceGetAddrInfo(DNSServiceRef *sdRef, DNSServiceFlags flags, uint32_t interfaceIndex,
-                                                     DNSServiceProtocol protocol, const char *hostname, DNSServiceGetAddrInfoReply callBack,
+                                                     DNSServiceProtocol protocol, const char *host, DNSServiceGetAddrInfoReply callBack,
                                                      void *context) {
     // A shared connection's ref is the caller's, made by the real service.
     // mDNSResponder's socket is out of a container's reach: every name
     // resolves here.
-    if (!sdRef || !callBack || (flags & kDNSServiceFlagsShareConnection) || !hostname || !*hostname) {
-        return DNSServiceGetAddrInfo(sdRef, flags, interfaceIndex, protocol, hostname, callBack, context);
+    if (!sdRef || !callBack || (flags & kDNSServiceFlagsShareConnection) || !host || !*host) {
+        return DNSServiceGetAddrInfo(sdRef, flags, interfaceIndex, protocol, host, callBack, context);
     }
     struct dns_job *j = calloc(1, sizeof *j);
     if (!j) return kDNSServiceErr_NoMemory;
-    if (!(j->name = strdup(hostname))) {
+    if (!(j->name = strdup(host))) {
         free(j);
         return kDNSServiceErr_NoMemory;
     }
@@ -452,7 +452,7 @@ typedef struct fws_dnssd_result *fws_dnssd_result_t;
 typedef void (^fws_dnssd_result_handler_t)(fws_dnssd_result_t *results, size_t count);
 typedef void (^fws_dnssd_event_handler_t)(int event, int error);
 #define DNSSD_WEAK __attribute__((weak_import))
-extern void dnssd_getaddrinfo_set_hostname(fws_dnssd_gai_t gai, const char *hostname) DNSSD_WEAK;
+extern void dnssd_getaddrinfo_set_hostname(fws_dnssd_gai_t gai, const char *name) DNSSD_WEAK;
 extern void dnssd_getaddrinfo_set_queue(fws_dnssd_gai_t gai, dispatch_queue_t queue) DNSSD_WEAK;
 extern void dnssd_getaddrinfo_set_result_handler(fws_dnssd_gai_t gai, fws_dnssd_result_handler_t handler) DNSSD_WEAK;
 extern void dnssd_getaddrinfo_set_event_handler(fws_dnssd_gai_t gai, fws_dnssd_event_handler_t handler) DNSSD_WEAK;
@@ -545,8 +545,8 @@ static void nw_objc_load(void) {
     nw_objc.ivars = (void *(*)(void *))dlsym(RTLD_DEFAULT, "object_getIndexedIvars");
     nw_objc.release = (void (*)(void *))dlsym(RTLD_DEFAULT, "objc_release");
     if (!get_class || !allocate || !register_class || !nw_objc.create || !nw_objc.ivars || !nw_objc.release) return;
-    void *root = get_class("NSObject");
-    void *cls = root ? allocate(root, "FWSDNSSDResult", 0) : NULL;
+    void *nsobject = get_class("NSObject");
+    void *cls = nsobject ? allocate(nsobject, "FWSDNSSDResult", 0) : NULL;
     if (cls) {
         register_class(cls);
     } else {
@@ -596,12 +596,12 @@ static void nw_drop(struct nw_lookup *l) {
     memset(l, 0, sizeof *l);
 }
 
-static void fws_dnssd_set_hostname(fws_dnssd_gai_t gai, const char *hostname) {
+static void fws_dnssd_set_hostname(fws_dnssd_gai_t gai, const char *name) {
     pthread_mutex_lock(&nw_lock);
     struct nw_lookup *l = nw_lookup_of(gai, 1);
-    if (l) strlcpy(l->name, hostname ? hostname : "", sizeof l->name);
+    if (l) strlcpy(l->name, name ? name : "", sizeof l->name);
     pthread_mutex_unlock(&nw_lock);
-    dnssd_getaddrinfo_set_hostname(gai, hostname);
+    dnssd_getaddrinfo_set_hostname(gai, name);
 }
 INTERPOSE(fws_dnssd_set_hostname, dnssd_getaddrinfo_set_hostname);
 
@@ -651,9 +651,31 @@ static void fws_dnssd_set_protocols(fws_dnssd_gai_t gai, uint32_t protocols) {
 }
 INTERPOSE(fws_dnssd_set_protocols, dnssd_getaddrinfo_set_protocols);
 
-// nw_resolving marks a thread resolving for the stand-in, whose own
-// lookups, should the host's resolver ask the client, are the client's.
-static __thread int nw_resolving;
+// The threads resolving for the stand-in, whose own lookups, should the
+// host's resolver ask the client, are the client's. A table, not a
+// thread-local: an inserted library's thread-locals are not set up before
+// its first calls.
+#define NW_RESOLVERS 64
+static _Atomic(pthread_t) nw_resolvers[NW_RESOLVERS];
+
+// nw_resolver_add marks the calling thread as resolving and returns its
+// slot, or -1 where every slot is taken.
+static int nw_resolver_add(void) {
+    pthread_t self = pthread_self();
+    for (int i = 0; i < NW_RESOLVERS; i++) {
+        pthread_t none = NULL;
+        if (atomic_compare_exchange_strong(&nw_resolvers[i], &none, self)) return i;
+    }
+    return -1;
+}
+
+static int nw_resolving(void) {
+    pthread_t self = pthread_self();
+    for (int i = 0; i < NW_RESOLVERS; i++) {
+        if (atomic_load(&nw_resolvers[i]) == self) return 1;
+    }
+    return 0;
+}
 
 // A lookup the library runs: what it asks, and what it found.
 struct nw_job {
@@ -733,9 +755,11 @@ static void nw_resolve(void *arg) {
     struct addrinfo hints = {0}, *res = NULL;
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    nw_resolving = 1;
-    int err = fws_getaddrinfo(j->name, NULL, &hints, &res);
-    nw_resolving = 0;
+    // Past NW_RESOLVERS lookups at once, one fails as a resolver that
+    // does not answer, rather than ask the client it stands in for.
+    int slot = nw_resolver_add();
+    int err = slot < 0 ? EAI_AGAIN : fws_getaddrinfo(j->name, NULL, &hints, &res);
+    if (slot >= 0) atomic_store(&nw_resolvers[slot], (pthread_t)NULL);
     j->found = err == 0;
     for (struct addrinfo *ai = err == 0 ? res : NULL; ai && j->n < NW_ADDRS; ai = ai->ai_next) {
         if ((ai->ai_family != AF_INET && ai->ai_family != AF_INET6) || ai->ai_addrlen > sizeof j->addrs[0]) continue;
@@ -754,7 +778,7 @@ static void nw_resolve(void *arg) {
 // fws_dnssd_activate starts the library's lookup in the client's place,
 // for a lookup whose name, queue and handler it has.
 static void fws_dnssd_activate(fws_dnssd_gai_t gai) {
-    struct nw_job *j = nw_resolving || !nw_objc_ready() ? NULL : calloc(1, sizeof *j);
+    struct nw_job *j = nw_resolving() || !nw_objc_ready() ? NULL : calloc(1, sizeof *j);
     pthread_mutex_lock(&nw_lock);
     struct nw_lookup *l = j ? nw_lookup_of(gai, 0) : NULL;
     if (!l || !l->name[0] || !l->queue || !l->handler) {

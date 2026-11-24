@@ -52,6 +52,13 @@ func (e *Engine) Unpause(ref string) error {
 	c.save()
 	c.mu.Unlock()
 	if err := task.Unpause(); err != nil {
+		// The processes stay stopped while the run they belong to lasts.
+		c.mu.Lock()
+		if c.task == task {
+			c.rec.State.Paused = true
+			c.save()
+		}
+		c.mu.Unlock()
 		return err
 	}
 	e.publishContainer(c, events.ActionUnPause, nil)

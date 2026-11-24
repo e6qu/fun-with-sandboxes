@@ -172,15 +172,16 @@ func Open(cfg Config) (*Engine, error) {
 		e.libOnce.Do(func() { e.lib = cfg.Nested.Library })
 	}
 	// An engine nested in a container leaves the guard to the engine on the
-	// host, whose container it runs in.
+	// host, whose container it runs in. The guard starts once the engine
+	// has opened, so an Open that fails leaves no goroutine behind.
+	var guards []*guard
 	if cfg.MachineGuard && cfg.Nested == nil {
-		guards := machineGuards(root)
+		guards = machineGuards(root)
 		for _, g := range guards {
 			if _, err := g.level(); err != nil {
 				return nil, fmt.Errorf("the machine guard reads %s: %w", g.name, err)
 			}
 		}
-		go e.guardMachine(guards, e.closing)
 	}
 	if err := os.MkdirAll(e.runDir(), 0o700); err != nil {
 		return nil, err
@@ -202,6 +203,9 @@ func Open(cfg Config) (*Engine, error) {
 				return nil, err
 			}
 		}
+	}
+	if guards != nil {
+		go e.guardMachine(guards, e.closing)
 	}
 	return e, nil
 }

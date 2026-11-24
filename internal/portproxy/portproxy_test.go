@@ -76,7 +76,7 @@ func TestUDPProxyKeepsAFlowPerClient(t *testing.T) {
 		mu.Unlock()
 		return c, nil
 	}
-	cl, port, err := Listen("udp", netip.MustParseAddr("127.0.0.1"), 0, 0, upstream, dial)
+	cl, port, err := Listen("udp", netip.MustParseAddr("127.0.0.1"), 0, 0, upstream, dial, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestListenRangeTakesTheFirstFreePort(t *testing.T) {
 	defer held.Close()
 	lo := held.Addr().(*net.TCPAddr).Port
 	ip := netip.MustParseAddr("127.0.0.1")
-	cl, port, err := Listen("tcp", ip, lo, lo+5, "127.0.0.1:1", nil)
+	cl, port, err := Listen("tcp", ip, lo, lo+5, "127.0.0.1:1", nil, nil)
 	if err != nil {
 		t.Fatalf("binding %d-%d with %d taken: %v", lo, lo+5, lo, err)
 	}
@@ -130,7 +130,7 @@ func TestListenRangeTakesTheFirstFreePort(t *testing.T) {
 	if port <= lo || port > lo+5 {
 		t.Fatalf("bound %d, want a port in %d-%d other than %d", port, lo+1, lo+5, lo)
 	}
-	if _, _, err := Listen("tcp", ip, lo, lo, "127.0.0.1:1", nil); !errors.Is(err, syscall.EADDRINUSE) {
+	if _, _, err := Listen("tcp", ip, lo, lo, "127.0.0.1:1", nil, nil); !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("binding a fully taken range: %v", err)
 	}
 }
@@ -203,5 +203,46 @@ func TestListenUnixTakesTheFirstFreePort(t *testing.T) {
 	}
 	if _, port, err := ListenUnix(path, 0, 0, up.Addr().String(), header); err != nil || port < 32768 {
 		t.Errorf("an ephemeral port: %d, %v", port, err)
+	}
+}
+
+// A published port with an allow list takes connections from the sources
+// on it alone.
+func TestListenTakesAllowedSourcesAlone(t *testing.T) {
+	up, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer up.Close()
+	go func() {
+		for {
+			c, err := up.Accept()
+			if err != nil {
+				return
+			}
+			c.Write([]byte("hi"))
+			c.Close()
+		}
+	}()
+	try := func(allow func(netip.Addr) bool) bool {
+		cl, port, err := Listen("tcp", netip.MustParseAddr("127.0.0.1"), 0, 0, up.Addr().String(), nil, allow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cl.Close()
+		c, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			return false
+		}
+		defer c.Close()
+		c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		b, _ := io.ReadAll(c)
+		return string(b) == "hi"
+	}
+	if !try(func(a netip.Addr) bool { return a == netip.MustParseAddr("127.0.0.1") }) {
+		t.Error("an allowed source was refused")
+	}
+	if try(func(a netip.Addr) bool { return false }) {
+		t.Error("a source off the list was served")
 	}
 }

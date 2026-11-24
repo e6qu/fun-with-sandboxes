@@ -156,11 +156,26 @@ func serveNested(withBuildKit, debug bool) func(*engine.Engine, string) (io.Clos
 }
 
 func run(cfg engine.Config, socket string, withBuildKit, debug bool) error {
+	// Another engine on the socket owns the state too: it is asked first,
+	// before this one opens the state and takes back its containers.
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+		return err
+	}
+	if c, err := net.Dial("unix", socket); err == nil {
+		c.Close()
+		return fmt.Errorf("another engine is already serving %s", socket)
+	}
 	cfg.Serve = serveNested(withBuildKit, debug)
 	e, err := engine.Open(cfg)
 	if err != nil {
 		return err
 	}
+	serving := false
+	defer func() {
+		if !serving {
+			e.Close()
+		}
+	}()
 	// The container library and the spawn helper compile with clang the
 	// first time an engine needs them, which takes seconds; they compile
 	// now, as the engine starts, rather than in its first container's start.
@@ -178,21 +193,11 @@ func run(cfg engine.Config, socket string, withBuildKit, debug bool) error {
 		defer svc.Close()
 		bk = svc
 	}
-	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
-		return err
-	}
-	if c, err := net.Dial("unix", socket); err == nil {
-		c.Close()
-		return fmt.Errorf("another engine is already serving %s", socket)
-	}
-	os.Remove(socket)
-	l, err := net.Listen("unix", socket)
+	l, err := listenPrivate(socket)
 	if err != nil {
 		return err
 	}
-	if err := os.Chmod(socket, 0o600); err != nil {
-		return err
-	}
+	serving = true
 	srv, h := apiServer(e, bk, debug)
 	defer h.Close()
 
@@ -220,4 +225,35 @@ func run(cfg engine.Config, socket string, withBuildKit, debug bool) error {
 		return nil
 	}
 	return err
+}
+
+// listenPrivate listens on a Unix socket at path that only this user can
+// connect to at any moment: it binds in a directory of its own, mode 0700,
+// makes the socket 0600 and only then renames it into place, as a socket
+// bound at path would be open to the umask's other users until its chmod.
+func listenPrivate(path string) (*net.UnixListener, error) {
+	dir, err := os.MkdirTemp(filepath.Dir(path), ".fwsd-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	bound := filepath.Join(dir, "s")
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: bound, Net: "unix"})
+	if err != nil {
+		return nil, err
+	}
+	// The socket's file moves away from where it was bound, so the
+	// listener leaves unlinking it to the engine, which removes path as
+	// it stops.
+	l.SetUnlinkOnClose(false)
+	if err := os.Chmod(bound, 0o600); err != nil {
+		l.Close()
+		return nil, err
+	}
+	os.Remove(path)
+	if err := os.Rename(bound, path); err != nil {
+		l.Close()
+		return nil, err
+	}
+	return l, nil
 }

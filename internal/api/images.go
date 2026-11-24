@@ -57,6 +57,13 @@ func (s *Server) imagePull(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "requested platform "+p+" does not match the engine platform "+image.Platform.OS+"/"+image.Platform.Architecture)
 		return
 	}
+	// A malformed reference is refused before the stream starts, as
+	// dockerd refuses it, rather than inside a 200.
+	parsed, err := name.ParseReference(ref, name.WithDefaultTag("latest"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid reference format")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
@@ -64,10 +71,7 @@ func (s *Server) imagePull(w http.ResponseWriter, r *http.Request) {
 	if tag == "" {
 		tag = "latest"
 	}
-	repo := q.Get("fromImage")
-	if r, err := name.ParseReference(ref); err == nil {
-		repo = r.Context().RepositoryStr()
-	}
+	repo := parsed.Context().RepositoryStr()
 	enc.Encode(jsonMessage{Status: "Pulling from " + repo, ID: tag})
 	flush(w)
 	pulled, err := s.e.Images().Pull(r.Context(), ref, auth, func(id, status string) {
@@ -210,7 +214,7 @@ func (s *Server) build(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts.Registries = creds
-	quiet := q.Get("q") == "1" || q.Get("q") == "true"
+	quiet := boolParam(q.Get("q"))
 	// Read the upload to its end before returning: the tar reader stops at
 	// the archive's end marker, and with full duplex on, unread body left to
 	// the server races its read of the next request on the connection.

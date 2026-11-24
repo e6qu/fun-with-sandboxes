@@ -1,8 +1,8 @@
 # Limitations
 
 Where the engine differs from Docker on Linux, and why. Almost every limit
-follows from the two constraints, no root and no virtual machine, and from
-what macOS offers an unprivileged process under them. Non-goals are in
+follows from running with no root and no virtual machine, on what macOS
+offers an unprivileged process. Non-goals are in
 [PLAN.md](PLAN.md#non-goals).
 
 ## Images
@@ -11,9 +11,10 @@ what macOS offers an unprivileged process under them. Non-goals are in
   without a VM, so stock Docker Hub images do not run.
 - **Images follow the container contract.** A service finds its root and
   ports at their container paths and port numbers through the container
-  library, or reads them from the `SANDBOX_*` variables (README). Software
-  the library cannot load into needs an entrypoint that configures it from
-  the variables.
+  library, or reads them from the `SANDBOX_*` variables
+  ([IMAGES](docs/IMAGES.md#the-container-contract)). Software the library
+  cannot load into needs an entrypoint that configures it from the
+  variables.
 - **Only the engine's platform.** A `--platform` or `FROM --platform` other
   than the engine's `darwin/<arch>` is refused. A multi-platform index
   stores its `darwin/<arch>` image alone; a BuildKit build's attestations
@@ -50,7 +51,9 @@ what macOS offers an unprivileged process under them. Non-goals are in
   builds; a `RUN` step runs what the darwin image holds, so one that runs
   a Linux package manager (`apt-get`, `apk`, `yum`) fails. Steps run under
   Seatbelt, with internet through a build-only egress proxy (none with
-  `--network none`).
+  `--network none`). The classic builder (`DOCKER_BUILDKIT=0`) refuses
+  `RUN --mount`, `--network` and `--security`, and any option it does not
+  implement or that is given twice, as dockerd's does.
 
 ## Isolation
 
@@ -94,7 +97,8 @@ what macOS offers an unprivileged process under them. Non-goals are in
   table's listings (`kern.proc.all`, `uid`, `ruid`, `tty`), which the
   library asks the container's supervisor for instead. A program without
   the library, such as Apple's `ps`, lists nothing; one that knows another
-  process's pid still reads its `kern.proc.pid` entry.
+  process's pid still reads its `kern.proc.pid` entry, and a listing of one
+  process group or session stays readable.
 - **A stop kills every process the main process started**, daemons in
   their own session included, as macOS holds the main process responsible
   for them.
@@ -130,7 +134,13 @@ what macOS offers an unprivileged process under them. Non-goals are in
 - **No host network mode**, except inside a privileged container's nested
   engine: every container is confined to its stack's ports.
 - **Bridge networks and the default IPAM driver only.** Overlay, macvlan,
-  ipvlan, other IPAM drivers and IPAM options are refused.
+  ipvlan, other IPAM drivers and IPAM options are refused. Of the bridge
+  driver's options, `enable_ip_masquerade=false` gives the network no
+  internet access, `enable_icc=false` keeps its members from reaching,
+  and resolving, one another over it, `host_binding_ipv4` is its members'
+  default published address, the bridge's name is reported, an MTU
+  changes nothing, and `fws.egress.allow` is an egress allow list (below);
+  any other option is refused.
 - **Container addresses are presented, not routed.** Members have
   addresses in `127.88.0.0/16`, or in their network's subnets (the default
   bridge holds `172.17.0.0/16`, where `--ip` is refused, as in Docker);
@@ -145,9 +155,13 @@ what macOS offers an unprivileged process under them. Non-goals are in
   - A network without a subnet reports `127.88.0.0/16`, so a program that
     advertises its first global address (Kubernetes' API server,
     SeaweedFS) finds none: give it a subnet.
-- **Interfaces are presented.** `getifaddrs`, the `SIOCGIF*` ioctls (IPv4)
-  and the routing sysctl list loopback and `eth0`; binding to `eth0`'s
-  index or joining a multicast group on it fails.
+- **Interfaces and routes are presented.** `getifaddrs`, the `SIOCGIF*`
+  ioctls (IPv4) and the routing sysctl list loopback and `eth0`, and the
+  routing table (`netstat -rn`) the host's loopback routes, each IPv4
+  subnet of the container's networks and a default route through its
+  first network's gateway; IPv6 routes are the host's loopback ones alone.
+  Binding to `eth0`'s index or joining a multicast group on it fails.
+  Programs without the library see the host's.
 - **A container's ports are its loopback host ports.** Only exposed or
   published ports have host ports; a listener on any other port, or port
   0, listens on a Unix socket reached through the router. A dual-stack
@@ -170,6 +184,19 @@ what macOS offers an unprivileged process under them. Non-goals are in
   stack's egress proxy: HTTP(S) via `HTTP_PROXY`/`HTTPS_PROXY`, any TCP via
   SOCKS5 (`ALL_PROXY`). UDP does not leave the machine. `fwsd -egress=false`
   turns the proxy off.
+- **Ingress allow lists hold a container's published ports.** Its
+  `fws.ingress.allow` label names the addresses and CIDR prefixes its
+  published ports take connections and datagrams from; others are
+  refused as they arrive. Docker has no such setting. Members of its
+  stack and networks reach it by membership, not by this list.
+- **Egress allow lists hold what goes through the egress proxy.** A
+  container's `fws.egress.allow` label and its networks' option of that
+  name (`docker network create --opt fws.egress.allow=...`) name the
+  hosts, `*.domains`, addresses and prefixes, each with an optional
+  `:port`, it may reach outside the machine; a destination must be on
+  every list that applies. Docker has no such setting. A name is matched
+  as the client asks for it, an address or prefix against every address
+  it resolves to; UDP, which does not leave the machine, is not on them.
 - **DNS is answered in the container and by its router.** The library
   resolves `/etc/hosts`, the stack's names and the host's resolver, through
   `getaddrinfo`, its async form, `DNSServiceGetAddrInfo` and
@@ -198,9 +225,9 @@ what macOS offers an unprivileged process under them. Non-goals are in
   pods, as a nice value would weigh a pod against every process on the
   Mac. `securityContext.runAsUser` takes no effect.
 - **The CRI refuses checkpoints**; `UpdatePodSandboxResources` changes
-  nothing, as containerd's does not. Pod metrics count CPU time in whole
-  seconds. A pod's DNS servers go unused; its search domains and options
-  apply.
+  nothing, as containerd's does not. Pod and container metrics count CPU
+  time in hundredths of a second, as `ps` reports it. A pod's DNS servers
+  go unused; its search domains and options apply.
 - **Pod networks hold the node's pod CIDR**, IPv4, IPv6 or both; other
   nodes' pods reach a pod through the routers. A changed CIDR applies once
   the node's pods are gone.
@@ -265,9 +292,10 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   are accepted and wait.
 - **Live restore needs `fwsd -live-restore`**; otherwise the engine stops
   its containers when it stops.
-- **`docker stats` samples the host's `ps` each second**, so a process
-  that lives less misses its disk I/O; network I/O is the per-socket
-  payload count on `eth0`, without headers.
+- **`docker stats` misses disk I/O a process does after the shim last
+  sampled it**: the shim reads each process's counts when stats polls,
+  each second, or every 100 ms with a limit set. Network I/O is the
+  per-socket payload count on `eth0`, without headers.
 - **Bandwidth is set by the `kubernetes.io/egress-bandwidth` and
   `kubernetes.io/ingress-bandwidth` labels**, or a pod's annotations of
   those names, in bits a second, as the Kubernetes bandwidth plugin takes
@@ -281,7 +309,8 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   files and the quota beside them, so writes past it fail with `ENOSPC`.
   The image is copied into it, not cloned, so such a container is slower
   to create; the image's files are counted in whole APFS blocks, and a
-  few megabytes of the volume's own are room beyond the quota. Volumes and tmpfs mounts stay outside it.
+  few megabytes of the volume's own are room beyond the quota. Volumes and
+  tmpfs mounts stay outside it.
 - **tmpfs mounts are directories**, emptied at each start, not
   memory-backed: `rw`, `ro`, `noexec`, `mode`, `uid` and `gid` hold, on
   tmpfs volumes too; `size` and `nr_inodes` are refused.
@@ -295,20 +324,20 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   back and `kube down` removes what a file made. Checkpoints and quadlets
   are not served.
 - **Refused, having no macOS counterpart**: `--sysctl` beyond those below,
-  `--userns`, runtimes other than runc, log drivers other than `json-file`
-  and `local`, devices, `--gpus`, device cgroup rules, `--cgroup-parent`,
-  `--oom-score-adj`, storage options other than `size`, Windows-only options, volume drivers
-  other than `local`, and mount types other than bind, volume, image and
-  tmpfs.
+  runtimes other than runc, log drivers other than `json-file` and
+  `local`, devices, `--gpus`, device cgroup rules, `--cgroup-parent`,
+  `--oom-score-adj`, storage options other than `size`, Windows-only
+  options, volume drivers other than `local`, and mount types other than
+  bind, volume, image and tmpfs.
 - **Accepted and changing nothing**, as each asks for no more confinement
-  than a container has: `--cap-drop`, `seccomp`/`apparmor=unconfined`,
-  `label=disable`, `--cgroupns`, and the sysctls that hold already
+  than a container has: `--cgroupns`, the sysctls that hold already
   (`net.ipv6.conf.{all,default}.disable_ipv6=0`, and in a privileged
-  container IPv4 and IPv6 forwarding). Bind propagation is always
+  container IPv4 and IPv6 forwarding), and the capability and security
+  options under [Isolation](#isolation). Bind propagation is always
   `rslave`.
 
 ## API surface
 
-- **Not served:** swarm, services, nodes, secrets, configs, plugins and
-  image search. The engine serves what Docker Compose, the Docker CLI and
-  Testcontainers use ([DESIGN](docs/DESIGN.md#8-docker-engine-api-surface)).
+- **Not served:** swarm, services, nodes, secrets, configs and plugins.
+  The engine serves what Docker Compose, the Docker CLI and Testcontainers
+  use ([DESIGN](docs/DESIGN.md#8-docker-engine-api-surface)).

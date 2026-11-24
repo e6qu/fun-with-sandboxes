@@ -43,6 +43,16 @@ func main() {
 		}
 		return
 	}
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] != "mariadbd" && args[0] != "mysqld" && !strings.HasPrefix(args[0], "-") {
+		// Any other command runs as given, as the official image's
+		// entrypoint execs it, with no database set up.
+		prog, err := exec.LookPath(args[0])
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Fatal(syscall.Exec(prog, args, os.Environ()))
+	}
 	server, err := filepath.EvalSymlinks(sandboxenv.Path("/bin/mariadbd"))
 	if err != nil {
 		log.Fatal(err)
@@ -74,7 +84,6 @@ func main() {
 	if err := initialise(server, base, datadir, common); err != nil {
 		log.Fatal(err)
 	}
-	args := os.Args[1:]
 	if len(args) > 0 && (args[0] == "mariadbd" || args[0] == "mysqld") {
 		args = args[1:]
 	}

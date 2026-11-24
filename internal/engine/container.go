@@ -304,10 +304,21 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	if _, _, err := containerBandwidth(req.Config.Labels); err != nil {
 		return container.CreateResponse{}, err
 	}
+	if _, err := ingressAllow(req.Config.Labels); err != nil {
+		return container.CreateResponse{}, err
+	}
+	if v, ok := req.Config.Labels[egress.AllowKey]; ok {
+		if _, err := egress.ParseAllow(v); err != nil {
+			return container.CreateResponse{}, invalid("label %s: %v", egress.AllowKey, err)
+		}
+	}
 	if opts.Platform != "" && opts.Platform != image.Platform.OS+"/"+image.Platform.Architecture {
 		return container.CreateResponse{}, unsupported("requested platform %s does not match the engine platform %s/%s", opts.Platform, image.Platform.OS, image.Platform.Architecture)
 	}
 	if err := checkHostConfig(req.HostConfig); err != nil {
+		return container.CreateResponse{}, err
+	}
+	if err := checkHealthcheck(req.Config.Healthcheck); err != nil {
 		return container.CreateResponse{}, err
 	}
 	if r := opts.Resolver; r != nil {
@@ -322,7 +333,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	}
 	// A nested engine's routers run in its privileged container's sandbox,
 	// which reaches no DNS server.
-	if e.cfg.Nested != nil && dnsOf(*req.HostConfig).set() {
+	if e.cfg.Nested != nil && dnsOf(req.HostConfig).set() {
 		return container.CreateResponse{}, unsupported("DNS servers, search domains and options are not supported in an engine nested in a privileged container: the container's router, which asks its DNS servers, runs in that container's sandbox, which reaches none")
 	}
 	switch {
@@ -464,6 +475,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	ok := false
 	defer func() {
 		if !ok {
+			if c.logs != nil {
+				c.logs.close()
+			}
 			os.RemoveAll(c.dir)
 			e.releaseStackIfEmptyLocked(stack)
 		}
@@ -520,14 +534,14 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			return container.CreateResponse{}, err
 		}
 	}
-	hostname, domain, extraHosts, hostAddress, dns := cfg.Hostname, cfg.Domainname, req.HostConfig.ExtraHosts, firstAddresses(address, networks), resolvOf(*req.HostConfig, opts.Resolver)
+	hostname, domain, extraHosts, hostAddress, dns := cfg.Hostname, cfg.Domainname, req.HostConfig.ExtraHosts, firstAddresses(address, networks), resolvOf(req.HostConfig, opts.Resolver)
 	if req.HostConfig.NetworkMode == "none" {
 		hostAddress = nil
 	}
 	if net != nil {
 		// A container on another's network has its hostname and hosts, as
 		// it would its UTS namespace's files in Docker.
-		hostname, domain, extraHosts, hostAddress, dns = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks), resolvOf(net.rec.HostConfig, net.rec.Resolver)
+		hostname, domain, extraHosts, hostAddress, dns = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks), resolvOf(&net.rec.HostConfig, net.rec.Resolver)
 		cfg.Hostname = hostname
 	}
 	if node != nil {
@@ -679,7 +693,7 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	// file and its stack do not answer through its router, which asks its
 	// resolv.conf's servers; without a router, as on network none, such a
 	// name does not resolve.
-	if dnsOf(net.rec.HostConfig).set() {
+	if dnsOf(&net.rec.HostConfig).set() {
 		env = append(env, pathmap.DNSVar+"=1")
 	}
 	return env, nil
@@ -779,7 +793,7 @@ func checkHostConfig(hc *container.HostConfig) error {
 	if _, err := storageQuota(hc.StorageOpt); err != nil {
 		return err
 	}
-	if err := checkDNS(dnsOf(*hc)); err != nil {
+	if err := checkDNS(dnsOf(hc)); err != nil {
 		return err
 	}
 	if hc.VolumeDriver != "" && hc.VolumeDriver != "local" {
@@ -1143,6 +1157,8 @@ func (e *Engine) prepareMountsLocked(root string, img image.Image, cfg container
 
 	for i := range mounts {
 		m := &mounts[i]
+		// The loops above refuse every other type.
+		//exhaustive:ignore
 		switch m.Type {
 		case mount.TypeBind:
 			src, err := e.hostPath(m.Source)
@@ -1413,12 +1429,11 @@ func engineVariable(k string) bool {
 	return strings.HasPrefix(k, "FWS_") || k == "DYLD_INSERT_LIBRARIES"
 }
 
-// environment is the process environment: the image and container variables
-// with PATH mapped into the root, plus the variables through which the
-// service learns its root, its own ports and its peers' ports; net is the
-// container whose network it is on.
-// environment is c's environment on net's network, which engine ne runs:
-// its egress proxy and ports are net's stack's.
+// environment is c's process environment on net's network, which engine
+// ne runs: the image and container variables with PATH mapped into the
+// root, plus the variables through which the service learns its root, its
+// own ports and its peers' ports, with net's stack's egress proxy and
+// ports.
 func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []string, tty bool, links []string) ([]string, error) {
 	root := c.root()
 	vars := map[string]string{}
@@ -1452,7 +1467,7 @@ func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []s
 		set(kv)
 	}
 	vars["PATH"] = mapPath(root, vars["PATH"])
-	if h := vars["HOME"]; !strings.HasPrefix(h, root) {
+	if h := vars["HOME"]; h != root && !strings.HasPrefix(h, root+"/") {
 		vars["HOME"] = filepath.Join(root, h)
 	}
 	home, err := rootfs.Join(root, strings.TrimPrefix(vars["HOME"], root))
@@ -1634,6 +1649,14 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	return spec, nil
 }
 
+// resources is the container's resource settings as they stand: Update
+// replaces them under c.mu while starts, execs and probes read them.
+func (c *Container) resources() container.Resources {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rec.HostConfig.Resources
+}
+
 func (c *Container) argv() []string {
 	return append(append([]string{}, c.rec.Config.Entrypoint...), c.rec.Config.Cmd...)
 }
@@ -1643,14 +1666,8 @@ func (e *Engine) Start(ref string) error {
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	running := c.rec.State.Status == container.StateRunning || c.starting
-	c.mu.Unlock()
-	if running {
-		return notModified("container already started")
-	}
 	err = c.start(e)
-	if err != nil && c.rec.HostConfig.AutoRemove {
+	if err != nil && KindOf(err) != KindNotModified && c.rec.HostConfig.AutoRemove {
 		// dockerd removes an auto-remove container whose start fails; a
 		// client waiting for its removal would otherwise wait forever.
 		e.Remove(c.rec.ID, RemoveOptions{Force: true, RemoveVolumes: true})
@@ -1658,8 +1675,15 @@ func (e *Engine) Start(ref string) error {
 	return err
 }
 
+// start starts a run of the container unless one is running or starting:
+// the check and the mark are one step under its lock, so two requests, or
+// a request and a restart, never launch two shims for one container.
 func (c *Container) start(e *Engine) error {
 	c.mu.Lock()
+	if c.starting || c.rec.State.Status == container.StateRunning {
+		c.mu.Unlock()
+		return notModified("container already started")
+	}
 	if c.restarting != nil {
 		c.restarting.Stop()
 		c.restarting = nil
@@ -1687,7 +1711,7 @@ func (c *Container) start(e *Engine) error {
 		return err
 	}
 	st.mark("profile")
-	limits, res, err := containerLimits(c.rec.HostConfig.Resources)
+	limits, res, err := containerLimits(c.resources())
 	if err != nil {
 		return err
 	}
@@ -1703,10 +1727,11 @@ func (c *Container) start(e *Engine) error {
 	if err := e.emptyTmpfsVolumes(c); err != nil {
 		return err
 	}
-	if err := c.writePidsLimit(c.rec.HostConfig.PidsLimit); err != nil {
+	r := c.resources()
+	if err := c.writePidsLimit(r.PidsLimit); err != nil {
 		return err
 	}
-	if l, _, err := containerLimits(c.rec.HostConfig.Resources); err != nil {
+	if l, _, err := containerLimits(r); err != nil {
 		return err
 	} else if err := c.writeMemoryLimit(l.MemoryMiB); err != nil {
 		return err
@@ -1753,7 +1778,7 @@ func (c *Container) start(e *Engine) error {
 			return err
 		}
 	}
-	if hc := c.rec.HostConfig; hc.Init != nil && *hc.Init {
+	if hc := &c.rec.HostConfig; hc.Init != nil && *hc.Init {
 		if err := placeInit(c.root()); err != nil {
 			return err
 		}
@@ -1780,7 +1805,7 @@ func (c *Container) start(e *Engine) error {
 		cfg.Address = c.rec.Address
 		cfg.Internet = e.hasEgress(c)
 		cfg.Egress, cfg.Ingress, _ = containerBandwidth(c.rec.Config.Labels)
-		d := dnsOf(c.rec.HostConfig)
+		d := dnsOf(&c.rec.HostConfig)
 		rc, err := containerResolvConf(d)
 		if err != nil {
 			return err
@@ -1791,8 +1816,14 @@ func (c *Container) start(e *Engine) error {
 			cfg.DNS = &dns
 		}
 	}
+	allow, err := ingressAllow(c.rec.Config.Labels)
+	if err != nil {
+		return err
+	}
 	for _, p := range plan {
-		cfg.Publish = append(cfg.Publish, p.binding)
+		b := p.binding
+		b.Allow = allow
+		cfg.Publish = append(cfg.Publish, b)
 	}
 	st.mark("prepare")
 	// The profile compiles while the supervisor starts; its start waits for
@@ -2005,17 +2036,27 @@ func (e *Engine) ended(c *Container, exit shim.Exit, done chan struct{}) {
 			}
 		}
 		c.mu.Lock()
+		// A start or a stop that came between the run's end and here has
+		// the container's state from then on.
+		if c.rec.State.Status != container.StateExited || c.starting || c.rec.State.ManualStop {
+			c.mu.Unlock()
+			return
+		}
 		c.rec.State.Status = container.StateRestarting
 		c.rec.State.RestartCount++
 		c.save()
 		c.restarting = time.AfterFunc(delay, func() {
-			if err := c.start(e); err != nil {
-				c.logs.append("stderr", fmt.Sprintf("restart failed: %v\n", err))
-				c.mu.Lock()
+			err := c.start(e)
+			if err == nil || KindOf(err) == KindNotModified {
+				return
+			}
+			c.logs.append("stderr", fmt.Sprintf("restart failed: %v\n", err))
+			c.mu.Lock()
+			if c.rec.State.Status == container.StateRestarting {
 				c.rec.State.Status = container.StateExited
 				c.save()
-				c.mu.Unlock()
 			}
+			c.mu.Unlock()
 		})
 		c.mu.Unlock()
 		return
@@ -2219,6 +2260,12 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 		return err
 	}
 	c.mu.Lock()
+	// A start under way launches its shim in the container's directory,
+	// which removal would delete beneath it.
+	if c.starting {
+		c.mu.Unlock()
+		return conflict("cannot remove container \"/%s\": container is starting: wait until it runs, then stop it or force remove it", c.Name())
+	}
 	if c.restarting != nil {
 		c.restarting.Stop()
 		c.restarting = nil
@@ -2249,9 +2296,9 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 		return nil
 	}
 	delete(e.containers, c.rec.ID)
-	if err := e.writeNetworkLocked(c.rec.Stack); err != nil {
-		return err
-	}
+	// The container is gone from the engine from here, so what it held is
+	// freed whether or not its stack's network file is written.
+	netErr := e.writeNetworkLocked(c.rec.Stack)
 	for id, x := range e.execs {
 		if x.containerID == c.rec.ID {
 			delete(e.execs, id)
@@ -2278,7 +2325,7 @@ func (e *Engine) Remove(ref string, opts RemoveOptions) error {
 	e.releaseStackIfEmptyLocked(c.rec.Stack)
 	close(c.removed)
 	e.publishContainer(c, events.ActionDestroy, nil)
-	return nil
+	return netErr
 }
 
 func (e *Engine) releaseStackIfEmptyLocked(stack string) {

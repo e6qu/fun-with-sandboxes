@@ -37,7 +37,7 @@ func TestNodesSeeOneAnothersPods(t *testing.T) {
 			Networks: map[string]*network.EndpointSettings{netName: {}}}}
 		outer.containers[id] = c
 		sub := &Engine{alloc: newAlloc(base), containers: map[string]*Container{}, networks: map[string]*Network{
-			"p": {ID: "p", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: subnet}},
+			"p": {ID: "p", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: netip.MustParsePrefix(subnet)}},
 		}}
 		sub.cfg.Nested = &Nested{
 			Publish: func(ms []stackmembers.Member) { outer.publishPeer(c, ms) },
@@ -164,7 +164,7 @@ func TestNodesSeeOneAnothersPodsOnIPv6OnlyNetworks(t *testing.T) {
 			Networks: map[string]*network.EndpointSettings{"kind": {}}}}
 		outer.containers[id] = c
 		sub := &Engine{alloc: newAlloc(base), containers: map[string]*Container{}, networks: map[string]*Network{
-			"p": {ID: "p", Name: "pods", Driver: "bridge", EnableIPv6: true, IPv4Disabled: true, IPv6: Pool{Subnet: "fd00:244::/56"}},
+			"p": {ID: "p", Name: "pods", Driver: "bridge", EnableIPv6: true, IPv4Disabled: true, IPv6: Pool{Subnet: netip.MustParsePrefix("fd00:244::/56")}},
 		}}
 		sub.cfg.Nested = &Nested{
 			Publish: func(ms []stackmembers.Member) { outer.publishPeer(c, ms) },
@@ -286,5 +286,45 @@ func TestDialNode(t *testing.T) {
 	}
 	if len(dialled) != 2 {
 		t.Errorf("an unknown name went through the outer engine: %v", dialled)
+	}
+}
+
+// A nested engine connects and disconnects a running container: it
+// publishes its members, reading each one's state under its lock, after
+// the container's own lock is released.
+func TestNestedNetworkConnectPublishes(t *testing.T) {
+	a, err := alloc.Open(alloc.Config{Root: t.TempDir(), PortBase: 34000, PortLimit: 35000, BlockSize: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Stack("s"); err != nil {
+		t.Fatal(err)
+	}
+	published := make(chan []stackmembers.Member, 16)
+	e := &Engine{alloc: a, events: newEventBus(), containers: map[string]*Container{}, networks: map[string]*Network{
+		"n": {ID: "n", Name: "pods", Driver: "bridge", Pool: Pool{Subnet: netip.MustParsePrefix("10.9.0.0/24"), Gateway: netip.MustParseAddr("10.9.0.1")}},
+	}}
+	e.cfg.Nested = &Nested{Publish: func(ms []stackmembers.Member) { published <- ms }}
+	c := &Container{dir: t.TempDir(), rec: record{ID: "c", Name: "c", Stack: "s", Address: "127.88.0.2",
+		State: stateRec{Status: container.StateRunning}, Networks: map[string]*network.EndpointSettings{}}}
+	e.containers["c"] = c
+	done := make(chan error, 1)
+	go func() {
+		if err := e.NetworkConnect("pods", network.ConnectRequest{Container: "c"}); err != nil {
+			done <- err
+			return
+		}
+		done <- e.NetworkDisconnect("pods", "c", false)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("NetworkConnect deadlocked on the container's lock")
+	}
+	if len(published) == 0 {
+		t.Fatal("the nested engine published nothing")
 	}
 }

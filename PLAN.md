@@ -46,58 +46,43 @@ Docker's CLI, Compose, buildx and BuildKit, Testcontainers, Podman's
 remote client, `podman-compose`, pods and `kube play`, the Dev Containers
 CLI and VS Code's extension, graphical applications
 (`--security-opt seatbelt=gui`), `crictl`, the kubelet, kind and k3s run
-against the engine in CI on macOS 15 and 26. That includes bridge networks
-with IPv4, IPv6 and dual-stack subnets, published ports, `--network
-container:` sidecars, internal networks and the egress proxy. A catalog of
-46 darwin images is published to `ghcr.io/e6qu/fws-*` at the newest
-upstream releases. It includes Python, Node.js and the AWS Lambda runtimes
-for both. Kubernetes is at 1.37.2.
+against the engine in CI on macOS 15 and 26. A catalog of 45 darwin images
+at 56 tags is published to `ghcr.io/e6qu/fws-*` at the newest upstream
+releases ([IMAGES](docs/IMAGES.md)); Kubernetes is at 1.37.2.
 
-What a container sees is presented by the container library, and Seatbelt
-enforces part of it. The roadmap moves the rest from presented to
-enforced, wherever an unprivileged process on macOS can enforce it.
+Seatbelt enforces a container's file reads and writes, its TCP
+connections, its process listing and its IPC; its supervisor enforces its
+memory, CPU, pids and disk limits, and its router and egress proxy its
+network membership, bandwidth and allow lists. The container library
+presents the rest: paths at their container values, ports, interfaces,
+routes, users and the process tree. [LIMITATIONS](LIMITATIONS.md) lists
+what is presented without being enforced.
 
 ## Roadmap
 
-Four pull requests to the finish line, in this order. Each one ships with
-the e2e tests that prove its claims on macOS.
+Four pull requests, in this order, each with the end-to-end tests that
+prove its claims on macOS:
 
-1. **Enforced isolation.** A container behaves as if under chroot, even
-   for programs that load no library:
-   - It reads only its root, its volumes, the system tree and the few host
-     files a root would hold. Seatbelt allow-lists reads instead of
-     denying a list of roots (in progress).
-   - A container's ports are its own. Seatbelt lets a container connect
-     over TCP only to its own ports, its router and the egress proxy, and
-     its router carries a connection to a member only when they share a
-     network. This makes network membership enforced, not presented
-     (in progress).
-   - Its process listing is its own. Seatbelt denies process information
-     about other sandboxes and the process table's listings, which the
-     container's supervisor answers with its own processes (in progress).
-2. **Limits macOS can enforce** (in progress).
-   - CPU placement: `--cpuset-cpus` holds a container to as many CPUs'
-     time, and a set of efficiency cores to them through the background
-     QoS clamp.
-   - A disk quota: `--storage-opt size` puts the root on a sparse APFS
-     disk image of its own.
-   - Bandwidth: the `kubernetes.io/egress-bandwidth` and
-     `ingress-bandwidth` labels and pod annotations, held in the router and
-     the egress proxy.
-3. **Networks: ingress, egress and routes.**
-   - Egress policy per network and per container: allow-listed hosts and
-     ports in the egress proxy, denied elsewhere by Seatbelt.
-   - Ingress through published ports, with a source allow-list.
-   - Presented routes in `docker network inspect` and the routing sysctl
-     for a network's gateways and subnets.
-   - The `docker network` options that remain, where they translate.
-4. **Images and the CLI.**
-   - More versions of the Python, Node.js and Lambda images: the
-     supported releases each upstream maintains.
-   - An `fws` command that lists the catalog's images, their versions and
-     their tags (`fws catalog`).
+1. **Enforced isolation** (done,
+   [#84](https://github.com/e6qu/fun-with-sandboxes/pull/84)): reads
+   allow-listed as chroot would, TCP held to the container's own ports and
+   its networks' members, and the process table its own.
+2. **Limits macOS can enforce** (done,
+   [#85](https://github.com/e6qu/fun-with-sandboxes/pull/85)): cpusets, a
+   root size quota on an APFS disk image, and bandwidth.
+3. **Networks: ingress, egress and routes** (in
+   [#86](https://github.com/e6qu/fun-with-sandboxes/pull/86)): egress allow
+   lists per network and per container in the egress proxy, a source
+   allow list on published ports, a routing table presented through the
+   routing sysctl, and the bridge driver's options that translate
+   (`enable_icc`, `enable_ip_masquerade`, `host_binding_ipv4`), with the
+   rest refused.
+4. **Images and the CLI** (in
+   [#86](https://github.com/e6qu/fun-with-sandboxes/pull/86)): Python
+   3.11–3.15, Node.js 22, 24 and 26, and the Lambda runtimes AWS offers for
+   them; `fws catalog`; and [IMAGES](docs/IMAGES.md), how images work.
 
-Done when all four have merged and `main` is green through `publish`.
+Done when #86 has merged and `main` is green through `publish`.
 Compatibility with Compose, Testcontainers, Podman, Kubernetes, kind and
 k3s is kept by the tests that already run them; gaps they turn up go into
 the open pull request.

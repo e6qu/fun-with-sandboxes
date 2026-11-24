@@ -333,6 +333,12 @@ func Render(s Spec) (string, error) {
 			return "", err
 		}
 	}
+	switch s.IPC {
+	case IPCPrivate, IPCHost, IPCNone:
+	default:
+		// A mode the switch below does not name would leave IPC open.
+		return "", fmt.Errorf("seatbelt: IPC mode %d", s.IPC)
+	}
 	if s.IPC == IPCPrivate && !ipcPrefixOK(s.IPCPrefix) {
 		return "", fmt.Errorf("seatbelt: IPC prefix %q must be letters, digits and dots", s.IPCPrefix)
 	}
@@ -577,6 +583,8 @@ func Render(s Spec) (string, error) {
 			// What the session's services share with their clients.
 			w("(allow ipc-posix-shm-read* (ipc-posix-name \"apple.shm.notification_center\") (ipc-posix-name-prefix \"apple.cfprefs.\") (ipc-posix-name \"com.apple.AppleDatabaseChanged\"))")
 		}
+	case IPCHost:
+		// The baseline above allows POSIX and System V IPC.
 	case IPCNone:
 		w("(deny ipc-posix-shm* ipc-posix-sem* ipc-sysv*)")
 	}

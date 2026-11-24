@@ -151,6 +151,9 @@ type Router struct {
 	net Network
 	mu  sync.Mutex
 	cs  map[net.Conn]struct{}
+	// closed is set by Close, under mu and umu both, so a connection
+	// joined or a flow port opened after it is closed at once.
+	closed bool
 
 	ux   *net.UnixConn
 	flow func() (*net.UDPConn, error)
@@ -196,7 +199,6 @@ type Network struct {
 
 // Listen starts a router on addr for the port directory dir; flow opens a
 // UDP port of the router's stack's block.
-
 func Listen(addr, dir string, flow func() (*net.UDPConn, error), nw Network) (*Router, error) {
 	key, err := loadKey(dir)
 	if err != nil {
@@ -283,7 +285,7 @@ func (r *Router) echo(c net.Conn) {
 // ping sends echo request msg to dst and returns the echo reply that
 // matches it, its identifier and sequence number.
 func (r *Router) ping(dst netip.Addr, msg []byte) ([]byte, error) {
-	if !r.net.Internet || len(msg) < 8 || msg[0] != 8 || !dst.Is4() || dst.IsLoopback() || dst.IsUnspecified() || dst.IsMulticast() {
+	if !r.net.Internet || len(msg) < 8 || msg[0] != 8 || !dst.Is4() || dst.IsLoopback() || dst.IsUnspecified() || dst.IsMulticast() || dst.IsLinkLocalUnicast() {
 		return nil, errRefused
 	}
 	pc, err := icmp.ListenPacket("udp4", "0.0.0.0")
@@ -325,6 +327,7 @@ func (r *Router) Addr() *net.TCPAddr { return r.l.Addr().(*net.TCPAddr) }
 func (r *Router) Close() error {
 	err := r.l.Close()
 	r.mu.Lock()
+	r.closed = true
 	for c := range r.cs {
 		c.Close()
 	}
@@ -334,6 +337,7 @@ func (r *Router) Close() error {
 		r.dns.Close()
 	}
 	r.umu.Lock()
+	r.closed = true
 	for _, c := range r.flows {
 		c.Close()
 	}
@@ -350,6 +354,9 @@ func (r *Router) flowPort(port int) (*net.UDPConn, error) {
 	defer r.umu.Unlock()
 	if c, ok := r.flows[port]; ok {
 		return c, nil
+	}
+	if r.closed {
+		return nil, net.ErrClosed
 	}
 	c, err := r.flow()
 	if err != nil {
@@ -407,14 +414,23 @@ func (r *Router) fromContainer() {
 	}
 }
 
-func (r *Router) track(c net.Conn, on bool) {
+// track adds c to the connections Close ends, or closes it and reports
+// false once the router has closed.
+func (r *Router) track(c net.Conn) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if on {
-		r.cs[c] = struct{}{}
-	} else {
-		delete(r.cs, c)
+	if r.closed {
+		c.Close()
+		return false
 	}
+	r.cs[c] = struct{}{}
+	return true
+}
+
+func (r *Router) untrack(c net.Conn) {
+	r.mu.Lock()
+	delete(r.cs, c)
+	r.mu.Unlock()
 }
 
 func (r *Router) serve() {
@@ -428,8 +444,10 @@ func (r *Router) serve() {
 }
 
 func (r *Router) join(c net.Conn) {
-	r.track(c, true)
-	defer r.track(c, false)
+	if !r.track(c) {
+		return
+	}
+	defer r.untrack(c)
 	defer c.Close()
 	c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	var kind [1]byte
@@ -478,8 +496,10 @@ func (r *Router) join(c net.Conn) {
 		c.Write([]byte{Refused})
 		return
 	}
-	r.track(up, true)
-	defer r.track(up, false)
+	if !r.track(up) {
+		return
+	}
+	defer r.untrack(up)
 	defer up.Close()
 	if _, err := c.Write([]byte{Connected}); err != nil {
 		return
@@ -575,6 +595,9 @@ func (r *Router) relay(addr netip.Addr, port int) (int, error) {
 	defer r.umu.Unlock()
 	if pc, ok := r.relays[key]; ok {
 		return pc.LocalAddr().(*net.UDPAddr).Port, nil
+	}
+	if r.closed {
+		return 0, net.ErrClosed
 	}
 	pc, err = r.flow()
 	if err != nil {

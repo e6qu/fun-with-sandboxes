@@ -44,6 +44,16 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "health" {
 		os.Exit(run(bin("pg_isready"), "-q", "-h", "127.0.0.1", "-U", user, "-d", "postgres"))
 	}
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] != "postgres" && !strings.HasPrefix(args[0], "-") {
+		// Any other command runs as given, as the official image's
+		// entrypoint execs it, with no database set up.
+		prog, err := exec.LookPath(args[0])
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Fatal(syscall.Exec(prog, args, os.Environ()))
+	}
 	pgdata := sandboxenv.Path(getenv("PGDATA", "/var/lib/postgresql/data"))
 	sockets := sandboxenv.Path("/var/run/postgresql")
 	if err := os.MkdirAll(sockets, 0o755); err != nil {
@@ -55,7 +65,6 @@ func main() {
 	if err := sandboxenv.Become("postgres", pgdata, sockets); err != nil {
 		log.Fatal(err)
 	}
-	args := os.Args[1:]
 	if len(args) > 0 && args[0] == "postgres" {
 		args = args[1:]
 	}
@@ -245,6 +254,9 @@ func relay(r io.Reader, ready chan<- struct{}) {
 			close(ready)
 		}
 	}
+	// A line too long to scan ends the scan: the rest is copied as it
+	// comes, so the server never blocks on a full pipe.
+	io.Copy(os.Stderr, r)
 }
 
 func ident(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }

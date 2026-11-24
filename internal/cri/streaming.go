@@ -126,11 +126,9 @@ func (r streamRuntime) Exec(ctx context.Context, id string, cmd []string, in io.
 	if err != nil {
 		return err
 	}
-	go func() {
-		for sz := range resize {
-			e.ExecResize(x, sz.Height, sz.Width)
-		}
-	}()
+	done := make(chan struct{})
+	defer close(done)
+	forwardResizes(done, resize, func(h, w uint16) { e.ExecResize(x, h, w) })
 	stdio := engine.ExecIO{}
 	if in != nil {
 		stdio.Stdin = in
@@ -141,8 +139,6 @@ func (r streamRuntime) Exec(ctx context.Context, id string, cmd []string, in io.
 	if errw != nil {
 		stdio.Stderr = errw
 	}
-	done := make(chan struct{})
-	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -165,11 +161,9 @@ func (r streamRuntime) Exec(ctx context.Context, id string, cmd []string, in io.
 
 func (r streamRuntime) Attach(ctx context.Context, id string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommandserver.TerminalSize) error {
 	e := r.s.e
-	go func() {
-		for sz := range resize {
-			e.Resize(id, sz.Height, sz.Width)
-		}
-	}()
+	done := make(chan struct{})
+	defer close(done)
+	forwardResizes(done, resize, func(h, w uint16) { e.Resize(id, h, w) })
 	opts := engine.AttachOptions{Stream: true, Stdin: in != nil, Stdout: out != nil, Stderr: errw != nil}
 	return e.Attach(ctx, id, opts, func() (io.Reader, func(engine.LogEntry) error, error) {
 		return in, func(le engine.LogEntry) error {
@@ -186,6 +180,28 @@ func (r streamRuntime) Attach(ctx context.Context, id string, in io.Reader, out,
 			return err
 		}, nil
 	})
+}
+
+// forwardResizes applies the terminal sizes the client sends until done
+// closes. The stream server sends none, on a nil channel it never closes,
+// when the stream has no TTY.
+func forwardResizes(done <-chan struct{}, resize <-chan remotecommandserver.TerminalSize, apply func(h, w uint16)) {
+	if resize == nil {
+		return
+	}
+	go func() {
+		for {
+			select {
+			case sz, ok := <-resize:
+				if !ok {
+					return
+				}
+				apply(sz.Height, sz.Width)
+			case <-done:
+				return
+			}
+		}
+	}()
 }
 
 // PortForward connects stream to the pod's port, where a process of its

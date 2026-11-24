@@ -28,7 +28,7 @@ func (e *Engine) groups(c *Container) map[int]bool {
 	c.mu.Unlock()
 	for _, x := range e.execsFor(c.rec.ID) {
 		x.mu.Lock()
-		if x.running && x.pid != 0 {
+		if x.phase == execRunning && x.pid != 0 {
 			g[x.pid] = true
 		}
 		x.mu.Unlock()

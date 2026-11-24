@@ -222,6 +222,9 @@ func (s *Store) collectLocked() (uint64, error) {
 // ociLayerType maps a layer media type onto its OCI equivalent, as BuildKit
 // does when it writes an OCI manifest over Docker-typed base layers.
 func ociLayerType(mt types.MediaType) types.MediaType {
+	// Only Docker's layer types have OCI equivalents; every other type
+	// stays as it is.
+	//exhaustive:ignore
 	switch mt {
 	case types.DockerLayer:
 		return types.OCILayer

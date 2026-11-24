@@ -179,7 +179,7 @@ func (c *Client) Wait(stop <-chan struct{}) (Exit, error) {
 		case <-waited:
 		}
 	}()
-	b, _ := json.Marshal(Request{Op: "wait"})
+	b, _ := json.Marshal(Request{Op: OpWait})
 	if _, err := conn.Write(append(b, '\n')); err != nil {
 		return Exit{}, err
 	}
@@ -198,7 +198,7 @@ func (c *Client) Wait(stop <-chan struct{}) (Exit, error) {
 }
 
 func (c *Client) State() (State, error) {
-	resp, err := c.call(Request{Op: "state"})
+	resp, err := c.call(Request{Op: OpState})
 	if err != nil {
 		return State{}, err
 	}
@@ -212,43 +212,43 @@ func (c *Client) State() (State, error) {
 func (c *Client) Pid() int { return c.pid }
 
 func (c *Client) Signal(sig syscall.Signal) error {
-	_, err := c.call(Request{Op: "signal", Signal: int(sig)})
+	_, err := c.call(Request{Op: OpSignal, Signal: int(sig)})
 	return err
 }
 
 func (c *Client) Resize(h, w uint16) error {
-	_, err := c.call(Request{Op: "resize", Height: h, Width: w})
+	_, err := c.call(Request{Op: OpResize, Height: h, Width: w})
 	return err
 }
 
 func (c *Client) Pause() error {
-	_, err := c.call(Request{Op: "pause"})
+	_, err := c.call(Request{Op: OpPause})
 	return err
 }
 
 func (c *Client) Unpause() error {
-	_, err := c.call(Request{Op: "unpause"})
+	_, err := c.call(Request{Op: OpUnpause})
 	return err
 }
 
 // Update changes the limits the shim enforces and, with nice, the
 // scheduling priority of the container's processes.
 func (c *Client) Update(r Resources, nice *int) error {
-	_, err := c.call(Request{Op: "update", Resources: &r, Nice: nice})
+	_, err := c.call(Request{Op: OpUpdate, Resources: &r, Nice: nice})
 	return err
 }
 
 // Track asks the shim to look for new processes of the container now, such
 // as an exec the engine just started.
 func (c *Client) Track() error {
-	_, err := c.call(Request{Op: "track"})
+	_, err := c.call(Request{Op: OpTrack})
 	return err
 }
 
 // Stdin returns a writer to the container's standard input. Closing it
 // closes the container's input when closeInput is set.
 func (c *Client) Stdin(closeInput bool) (io.WriteCloser, error) {
-	conn, _, _, err := c.open(Request{Op: "stdin", Close: closeInput})
+	conn, _, _, err := c.open(Request{Op: OpStdin, Close: closeInput})
 	if err != nil {
 		return nil, err
 	}
@@ -271,15 +271,20 @@ func (h halfCloser) Close() error {
 // Logs calls notify each time the shim appends to the container's log,
 // until the shim exits or stop closes.
 func (c *Client) Logs(stop <-chan struct{}, notify func()) error {
-	conn, r, _, err := c.open(Request{Op: "logs"})
+	conn, r, _, err := c.open(Request{Op: OpLogs})
 	if err != nil {
 		return err
 	}
 	// The container may have written before the subscription began.
 	notify()
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		<-stop
-		conn.Close()
+		select {
+		case <-stop:
+			conn.Close()
+		case <-done:
+		}
 	}()
 	defer conn.Close()
 	buf := make([]byte, 64)

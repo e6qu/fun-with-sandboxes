@@ -155,19 +155,29 @@ func TestLanguageImages(t *testing.T) {
 	write("hello.py", "#!/usr/bin/env python3\nimport sys\nprint('python', sys.version_info[0], sys.version_info[1])\n")
 	write("hello.mjs", "#!/usr/bin/env node\nconsole.log('node', process.versions.node.split('.')[0])\n")
 	write("hello.ts", "const who: string = 'bun';\nconsole.log(who, Bun.version.split('.')[0]);\n")
-	for _, c := range []struct {
+	type check struct {
 		image string
 		args  []string
 		want  string
-	}{
-		{"fws/python:3.14", []string{"/app/hello.py"}, "python 3 14"},
-		{"fws/python:3.14", []string{"python3", "-m", "ensurepip", "--version"}, "pip"},
-		{"fws/node:26", []string{"/app/hello.mjs"}, "node 26"},
-		{"fws/node:26", []string{"npm", "--version"}, "."},
+	}
+	checks := []check{
 		// Arguments are the program's to read, on the host: a path
 		// relative to the image's working directory, /app, names the file.
 		{"fws/bun:1", []string{"bun", "run", "hello.ts"}, "bun 1"},
-	} {
+	}
+	// Every release the catalog carries runs as itself, with its package
+	// manager.
+	for _, v := range []string{"3.11", "3.12", "3.13", "3.14", "3.15"} {
+		checks = append(checks,
+			check{"fws/python:" + v, []string{"/app/hello.py"}, "python " + strings.Replace(v, ".", " ", 1)},
+			check{"fws/python:" + v, []string{"python3", "-m", "ensurepip", "--version"}, "pip"})
+	}
+	for _, v := range []string{"22", "24", "26"} {
+		checks = append(checks,
+			check{"fws/node:" + v, []string{"/app/hello.mjs"}, "node " + v},
+			check{"fws/node:" + v, []string{"npm", "--version"}, "."})
+	}
+	for _, c := range checks {
 		out, err := docker(t, append([]string{"run", "--rm", "-v", dir + ":/app", c.image}, c.args...)...)
 		if err != nil || !strings.Contains(out, c.want) {
 			t.Errorf("%s %v: %q, %v; want %q", c.image, c.args, out, err, c.want)

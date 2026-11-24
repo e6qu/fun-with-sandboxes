@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/e6qu/fun-with-sandboxes/internal/bandwidth"
+	"github.com/e6qu/fun-with-sandboxes/internal/egress"
 	stackmembers "github.com/e6qu/fun-with-sandboxes/internal/members"
 )
 
@@ -125,6 +126,19 @@ func userNetworks(c *Container) []string {
 	return out
 }
 
+// connectingLocked keeps the networks of names whose members reach one
+// another over them, as a network with inter-container communication off
+// does not let them.
+func (e *Engine) connectingLocked(names []string) []string {
+	out := names[:0:0]
+	for _, n := range names {
+		if nw, err := e.networkLocked(n); err != nil || nw.connects() {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // writeNetworkLocked rewrites the network file of the stack and of every
 // other stack: a member that comes or goes on a network stacks share
 // changes the files of all of them.
@@ -221,14 +235,15 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 			}
 		}
 		member := stackmembers.Member{Address: m.rec.Address, Names: memberNames(m), Ports: ports, Router: m.rec.RouterPort, Links: links[m]}
-		member.Search, member.Ndots = resolverSearch(resolvOf(m.rec.HostConfig, m.rec.Resolver))
+		member.Search, member.Ndots = resolverSearch(resolvOf(&m.rec.HostConfig, m.rec.Resolver))
 		if member.Foreign = m.rec.Stack != stack; member.Foreign {
-			member.Networks, member.Stack = userNetworks(m), m.rec.Stack
+			member.Networks, member.Stack = e.connectingLocked(userNetworks(m)), m.rec.Stack
 		} else {
 			for n := range m.rec.Networks {
 				member.Networks = append(member.Networks, n)
 			}
 			sort.Strings(member.Networks)
+			member.Networks = e.connectingLocked(member.Networks)
 		}
 		for _, n := range member.Networks {
 			if es := m.rec.Networks[n]; es != nil && es.IPAddress.IsValid() {
@@ -259,6 +274,9 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 		ms = append(ms, peers...)
 	}
 	if err := writeRates(bandwidth.RatesPath(path), own); err != nil {
+		return err
+	}
+	if err := e.writeAllowLocked(egress.AllowPath(path), own); err != nil {
 		return err
 	}
 	b := stackmembers.Format(ms)
@@ -338,13 +356,51 @@ func writeRates(path string, own []*Container) error {
 			rates[m.rec.Address] = bandwidth.Rates{Egress: eg, Ingress: in}
 		}
 	}
-	if len(rates) == 0 {
+	return writeJSONFile(path, rates)
+}
+
+// writeAllowLocked writes the egress allow lists of the stack's members
+// beside its network file, each member's own label's and its networks'
+// options', for its egress proxy, or removes the file when none has any.
+func (e *Engine) writeAllowLocked(path string, own []*Container) error {
+	lists := map[string][]string{}
+	for _, m := range own {
+		if m.rec.Address == "" {
+			continue
+		}
+		var ls []string
+		if v, ok := m.rec.Config.Labels[egress.AllowKey]; ok {
+			ls = append(ls, v)
+		}
+		names := make([]string, 0, len(m.rec.Networks))
+		for n := range m.rec.Networks {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			if nw, err := e.networkLocked(n); err == nil {
+				if v, ok := nw.Options[egress.AllowKey]; ok {
+					ls = append(ls, v)
+				}
+			}
+		}
+		if len(ls) > 0 {
+			lists[m.rec.Address] = ls
+		}
+	}
+	return writeJSONFile(path, lists)
+}
+
+// writeJSONFile writes v as JSON at path, as it is not already, or removes
+// the file when v is empty.
+func writeJSONFile[V any](path string, v map[string]V) error {
+	if len(v) == 0 {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		return nil
 	}
-	b, err := json.Marshal(rates)
+	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}

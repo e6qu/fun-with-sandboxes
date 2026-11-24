@@ -39,16 +39,29 @@ const DNSStream = 7
 // a server closes an idle one.
 const dnsStreamIdle = 30 * time.Second
 
+// dnsInFlight bounds the UDP queries a router answers at once.
+const dnsInFlight = 64
+
 // serveDNS answers the queries that arrive on u until it closes.
 func (r *Router) serveDNS(u *net.UDPConn) {
 	buf := make([]byte, 65535)
+	// At most dnsInFlight queries are answered at once, as an answer may
+	// wait on an upstream server; past that a query is dropped, which a
+	// resolver retries, rather than spawning without bound.
+	slots := make(chan struct{}, dnsInFlight)
 	for {
 		n, from, err := u.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			return
 		}
+		select {
+		case slots <- struct{}{}:
+		default:
+			continue
+		}
 		q := append([]byte(nil), buf[:n]...)
 		go func() {
+			defer func() { <-slots }()
 			if a := r.answerDNS(q, false); a != nil {
 				u.WriteToUDPAddrPort(a, from)
 			}
@@ -189,6 +202,8 @@ func (r *Router) stackAnswer(h dnsmessage.Header, q dnsmessage.Question) ([]byte
 	}
 	var rrs []dnsmessage.Resource
 	hdr := dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: dnsTTL}
+	// A member has addresses alone: any other type has no records.
+	//exhaustive:ignore
 	switch q.Type {
 	case dnsmessage.TypeA:
 		if a, err := netip.ParseAddr(m.SeenBy(me)); err == nil && a.Is4() {

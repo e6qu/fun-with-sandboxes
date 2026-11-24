@@ -141,9 +141,11 @@ func (d *DNS) Lookup(ctx context.Context, family byte, name string) []netip.Addr
 		return nil
 	}
 	for _, fqdn := range d.candidates(name) {
+		// A search domain can make a name longer than DNS takes; the
+		// other candidates still stand.
 		n, err := dnsmessage.NewName(fqdn)
 		if err != nil {
-			return nil
+			continue
 		}
 		var out []netip.Addr
 		for _, t := range types {
@@ -249,6 +251,9 @@ func (d *DNS) exchange(ctx context.Context, server netip.Addr, name dnsmessage.N
 	if m.ID != id || !m.Response || len(m.Questions) != 1 || m.Questions[0].Type != t || !strings.EqualFold(m.Questions[0].Name.String(), name.String()) {
 		return nil, errAnswer
 	}
+	// An answer or a name that does not exist; any other code is a
+	// server's failure.
+	//exhaustive:ignore
 	switch m.RCode {
 	case dnsmessage.RCodeSuccess, dnsmessage.RCodeNameError:
 	default:

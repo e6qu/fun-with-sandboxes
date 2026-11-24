@@ -30,7 +30,7 @@ func (e *Engine) hasEgress(c *Container) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for name := range c.rec.Networks {
-		if n, err := e.networkLocked(name); err == nil && !n.Internal && n.Name != "none" {
+		if n, err := e.networkLocked(name); err == nil && n.masquerades() && n.Name != "none" {
 			return true
 		}
 	}

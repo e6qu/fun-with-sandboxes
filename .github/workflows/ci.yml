@@ -46,8 +46,13 @@ jobs:
       - name: staticcheck (darwin)
         run: |
           GOBIN="$RUNNER_TEMP/bin" go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
-          GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/staticcheck" $(go list ./... | grep -v /third_party/)
+          mapfile -t pkgs < <(go list ./... | grep -v /third_party/)
+          GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/staticcheck" "${pkgs[@]}"
           (cd tests/e2e && GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/staticcheck" -tags e2e ./...)
+      # ineffassign, nilness, exhaustive, ShellCheck and actionlint
+      # (scripts/lint.sh); ShellCheck comes with the runner's image.
+      - name: lint (darwin)
+        run: GOOS=darwin GOARCH=arm64 GOBIN="$RUNNER_TEMP/bin" scripts/lint.sh
       # Known vulnerabilities in the code the engine and the suite call,
       # the standard library's included, for the build that ships.
       - name: govulncheck (darwin)
@@ -90,9 +95,11 @@ jobs:
           # the repository's 10 GB, and Go builds the module in minutes.
           cache: false
       # Each test runs three times under the race detector, so a test that
-      # passes only sometimes, or races, fails here.
+      # passes only sometimes, or races, fails here. internal/pathmap's
+      # probes take seven minutes on a quick runner and twice that on a
+      # slow one, past go test's default ten.
       - name: unit tests
-        run: go test -race -count=3 ./...
+        run: go test -race -count=3 -timeout 30m ./...
       # The probes again, with the container library and the spawn helper
       # built to trap where their C would act undefined: an out-of-bounds
       # index, a misaligned or null pointer, a signed overflow.
@@ -100,6 +107,18 @@ jobs:
         env:
           FWS_CFLAGS: -fsanitize=undefined -fsanitize-trap=undefined -g
         run: go test -count=1 ./internal/pathmap ./internal/runtime ./internal/shim ./internal/seatbelt
+      # The container library and spawn helper under warnings beyond the
+      # -Wall -Werror they build with, and clang's static analyzer over the
+      # helper; neither changes what they compile to. The library's
+      # interposed functions keep their originals' parameters, used or not,
+      # and its analyzer reports its process-long buffers as leaks.
+      - name: C warnings and static analysis
+        working-directory: internal/pathmap/src
+        run: |
+          for f in fwsroot.c spawn.c; do
+            xcrun clang -fsyntax-only -Wall -Wextra -Wno-unused-parameter -Wshadow -Wsign-compare -Werror "$f"
+          done
+          xcrun clang --analyze -Xclang -analyzer-werror -o /dev/null spawn.c
       # The path mapping's fuzzer (internal/pathmap/testdata/fuzz) for two
       # minutes, under AddressSanitizer and UndefinedBehaviorSanitizer, from
       # a seed it prints, which FWS_PATH_FUZZ_SEED replays.
@@ -183,10 +202,14 @@ jobs:
           if [ -d "$dir" ]; then
             export NIX_CONFIG="extra-substituters = file://$dir?trusted=1"
           fi
-          paths=$(scripts/build-images.sh --prebuilt ${{ matrix.group }})
+          # A failed build fails the step here; macOS's bash 3.2 has no
+          # mapfile.
+          out=$(scripts/build-images.sh --prebuilt "${{ matrix.group }}")
+          paths=()
+          while read -r p; do [ -z "$p" ] || paths+=("$p"); done <<< "$out"
           # zstd, not the file store's default xz, which takes many minutes
           # over a group's closure; the cache compresses the store again.
-          nix --extra-experimental-features nix-command copy --to "file://$dir?compression=zstd" $paths
+          nix --extra-experimental-features nix-command copy --to "file://$dir?compression=zstd" "${paths[@]}"
       - uses: actions/cache/save@v5
         if: steps.cache.outputs.cache-hit != 'true'
         with:
@@ -217,13 +240,15 @@ jobs:
         if: (failure() || cancelled()) && steps.cache.outputs.cache-hit != 'true' && steps.drv.outputs.key != ''
         timeout-minutes: 5
         run: |
-          built=$(nix --extra-experimental-features nix-command path-info --json --all | python3 -c '
+          out=$(nix --extra-experimental-features nix-command path-info --json --all | python3 -c '
           import json, sys
           d = json.load(sys.stdin)
           entries = d.items() if isinstance(d, dict) else ((e["path"], e) for e in d)
-          print(" ".join(p for p, i in entries if i and i.get("ultimate")))')
-          if [ -n "$built" ]; then
-            nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-prebuilt/${{ matrix.group }}?compression=zstd" $built
+          print("\n".join(p for p, i in entries if i and i.get("ultimate")))')
+          built=()
+          while read -r p; do [ -z "$p" ] || built+=("$p"); done <<< "$out"
+          if [ "${#built[@]}" -gt 0 ]; then
+            nix --extra-experimental-features nix-command copy --to "file://$HOME/fws-prebuilt/${{ matrix.group }}?compression=zstd" "${built[@]}"
             echo "kept=true" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/cache/save@v5
@@ -337,8 +362,10 @@ jobs:
           trap 'kill $registry' EXIT
           until curl -sf 127.0.0.1:5000/v2/ >/dev/null; do sleep 1; done
           scripts/publish-images.sh ~/fws-images 127.0.0.1:5000/e6qu
-          for ref in fws-postgres:16 fws-postgres:18 fws-redis:8 fws-nginx:1 fws-mariadb:11 fws-python:3.14 fws-node:26 fws-bun:1 fws-gitea:28 fws-dynamodb-local:2 fws-rabbitmq:4 fws-lambda/python:3.14 fws-lambda/nodejs:24 fws-lambda/java:17 fws-playwright:1.65 fws-toolbox:1 fws-busybox:1 fws-base:1 fws-ryuk:0.14.0 fws-mysql:8.4 fws-valkey:9 fws-memcached:1.6 fws-nats:2.15 fws-seaweedfs:4.54 fws-etcd:3.7 fws-consul:2.1 fws-vault:2.2 fws-mongo:8.3 fws-kafka:4.4 fws-mailpit:1.34 fws-meilisearch:1.57 fws-qdrant:1.20 fws-neo4j:2026.10 fws-clickhouse:26.10 fws-influxdb:2.10 fws-opensearch:3.10 fws-toxiproxy:2.13 fws-dind:29 fws-kube-apiserver:1.37 fws-kube-controller-manager:1.37 fws-kube-scheduler:1.37 fws-kubectl:1.37 fws-pause:3.10.2 fws-kubelet:1.37 fws-kind-node:1.37 fws-k3s:1.37; do
-            "$crane" config "127.0.0.1:5000/e6qu/$ref" | grep -q '"os":"darwin"'
+          # Every tag of the catalog (internal/catalog) published, as a
+          # darwin image.
+          go run ./cmd/fws catalog -published | while read -r _ ref; do
+            "$crane" config "127.0.0.1:5000/e6qu/${ref#ghcr.io/e6qu/}" | grep -q '"os":"darwin"' || { echo "$ref: not published as a darwin image" >&2; exit 1; }
           done
       # The catalog this run built supersedes earlier runs', which are
       # dropped before it is saved: the repository holds 10 GB of cache,
@@ -426,9 +453,13 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/e2e"
           export FWS_E2E_IMAGES=~/fws-images
-          export FWS_E2E_RUN=$(../../scripts/e2e-shard.sh 4 ${{ matrix.shard }})
+          FWS_E2E_RUN=$(../../scripts/e2e-shard.sh 4 "${{ matrix.shard }}")
+          export FWS_E2E_RUN
+          # The quoted scripts expand their variables in sh, not here.
+          # shellcheck disable=SC2016
           nohup sh -c 'go test -tags e2e -v -count=1 -timeout 75m -run "$FWS_E2E_RUN" ./...; echo $? > "$RUNNER_TEMP/e2e/exit"' \
             > "$RUNNER_TEMP/e2e/test.log" 2>&1 < /dev/null &
+          # shellcheck disable=SC2016
           nohup sh -c 'while [ ! -e "$RUNNER_TEMP/e2e/exit" ]; do
               date; df -h /; sysctl vm.swapusage kern.memorystatus_level; vm_stat
               ps -o pid,ppid,pgid,stat,rss,%cpu,etime,comm -p "$(pgrep -d, -f "Runner\.|provjobd")"

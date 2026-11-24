@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/volume"
 )
 
@@ -134,7 +135,7 @@ func (e *Engine) VolumeList(f Filters) []volume.Volume {
 func (e *Engine) volumeInUseLocked(name string) bool {
 	for _, c := range e.containers {
 		for _, m := range c.rec.Mounts {
-			if m.Type == "volume" && m.Name == name {
+			if m.Type == mount.TypeVolume && m.Name == name {
 				return true
 			}
 		}
@@ -254,7 +255,7 @@ func (v *Volume) isTmpfs() bool { return v.Options["type"] == "tmpfs" }
 // tmpfsVolumeMount is a tmpfs volume's options, o, as a tmpfs mount's: its
 // mode and owner hold, as on a tmpfs mount, and a size does not.
 func tmpfsVolumeMount(o string) (mountRec, error) {
-	m := mountRec{Type: "tmpfs", RW: true}
+	m := mountRec{Type: mount.TypeTmpfs, RW: true}
 	for _, x := range strings.Split(o, ",") {
 		if err := tmpfsOption(&m, x); err != nil {
 			return m, err
@@ -287,7 +288,7 @@ func (e *Engine) emptyTmpfsVolumes(c *Container) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, m := range c.rec.Mounts {
-		if m.Type != "volume" {
+		if m.Type != mount.TypeVolume {
 			continue
 		}
 		v, ok := e.volumes[m.Name]
@@ -327,7 +328,7 @@ func (e *Engine) volumeMountedLocked(name string, c *Container) bool {
 			continue
 		}
 		for _, m := range o.rec.Mounts {
-			if m.Type == "volume" && m.Name == name {
+			if m.Type == mount.TypeVolume && m.Name == name {
 				return true
 			}
 		}

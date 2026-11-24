@@ -208,6 +208,15 @@ func TestMachServicesUnderTheIPCPrefix(t *testing.T) {
 	}
 }
 
+// A mode Render does not know would leave IPC open, as the host's is.
+func TestRenderRefusesAnUnknownIPCMode(t *testing.T) {
+	s := spec()
+	s.IPC = IPCNone + 1
+	if _, err := Render(s); err == nil {
+		t.Error("an unknown IPC mode rendered")
+	}
+}
+
 func TestHelperExecutable(t *testing.T) {
 	s := spec()
 	s.Helper = "/usr/local/bin/fws-shim"

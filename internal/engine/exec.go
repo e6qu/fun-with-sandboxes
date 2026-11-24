@@ -22,14 +22,26 @@ type Exec struct {
 	cfg         container.ExecCreateRequest
 	detachKeys  []byte
 
-	mu       sync.Mutex
-	started  bool
-	running  bool
-	exitCode *int
+	mu    sync.Mutex
+	phase execPhase
+	// exitCode is the process's, once phase is execExited.
+	exitCode int
 	pid      int
 	master   *os.File
 	done     chan struct{}
 }
+
+// execPhase is where an exec is in its life; it only moves forward.
+type execPhase uint8
+
+const (
+	execCreated execPhase = iota
+	// execStarting: ExecStart took the exec and has not yet run its
+	// process, or failed before it could.
+	execStarting
+	execRunning
+	execExited
+)
 
 func (e *Engine) ExecCreate(ref string, req container.ExecCreateRequest) (string, error) {
 	c, err := e.Container(ref)
@@ -88,21 +100,47 @@ type ExecIO struct {
 }
 
 // ExecStart runs the exec under the container's profile and blocks until it
-// exits.
+// exits, or its client detaches from its terminal.
 func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) error {
-	x, c, err := e.exec(id)
+	wait, err := e.execBegin(id, tty, size, stdio)
 	if err != nil {
 		return err
 	}
-	x.mu.Lock()
-	if x.started {
-		x.mu.Unlock()
-		return conflict("exec %s has already been started", id)
+	wait()
+	return nil
+}
+
+// ExecStartDetached starts the exec as ExecStart does, its output dropped,
+// and returns once it runs, with the error that kept it from starting.
+func (e *Engine) ExecStartDetached(id string, tty bool, size *[2]uint) error {
+	_, err := e.execBegin(id, tty, size, ExecIO{Stdout: io.Discard, Stderr: io.Discard})
+	return err
+}
+
+// execBegin starts the exec and returns what waits for it to exit or
+// detach. An exec that fails before its process starts may be started
+// again; one whose process fails to start has exited.
+func (e *Engine) execBegin(id string, tty bool, size *[2]uint, stdio ExecIO) (wait func(), err error) {
+	x, c, err := e.exec(id)
+	if err != nil {
+		return nil, err
 	}
-	x.started = true
+	x.mu.Lock()
+	if x.phase != execCreated {
+		x.mu.Unlock()
+		return nil, conflict("exec %s has already been started", id)
+	}
+	x.phase = execStarting
 	x.mu.Unlock()
+	defer func() {
+		x.mu.Lock()
+		if x.phase == execStarting {
+			x.phase = execCreated
+		}
+		x.mu.Unlock()
+	}()
 	if !c.isRunning() {
-		return conflict("container %s is not running", c.rec.ID)
+		return nil, conflict("container %s is not running", c.rec.ID)
 	}
 	tty = tty || x.cfg.Tty
 	if size == nil {
@@ -111,15 +149,15 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 
 	spec, err := e.profile(c)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	wd := x.cfg.WorkingDir
 	if wd == "" {
 		wd = c.rec.Config.WorkingDir
 	}
-	limits, _, err := containerLimits(c.rec.HostConfig.Resources)
+	limits, _, err := containerLimits(c.resources())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	limits.QoSClamp = max(limits.QoSClamp, e.cfg.QoSClamp)
 	user := x.cfg.User
@@ -128,11 +166,11 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	}
 	env, err := e.processEnv(c, x.cfg.Env, user, tty)
 	if err != nil {
-		return invalid("%v", err)
+		return nil, invalid("%v", err)
 	}
 	anchor, err := e.anchor(c)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rs := runtime.Spec{
 		Root: c.root(), Argv: x.cfg.Cmd, Env: env, WorkDir: wd,
@@ -143,7 +181,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	var master, slave *os.File
 	if tty {
 		if master, slave, err = pty.Open(); err != nil {
-			return err
+			return nil, err
 		}
 		if size != nil && size[0] > 0 && size[1] > 0 {
 			pty.Setsize(master, &pty.Winsize{Rows: uint16(size[0]), Cols: uint16(size[1])})
@@ -168,15 +206,14 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 		if master != nil {
 			master.Close()
 		}
-		code := 126
 		x.mu.Lock()
-		x.exitCode = &code
+		x.phase, x.exitCode = execExited, 126
 		x.mu.Unlock()
 		close(x.done)
-		return invalid("exec failed: %v", err)
+		return nil, invalid("exec failed: %v", err)
 	}
 	x.mu.Lock()
-	x.running, x.pid, x.master = true, proc.Pid(), master
+	x.phase, x.pid, x.master = execRunning, proc.Pid(), master
 	x.mu.Unlock()
 	// The exec counts against the container's limits from its start.
 	c.mu.Lock()
@@ -222,17 +259,18 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 		}
 		code := proc.ExitCode()
 		x.mu.Lock()
-		x.running, x.exitCode, x.master = false, &code, nil
+		x.phase, x.exitCode, x.master = execExited, code, nil
 		x.mu.Unlock()
 		close(x.done)
 		e.publishContainer(c, events.ActionExecDie, map[string]string{"execID": id, "exitCode": itoa(code)})
 	}()
-	select {
-	case <-finished:
-	case <-detached:
-		e.publishContainer(c, events.ActionExecDetach, map[string]string{"execID": id})
-	}
-	return nil
+	return func() {
+		select {
+		case <-finished:
+		case <-detached:
+			e.publishContainer(c, events.ActionExecDetach, map[string]string{"execID": id})
+		}
+	}, nil
 }
 
 func (e *Engine) ExecInspect(id string) (container.ExecInspectResponse, error) {
@@ -243,8 +281,13 @@ func (e *Engine) ExecInspect(id string) (container.ExecInspectResponse, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	pc := &container.ExecProcessConfig{Tty: x.cfg.Tty, Entrypoint: x.cfg.Cmd[0], Arguments: x.cfg.Cmd[1:], User: x.cfg.User}
+	var code *int
+	if x.phase == execExited {
+		c := x.exitCode
+		code = &c
+	}
 	return container.ExecInspectResponse{
-		ID: x.ID, Running: x.running, ExitCode: x.exitCode, ProcessConfig: pc,
+		ID: x.ID, Running: x.phase == execRunning, ExitCode: code, ProcessConfig: pc,
 		OpenStdin: x.cfg.AttachStdin, OpenStdout: x.cfg.AttachStdout, OpenStderr: x.cfg.AttachStderr,
 		ContainerID: x.containerID, Pid: x.pid, DetachKeys: x.detachKeys,
 	}, nil
@@ -283,7 +326,7 @@ func (e *Engine) probe(c *Container, argv []string, timeout time.Duration) (int,
 	if err != nil {
 		return -1, err.Error()
 	}
-	limits, _, err := containerLimits(c.rec.HostConfig.Resources)
+	limits, _, err := containerLimits(c.resources())
 	if err != nil {
 		return -1, err.Error()
 	}
@@ -362,7 +405,7 @@ func (e *Engine) ExecRemove(id string, force bool) error {
 		return err
 	}
 	x.mu.Lock()
-	running, pid := x.running, x.pid
+	running, pid := x.phase == execRunning, x.pid
 	x.mu.Unlock()
 	if running {
 		if !force {

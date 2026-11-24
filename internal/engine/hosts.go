@@ -33,7 +33,7 @@ func (e *Engine) writeHosts(c *Container) error {
 	if onNetwork(net) {
 		addresses = firstAddresses(net.rec.Address, net.rec.Networks)
 	}
-	return writeHostsFiles(c.root(), hostnameOf(net), net.rec.Config.Domainname, addresses, net.rec.HostConfig.ExtraHosts, linkHosts(links), resolvOf(net.rec.HostConfig, net.rec.Resolver), c.rec.Mounts)
+	return writeHostsFiles(c.root(), hostnameOf(net), net.rec.Config.Domainname, addresses, net.rec.HostConfig.ExtraHosts, linkHosts(links), resolvOf(&net.rec.HostConfig, net.rec.Resolver), c.rec.Mounts)
 }
 
 // dnsSettings are a container's DNS servers, search domains and options
@@ -43,13 +43,15 @@ type dnsSettings struct {
 	Search, Options []string
 }
 
-func dnsOf(hc container.HostConfig) dnsSettings {
+// dnsOf takes the host config by pointer: a copy would read its
+// Resources, which Update writes under the container's lock.
+func dnsOf(hc *container.HostConfig) dnsSettings {
 	return dnsSettings{Servers: hc.DNS, Search: hc.DNSSearch, Options: hc.DNSOptions}
 }
 
 // resolvOf is what a container's resolv.conf holds: its DNS settings, or
 // where it has none, its resolver's search domains and options.
-func resolvOf(hc container.HostConfig, r *Resolver) dnsSettings {
+func resolvOf(hc *container.HostConfig, r *Resolver) dnsSettings {
 	d := dnsOf(hc)
 	if !d.set() && r != nil {
 		d.Search, d.Options = r.Search, r.Options

@@ -50,6 +50,120 @@ func hostAddress(t *testing.T) string {
 	return ""
 }
 
+// A container's fws.egress.allow label, and its network's option of that
+// name, hold what it reaches through the egress proxy to the hosts they
+// name; a container under neither reaches any host. A list that names
+// nothing is refused.
+func TestEgressAllowLists(t *testing.T) {
+	fetch := func(url string, args ...string) error {
+		_, err := docker(t, append(append([]string{"run", "--rm"}, args...), "fws/toolbox:1", "fetch", url)...)
+		return err
+	}
+	if err := fetch("https://github.com/", "--label", "fws.egress.allow=github.com:443"); err != nil {
+		t.Errorf("a host on the container's list: %v", err)
+	}
+	if err := fetch("https://example.com/", "--label", "fws.egress.allow=github.com:443"); err == nil || !strings.Contains(err.Error(), "Forbidden") {
+		t.Errorf("a host off the container's list: %v", err)
+	}
+	const network = "e2e-egress-allow"
+	docker(t, "network", "rm", network)
+	mustDocker(t, "network", "create", "--opt", "fws.egress.allow=*.github.com,github.com", network)
+	t.Cleanup(func() { docker(t, "network", "rm", network) })
+	if err := fetch("https://github.com/", "--network", network); err != nil {
+		t.Errorf("a host on the network's list: %v", err)
+	}
+	if err := fetch("https://example.com/", "--network", network); err == nil {
+		t.Errorf("a host off the network's list was reached")
+	}
+	// Both lists hold: a host on the container's but off the network's is
+	// refused.
+	if err := fetch("https://example.com/", "--network", network, "--label", "fws.egress.allow=example.com"); err == nil {
+		t.Errorf("a host off the network's list, on the container's, was reached")
+	}
+	if err := fetch("https://example.com/"); err != nil {
+		t.Errorf("a container under no list: %v", err)
+	}
+	if _, err := docker(t, "run", "--rm", "--label", "fws.egress.allow=,", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "names nothing") {
+		t.Errorf("a list that names nothing: %v", err)
+	}
+}
+
+// The bridge driver's options hold: a network without masquerading gives
+// no internet, one without inter-container communication lets its members
+// reach none of one another, a host binding address is the default of its
+// members' published ports, and an option the engine cannot honour is
+// refused.
+func TestNetworkDriverOptions(t *testing.T) {
+	create := func(name string, opts ...string) {
+		t.Helper()
+		docker(t, "network", "rm", name)
+		args := []string{"network", "create"}
+		for _, o := range opts {
+			args = append(args, "--opt", o)
+		}
+		mustDocker(t, append(args, name)...)
+		t.Cleanup(func() { docker(t, "network", "rm", name) })
+	}
+	create("e2e-nomasq", "com.docker.network.bridge.enable_ip_masquerade=false")
+	if _, err := docker(t, "run", "--rm", "--network", "e2e-nomasq", "fws/toolbox:1", "fetch", "https://github.com/"); err == nil {
+		t.Errorf("a network without masquerading reached the internet")
+	}
+	create("e2e-noicc", "com.docker.network.bridge.enable_icc=false")
+	const server = "e2e-noicc-server"
+	mustDocker(t, "run", "-d", "--name", server, "--network", "e2e-noicc", "fws/python:3.14", "python3", "-c",
+		"import http.server; print('ready', flush=True); http.server.test(http.server.SimpleHTTPRequestHandler, port=8000, bind='0.0.0.0')")
+	t.Cleanup(func() { docker(t, "rm", "-f", server) })
+	waitLog(t, server, "ready")
+	if out, err := docker(t, "run", "--rm", "--network", "e2e-noicc", "fws/python:3.14", "python3", "-c",
+		"import urllib.request; urllib.request.urlopen('http://"+server+":8000', timeout=5)"); err == nil {
+		t.Errorf("a member reached another over a network without inter-container communication: %s", out)
+	}
+	create("e2e-hostbind", "com.docker.network.bridge.host_binding_ipv4=127.0.0.1")
+	const bound = "e2e-hostbind-web"
+	mustDocker(t, "run", "-d", "--name", bound, "--network", "e2e-hostbind", "-p", "8000", "fws/toolbox:1", "hold")
+	t.Cleanup(func() { docker(t, "rm", "-f", bound) })
+	if out := strings.TrimSpace(mustDocker(t, "port", bound, "8000")); !strings.HasPrefix(out, "127.0.0.1:") {
+		t.Errorf("a port published on a network binding 127.0.0.1: %q", out)
+	}
+	if _, err := docker(t, "network", "create", "--opt", "com.docker.network.bridge.gateway_mode_ipv4=routed", "e2e-routed"); err == nil || !strings.Contains(err.Error(), "not supported") {
+		docker(t, "network", "rm", "e2e-routed")
+		t.Errorf("an option the engine cannot honour: %v", err)
+	}
+}
+
+// A container's fws.ingress.allow label holds its published ports to the
+// sources it names: a port allowing loopback serves the host, one allowing
+// another address alone does not.
+func TestIngressAllowList(t *testing.T) {
+	serve := func(name, allow string) string {
+		t.Helper()
+		mustDocker(t, "run", "-d", "--name", name, "-p", "127.0.0.1::8000", "--label", "fws.ingress.allow="+allow,
+			"fws/python:3.14", "python3", "-c", "import http.server; print('ready', flush=True); http.server.test(http.server.SimpleHTTPRequestHandler, port=8000, bind='0.0.0.0')")
+		t.Cleanup(func() { docker(t, "rm", "-f", name) })
+		waitLog(t, name, "ready")
+		return strings.TrimSpace(mustDocker(t, "port", name, "8000"))
+	}
+	get := func(addr string) error {
+		c := http.Client{Timeout: 5 * time.Second}
+		res, err := c.Get("http://" + addr + "/")
+		if err == nil {
+			res.Body.Close()
+		}
+		return err
+	}
+	open := serve("e2e-ingress-open", "127.0.0.1, 10.0.0.0/8")
+	if err := get(open); err != nil {
+		t.Errorf("a source on the list: %v", err)
+	}
+	closed := serve("e2e-ingress-closed", "10.9.9.9")
+	if err := get(closed); err == nil {
+		t.Errorf("a source off the list was served at %s", closed)
+	}
+	if _, err := docker(t, "run", "--rm", "--label", "fws.ingress.allow=host.test", "fws/toolbox:1", "echo"); err == nil || !strings.Contains(err.Error(), "not an address or prefix") {
+		t.Errorf("a list of a host name: %v", err)
+	}
+}
+
 func TestEgressReachesTheInternetButNotTheHost(t *testing.T) {
 	// A service on the host's own network address: reachable from the
 	// internet's point of view, but it is the host.

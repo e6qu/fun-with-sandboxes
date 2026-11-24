@@ -177,8 +177,10 @@ var hostHeader = regexp.MustCompile(`^\s*\[\s*host\s*\.\s*"([^"]+)"\s*\]`)
 func Hosts(read func(string) ([]byte, error), dir, registry string) ([]Endpoint, error) {
 	var b []byte
 	var err error
+	var file string
 	for _, name := range []string{registry, "_default"} {
-		if b, err = read(filepath.Join(dir, name, "hosts.toml")); err == nil {
+		file = filepath.Join(dir, name, "hosts.toml")
+		if b, err = read(file); err == nil {
 			break
 		}
 		if !os.IsNotExist(err) {
@@ -196,7 +198,7 @@ func Hosts(read func(string) ([]byte, error), dir, registry string) ([]Endpoint,
 		} `toml:"host"`
 	}
 	if err := toml.Unmarshal(b, &doc); err != nil {
-		return nil, fmt.Errorf("%s/%s/hosts.toml: %v", dir, registry, err)
+		return nil, fmt.Errorf("%s: %v", file, err)
 	}
 	var out []Endpoint
 	sc := bufio.NewScanner(bytes.NewReader(b))

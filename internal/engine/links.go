@@ -242,7 +242,7 @@ func (e *Engine) RemoveLink(ref string) error {
 		if _, err := e.containerLocked(ref); err != nil {
 			return err
 		}
-		return fmt.Errorf("Conflict, cannot remove the default link name of the container")
+		return invalid("Conflict, cannot remove the default link name of the container")
 	}
 	parent, _, i, ok := e.linkLocked(name)
 	if !ok {

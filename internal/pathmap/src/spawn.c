@@ -80,16 +80,17 @@ void sandbox_free_error(char *errorbuf);
 
 enum { statusFD = 3, anchorFD = 4, hashLen = 32, rlimitNproc = 7 };
 
-static void fail(const char *what, const char *detail) {
+__attribute__((noreturn)) static void fail(const char *what, const char *detail) {
     char msg[1024];
     int n = snprintf(msg, sizeof msg, "%s: %s", what, detail);
     // As Go spells system errors: lower case.
-    for (char *p = strstr(msg, ": "); p && p[2]; p = NULL) p[2] = (char)tolower((unsigned char)p[2]);
+    char *p = strstr(msg, ": ");
+    if (p && p[2]) p[2] = (char)tolower((unsigned char)p[2]);
     if (n > 0) write(statusFD, msg, strlen(msg));
     _exit(127);
 }
 
-static void failErrno(const char *what) { fail(what, strerror(errno)); }
+__attribute__((noreturn)) static void failErrno(const char *what) { fail(what, strerror(errno)); }
 
 static char *slurp(const char *path, size_t *len) {
     int fd = open(path, O_RDONLY | O_CLOEXEC);
@@ -119,6 +120,7 @@ static int applyCompiled(const char *path) {
     char *b = slurp(path, &len);
     if (!b) return -1;
     if (len <= hashLen + 4) {
+        free(b);
         errno = EINVAL;
         return -1;
     }
@@ -127,7 +129,11 @@ static int applyCompiled(const char *path) {
     memcpy(&p.type, b + hashLen, 4);
     p.bytecode = b + hashLen + 4;
     p.bytecode_length = len - hashLen - 4;
-    return sandbox_apply(&p);
+    // The kernel copies the profile in.
+    int r = sandbox_apply(&p), e = errno;
+    free(b);
+    errno = e;
+    return r;
 }
 
 // applyText compiles and applies the profile text in the file at path: about
@@ -142,7 +148,9 @@ static int applyText(const char *path, char *why, size_t whyLen) {
         return -1;
     }
     char *err = NULL;
-    if (sandbox_init(text, 0, &err) != 0) {
+    int r = sandbox_init(text, 0, &err);
+    free(text);
+    if (r != 0) {
         snprintf(why, whyLen, "%s", err ? err : "sandbox_init failed");
         if (err) sandbox_free_error(err);
         return -1;
@@ -174,6 +182,7 @@ static void startAnchor(const char *anchor, int mib) {
         if (anchorPid != 0) _exit(anchorPid < 0 ? 1 : 0);
         int null = open("/dev/null", O_RDWR);
         if (null < 0 || dup2(null, 0) < 0 || dup2(null, 1) < 0 || dup2(null, 2) < 0 || dup2(anchorFD, 3) < 0) _exit(1);
+        if (null > 3) close(null);
         char *argv[] = {"fws-anchor", mainpid, NULL};
         char *envp[] = {"FWS_ROLE=anchor", NULL};
         if (mib > 0) {
@@ -233,10 +242,14 @@ int main(int argc, char **argv) {
             anchor = v;
         } else if (strcmp(a, "-L") == 0) {
             library = v;
-        } else if (strcmp(a, "-r") == 0 && nlimits < 16) {
+        } else if (strcmp(a, "-r") == 0) {
+            // resource:soft:hard
             char *end;
+            if (nlimits == (int)(sizeof limits / sizeof *limits)) fail("fws-spawn", "too many -r options");
             limits[nlimits].res = (int)strtol(v, &end, 10);
+            if (*end != ':') fail("fws-spawn", "a -r without resource:soft:hard");
             limits[nlimits].rl.rlim_cur = strtoull(end + 1, &end, 10);
+            if (*end != ':') fail("fws-spawn", "a -r without resource:soft:hard");
             limits[nlimits].rl.rlim_max = strtoull(end + 1, &end, 10);
             nlimits++;
         } else {

@@ -130,11 +130,15 @@ func grpcError(err error) error {
 		return err
 	}
 	switch engine.KindOf(err) {
+	case engine.KindInternal:
+		// Errors from outside the engine include the call's context
+		// ending, which has codes of its own.
+		return status.FromContextError(err).Err()
 	case engine.KindNotFound:
 		return status.Error(codes.NotFound, err.Error())
 	case engine.KindInvalid:
 		return status.Error(codes.InvalidArgument, err.Error())
-	case engine.KindConflict:
+	case engine.KindConflict, engine.KindNotModified:
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case engine.KindUnsupported:
 		return status.Error(codes.Unimplemented, err.Error())

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -37,6 +38,10 @@ type anchorRequest struct {
 	// (Limits.MemoryMiB).
 	MemoryMiB int `json:",omitempty"`
 }
+
+// maxAnchorRequest bounds a request's JSON: arguments and environment
+// within macOS's ARG_MAX of 1 MiB, with room for JSON's escapes.
+const maxAnchorRequest = 16 << 20
 
 type anchorReply struct {
 	Pid   int    `json:",omitempty"`
@@ -77,10 +82,17 @@ func serveAnchor() int {
 func awaitExit(pid int) {
 	kq, err := unix.Kqueue()
 	if err != nil {
+		pollExit(pid)
 		return
 	}
+	defer unix.Close(kq)
 	ev := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_ONESHOT, Fflags: unix.NOTE_EXIT}
 	if _, err := unix.Kevent(kq, []unix.Kevent_t{ev}, nil, nil); err != nil {
+		// ESRCH: it has exited already. Any other failure leaves the
+		// process running, which the anchor outlives by polling for it.
+		if !errors.Is(err, unix.ESRCH) {
+			pollExit(pid)
+		}
 		return
 	}
 	out := make([]unix.Kevent_t, 1)
@@ -89,6 +101,13 @@ func awaitExit(pid int) {
 		if n > 0 || (err != nil && !errors.Is(err, syscall.EINTR)) {
 			return
 		}
+	}
+}
+
+// pollExit returns once pid no longer exists.
+func pollExit(pid int) {
+	for unix.Kill(pid, 0) != unix.ESRCH {
+		time.Sleep(250 * time.Millisecond)
 	}
 }
 
@@ -115,11 +134,25 @@ func serveExec(c *net.UnixConn, main int) {
 			}
 		}
 	}
-	defer closeAll(files)
+	// The child holds its own copies once started, so the files close right
+	// after the start; the deferred close covers the returns before it.
+	started := false
+	defer func() {
+		if !started {
+			closeAll(files)
+		}
+	}()
 	if _, err := io.ReadFull(c, hdr[n:]); err != nil {
 		return
 	}
-	body := make([]byte, binary.BigEndian.Uint64(hdr))
+	// A length past any request's would make the anchor, which every
+	// exec of the container needs, allocate it or panic.
+	size := binary.BigEndian.Uint64(hdr)
+	if size > maxAnchorRequest {
+		enc.Encode(anchorReply{Error: "exec anchor: a malformed request"})
+		return
+	}
+	body := make([]byte, size)
 	if _, err := io.ReadFull(c, body); err != nil {
 		return
 	}
@@ -144,8 +177,8 @@ func serveExec(c *net.UnixConn, main int) {
 		// spawn helper's processes do.
 		Sys: &syscall.SysProcAttr{Setsid: req.TTY, Setctty: req.TTY, Setpgid: !req.TTY},
 	})
+	started = true
 	closeAll(files)
-	files = nil
 	if err != nil {
 		enc.Encode(anchorReply{Error: err.Error()})
 		return

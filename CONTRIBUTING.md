@@ -15,7 +15,9 @@ start. Two more rules follow:
 
 - **Refuse what cannot be honoured.** An option the engine cannot enforce
   returns a Docker API error; it is never accepted and silently ignored.
-  [LIMITATIONS](LIMITATIONS.md) lists any that still are, as bugs to fix.
+  Only an option that asks for no more confinement than a container already
+  has is accepted and changes nothing; [LIMITATIONS](LIMITATIONS.md) lists
+  them.
 - **Tests run everything they name.** No `t.Skip` for a missing tool:
   install the tool in CI instead.
 
@@ -29,6 +31,8 @@ You need:
 - **the Xcode Command Line Tools** (`xcode-select --install`), whose clang
   builds the container library and the spawn helper;
 - **[Nix](https://nixos.org/download)**, to build the image catalog;
+- **[ShellCheck](https://www.shellcheck.net)** (`brew install shellcheck`),
+  for `scripts/lint.sh`;
 - for the end-to-end suite, **the Docker CLI, Docker Compose, buildx,
   Podman, `podman-compose`, `crictl`** and **the Dev Containers CLI**:
 
@@ -58,9 +62,10 @@ export DOCKER_HOST=unix://$HOME/.fws/docker.sock
 
 [DESIGN §10](docs/DESIGN.md#10-go-implementation) lists every package.
 Beyond them, `images/` holds the catalog's Nix specs and entry programs,
-`scripts/` builds, publishes and vets them and shards the end-to-end suite,
-`third_party/` holds the patched BuildKit, and `tests/e2e` the end-to-end
-suite, a module of its own.
+`scripts/` builds and publishes the catalog, vets and fuzzes the Go code,
+shards the end-to-end suite and syncs BuildKit, `third_party/` holds the
+patched BuildKit, and `tests/e2e` the end-to-end suite, a module of its
+own.
 
 ## Test
 
@@ -79,7 +84,7 @@ The checks CI runs, in the order to run them locally:
 2. **Vet, staticcheck and govulncheck**, for the macOS build the engine
    ships (`staticcheck.conf` names the checks left out). CI pins
    `honnef.co/go/tools/cmd/staticcheck@v0.8.2` and
-   `golang.org/x/vuln/cmd/govulncheck@v1.9.0`, and runs both on
+   `golang.org/x/vuln/cmd/govulncheck@v1.9.0`, and runs all three on
    `tests/e2e` too, with `-tags e2e`:
 
    ```bash
@@ -92,6 +97,17 @@ The checks CI runs, in the order to run them locally:
 
    ```bash
    GOOS=darwin GOARCH=arm64 govulncheck ./...
+   ```
+
+   `scripts/lint.sh` runs the checks beyond those, at pinned versions:
+   ineffassign, nilness, exhaustive (a `switch` over one of the module's
+   enum types names every value or has a `default`; mark one partial by
+   design with a comment saying why and `//exhaustive:ignore` alone on
+   the line above it), ShellCheck over `scripts/` and actionlint over the
+   workflows. None of them adds anything to what the engine runs:
+
+   ```bash
+   GOOS=darwin GOARCH=arm64 scripts/lint.sh
    ```
 
 3. **Fuzzing**, of each `Fuzz` target for the time given; a failing input
@@ -115,11 +131,9 @@ The checks CI runs, in the order to run them locally:
    scripts/build-images.sh images-out
    ```
 
-   Most packages come from Nix's binary cache. A first build compiles
-   MySQL and MariaDB from source, with the compilation comment their
-   vendors' builds carry (`images/servers.nix`), the catalog's packages
-   at releases nixpkgs lacks (`images/catalog`), and Consul and
-   Kubernetes, which no cache holds for darwin: hours on one machine.
+   Most packages come from Nix's binary cache. A first build also compiles
+   what no cache holds for darwin, CI's `prebuilt` groups below: hours on
+   one machine.
 
    ```bash
    cd tests/e2e && FWS_E2E_IMAGES=../../images-out go test -tags e2e -v -count=1 -timeout 90m ./...
@@ -141,7 +155,8 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
 `main` and by hand:
 
 - `linux`: formatting, the cross-build, vet, the portable unit tests,
-  staticcheck and govulncheck (the end-to-end module's too), 30 s of each
+  staticcheck, `scripts/lint.sh` and govulncheck (the end-to-end
+  module's too), 30 s of each
   fuzz target, that the shards hold every test once, and that
   `third_party/buildkit` matches its sync script;
 - `macos`, on macOS 15 and 26: the unit tests; the probes again with the
@@ -152,10 +167,12 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   Network.framework experiments; and benchmarks of each interposed system
   call against the native one, of a container's start, part by part, and
   of compiling a profile;
-- `prebuilt`: what Nix builds from source that no cache holds, in groups
-  on runners of their own (`scripts/build-images.sh --prebuilt GROUP`):
-  MySQL, MariaDB, the catalog's packages at releases nixpkgs lacks,
-  Kubernetes, etcd and Consul, each group cached by its derivations and handed to `images` as an
+- `prebuilt`: what Nix builds from source that no cache holds for darwin,
+  in groups on runners of their own (`scripts/build-images.sh --prebuilt
+  GROUP`): MySQL and MariaDB, with the compilation comment their vendors'
+  builds carry (`images/servers.nix`); the catalog's packages at releases
+  nixpkgs lacks (`images/catalog`); Kubernetes and etcd; and Consul. Each
+  group is cached by its derivations and handed to `images` as an
   artifact. A group's run stopped partway, by a failure or a newer push,
   keeps what it finished, which the next run substitutes. A whole build
   drops the entries it supersedes, as `images` does, so the repository's
@@ -172,8 +189,8 @@ CI (`.github/workflows/ci.yml`) runs these jobs on pull requests, pushes to
   beside the prebuilt groups. The whole of it substitutes from
   cache.nixos.org and the prebuilt groups, so no other store paths are
   cached, and the Go jobs keep no cache either. It waits for `linux`,
-  `macos` and `prebuilt`, so a change the unit tests
-  fail spends no image build or end-to-end run;
+  `macos` and `prebuilt`, so a change the unit tests fail spends no image
+  build or end-to-end run;
 - `e2e`: the end-to-end suite, in four shards on runners of their own.
   `scripts/e2e-shard.sh` spreads the tests by their durations in
   `tests/e2e/durations.txt`, seconds per test from an earlier run; a test
@@ -202,7 +219,9 @@ connection, never on a fixed sleep.
   it to `sandbox_darwin_test.go`.
 - **The container library.** `internal/pathmap/src/fwsroot.c` runs inside
   every container process, so:
-  - It builds with `-Wall -Werror`.
+  - It builds with `-Wall -Werror`; CI also compiles it, and the spawn
+    helper, with `-Wextra -Wshadow -Wsign-compare`, and runs clang's
+    static analyzer over the helper.
   - Its path and socket mapping takes no lock libSystem may hold, so it
     calls no `snprintf`, `strtoul` or other locale-aware function there.
   - It keeps no thread-local state.
@@ -215,15 +234,8 @@ connection, never on a fixed sleep.
 - **The Docker API.** Answer as dockerd does, with the same status codes
   and error text, and add an end-to-end test that drives the change through
   the Docker CLI or Compose.
-- **An image.** Add it to `scripts/build-images.sh` and `images/`, list it
-  in the README's catalog and in the `images` job's registry check in
-  `.github/workflows/ci.yml`, and drive it in `tests/e2e/catalog_test.go`
-  through the client its users would use.
-- **A newer release.** An image takes `nixpkgs-26.05-darwin`'s package;
-  where that lags upstream, add it to `images/catalog`: nixpkgs-unstable's
-  package when it has the newest release, else its recipe copied there at
-  the release, or the release's own macOS build. GitHub's source archives
-  hash as `git archive` of the tag lays the tree out.
+- **An image or a release.** See
+  [IMAGES](docs/IMAGES.md#add-an-image-or-a-release).
 - **BuildKit.** Change the packages it copies with
   `scripts/sync-buildkit.sh`, and patches in `third_party/buildkit-patches`.
   Never edit `third_party/buildkit` by hand: CI checks it matches the

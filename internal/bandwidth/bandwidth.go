@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"strconv"
@@ -26,9 +27,12 @@ const (
 	IngressLabel = "kubernetes.io/ingress-bandwidth"
 )
 
-// minRate is the lowest rate the Kubernetes bandwidth plugin takes, in
-// bits a second.
-const minRate = 1000
+// minRate and maxRate are the lowest and highest rates the Kubernetes
+// bandwidth plugin takes, in bits a second.
+const (
+	minRate = 1e3
+	maxRate = 1e15
+)
 
 // suffixes are a quantity's, as Kubernetes reads them.
 var suffixes = []struct {
@@ -50,14 +54,18 @@ func ParseRate(s string) (int64, error) {
 		}
 	}
 	f, err := strconv.ParseFloat(num, 64)
-	if err != nil || f <= 0 {
+	// ParseFloat takes NaN and Inf, which no conversion to int64 holds.
+	if err != nil || !(f > 0) || math.IsInf(f, 1) {
 		return 0, fmt.Errorf("bandwidth %q is not a quantity of bits a second, such as 10M", s)
 	}
-	bps := int64(f * mult)
-	if bps < minRate {
+	bps := f * mult
+	switch {
+	case bps < minRate:
 		return 0, fmt.Errorf("bandwidth %q is below 1k bits a second", s)
+	case bps > maxRate:
+		return 0, fmt.Errorf("bandwidth %q is above 1P bits a second", s)
 	}
-	return bps, nil
+	return int64(bps), nil
 }
 
 // chunk is the most a copy writes at once, and the bucket's burst.
@@ -193,6 +201,17 @@ func (t *Table) Limiters(address string) (out, in *rate.Limiter) {
 		return p.out, p.in
 	}
 	return nil, nil
+}
+
+// Any reports whether a member of the stack has a rate.
+func (t *Table) Any() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.reload()
+	return len(t.byAddr) > 0
 }
 
 func (t *Table) reload() {

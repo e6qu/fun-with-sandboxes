@@ -16,6 +16,9 @@
     "Entrypoint": [
       "/entry"
     ],
+    "Cmd": [
+      "postgres"
+    ],
     "ExposedPorts": {
       "5432/tcp": {}
     },

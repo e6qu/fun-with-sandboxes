@@ -195,6 +195,36 @@ no VM and no more than microseconds per call.
   process table's listings are denied as well; the container's supervisor
   answers the library with the container's own processes.
 
+## Limits macOS can enforce (PR #85)
+
+- **Cpusets**: a set holds a container to as many CPUs' time, and a set
+  of efficiency cores to them through the background QoS clamp.
+- **A root size quota**: `--storage-opt size` puts the root on a sparse
+  APFS disk image of its own; hdiutil's `b` suffix is a 512-byte sector,
+  which first made every quota 512 times its size.
+- **Bandwidth**: the Kubernetes bandwidth labels and annotations hold a
+  container's TCP through its router and the egress proxy.
+- **A deadlock**: Inspect took a container's lock and then the engine's,
+  against Create's order, which hung kind's clusters on main; a test now
+  holds every function to the engine's lock first.
+
+## Networks, images and the CLI (PR #86)
+
+- **Allow lists**: `fws.egress.allow` on a network or container holds the
+  egress proxy to the hosts, addresses and ports it names, refused with
+  403; `fws.ingress.allow` holds a published port to the source addresses
+  it names.
+- **Bridge options**: `enable_icc`, `enable_ip_masquerade` and
+  `host_binding_ipv4` hold; options the engine took and dropped before
+  are refused.
+- **Routes**: the routing sysctl (`netstat -rn`) showed the host's routes
+  to every container; the library now presents the container's own, its
+  subnets and a default route through its network's gateway.
+- **Images**: Python 3.11–3.15, Node.js 22–26 and their Lambda runtimes;
+  `fws catalog` lists the catalog, and CI checks each tag it lists
+  publishes. `fws-mkimage -env` replaced none of a spec's variables, so
+  an image could carry two of one name.
+
 ## Investigations
 
 Findings still worth knowing, each with what the code does since.

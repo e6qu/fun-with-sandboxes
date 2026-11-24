@@ -261,6 +261,19 @@ static const char *num(const char *p, unsigned long *v) {
     return p;
 }
 
+// put_num writes the decimal digits of v at out, unterminated, and returns
+// how many it wrote, at most 20: as num reads them, without the locale.
+static size_t put_num(char *out, unsigned long long v) {
+    char d[20];
+    size_t n = 0;
+    do {
+        d[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+    for (size_t i = 0; i < n; i++) out[i] = d[n - 1 - i];
+    return n;
+}
+
 static int parse_v4(const char *p, const char **end, in_addr_t *out) {
     uint32_t v = 0;
     for (int i = 0; i < 4; i++) {
@@ -330,7 +343,7 @@ static void parse_network(const char *path, const char *address) {
 // environment once the library is loaded, as long as that one.
 #define LOADED_NAME "FWS__INSERT_LIBRARIES"
 static const char *const kept_names[] = {"DYLD_INSERT_LIBRARIES", "SANDBOX_ROOT", "SANDBOX_IPC_PREFIX", "FWS_MOUNTS", "FWS_HOSTNAME", "FWS_DOMAINNAME", "FWS_SHM", "FWS_PORTS", "FWS_NETWORK", "FWS_ADDRESS", "FWS_HELPER", "FWS_INIT", "FWS_PORTDIR", "FWS_ROUTER", "FWS_PIDS", "FWS_PIDS_SOCKET", "FWS_PIDNS", "FWS_PIDNSFILE", "FWS_PROCS", "FWS_DNS", NULL};
-static char *kept[sizeof kept_names / sizeof kept_names[0]];
+static char *kept_vars[sizeof kept_names / sizeof kept_names[0]];
 
 static void set_groups_var(void) {
     size_t o = (size_t)snprintf(groups_var, sizeof groups_var, "FWS_GROUPS=");
@@ -417,10 +430,33 @@ static void parse_shm(const char *v);
 // a program that loses its way between the container's paths and the
 // host's is read.
 static int tracing;
+// trace formats its line by hand: it runs on the path mapping, where a
+// locale-aware printf could wait on a lock setlocale holds.
 static void trace(const char *call, const char *path, const char *mapped, long extra, int r) {
     if (!tracing) return;
     int e = errno;
-    dprintf(2, "fws: %s %s -> %s [%lx] = %d\n", call, path ? path : "(null)", mapped ? mapped : "(null)", extra, r);
+    char line[3 * PATH_MAX];
+    size_t n = 0;
+    const char *parts[] = {"fws: ", call, " ", path ? path : "(null)", " -> ", mapped ? mapped : "(null)", " [", NULL};
+    for (int i = 0; parts[i]; i++) {
+        size_t l = strnlen(parts[i], sizeof line - n - 48);
+        memcpy(line + n, parts[i], l);
+        n += l;
+    }
+    unsigned long x = (unsigned long)extra;
+    char hex[16];
+    size_t h = 0;
+    do {
+        hex[h++] = "0123456789abcdef"[x & 15];
+        x >>= 4;
+    } while (x);
+    while (h) line[n++] = hex[--h];
+    memcpy(line + n, "] = ", 4);
+    n += 4;
+    if (r < 0) line[n++] = '-';
+    n += put_num(line + n, r < 0 ? 0ull - (unsigned long long)r : (unsigned long long)r);
+    line[n++] = '\n';
+    write(2, line, n);
     errno = e;
 }
 
@@ -432,8 +468,8 @@ __attribute__((constructor)) static void fwsroot_init(void) {
         const char *v = getenv(kept_names[i]);
         if (v) {
             size_t n = strlen(kept_names[i]) + strlen(v) + 2;
-            kept[i] = malloc(n);
-            if (kept[i]) snprintf(kept[i], n, "%s=%s", kept_names[i], v);
+            kept_vars[i] = malloc(n);
+            if (kept_vars[i]) snprintf(kept_vars[i], n, "%s=%s", kept_names[i], v);
         }
     }
     fake_uid = fake_euid = (uid_t)env_number("FWS_UID");
@@ -521,8 +557,8 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     // a worker thread a copy, must find every one it listed. The name
     // changes where it stands, a name as long: the list keeps its length,
     // which the Go runtime counts on to find what follows it. A program the
-    // process starts gets the variable back from kept (child_env).
-    if (kept[0]) {
+    // process starts gets the variable back from kept_vars (child_env).
+    if (kept_vars[0]) {
         // A library reaches the environment through _NSGetEnviron.
         for (char **e = *_NSGetEnviron(); e && *e; e++) {
             if (strncmp(*e, "DYLD_INSERT_LIBRARIES=", 22) == 0) memcpy(*e, LOADED_NAME, 21);
@@ -975,7 +1011,7 @@ static int direct(const char *p, char *buf) {
 // rooted is container path p's host path under the root as the library
 // names it, which own matches, given d, its path under the resolved root.
 static const char *rooted(const char *p, char *d) {
-    if (strcmp(root, croot) != 0) {
+    if (strcmp(root, croot) != 0 && rootlen + strlen(p) < PATH_MAX) {
         memcpy(d, root, rootlen);
         strcpy(d + rootlen, p);
     }
@@ -1184,22 +1220,26 @@ static int fws_fstat(int fd, struct stat *st) {
     return r;
 }
 INTERPOSE(fws_fstat, fstat);
+// own_at presents a stat result of path p, relative to directory fd, as
+// own does.
+static void own_at(struct stat *st, int fd, const char *p, int flag) {
+    int nofollow = (flag & AT_SYMLINK_NOFOLLOW) != 0;
+    if (p[0] == '/' || fd == AT_FDCWD) {
+        own(st, p, -1, nofollow);
+        return;
+    }
+    int f = openat(fd, p, O_RDONLY | O_CLOEXEC | (nofollow ? O_SYMLINK : 0));
+    if (f >= 0) {
+        own(st, NULL, f, 0);
+        close(f);
+    }
+}
 static int fws_fstatat(int fd, const char *path, struct stat *st, int flag) {
     int sr;
     if ((flag & ~AT_SYMLINK_NOFOLLOW) == 0 && settle_stat(path, st, flag & AT_SYMLINK_NOFOLLOW, &sr)) return sr;
     const char *p = AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW));
     int r = fstatat(fd, p, st, flag);
-    if (r == 0) {
-        if (p[0] == '/' || fd == AT_FDCWD) {
-            own(st, p, -1, flag & AT_SYMLINK_NOFOLLOW);
-        } else {
-            int f = openat(fd, p, O_RDONLY | ((flag & AT_SYMLINK_NOFOLLOW) ? O_SYMLINK : 0));
-            if (f >= 0) {
-                own(st, NULL, f, 0);
-                close(f);
-            }
-        }
-    }
+    if (r == 0) own_at(st, fd, p, flag);
     return r;
 }
 INTERPOSE(fws_fstatat, fstatat);
@@ -1239,7 +1279,7 @@ static int fws_fstatat64(int fd, const char *path, void *st, int flag) {
     if ((flag & ~AT_SYMLINK_NOFOLLOW) == 0 && settle_stat(path, st, flag & AT_SYMLINK_NOFOLLOW, &sr)) return sr;
     const char *p = AT_MAPF(fd, path, !(flag & AT_SYMLINK_NOFOLLOW));
     int r = fstatat64(fd, p, st, flag);
-    if (r == 0 && (p[0] == '/' || fd == AT_FDCWD)) own(st, p, -1, flag & AT_SYMLINK_NOFOLLOW);
+    if (r == 0) own_at(st, fd, p, flag);
     return r;
 }
 INTERPOSE(fws_fstatat64, fstatat64);
@@ -1355,10 +1395,11 @@ static ssize_t proc_mnt_ns(const char *path, char *buf, size_t size) {
     if (strcmp(p, "ns/mnt") != 0) return -2;
     struct stat st;
     if (stat(croot, &st) != 0) return -2;
-    char name[64];
-    int n = snprintf(name, sizeof name, "mnt:[%llu]", (unsigned long long)st.st_ino);
-    if (n < 0) return -2;
-    size_t k = (size_t)n < size ? (size_t)n : size;
+    char name[32] = "mnt:[";
+    size_t n = 5;
+    n += put_num(name + n, st.st_ino);
+    name[n++] = ']';
+    size_t k = n < size ? n : size;
     memcpy(buf, name, k);
     return (ssize_t)k;
 }
@@ -1510,7 +1551,8 @@ static char **env_argv(char *arg, const char *shown, char *const argv[], char *i
     char *words[64];
     size_t nw = 0;
     if (strncmp(arg, "-S", 2) == 0 && (arg[2] == ' ' || arg[2] == '\t')) {
-        for (char *w = strtok(arg + 3, " \t"); w && nw < 64; w = strtok(NULL, " \t")) words[nw++] = w;
+        char *save;
+        for (char *w = strtok_r(arg + 3, " \t", &save); w && nw < 64; w = strtok_r(NULL, " \t", &save)) words[nw++] = w;
     } else if (*arg) {
         words[nw++] = arg;
     }
@@ -1525,12 +1567,21 @@ static char **env_argv(char *arg, const char *shown, char *const argv[], char *i
     }
     size_t argc = 0;
     while (argv && argv[argc]) argc++;
-    char **out = calloc(nw + argc + 2, sizeof *out);
+    // The words, which lie in the caller's buffer, go in a block after the
+    // array's, which the caller frees as one.
+    size_t slots = nw + argc + 2, bytes = 0;
+    for (size_t j = 0; j < nw; j++) bytes += strlen(words[j]) + 1;
+    char **out = calloc(1, slots * sizeof *out + bytes);
     if (!out) {
         return NULL;
     }
+    char *text = (char *)(out + slots);
     size_t i = 0;
-    for (size_t j = 0; j < nw; j++) out[i++] = strdup(words[j]);
+    for (size_t j = 0; j < nw; j++) {
+        size_t n = strlen(words[j]) + 1;
+        out[i++] = memcpy(text, words[j], n);
+        text += n;
+    }
     out[i++] = (char *)shown;
     for (size_t j = 1; j < argc; j++) out[i++] = argv[j];
     return out;
@@ -1546,7 +1597,7 @@ static char **env_argv(char *arg, const char *shown, char *const argv[], char *i
 // sees the link's path in $0, and no host path, since the interpreter,
 // the root's, maps it as it opens it.
 static char **script_argv(const char *path, const char *shown, char *const argv[], char *interp) {
-    int fd = open(path, O_RDONLY);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         return NULL;
     }
@@ -1579,13 +1630,17 @@ static char **script_argv(const char *path, const char *shown, char *const argv[
     }
     size_t argc = 0;
     while (argv && argv[argc]) argc++;
-    char **out = calloc(argc + 4, sizeof *out);
+    // The #! line's words, which lie in head, go in a block after the
+    // array's, which the caller frees as one.
+    size_t slots = argc + 4, ln = strlen(line) + 1, an = *arg ? strlen(arg) + 1 : 0;
+    char **out = calloc(1, slots * sizeof *out + ln + an);
     if (!out) {
         return NULL;
     }
+    char *text = (char *)(out + slots);
     size_t i = 0;
-    out[i++] = strdup(line);
-    if (*arg) out[i++] = strdup(arg);
+    out[i++] = memcpy(text, line, ln);
+    if (an) out[i++] = memcpy(text + ln, arg, an);
     out[i++] = (char *)shown;
     for (size_t j = 1; j < argc; j++) out[i++] = argv[j];
     return out;
@@ -1628,7 +1683,7 @@ static char **child_env(char *const envp[], char *ids) {
     // out holds what the program passes, without what it emptied, and
     // ends with a NULL, as calloc left it.
     for (size_t i = 0; kept_names[i]; i++) {
-        if (kept[i] && !has_var(out, kept[i])) out[j++] = kept[i];
+        if (kept_vars[i] && !has_var(out, kept_vars[i])) out[j++] = kept_vars[i];
     }
     // PATH and HOME name the host's directories again (path_list), for a
     // program without the library; one with it presents them anew. Their
@@ -1683,13 +1738,17 @@ static int fws_execve(const char *path, char *const argv[], char *const envp[]) 
         // An exec takes no limit; posix_spawn's POSIX_SPAWN_SETEXEC, the
         // same exec otherwise, does.
         posix_spawnattr_t a;
-        int owned = 0;
-        if (posix_spawnattr_init(&a) == 0 && posix_spawnattr_setflags(&a, POSIX_SPAWN_SETEXEC) == 0) {
-            limit_memory(&a, NULL, &owned);
-            int err = sargv ? posix_spawn(NULL, interp, NULL, &a, sargv, envp) : posix_spawn(NULL, p, NULL, &a, argv, envp);
+        int owned;
+        int err = posix_spawnattr_init(&a);
+        if (err == 0) {
+            err = posix_spawnattr_setflags(&a, POSIX_SPAWN_SETEXEC);
+            if (err == 0) {
+                limit_memory(&a, NULL, &owned);
+                err = sargv ? posix_spawn(NULL, interp, NULL, &a, sargv, envp) : posix_spawn(NULL, p, NULL, &a, argv, envp);
+            }
             posix_spawnattr_destroy(&a);
-            errno = err;
         }
+        errno = err;
         r = -1;
     } else {
         r = sargv ? execve(interp, sargv, envp) : execve(p, argv, envp);
@@ -1946,6 +2005,18 @@ static int fws_setgroups(int n, const gid_t *list) {
     return 0;
 }
 INTERPOSE(fws_setgroups, setgroups);
+// etc_file opens the root's file at path, /etc/passwd or /etc/group, to
+// read.
+static FILE *etc_file(const char *path) {
+    char p[PATH_MAX];
+    if (!rootlen || !join(p, sizeof p, root, path, "")) return NULL;
+    int fd = open(p, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    FILE *f = fdopen(fd, "r");
+    if (!f) close(fd);
+    return f;
+}
+
 // initgroups gives the process gid and the groups of the container's
 // /etc/group that list name as a member.
 static int fws_initgroups(const char *name, int gid) {
@@ -1956,9 +2027,7 @@ static int fws_initgroups(const char *name, int gid) {
     gid_t list[NGROUPS_MAX];
     int n = 0;
     list[n++] = (gid_t)gid;
-    char path[PATH_MAX];
-    snprintf(path, sizeof path, "%s/etc/group", root);
-    FILE *f = rootlen ? fopen(path, "r") : NULL;
+    FILE *f = etc_file("/etc/group");
     char line[4096];
     while (f && n < NGROUPS_MAX && fgets(line, sizeof line, f)) {
         char *fields[4];
@@ -2000,8 +2069,10 @@ static int read_owner(const char *path, int fd, int nofollow, uid_t *uid, gid_t 
         return 0;
     }
     v[n] = 0;
+    // stat reads it, which the path mapping answers: no sscanf.
     unsigned long u, g;
-    if (sscanf(v, "%lu:%lu", &u, &g) != 2) {
+    const char *e = num(v, &u);
+    if (!e || *e != ':' || !num(e + 1, &g)) {
         return 0;
     }
     *uid = (uid_t)u;
@@ -2011,9 +2082,10 @@ static int read_owner(const char *path, int fd, int nofollow, uid_t *uid, gid_t 
 
 static void write_owner(const char *path, int fd, int nofollow, uid_t uid, gid_t gid) {
     char v[32];
-    int n = snprintf(v, sizeof v, "%u:%u", uid, gid);
-    int r = fd >= 0 ? fsetxattr(fd, OWNER_XATTR, v, (size_t)n, 0, 0)
-                    : setxattr(path, OWNER_XATTR, v, (size_t)n, 0, nofollow ? XATTR_NOFOLLOW : 0);
+    size_t n = put_num(v, uid);
+    v[n++] = ':';
+    n += put_num(v + n, gid);
+    int r = fd >= 0 ? fsetxattr(fd, OWNER_XATTR, v, n, 0, 0) : setxattr(path, OWNER_XATTR, v, n, 0, nofollow ? XATTR_NOFOLLOW : 0);
     if (r == 0) {
         mark(path, fd, nofollow);
     }
@@ -2123,7 +2195,7 @@ static int fws_fchownat(int fd, const char *path, uid_t uid, gid_t gid, int flag
     if (path[0] == '/' || fd == AT_FDCWD) {
         return (flag & AT_SYMLINK_NOFOLLOW) ? fws_lchown(path, uid, gid) : fws_chown(path, uid, gid);
     }
-    int f = openat(fd, path, O_RDONLY | ((flag & AT_SYMLINK_NOFOLLOW) ? O_SYMLINK : 0));
+    int f = openat(fd, path, O_RDONLY | O_CLOEXEC | ((flag & AT_SYMLINK_NOFOLLOW) ? O_SYMLINK : 0));
     if (f < 0) {
         return -1;
     }
@@ -2142,9 +2214,7 @@ static char grbuf[1024];
 static char *grmem[2];
 
 static struct passwd *find_passwd(const char *name, uid_t uid, int byname) {
-    char path[PATH_MAX];
-    snprintf(path, sizeof path, "%s/etc/passwd", root);
-    FILE *f = rootlen ? fopen(path, "r") : NULL;
+    FILE *f = etc_file("/etc/passwd");
     if (!f) {
         // An image without /etc/passwd knows root alone.
         if ((byname && strcmp(name, "root") == 0) || (!byname && uid == 0)) {
@@ -2180,9 +2250,7 @@ static struct passwd *find_passwd(const char *name, uid_t uid, int byname) {
 }
 
 static struct group *find_group(const char *name, gid_t gid, int byname) {
-    char path[PATH_MAX];
-    snprintf(path, sizeof path, "%s/etc/group", root);
-    FILE *f = rootlen ? fopen(path, "r") : NULL;
+    FILE *f = etc_file("/etc/group");
     if (!f) {
         if ((byname && strcmp(name, "root") == 0) || (!byname && gid == 0)) {
             strcpy(grbuf, "root");
@@ -2232,13 +2300,27 @@ static struct group *lookup_group(const char *name, gid_t gid, int byname) {
     errno = saved;
     return g;
 }
-static struct passwd *fws_getpwuid(uid_t uid) { return lookup_passwd(NULL, uid, 0); }
+// The variants that return the shared buffer fill it under the lock too,
+// so that a reentrant one never copies it half written.
+static struct passwd *locked_passwd(const char *name, uid_t uid, int byname) {
+    pthread_mutex_lock(&db_lock);
+    struct passwd *p = lookup_passwd(name, uid, byname);
+    pthread_mutex_unlock(&db_lock);
+    return p;
+}
+static struct group *locked_group(const char *name, gid_t gid, int byname) {
+    pthread_mutex_lock(&db_lock);
+    struct group *g = lookup_group(name, gid, byname);
+    pthread_mutex_unlock(&db_lock);
+    return g;
+}
+static struct passwd *fws_getpwuid(uid_t uid) { return locked_passwd(NULL, uid, 0); }
 INTERPOSE(fws_getpwuid, getpwuid);
-static struct passwd *fws_getpwnam(const char *name) { return lookup_passwd(name, 0, 1); }
+static struct passwd *fws_getpwnam(const char *name) { return locked_passwd(name, 0, 1); }
 INTERPOSE(fws_getpwnam, getpwnam);
-static struct group *fws_getgrgid(gid_t gid) { return lookup_group(NULL, gid, 0); }
+static struct group *fws_getgrgid(gid_t gid) { return locked_group(NULL, gid, 0); }
 INTERPOSE(fws_getgrgid, getgrgid);
-static struct group *fws_getgrnam(const char *name) { return lookup_group(name, 0, 1); }
+static struct group *fws_getgrnam(const char *name) { return locked_group(name, 0, 1); }
 INTERPOSE(fws_getgrnam, getgrnam);
 
 // getlogin names the container's user, not the host session's.
@@ -2412,6 +2494,14 @@ static int ns_shared(void) {
     return lines > 1;
 }
 
+// lib_socket makes a socket of the library's own, which no program the
+// process executes inherits: macOS has no SOCK_CLOEXEC.
+static int lib_socket(int domain, int type) {
+    int s = socket(domain, type, 0);
+    if (s >= 0) fcntl(s, F_SETFD, FD_CLOEXEC);
+    return s;
+}
+
 static int io_all(int fd, void *b, size_t n, int out) {
     char *p = b;
     while (n > 0) {
@@ -2430,7 +2520,7 @@ static int io_all(int fd, void *b, size_t n, int out) {
 // ns_call asks the shim, and reads the data of its answer into buf, of cap
 // bytes. It returns the answer's result, or -1 with errno set.
 static int ns_call(int32_t op, int32_t pid, int32_t a, int32_t size, uint64_t b, void *buf, size_t cap) {
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    int s = lib_socket(AF_UNIX, SOCK_STREAM);
     if (s < 0) return -1;
     int one = 1;
     setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
@@ -2669,7 +2759,7 @@ static int listed(pid_t pid, const char *comm, const pid_t *ns, int n) {
 // members' children as it answers, so the count holds a fork the kernel
 // made a moment before. It returns -1 where the supervisor does not answer.
 static long pids_count(void) {
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    int s = lib_socket(AF_UNIX, SOCK_STREAM);
     if (s < 0) return -1;
     int one = 1;
     setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
@@ -2877,7 +2967,10 @@ INTERPOSE(fws_proc_listchildpids, proc_listchildpids);
 #define MEMBER_MASK 0xffff0000u
 #define ETH_MTU 1500
 #define MAX_IFACES 16
-#define RT_ROUNDUP(a) ((a) > 0 ? (1 + (((a) - 1) | (sizeof(uint32_t) - 1))) : sizeof(uint32_t))
+
+// rt_roundup is the room a socket address of len bytes takes in a routing
+// message: Darwin's routing socket pads each to 4 bytes, on arm64 too.
+static size_t rt_roundup(size_t len) { return len ? 1 + ((len - 1) | (sizeof(uint32_t) - 1)) : sizeof(uint32_t); }
 
 // An interface has an IPv4 address where v4 is set, as on any network but
 // an IPv6-only one, and an IPv6 one where bits6 is not 0. addr is the
@@ -2911,8 +3004,8 @@ static struct sockaddr_in v4_sockaddr(in_addr_t a) {
 // returns its length.
 static size_t eth_info(char *out, unsigned char type, unsigned short index, int i, in_addr_t addr) {
     size_t head = type == RTM_IFINFO2 ? sizeof(struct if_msghdr2) : sizeof(struct if_msghdr);
-    char name[IFNAMSIZ];
-    snprintf(name, sizeof name, "eth%d", i);
+    char name[IFNAMSIZ] = "eth";
+    name[3 + put_num(name + 3, (unsigned)i)] = 0;
     struct sockaddr_dl dl;
     memset(&dl, 0, sizeof dl);
     dl.sdl_len = sizeof dl;
@@ -2943,7 +3036,7 @@ static size_t eth_info(char *out, unsigned char type, unsigned short index, int 
         m->ifm_data.ifi_mtu = ETH_MTU;
     }
     memcpy(out + head, &dl, sizeof dl);
-    size_t n = head + RT_ROUNDUP(sizeof dl);
+    size_t n = head + rt_roundup(sizeof dl);
     m->ifm_msglen = (unsigned short)n;
     return n;
 }
@@ -2961,7 +3054,7 @@ static size_t eth_addr(char *out, unsigned short index, const struct iface *f) {
     size_t n = sizeof h;
     for (int i = 0; i < 3; i++) {
         memcpy(out + n, &sa[i], sizeof sa[i]);
-        n += RT_ROUNDUP(sizeof sa[i]);
+        n += rt_roundup(sizeof sa[i]);
     }
     h.ifam_msglen = (unsigned short)n;
     memcpy(out, &h, sizeof h);
@@ -2988,58 +3081,220 @@ static size_t eth_addr6(char *out, unsigned short index, const struct iface *f) 
     size_t n = sizeof h;
     for (int i = 0; i < 2; i++) {
         memcpy(out + n, &sa[i], sizeof sa[i]);
-        n += RT_ROUNDUP(sizeof sa[i]);
+        n += rt_roundup(sizeof sa[i]);
     }
     h.ifam_msglen = (unsigned short)n;
     memcpy(out, &h, sizeof h);
     return n;
 }
 
+// route_dump reads routing sysctl mib into a buffer the caller frees, with
+// more bytes of room after the *n it read; NULL with errno set where it
+// fails. The table may grow between the call that sizes it and the one
+// that reads it, which then fails with ENOMEM and is tried again.
+static char *route_dump(const int mib[6], size_t more, size_t *n) {
+    for (int tries = 0; tries < 8; tries++) {
+        if (sysctl((int *)mib, 6, NULL, n, NULL, 0) == -1) return NULL;
+        *n += *n / 4 + 1024;
+        char *buf = malloc(*n + more);
+        if (!buf) {
+            errno = ENOMEM;
+            return NULL;
+        }
+        if (sysctl((int *)mib, 6, buf, n, NULL, 0) == 0) return buf;
+        int e = errno;
+        free(buf);
+        if (e != ENOMEM) {
+            errno = e;
+            return NULL;
+        }
+    }
+    errno = ENOMEM;
+    return NULL;
+}
+
+// IFM_HEAD is how much of a message the interface walks read: the fields
+// every interface-list message begins with, through the index, which an
+// address message's struct ifa_msghdr and a multicast one's struct
+// ifma_msghdr share with struct if_msghdr. Those are shorter than a
+// struct if_msghdr, so a walk that wanted one whole stopped at them.
+#define IFM_HEAD (offsetof(struct if_msghdr, ifm_index) + sizeof(unsigned short))
+_Static_assert(offsetof(struct ifa_msghdr, ifam_index) == offsetof(struct if_msghdr, ifm_index), "address messages' index");
+_Static_assert(offsetof(struct ifma_msghdr, ifmam_index) == offsetof(struct if_msghdr, ifm_index), "multicast messages' index");
+
+// The host's interfaces, by index: Darwin's indexes are 16 bits.
+typedef unsigned char ifindex_set[65536 / 8];
+
+static int if_in(const ifindex_set set, unsigned short index) { return (set[index / 8] >> (index % 8)) & 1; }
+
+// loopbacks marks in loop the loopback interfaces of the interface
+// messages, n bytes at buf, and returns the highest index, whose
+// successors the container's interfaces take so that no host interface's
+// index names one.
+static unsigned short loopbacks(const char *buf, size_t n, ifindex_set loop) {
+    unsigned short top = 0;
+    for (size_t off = 0; off + IFM_HEAD <= n;) {
+        const struct if_msghdr *m = (const void *)(buf + off);
+        if (m->ifm_msglen < IFM_HEAD || m->ifm_msglen > n - off) break;
+        if (m->ifm_index > top) top = m->ifm_index;
+        if ((m->ifm_type == RTM_IFINFO || m->ifm_type == RTM_IFINFO2) && (m->ifm_flags & IFF_LOOPBACK)) {
+            loop[m->ifm_index / 8] |= (unsigned char)(1u << (m->ifm_index % 8));
+        }
+        off += m->ifm_msglen;
+    }
+    return top;
+}
+
+// host_loopbacks marks in loop the host's loopback interfaces, and returns
+// the highest interface index, or -1 with errno set where the interface
+// list cannot be read.
+static int host_loopbacks(ifindex_set loop) {
+    static const int mib[6] = {CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST, 0};
+    size_t n;
+    char *buf = route_dump(mib, 0, &n);
+    if (!buf) return -1;
+    unsigned short top = loopbacks(buf, n, loop);
+    free(buf);
+    return top;
+}
+
+// copy_out answers a sysctl with the n bytes at buf, as the kernel does:
+// their size, with no buffer, else as many as *oldlen holds, and ENOMEM
+// where that is fewer.
+static int copy_out(const char *buf, size_t n, void *old, size_t *oldlen) {
+    int r = 0;
+    if (old) {
+        if (*oldlen < n) {
+            n = *oldlen;
+            r = -1;
+        }
+        memcpy(old, buf, n);
+    }
+    *oldlen = n;
+    if (r) errno = ENOMEM;
+    return r;
+}
+
+// The most bytes a route message of the container's takes: either header
+// and three socket addresses, an interface's at the largest.
+#define RT_ROUTE_MAX (sizeof(struct rt_msghdr2) + sizeof(struct rt_msghdr) + 3 * sizeof(struct sockaddr_dl))
+
+// rt_route writes at out the route message of type, RTM_GET2 for
+// NET_RT_DUMP2's rt_msghdr2 or RTM_GET for rt_msghdr, of an IPv4 route to
+// dst/mask on interface index: through gw, or with gw 0 through the
+// interface itself, as a route to its subnet goes. It returns the
+// message's length.
+static size_t rt_route(char *out, unsigned char type, unsigned short index, in_addr_t dst, in_addr_t mask, in_addr_t gw, int flags) {
+    _Static_assert(offsetof(struct rt_msghdr2, rtm_addrs) == offsetof(struct rt_msghdr, rtm_addrs), "route message headers differ");
+    size_t n = type == RTM_GET2 ? sizeof(struct rt_msghdr2) : sizeof(struct rt_msghdr);
+    memset(out, 0, n);
+    struct sockaddr_in sd = v4_sockaddr(dst), sm = v4_sockaddr(mask), sg = v4_sockaddr(gw);
+    struct sockaddr_dl link;
+    memset(&link, 0, sizeof link);
+    link.sdl_len = sizeof link;
+    link.sdl_family = AF_LINK;
+    link.sdl_index = index;
+    link.sdl_type = IFT_ETHER;
+    memcpy(out + n, &sd, sizeof sd);
+    n += rt_roundup(sizeof sd);
+    if (gw) {
+        memcpy(out + n, &sg, sizeof sg);
+        n += rt_roundup(sizeof sg);
+    } else {
+        memcpy(out + n, &link, sizeof link);
+        n += rt_roundup(sizeof link);
+    }
+    memcpy(out + n, &sm, sizeof sm);
+    n += rt_roundup(sizeof sm);
+    // rt_msghdr2 and rt_msghdr share these fields' places.
+    struct rt_msghdr *m = (struct rt_msghdr *)(void *)out;
+    m->rtm_msglen = (unsigned short)n;
+    m->rtm_version = RTM_VERSION;
+    m->rtm_type = type;
+    m->rtm_index = index;
+    m->rtm_flags = flags;
+    m->rtm_addrs = RTA_DST | RTA_GATEWAY | RTA_NETMASK;
+    return n;
+}
+
+// rtdump answers a routing sysctl of routes, NET_RT_DUMP, NET_RT_DUMP2 or
+// NET_RT_FLAGS, as the container's network namespace would: the host's
+// routes through its loopback interfaces, then the container's own: on
+// each of its interfaces the route to its subnet, and a default route
+// through its first interface's gateway, the subnet's first address, as
+// a bridge network's is. The host's other routes are not the container's.
+static int rtdump(const int name[6], void *old, size_t *oldlen) {
+    ifindex_set loop = {0};
+    int top = host_loopbacks(loop);
+    if (top < 0) return -1;
+    unsigned char type = name[4] == NET_RT_DUMP2 ? RTM_GET2 : RTM_GET;
+    // NET_RT_FLAGS takes the routes with any of the flags name[5] holds.
+    int want = name[4] == NET_RT_FLAGS ? name[5] : 0;
+    size_t n;
+    char *buf = route_dump(name, (MAX_IFACES + 1) * RT_ROUTE_MAX, &n);
+    if (!buf) return -1;
+    // The two headers share the fields read here.
+    size_t out = 0;
+    for (size_t off = 0; off + sizeof(struct rt_msghdr) <= n;) {
+        const struct rt_msghdr *m = (const void *)(buf + off);
+        size_t len = m->rtm_msglen;
+        if (len < sizeof(struct rt_msghdr) || len > n - off) break;
+        if (if_in(loop, m->rtm_index)) {
+            memmove(buf + out, m, len);
+            out += len;
+        }
+        off += len;
+    }
+    // A request of one address family other than IPv4 takes no more.
+    if (name[3] == AF_UNSPEC || name[3] == AF_INET) {
+        struct iface ifs[MAX_IFACES];
+        int nif = own_ifaces(ifs);
+        int subnet = RTF_UP | RTF_STATIC | RTF_CLONING, gateway = RTF_UP | RTF_STATIC | RTF_GATEWAY;
+        for (int i = 0; i < nif && top + 1 + i <= 65535; i++) {
+            if (!ifs[i].v4 || (want && !(subnet & want))) continue;
+            unsigned short index = (unsigned short)(top + 1 + i);
+            out += rt_route(buf + out, type, index, ifs[i].addr & ifs[i].mask, ifs[i].mask, 0, subnet);
+        }
+        for (int i = 0; i < nif && top + 1 + i <= 65535; i++) {
+            if (!ifs[i].v4) continue;
+            if (!want || (gateway & want)) {
+                in_addr_t gw = htonl(ntohl(ifs[i].addr & ifs[i].mask) + 1);
+                out += rt_route(buf + out, type, (unsigned short)(top + 1 + i), 0, 0, gw, gateway);
+            }
+            break;
+        }
+    }
+    int r = copy_out(buf, out, old, oldlen);
+    int e = errno;
+    free(buf);
+    errno = e;
+    return r;
+}
+
+// The most bytes the messages of one of the container's interfaces take:
+// its interface message and an address message of each family.
+#define ETH_MSGS_MAX 512
+
 // iflist answers a routing sysctl of interfaces, NET_RT_IFLIST or
 // NET_RT_IFLIST2, as the container's network namespace would: the host's
 // messages of its loopback interfaces, then the container's, for the
 // interface the request names, or all of them.
-static int iflist(const int *name, void *old, size_t *oldlen) {
+static int iflist(const int name[6], void *old, size_t *oldlen) {
     int mib[6];
     memcpy(mib, name, sizeof mib);
     int want = mib[5], af = mib[3];
     mib[5] = 0;
-    char *buf = NULL;
-    size_t n = 0;
-    for (;;) {
-        if (sysctl(mib, 6, NULL, &n, NULL, 0) == -1) return -1;
-        n += n / 4 + 1024;
-        free(buf);
-        if (!(buf = malloc(n + MAX_IFACES * 512))) {
-            errno = ENOMEM;
-            return -1;
-        }
-        if (sysctl(mib, 6, buf, &n, NULL, 0) == 0) break;
-        if (errno != ENOMEM) {
-            free(buf);
-            return -1;
-        }
-    }
-    // The loopback interfaces, and the highest index, whose successors
-    // the container's interfaces take so that no host interface's index
-    // names one.
-    unsigned char loop[65536 / 8] = {0};
-    unsigned short top = 0;
-    for (size_t off = 0; off + sizeof(struct if_msghdr) <= n;) {
-        const struct if_msghdr *m = (const void *)(buf + off);
-        if (m->ifm_msglen == 0) break;
-        if (m->ifm_index > top) top = m->ifm_index;
-        if ((m->ifm_type == RTM_IFINFO || m->ifm_type == RTM_IFINFO2) && (m->ifm_flags & IFF_LOOPBACK)) {
-            loop[m->ifm_index / 8] |= (unsigned char)(1 << (m->ifm_index % 8));
-        }
-        off += m->ifm_msglen;
-    }
+    size_t n;
+    char *buf = route_dump(mib, MAX_IFACES * ETH_MSGS_MAX, &n);
+    if (!buf) return -1;
+    ifindex_set loop = {0};
+    unsigned short top = loopbacks(buf, n, loop);
     size_t out = 0;
-    for (size_t off = 0; off + sizeof(struct if_msghdr) <= n;) {
-        struct if_msghdr *m = (void *)(buf + off);
+    for (size_t off = 0; off + IFM_HEAD <= n;) {
+        const struct if_msghdr *m = (const void *)(buf + off);
         size_t len = m->ifm_msglen;
-        if (len == 0) break;
-        if ((loop[m->ifm_index / 8] & (1 << (m->ifm_index % 8))) && (!want || want == m->ifm_index)) {
+        if (len < IFM_HEAD || len > n - off) break;
+        if (if_in(loop, m->ifm_index) && (!want || want == m->ifm_index)) {
             memmove(buf + out, m, len);
             out += len;
         }
@@ -3047,31 +3302,17 @@ static int iflist(const int *name, void *old, size_t *oldlen) {
     }
     struct iface ifs[MAX_IFACES];
     int nif = own_ifaces(ifs);
-    char extra[MAX_IFACES * 512];
-    size_t more = 0;
     for (int i = 0; i < nif && top + 1 + i <= 65535; i++) {
         unsigned short index = (unsigned short)(top + 1 + i);
         if (want && want != index) continue;
-        more += eth_info(extra + more, mib[4] == NET_RT_IFLIST2 ? RTM_IFINFO2 : RTM_IFINFO, index, i, ifs[i].addr);
-        if ((af == 0 || af == AF_INET) && ifs[i].v4) more += eth_addr(extra + more, index, &ifs[i]);
-        if ((af == 0 || af == AF_INET6) && ifs[i].bits6) more += eth_addr6(extra + more, index, &ifs[i]);
+        out += eth_info(buf + out, mib[4] == NET_RT_IFLIST2 ? RTM_IFINFO2 : RTM_IFINFO, index, i, ifs[i].addr);
+        if ((af == AF_UNSPEC || af == AF_INET) && ifs[i].v4) out += eth_addr(buf + out, index, &ifs[i]);
+        if ((af == AF_UNSPEC || af == AF_INET6) && ifs[i].bits6) out += eth_addr6(buf + out, index, &ifs[i]);
     }
-    memcpy(buf + out, extra, more);
-    out += more;
-    if (!old) {
-        *oldlen = out;
-        free(buf);
-        return 0;
-    }
-    int r = 0;
-    if (*oldlen < out) {
-        errno = ENOMEM;
-        r = -1;
-        out = *oldlen;
-    }
-    memcpy(old, buf, out);
-    *oldlen = out;
+    int r = copy_out(buf, out, old, oldlen);
+    int e = errno;
     free(buf);
+    errno = e;
     return r;
 }
 
@@ -3212,6 +3453,10 @@ static int fws_sysctl(int *name, u_int namelen, void *old, size_t *oldlen, void 
     if (namelen == 6 && name[0] == CTL_NET && name[1] == PF_ROUTE && name[2] == 0 &&
         (name[4] == NET_RT_IFLIST || name[4] == NET_RT_IFLIST2) && oldlen && !new) {
         return iflist(name, old, oldlen);
+    }
+    if (namelen == 6 && name[0] == CTL_NET && name[1] == PF_ROUTE && name[2] == 0 &&
+        (name[4] == NET_RT_DUMP || name[4] == NET_RT_DUMP2 || name[4] == NET_RT_FLAGS) && oldlen && !new) {
+        return rtdump(name, old, oldlen);
     }
     if (namelen == 3 && name[0] == CTL_KERN && (name[1] == KERN_PROCARGS || name[1] == KERN_PROCARGS2) && !new && oldlen) {
         int mib[3] = {name[0], name[1], to_host(name[2])};
@@ -3418,8 +3663,7 @@ static const char *posix_ipc_name(const char *name, char *out) {
         hex[i] = "0123456789abcdef"[h & 15];
     }
     hex[16] = 0;
-    join(out, POSIX_IPC_NAME_MAX + 1, slash, prefix, hex);
-    return out;
+    return join(out, POSIX_IPC_NAME_MAX + 1, slash, prefix, hex) ? out : name;
 }
 
 // The sizes of the IPC namespace's shared memory objects, which a ledger
@@ -3826,7 +4070,7 @@ static int p6_addr(int fd, in_addr_t a, int own, struct in6_addr *out) {
 
 // to_ipv4 puts an IPv4 socket of fd's type, with its settings, in its place.
 static int to_ipv4(int fd, int type) {
-    int s = socket(AF_INET, type, 0);
+    int s = lib_socket(AF_INET, type);
     if (s < 0) {
         return -1;
     }
@@ -4095,8 +4339,14 @@ static const unsigned char *relay_key(void) {
 // ask_router asks the router at loopback port router for UDP port port's
 // flow port, or with foreign set, the container's own router for its relay
 // to UDP port port of another stack's member at addr.
+// ROUTER_WAIT is how long, in seconds, the library waits on a router's
+// answer to a request of its own; CONNECT_WAIT is how long it waits on a
+// connection the router makes for a program, as long as macOS lets a TCP
+// connect take.
+enum { ROUTER_WAIT = 10, CONNECT_WAIT = 75 };
+
 static unsigned short ask_router(unsigned short router, unsigned short port, in_addr_t addr, int foreign) {
-    int s = socket(AF_INET, SOCK_STREAM, 0);
+    int s = lib_socket(AF_INET, SOCK_STREAM);
     if (s < 0) {
         return 0;
     }
@@ -4116,6 +4366,11 @@ static unsigned short ask_router(unsigned short router, unsigned short port, in_
         req[6 + RELAY_KEY] = (unsigned char)port;
         n = (ssize_t)sizeof req;
     }
+    // The router answers from its own table at once; one that does not
+    // within ROUTER_WAIT is taken as gone, not waited on for good.
+    struct timeval wait = {ROUTER_WAIT, 0};
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &wait, sizeof wait);
     int ok = connect(s, (struct sockaddr *)&r, sizeof r) == 0 && write(s, req, (size_t)n) == n && read(s, ans, 1) == 1 && ans[0] == 0 &&
              read(s, ans + 1, 2) == 2;
     close(s);
@@ -4202,7 +4457,7 @@ static int reach(int type, in_addr_t v4, unsigned short port, in_addr_t *a, unsi
 // bound_v6 reports whether a socket of type holds port on IPv6 loopback, by
 // trying to bind it, which, unlike a connection, no listener sees.
 static int bound_v6(int type, unsigned short port) {
-    int s = socket(AF_INET6, type, 0);
+    int s = lib_socket(AF_INET6, type);
     if (s < 0) {
         return 1;
     }
@@ -4588,7 +4843,7 @@ struct icmp_job {
 
 static void *icmp_relay(void *arg) {
     struct icmp_job *j = arg;
-    int s = socket(AF_INET, SOCK_STREAM, 0);
+    int s = lib_socket(AF_INET, SOCK_STREAM);
     if (s >= 0) {
         int one = 1;
         setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
@@ -4663,7 +4918,7 @@ static ssize_t icmp_send(int fd, const struct iovec *iov, int iovlen, const stru
     }
     if (!local) {
         struct icmp_job *j = malloc(sizeof *j + n);
-        int peer = j ? dup(icmp_peer[fd]) : -1;
+        int peer = j ? fcntl(icmp_peer[fd], F_DUPFD_CLOEXEC, 0) : -1;
         pthread_t t;
         pthread_attr_t at;
         if (peer < 0 || pthread_attr_init(&at) != 0) {
@@ -4859,7 +5114,7 @@ static int loopback_held(unsigned short port) {
     if (!port_dir[0] || port_path(SOCK_STREAM, port, &u) == -1 || stat(u.sun_path, &st) != 0 || !S_ISSOCK(st.st_mode)) {
         return 0;
     }
-    int t = socket(AF_UNIX, SOCK_STREAM, 0);
+    int t = lib_socket(AF_UNIX, SOCK_STREAM);
     int live = t >= 0 && connect(t, (struct sockaddr *)&u, u.sun_len) == 0;
     if (t >= 0) close(t);
     if (!live) unlink(u.sun_path);
@@ -4872,7 +5127,7 @@ static int host_held(const struct sockaddr *sa, unsigned short port) {
     if (sa->sa_family == AF_INET6 && IN6_IS_ADDR_LOOPBACK(&((const struct sockaddr_in6 *)sa)->sin6_addr)) {
         return bound_v6(SOCK_STREAM, port);
     }
-    int s = socket(AF_INET, SOCK_STREAM, 0);
+    int s = lib_socket(AF_INET, SOCK_STREAM);
     if (s < 0) {
         return 1;
     }
@@ -4926,7 +5181,7 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int own, in
         socklen_t on = sizeof only;
         if (getsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, &on) != 0) only = 0;
     }
-    int s = socket(AF_UNIX, type, 0);
+    int s = lib_socket(AF_UNIX, type);
     if (s < 0) {
         return -1;
     }
@@ -4983,7 +5238,7 @@ static int listen_unix(int fd, unsigned short port, int any, int v6, int own, in
         }
         // A socket no listener holds is a stale one, which a listener that
         // ended left behind.
-        int t = socket(AF_UNIX, type, 0);
+        int t = lib_socket(AF_UNIX, type);
         int live = t >= 0 && connect(t, (struct sockaddr *)&u, u.sun_len) == 0;
         if (t >= 0) close(t);
         if (live) {
@@ -5123,8 +5378,16 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
         req[6 + RELAY_KEY] = (unsigned char)port;
         n = sizeof req;
     }
+    // The program's own receive timeout comes back once the router has
+    // answered; until then the wait is a connect's, bounded as one is.
+    struct timeval had;
+    socklen_t hl = sizeof had;
+    int keep = getsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &had, &hl) == 0;
+    struct timeval wait = {CONNECT_WAIT, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
     int ok = connect(fd, (struct sockaddr *)&r, sizeof r) == 0 && write(fd, req, n) == (ssize_t)n && read(fd, &ans, 1) == 1;
-    int e = errno;
+    int e = errno == EAGAIN ? ETIMEDOUT : errno;
+    if (keep) setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &had, sizeof had);
     if (fl != -1 && (fl & O_NONBLOCK)) fcntl(fd, F_SETFL, fl);
     if (!ok) {
         errno = e;
@@ -6111,6 +6374,18 @@ static void copy_state(int from, int to) {
         set_name(unix_names, to, unix_names[from]);
         set_name(unix_peers, to, unix_peers[from]);
         set_peer(to, acc_peers[from]);
+        // A copy of an ICMP socket is one too, with its own copy of the
+        // relay's end, which its close then releases as the original's
+        // releases its own.
+        net_icmp[to] = 0;
+        if (net_icmp[from]) {
+            int peer = fcntl(icmp_peer[from], F_DUPFD_CLOEXEC, 0);
+            if (peer >= 0) {
+                icmp_peer[to] = peer;
+                icmp_dest[to] = icmp_dest[from];
+                net_icmp[to] = net_icmp[from];
+            }
+        }
     }
 }
 
@@ -6151,7 +6426,11 @@ INTERPOSE(fws_dup, dup);
 
 static int fws_dup2(int fd, int to) {
     int c = dup2(fd, to);
-    if (c >= 0) copy_state(fd, c);
+    if (c >= 0 && fd != to) {
+        // dup2 closed what to was.
+        forget(c);
+        copy_state(fd, c);
+    }
     return c;
 }
 INTERPOSE(fws_dup2, dup2);
@@ -7059,7 +7338,7 @@ static int router_resolve(const char *name, int af, char addrs[][INET6_ADDRSTRLE
     size_t len = strlen(name);
     if (!router_port) return -1;
     if (len == 0 || len > 255) return 0;
-    int s = socket(AF_INET, SOCK_STREAM, 0);
+    int s = lib_socket(AF_INET, SOCK_STREAM);
     if (s < 0) return -1;
     int one = 1;
     setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);

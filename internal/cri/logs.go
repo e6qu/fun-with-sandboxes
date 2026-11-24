@@ -3,6 +3,7 @@ package cri
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moby/moby/api/types/container"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -27,7 +29,12 @@ type logCopy struct {
 
 	mu sync.Mutex
 	f  *os.File
+	// closed is set once the copy has ended, after which a reopen would
+	// leave a file open that nothing writes or closes.
+	closed bool
 }
+
+var errLogEnded = errors.New("the container's log copy has ended")
 
 func (l *logCopy) stop() {
 	l.cancel()
@@ -45,6 +52,11 @@ func (l *logCopy) open() error {
 		return err
 	}
 	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		f.Close()
+		return errLogEnded
+	}
 	old := l.f
 	l.f = f
 	l.mu.Unlock()
@@ -96,6 +108,7 @@ func (s *Service) startLog(id, logPath string, since time.Time) error {
 		s.e.Logs(ctx, id, engine.LogOptions{Stdout: true, Stderr: true, Follow: true, Since: since, Tail: -1}, l.write)
 		l.mu.Lock()
 		l.f.Close()
+		l.closed = true
 		l.mu.Unlock()
 		s.mu.Lock()
 		if s.logs[id] == l {
@@ -140,7 +153,7 @@ func lastLogged(path string) time.Time {
 func (s *Service) resumeLogs() {
 	for _, id := range s.listKind(kindContainer) {
 		in, err := s.e.Inspect(id)
-		if err != nil || in.State == nil || in.State.Status == "created" {
+		if err != nil || in.State == nil || in.State.Status == container.StateCreated {
 			continue
 		}
 		p := in.Config.Labels[logLabel]
@@ -177,7 +190,9 @@ func (s *Service) ReopenContainerLog(ctx context.Context, req *runtimeapi.Reopen
 	if l == nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "container %s has no log", id)
 	}
-	if err := l.open(); err != nil {
+	if err := l.open(); errors.Is(err, errLogEnded) {
+		return nil, status.Errorf(codes.FailedPrecondition, "container %s has no log", id)
+	} else if err != nil {
 		return nil, status.Errorf(codes.Internal, "reopen %s: %v", l.path, err)
 	}
 	return &runtimeapi.ReopenContainerLogResponse{}, nil

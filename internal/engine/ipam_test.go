@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"net/netip"
 	"os"
 	"strings"
@@ -40,7 +41,7 @@ func TestIPAMConfigurations(t *testing.T) {
 	if err := e.checkIPAMLocked(n, subnetConfig("172.28.0.0/16", "", "172.28.5.0/24"), nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if n.Subnet != "172.28.0.0/16" || n.Gateway != "172.28.0.1" || n.IPRange != "172.28.5.0/24" {
+	if n.Subnet.String() != "172.28.0.0/16" || n.Gateway.String() != "172.28.0.1" || n.IPRange.String() != "172.28.5.0/24" {
 		t.Fatalf("recorded %+v", n)
 	}
 	if got := n.ipamConfig(); len(got) != 1 || got[0].Gateway.String() != "172.28.0.1" || got[0].IPRange.String() != "172.28.5.0/24" {
@@ -83,7 +84,7 @@ func TestIPAMConfigurations(t *testing.T) {
 			t.Errorf("%s: %v, want kind %v", name, err, c.kind)
 		}
 	}
-	if got := (&Network{Driver: "bridge"}).ipamConfig(); len(got) != 1 || got[0].Subnet.String() != memberSubnet || got[0].Gateway.String() != memberGateway {
+	if got := (&Network{Driver: "bridge"}).ipamConfig(); len(got) != 1 || got[0].Subnet != memberSubnet || got[0].Gateway != memberGateway {
 		t.Errorf("a network without a subnet reports %+v", got)
 	}
 }
@@ -137,7 +138,7 @@ func TestNetworkAddresses(t *testing.T) {
 	if es := c.endpoint("front"); es.IPAddress.String() != "10.5.0.3" {
 		t.Errorf("endpoint on front: %+v", es)
 	}
-	if es := c.endpoint("plain"); es.IPAddress.String() != "127.88.0.9" || es.IPPrefixLen != 16 || es.Gateway.String() != memberGateway {
+	if es := c.endpoint("plain"); es.IPAddress.String() != "127.88.0.9" || es.IPPrefixLen != 16 || es.Gateway != memberGateway {
 		t.Errorf("endpoint on plain: %+v", es)
 	}
 	// A stopped container lists its endpoints without addresses.
@@ -185,7 +186,7 @@ func TestIPv6Networks(t *testing.T) {
 	if err := e.checkIPAMLocked(n, ipam, nil, &yes); err != nil {
 		t.Fatal(err)
 	}
-	if !n.EnableIPv6 || n.IPv6.Subnet != "fd00:6::/64" || n.IPv6.Gateway != "fd00:6::1" || n.IPv6.Auto {
+	if !n.EnableIPv6 || n.IPv6.Subnet.String() != "fd00:6::/64" || n.IPv6.Gateway.String() != "fd00:6::1" || n.IPv6.Auto {
 		t.Fatalf("recorded %+v", n)
 	}
 	if got := n.ipamConfig(); len(got) != 2 || got[0].Subnet.String() != "10.6.0.0/24" || got[1].Gateway.String() != "fd00:6::1" {
@@ -209,15 +210,15 @@ func TestIPv6Networks(t *testing.T) {
 		if err := e.checkIPAMLocked(a, nil, nil, &yes); err != nil {
 			t.Fatal(err)
 		}
-		subnet := netip.MustParsePrefix(a.IPv6.Subnet)
+		subnet := a.IPv6.Subnet
 		b := ula.Addr().As16()
 		b[7] = byte(i)
-		v4 := netip.MustParsePrefix(a.Subnet)
+		v4 := a.Subnet
 		if subnet != netip.PrefixFrom(netip.AddrFrom16(b), 64) || !a.IPv6.Auto || !a.Pool.Auto || !v4.Addr().IsPrivate() {
 			t.Errorf("%s took %+v", name, a)
 		}
 		for _, o := range autos {
-			if netip.MustParsePrefix(o.Subnet).Overlaps(v4) {
+			if o.Subnet.Overlaps(v4) {
 				t.Errorf("%s took %s, which %s holds", name, v4, o.Name)
 			}
 		}
@@ -251,14 +252,14 @@ func TestIPv6Networks(t *testing.T) {
 			t.Errorf("static %s: %v, want kind %v", static, err, kind)
 		}
 	}
-	if _, err := join(autos[0], "e", netip.MustParsePrefix(autos[0].IPv6.Subnet).Addr().Next().Next().String()); KindOf(err) != KindInvalid {
+	if _, err := join(autos[0], "e", autos[0].IPv6.Subnet.Addr().Next().Next().String()); KindOf(err) != KindInvalid {
 		t.Errorf("a static IPv6 address on a network the engine chose the subnet of: %v", err)
 	}
-	e4 := &network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: netip.MustParsePrefix(autos[0].Subnet).Addr().Next().Next()}}
+	e4 := &network.EndpointSettings{IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: autos[0].Subnet.Addr().Next().Next()}}
 	if err := e.assignNetAddressLocked(autos[0], "e4", e4); KindOf(err) != KindInvalid {
 		t.Errorf("a static IPv4 address on a network the engine chose the subnet of: %v", err)
 	}
-	if f, err := join(autos[0], "f", ""); err != nil || f.IPAddress != netip.MustParsePrefix(autos[0].Subnet).Addr().Next().Next() || f.GlobalIPv6Address != netip.MustParsePrefix(autos[0].IPv6.Subnet).Addr().Next().Next() {
+	if f, err := join(autos[0], "f", ""); err != nil || f.IPAddress != autos[0].Subnet.Addr().Next().Next() || f.GlobalIPv6Address != autos[0].IPv6.Subnet.Addr().Next().Next() {
 		t.Errorf("a container on a network with an engine-chosen subnet: %+v, %v", f, err)
 	}
 
@@ -365,7 +366,7 @@ func TestIPv6OnlyNetwork(t *testing.T) {
 	if err := e.checkIPAMLocked(n, subnetConfig("fd00:6::/64", "", ""), &no, &yes); err != nil {
 		t.Fatal(err)
 	}
-	if !n.IPv4Disabled || n.Subnet != "" || n.IPv6.Subnet != "fd00:6::/64" {
+	if !n.IPv4Disabled || n.Subnet.IsValid() || n.IPv6.Subnet.String() != "fd00:6::/64" {
 		t.Fatalf("recorded %+v", n)
 	}
 	if got := n.ipamConfig(); len(got) != 1 || got[0].Subnet.String() != "fd00:6::/64" {
@@ -376,7 +377,7 @@ func TestIPv6OnlyNetwork(t *testing.T) {
 	if err := e.checkIPAMLocked(auto, nil, &no, &yes); err != nil {
 		t.Fatal(err)
 	}
-	if auto.Subnet != "" || !auto.IPv6.Auto || len(auto.ipamConfig()) != 1 {
+	if auto.Subnet.IsValid() || !auto.IPv6.Auto || len(auto.ipamConfig()) != 1 {
 		t.Errorf("an IPv6-only network without a subnet took %+v", auto)
 	}
 	s := &network.EndpointSettings{}
@@ -408,5 +409,26 @@ func TestIPv6OnlyNetwork(t *testing.T) {
 	path, _ := e.networkFile("proj")
 	if b, err := os.ReadFile(path); err != nil || !strings.HasSuffix(string(b), "\tsix\t0\t\t\tsix=fd00:6::2/64 six=-\n") {
 		t.Errorf("network file: %q, %v", b, err)
+	}
+}
+
+// A network's pools read from the strings an engine stored before they
+// were typed, and write them back the same.
+func TestPoolJSONKeepsItsStrings(t *testing.T) {
+	stored := `{"id":"n","name":"pods","driver":"bridge","created":"0001-01-01T00:00:00Z","labels":null,"options":null,"internal":false,"attachable":false,"predefined":false,"subnet":"10.7.0.0/24","gateway":"10.7.0.1","auxAddresses":{"r":"10.7.0.9"},"ipv6":{"subnet":"fd00:7::/64","gateway":"fd00:7::1","auto":true}}`
+	var n Network
+	if err := json.Unmarshal([]byte(stored), &n); err != nil {
+		t.Fatal(err)
+	}
+	if n.Subnet != netip.MustParsePrefix("10.7.0.0/24") || n.Gateway != netip.MustParseAddr("10.7.0.1") || n.IPRange.IsValid() ||
+		n.AuxAddresses["r"] != netip.MustParseAddr("10.7.0.9") || n.IPv6.Subnet != netip.MustParsePrefix("fd00:7::/64") || !n.IPv6.Auto {
+		t.Fatalf("read %+v", n)
+	}
+	b, err := json.Marshal(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != stored {
+		t.Fatalf("wrote\n%s\nnot\n%s", b, stored)
 	}
 }
