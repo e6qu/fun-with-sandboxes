@@ -358,6 +358,11 @@ jobs:
           done
           export NIX_CONFIG="extra-substituters = $substituters"
           scripts/build-images.sh ~/fws-images
+      - name: the disk when the build failed
+        if: failure() && steps.images.outputs.cache-hit != 'true'
+        run: |
+          df -h / /System/Volumes/Data "${TMPDIR:-/tmp}"
+          du -sh ~/fws-images ~/fws-prebuilt /nix/store "${TMPDIR:-/tmp}" 2>/dev/null || true
       - name: free what the build left
         if: steps.images.outputs.cache-hit != 'true'
         run: |

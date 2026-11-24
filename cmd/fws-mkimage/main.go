@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -341,11 +342,23 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if n, err := io.Copy(out, in); err != nil {
 		out.Close()
-		return err
+		// What the file system says on a failed write is often terse
+		// (APFS has answered EILSEQ): say what was copied and how much
+		// room the stage had left.
+		return fmt.Errorf("copy %s (%d of %d bytes): %w; %s", src, n, fi.Size(), err, freeSpace(filepath.Dir(dst)))
 	}
 	return out.Close()
+}
+
+// freeSpace describes the room left on dir's file system.
+func freeSpace(dir string) string {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return fmt.Sprintf("free space unknown: %v", err)
+	}
+	return fmt.Sprintf("%d MiB and %d inodes free there", st.Bavail*uint64(st.Bsize)>>20, st.Ffree)
 }
 
 // relocate rewrites every Mach-O file's absolute store references, then
