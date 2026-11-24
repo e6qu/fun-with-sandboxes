@@ -129,7 +129,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	if wd == "" {
 		wd = c.rec.Config.WorkingDir
 	}
-	limits, _, err := containerLimits(c.rec.HostConfig.Resources)
+	limits, _, err := containerLimits(c.resources())
 	if err != nil {
 		return err
 	}
@@ -299,7 +299,7 @@ func (e *Engine) probe(c *Container, argv []string, timeout time.Duration) (int,
 	if err != nil {
 		return -1, err.Error()
 	}
-	limits, _, err := containerLimits(c.rec.HostConfig.Resources)
+	limits, _, err := containerLimits(c.resources())
 	if err != nil {
 		return -1, err.Error()
 	}

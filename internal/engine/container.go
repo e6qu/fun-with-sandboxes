@@ -1649,6 +1649,14 @@ func (e *Engine) profile(c *Container) (seatbelt.Spec, error) {
 	return spec, nil
 }
 
+// resources is the container's resource settings as they stand: Update
+// replaces them under c.mu while starts, execs and probes read them.
+func (c *Container) resources() container.Resources {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rec.HostConfig.Resources
+}
+
 func (c *Container) argv() []string {
 	return append(append([]string{}, c.rec.Config.Entrypoint...), c.rec.Config.Cmd...)
 }
@@ -1703,7 +1711,7 @@ func (c *Container) start(e *Engine) error {
 		return err
 	}
 	st.mark("profile")
-	limits, res, err := containerLimits(c.rec.HostConfig.Resources)
+	limits, res, err := containerLimits(c.resources())
 	if err != nil {
 		return err
 	}
@@ -1719,10 +1727,11 @@ func (c *Container) start(e *Engine) error {
 	if err := e.emptyTmpfsVolumes(c); err != nil {
 		return err
 	}
-	if err := c.writePidsLimit(c.rec.HostConfig.PidsLimit); err != nil {
+	r := c.resources()
+	if err := c.writePidsLimit(r.PidsLimit); err != nil {
 		return err
 	}
-	if l, _, err := containerLimits(c.rec.HostConfig.Resources); err != nil {
+	if l, _, err := containerLimits(r); err != nil {
 		return err
 	} else if err := c.writeMemoryLimit(l.MemoryMiB); err != nil {
 		return err
