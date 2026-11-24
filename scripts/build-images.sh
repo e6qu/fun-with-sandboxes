@@ -556,7 +556,7 @@ for v in 3.11 3.12 3.13 3.14 3.15; do
   closure "$p" > "$build/python$v.closure"
   accounts python
   mkimage "${acct[@]}" -spec images/python/image.json -tag "fws/python:$v" -closure "$build/python$v.closure" -pkg "$p" \
-    -remove "$p/lib/python$v/EXTERNALLY-MANAGED" -out "$out/python-$v.tar"
+    -remove "$p/lib/python$v/EXTERNALLY-MANAGED" -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/python-$v.tar"
 done
 
 # Node.js as its official images, on Debian's buildpack-deps, carry it:
@@ -673,7 +673,7 @@ for v in 3.11 3.12 3.13 3.14; do
     -env "AWS_EXECUTION_ENV=AWS_Lambda_python$v" -closure "$build/lambda-python$v.closure" -pkg "$p" -pkg "$rie" \
     -remove "$p/lib/python$v/EXTERNALLY-MANAGED" \
     -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" -file "/var/runtime/bootstrap=images/lambda/python/bootstrap" \
-    -out "$out/lambda-python-$v.tar"
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/lambda-python-$v.tar"
 done
 # shellcheck disable=SC2154 # set through printf -v above
 node24=$node_24
@@ -685,7 +685,7 @@ for v in 22 24; do
   mkimage "${acct[@]}" -spec images/lambda/nodejs/image.json -tag "fws/lambda/nodejs:$v" \
     -env "AWS_EXECUTION_ENV=AWS_Lambda_nodejs$v.x" -closure "$build/lambda-nodejs$v.closure" -pkg "$p" -pkg "$rie" \
     -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.mjs=images/lambda/nodejs/bootstrap.mjs" -file "/var/runtime/bootstrap=images/lambda/nodejs/bootstrap" \
-    -out "$out/lambda-nodejs-$v.tar"
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/lambda-nodejs-$v.tar"
 done
 
 # The Java runtime's libraries, from Maven Central, checked against their
@@ -709,7 +709,7 @@ closure "$jdk17" "$rie" > "$build/lambda-java.closure"
 accounts lambda-java sbx_user1051 993 990 /home/sbx_user1051
 mkimage "${acct[@]}" -spec images/lambda/java/image.json -closure "$build/lambda-java.closure" -pkg "$jdk17" -pkg "$rie" \
   -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/lib=$lib" -file "/var/runtime/bootstrap=images/lambda/java/bootstrap" \
-  -out "$out/lambda-java.tar"
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/lambda-java.tar"
 
 # Playwright on Node.js 24: the playwright packages and its test runner,
 # @playwright/test, of the version pinned here, and the mac-arm64 browsers
@@ -757,7 +757,7 @@ mkimage "${acct[@]}" -spec images/playwright/image.json -closure "$build/playwri
   -file "/entry=$build/playwright-entry" -file "/usr/lib/node_modules=$build/playwright/modules/node_modules" \
   -link /bin/playwright=../usr/lib/node_modules/@playwright/test/cli.js \
   -link /usr/bin/playwright=../lib/node_modules/@playwright/test/cli.js \
-  -file "/ms-playwright=$pw_browsers" -out "$out/playwright.tar"
+  -file "/ms-playwright=$pw_browsers" -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/playwright.tar"
 
 "$build/fws-mkimage" -reuse -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"
 

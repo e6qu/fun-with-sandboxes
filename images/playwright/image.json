@@ -9,7 +9,6 @@
     "Env": [
       "PATH=/bin",
       "TZ=UTC",
-      "NODE_ENV=production",
       "NPM_CONFIG_PREFIX=/usr",
       "NODE_PATH=/usr/lib/node_modules",
       "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright",
@@ -18,7 +17,9 @@
       "MOZ_DISABLE_RDD_SANDBOX=1",
       "MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1",
       "MOZ_DISABLE_UTILITY_SANDBOX=1",
-      "MOZ_DISABLE_GMP_SANDBOX=1"
+      "MOZ_DISABLE_GMP_SANDBOX=1",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+      "NODE_USE_ENV_PROXY=1"
     ],
     "Entrypoint": [
       "/entry"

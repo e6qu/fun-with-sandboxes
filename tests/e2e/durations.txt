@@ -3,6 +3,7 @@ TestBindVolume 2
 TestBuildKit 11
 TestBuildKitSSHMount 3
 TestBuildUser 1
+TestBunToolchain 40
 TestCPUQuota 5
 TestCRIImages 1
 TestCRIPodSandbox 12
@@ -73,6 +74,7 @@ TestNeo4j 31
 TestNetworkFrameworkLookups 15
 TestNetworkSubnets 28
 TestNginx 4
+TestNodeToolchain 120
 TestOpenSearch 16
 TestPauseUnpauseUpdate 5
 TestPidContainer 2
@@ -95,6 +97,7 @@ TestRabbitMQ 9
 TestReadOnlyRoot 3
 TestRegistryLoginAndImport 5
 TestRemoteBuildContext 5
+TestRustToolchain 180
 TestSeaweedFS 5
 TestSettingsTheEngineRefuses 0
 TestSharedNetworks 24

@@ -10,7 +10,8 @@
       "PATH=/bin",
       "TZ=UTC",
       "PYTHONDONTWRITEBYTECODE=1",
-      "PYTHONUNBUFFERED=1"
+      "PYTHONUNBUFFERED=1",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ],
     "Cmd": [
       "python3"

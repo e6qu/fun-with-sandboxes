@@ -12,7 +12,8 @@
       "LANG=en_US.UTF-8",
       "LAMBDA_TASK_ROOT=/var/task",
       "LAMBDA_RUNTIME_DIR=/var/runtime",
-      "AWS_EXECUTION_ENV=AWS_Lambda_java17"
+      "AWS_EXECUTION_ENV=AWS_Lambda_java17",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     ],
     "Entrypoint": [
       "/lambda-entrypoint"

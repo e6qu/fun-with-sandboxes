@@ -12,7 +12,9 @@
       "LANG=en_US.UTF-8",
       "LAMBDA_TASK_ROOT=/var/task",
       "LAMBDA_RUNTIME_DIR=/var/runtime",
-      "AWS_EXECUTION_ENV=AWS_Lambda_nodejs24.x"
+      "AWS_EXECUTION_ENV=AWS_Lambda_nodejs24.x",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+      "NODE_USE_ENV_PROXY=1"
     ],
     "Entrypoint": [
       "/lambda-entrypoint"
