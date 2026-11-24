@@ -235,7 +235,7 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 			}
 		}
 		member := stackmembers.Member{Address: m.rec.Address, Names: memberNames(m), Ports: ports, Router: m.rec.RouterPort, Links: links[m]}
-		member.Search, member.Ndots = resolverSearch(resolvOf(m.rec.HostConfig, m.rec.Resolver))
+		member.Search, member.Ndots = resolverSearch(resolvOf(&m.rec.HostConfig, m.rec.Resolver))
 		if member.Foreign = m.rec.Stack != stack; member.Foreign {
 			member.Networks, member.Stack = e.connectingLocked(userNetworks(m)), m.rec.Stack
 		} else {

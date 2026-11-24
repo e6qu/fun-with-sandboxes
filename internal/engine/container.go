@@ -333,7 +333,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	}
 	// A nested engine's routers run in its privileged container's sandbox,
 	// which reaches no DNS server.
-	if e.cfg.Nested != nil && dnsOf(*req.HostConfig).set() {
+	if e.cfg.Nested != nil && dnsOf(req.HostConfig).set() {
 		return container.CreateResponse{}, unsupported("DNS servers, search domains and options are not supported in an engine nested in a privileged container: the container's router, which asks its DNS servers, runs in that container's sandbox, which reaches none")
 	}
 	switch {
@@ -534,14 +534,14 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 			return container.CreateResponse{}, err
 		}
 	}
-	hostname, domain, extraHosts, hostAddress, dns := cfg.Hostname, cfg.Domainname, req.HostConfig.ExtraHosts, firstAddresses(address, networks), resolvOf(*req.HostConfig, opts.Resolver)
+	hostname, domain, extraHosts, hostAddress, dns := cfg.Hostname, cfg.Domainname, req.HostConfig.ExtraHosts, firstAddresses(address, networks), resolvOf(req.HostConfig, opts.Resolver)
 	if req.HostConfig.NetworkMode == "none" {
 		hostAddress = nil
 	}
 	if net != nil {
 		// A container on another's network has its hostname and hosts, as
 		// it would its UTS namespace's files in Docker.
-		hostname, domain, extraHosts, hostAddress, dns = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks), resolvOf(net.rec.HostConfig, net.rec.Resolver)
+		hostname, domain, extraHosts, hostAddress, dns = hostnameOf(net), net.rec.Config.Domainname, net.rec.HostConfig.ExtraHosts, firstAddresses(net.rec.Address, net.rec.Networks), resolvOf(&net.rec.HostConfig, net.rec.Resolver)
 		cfg.Hostname = hostname
 	}
 	if node != nil {
@@ -693,7 +693,7 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	// file and its stack do not answer through its router, which asks its
 	// resolv.conf's servers; without a router, as on network none, such a
 	// name does not resolve.
-	if dnsOf(net.rec.HostConfig).set() {
+	if dnsOf(&net.rec.HostConfig).set() {
 		env = append(env, pathmap.DNSVar+"=1")
 	}
 	return env, nil
@@ -793,7 +793,7 @@ func checkHostConfig(hc *container.HostConfig) error {
 	if _, err := storageQuota(hc.StorageOpt); err != nil {
 		return err
 	}
-	if err := checkDNS(dnsOf(*hc)); err != nil {
+	if err := checkDNS(dnsOf(hc)); err != nil {
 		return err
 	}
 	if hc.VolumeDriver != "" && hc.VolumeDriver != "local" {
@@ -1778,7 +1778,7 @@ func (c *Container) start(e *Engine) error {
 			return err
 		}
 	}
-	if hc := c.rec.HostConfig; hc.Init != nil && *hc.Init {
+	if hc := &c.rec.HostConfig; hc.Init != nil && *hc.Init {
 		if err := placeInit(c.root()); err != nil {
 			return err
 		}
@@ -1805,7 +1805,7 @@ func (c *Container) start(e *Engine) error {
 		cfg.Address = c.rec.Address
 		cfg.Internet = e.hasEgress(c)
 		cfg.Egress, cfg.Ingress, _ = containerBandwidth(c.rec.Config.Labels)
-		d := dnsOf(c.rec.HostConfig)
+		d := dnsOf(&c.rec.HostConfig)
 		rc, err := containerResolvConf(d)
 		if err != nil {
 			return err
