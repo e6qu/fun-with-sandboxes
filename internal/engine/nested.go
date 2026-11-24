@@ -150,6 +150,14 @@ func (e *Engine) openNested(c *Container) error {
 	if err != nil {
 		return err
 	}
+	// A nested engine that fails to open or serve gives its ports back,
+	// rather than holding them until the container goes.
+	opened := false
+	defer func() {
+		if !opened {
+			e.alloc.Release(nestedStack(c))
+		}
+	}()
 	runDir := filepath.Join(e.runDir(), c.rec.ID[:12])
 	sub, err := Open(Config{
 		Root: filepath.Join(c.dir, "engine"), PortBase: base, PortLimit: limit, BlockSize: nestedBlockSize(e.alloc.BlockSize()),
@@ -176,6 +184,7 @@ func (e *Engine) openNested(c *Container) error {
 		sub.shutdown(true)
 		return err
 	}
+	opened = true
 	e.nested[c.rec.ID] = &nestedEngine{e: sub, serve: srv}
 	e.nodes.refreshing.Go(func() { e.refreshPeers("") })
 	return nil

@@ -3,7 +3,7 @@
 // the Runtime Interface Emulator, which serves invocations on the
 // container's port 8080 and the Runtime API on 9001, or, where
 // AWS_LAMBDA_RUNTIME_API names a Runtime API already, the runtime alone. The
-// handler is the last argument, the image's CMD.
+// handler is the one argument, the image's CMD.
 package main
 
 import (
@@ -26,13 +26,13 @@ func main() {
 		c.Close()
 		return
 	}
-	handler := os.Getenv("_HANDLER")
-	if len(os.Args) > 1 {
-		handler = os.Args[len(os.Args)-1]
+	// The handler is the one argument, as AWS's entrypoint takes it,
+	// which refuses any other count with status 142.
+	if len(os.Args) != 2 {
+		log.Print("entrypoint requires the handler name to be the first argument")
+		os.Exit(142)
 	}
-	if handler == "" {
-		log.Fatal("no handler: name it as the command, such as app.handler")
-	}
+	handler := os.Args[1]
 	// The image's runtime is /var/runtime/bootstrap, as in AWS's base
 	// images, which runs the function _HANDLER names.
 	os.Setenv("_HANDLER", handler)
