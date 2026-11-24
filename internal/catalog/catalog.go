@@ -48,7 +48,7 @@ var Images = []Image{
 	{"lambda/python", []string{"3.11", "3.12", "3.13", "3.14"}, Lambda, "an AWS Lambda Python runtime under the Runtime Interface Emulator"},
 	{"lambda/nodejs", []string{"22", "24"}, Lambda, "an AWS Lambda Node.js runtime under the Runtime Interface Emulator"},
 	{"lambda/java", []string{"17"}, Lambda, "an AWS Lambda Java runtime with a JDK"},
-	{"playwright", []string{"1.65"}, Tool, "Node.js 24 with Playwright and Chromium's headless shell"},
+	{"playwright", []string{"1.65"}, Tool, "Node.js 24 with Playwright, its test runner, Chromium and Firefox"},
 	{"postgres", []string{"16", "18"}, Database, "PostgreSQL"},
 	{"mysql", []string{"8.4"}, Database, "MySQL"},
 	{"mariadb", []string{"11"}, Database, "MariaDB"},

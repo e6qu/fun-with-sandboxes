@@ -628,34 +628,49 @@ mkimage "${acct[@]}" -spec images/lambda/java/image.json -closure "$build/lambda
   -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/lib=$lib" -file "/var/runtime/bootstrap=images/lambda/java/bootstrap" \
   -out "$out/lambda-java.tar"
 
-# Playwright on Node.js 24, with the playwright packages of the version
-# pinned here and the Chromium headless shell its browsers.json names
-# (revision and Chrome version), Chrome for Testing's build, checked
-# against the digest pinned here.
+# Playwright on Node.js 24: the playwright packages and its test runner,
+# @playwright/test, of the version pinned here, and the mac-arm64 browsers
+# its browsers.json names (revision, and Chrome's version), laid out under
+# /ms-playwright as `playwright install` lays them out, marker files
+# included: Chromium and its headless shell, Chrome for Testing's builds;
+# Firefox, Playwright's build with its Juggler protocol; and the ffmpeg that
+# records videos. Each comes from Playwright's CDN at the path its registry
+# (server/registry/index.ts) names, checked against the digest pinned here.
+# Playwright's WebKit is left out (LIMITATIONS): it starts its web content
+# and network processes as XPC services, which launchd runs outside the
+# container's sandbox.
 pw_version=1.65.1
-pw_revision=1255
-pw_chrome=159.0.8154.6
-pw_platform=mac-arm64 pw_sum=b08e7beaf02a19e2ee5ed6955f9c3853ab9176cd5bb57ba87afbb82e9f81cc29
-mkdir -p "$build/playwright/modules" "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
+pw_browsers="$build/playwright/browsers"
+mkdir -p "$build/playwright/modules" "$pw_browsers"
 # The install is retried as curl retries below: a runner's resolver drops a
 # lookup now and then, and npm retries no failed lookup itself.
 for attempt in 1 2 3 4 5; do
   if "$node24/bin/node" "$node24/lib/node_modules/npm/bin/npm-cli.js" install --prefix "$build/playwright/modules" \
-    --no-audit --no-fund --no-package-lock "playwright@$pw_version" "playwright-core@$pw_version"; then
+    --no-audit --no-fund --no-package-lock "playwright@$pw_version" "playwright-core@$pw_version" "@playwright/test@$pw_version"; then
     break
   fi
   [ "$attempt" -lt 5 ] || exit 1
   sleep $((attempt * 2))
 done
-curl -fsSL --retry 5 -o "$build/playwright/shell.zip" \
-  "https://storage.googleapis.com/chrome-for-testing-public/$pw_chrome/$pw_platform/chrome-headless-shell-$pw_platform.zip"
-echo "$pw_sum  $build/playwright/shell.zip" | shasum -a 256 -c - >/dev/null
-unzip -q "$build/playwright/shell.zip" -d "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
+while read -r dir sum path; do
+  curl -fsSL --retry 5 -o "$build/playwright/$dir.zip" "https://cdn.playwright.dev/builds/$path"
+  echo "$sum  $build/playwright/$dir.zip" | shasum -a 256 -c - >/dev/null
+  mkdir -p "$pw_browsers/$dir"
+  unzip -q "$build/playwright/$dir.zip" -d "$pw_browsers/$dir"
+  touch "$pw_browsers/$dir/INSTALLATION_COMPLETE" "$pw_browsers/$dir/DEPENDENCIES_VALIDATED"
+done <<'BROWSERS'
+chromium-1255 43609676a41e29d1c7667935eb914a422eca98b2e49dcbfd6f3e9794202de12a cft/159.0.8154.6/mac-arm64/chrome-mac-arm64.zip
+chromium_headless_shell-1255 b08e7beaf02a19e2ee5ed6955f9c3853ab9176cd5bb57ba87afbb82e9f81cc29 cft/159.0.8154.6/mac-arm64/chrome-headless-shell-mac-arm64.zip
+firefox-1572 9691b4a07405d8faf8a44f6378d66db480d36159d9e9c4ed1d6066687697e1f2 firefox/1572/firefox-mac-arm64.zip
+ffmpeg-1013 63e48ce8d4a6d9d496383e5ac557b26466e719fa29126bbbd5f5f7016ac9229c ffmpeg/1013/ffmpeg-mac-arm64.zip
+BROWSERS
 closure "$node24" > "$build/playwright.closure"
 accounts playwright pwuser 1000 1000 /home/pwuser
 mkimage "${acct[@]}" -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" \
   -file "/entry=$build/playwright-entry" -file "/usr/lib/node_modules=$build/playwright/modules/node_modules" \
-  -file "/ms-playwright=$build/playwright/browsers" -out "$out/playwright.tar"
+  -link /bin/playwright=../usr/lib/node_modules/@playwright/test/cli.js \
+  -link /usr/bin/playwright=../lib/node_modules/@playwright/test/cli.js \
+  -file "/ms-playwright=$pw_browsers" -out "$out/playwright.tar"
 
 "$build/fws-mkimage" -reuse -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"
 

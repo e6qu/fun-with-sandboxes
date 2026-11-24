@@ -36,6 +36,15 @@ offers an unprivileged process. Non-goals are in
     macOS's is; its `nc` only checks a port (`nc -z`); it has no `ps`,
     `top` or `vi`. `fws/base` has no package manager: add programs with
     `COPY` or by downloading darwin builds.
+  - `fws/playwright` carries Chromium and Firefox, not WebKit. Playwright's
+    WebKit on macOS starts its web content, network and GPU processes as
+    XPC services, which launchd runs: the container's profile denies the
+    lookup, and a process launchd started would run outside the
+    container's sandbox and library. Its macOS builds also differ by macOS
+    release (14, 15, 26), which an image cannot choose for its host.
+    Firefox's own sandboxes are off (`MOZ_DISABLE_*_SANDBOX`), as Chromium
+    runs with `--no-sandbox`, and stay off only where a launch keeps the
+    container's environment.
   - `fws/neo4j` is the Community Edition.
   - `fws/opensearch` is the minimal distribution with the security plugin,
     without the k-NN and ML Commons plugins, whose native libraries are
