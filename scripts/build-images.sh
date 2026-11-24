@@ -225,6 +225,37 @@ accounts() {
   acct=(-file "/etc/passwd=$d/passwd" -file "/etc/group=$d/group")
 }
 
+# The commands fws/busybox carries, as separate programs from the GNU tools
+# and others nixpkgs builds for darwin, and fws/base's, which add bash,
+# curl, git, jq and less: the userland of the images built FROM, whose
+# builds' Makefiles and scripts run them.
+busybox_pkgs=()
+for p in coreutils:ls findutils:find diffutils:diff gnugrep:grep gnused:sed gawk:awk libarchive:bsdtar gzip:gzip \
+  bzip2:bzip2 xz:xz unzip:unzip wget:wget which:which; do
+  busybox_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
+done
+base_pkgs=("${busybox_pkgs[@]}")
+for p in bash:bash curl:curl git:git jq:jq less:less; do
+  base_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
+done
+
+# A C and C++ toolchain for darwin, as the official node and rust images'
+# build-essential gives node-gyp, the cc crate and rustc's linker: the
+# compiler nixpkgs' stdenv builds with (clang, with ld64 and the macOS SDK
+# behind nixpkgs' wrappers), cctools' libtool, lipo and otool, and GNU
+# make. The wrappers are bash scripts, run by the image's /bin/bash, which
+# name the compiler, the linker and the SDK by store path, as the container
+# library finds them in the root. gcc and g++ name clang, as macOS's do, for
+# Makefiles that take make's default CXX, such as gyp's.
+cc=$(pkg_with stdenv.cc clang)
+cctools=$(pkg_with cctools lipo)
+gnumake=$(pkg_with gnumake make)
+# The SDK the wrappers fall back to, which SDKROOT names for the tools that
+# ask xcrun, absent here, for one otherwise: rustc warns at each link.
+sdk=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#stdenv.cc.fallback_sdk")
+sdkroot=$sdk/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+toolchain_args=(-pkg "$cctools" -pkg "$gnumake" -pkg "$cc" -link "/bin/gcc=clang" -link "/bin/g++=clang++" -env "SDKROOT=$sdkroot")
+
 for v in 16 18; do
   pg=$(pkg_with "postgresql_$v" postgres)
   closure "$pg" > "$build/pg$v.closure"
@@ -528,20 +559,65 @@ for v in 3.11 3.12 3.13 3.14 3.15; do
     -remove "$p/lib/python$v/EXTERNALLY-MANAGED" -out "$out/python-$v.tar"
 done
 
+# Node.js as its official images, on Debian's buildpack-deps, carry it:
+# node, npm and npx, and up to Node.js 24 corepack and Yarn 1, which
+# Node.js 25 and its images dropped, in /usr/local/bin as well as /bin;
+# what node-gyp builds native addons with: python3, make and the C
+# toolchain above; and fws/base's commands and CA bundle, which nixpkgs'
+# OpenSSL, Node.js's, reads where SSL_CERT_FILE names it. npm's node-gyp
+# is nixpkgs', which takes Xcode's version as given rather than ask
+# xcodebuild, which no image carries.
+python3=$(pkg_with python3 python3)
+yarn=$(output_with yarn -f images/node/yarn.nix --argstr nixpkgs "$nixpkgs")
+node_tools=("${base_pkgs[@]}" "$python3")
 for v in 22 24 26; do
   printf -v "node_$v" '%s' "$(pkg_with "nodejs_$v" node)"
   p=node_$v
   p=${!p}
-  closure "$p" > "$build/node$v.closure"
+  node_pkgs=("$p")
+  if [ "$v" -lt 25 ]; then node_pkgs+=("$yarn"); fi
+  closure "${node_tools[@]}" "$cctools" "$gnumake" "$cc" "${node_pkgs[@]}" > "$build/node$v.closure"
+  # Node.js's headers where its official images have them, which
+  # npm_config_nodedir names to node-gyp, so an addon builds against them
+  # rather than headers it downloads.
+  node_args=(-link "/usr/local/include/node=../../..$p/include/node")
+  for q in "${node_tools[@]}" "${node_pkgs[@]}"; do node_args+=(-pkg "$q"); done
+  for q in "${node_pkgs[@]}"; do
+    for f in "$q"/bin/*; do node_args+=(-link "/usr/local/bin/${f##*/}=../../../bin/${f##*/}"); done
+  done
   accounts node node 1000 1000 /home/node
   mkimage "${acct[@]}" -spec images/node/image.json -tag "fws/node:$v" -closure "$build/node$v.closure" \
-    -pkg "$p" -out "$out/node-$v.tar"
+    "${node_args[@]}" "${toolchain_args[@]}" -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env \
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/node-$v.tar"
 done
 
+# Bun as its official image lays it out: bun and bunx in /usr/local/bin,
+# and bun as node in the directory its PATH ends with, for packages'
+# scripts that run node; and fws/busybox's commands, which those scripts,
+# run by /bin/sh, run.
 bun=$(cat_with bun bun)
-closure "$bun" > "$build/bun.closure"
+closure "$bun" "${busybox_pkgs[@]}" > "$build/bun.closure"
+bun_args=()
+for p in "${busybox_pkgs[@]}"; do bun_args+=(-pkg "$p"); done
 accounts bun bun 1000 1000 /home/bun
-mkimage "${acct[@]}" -spec images/bun/image.json -closure "$build/bun.closure" -pkg "$bun" -out "$out/bun.tar"
+mkimage "${acct[@]}" -spec images/bun/image.json -closure "$build/bun.closure" "${bun_args[@]}" -pkg "$bun" \
+  -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env -link /usr/local/bin/bun=../../../bin/bun \
+  -link /usr/local/bin/bunx=../../../bin/bunx -link /usr/local/bun-node-fallback-bin/node=../../../bin/bun -out "$out/bun.tar"
+
+# Rust as its official image lays it out: the release's toolchain
+# (images/rust) in CARGO_HOME's bin, which leads PATH, over the C toolchain
+# above, which rustc links with and build scripts compile C with, and
+# fws/base's commands and CA bundle. There is no rustup: the toolchain is
+# the release's, for aarch64-apple-darwin alone.
+rust=$(output_with rustc -f images/rust/rust.nix --argstr nixpkgs "$nixpkgs")
+closure "$rust" "${base_pkgs[@]}" "$cctools" "$gnumake" "$cc" > "$build/rust.closure"
+rust_args=()
+for p in "${base_pkgs[@]}"; do rust_args+=(-pkg "$p"); done
+for f in "$rust"/bin/*; do rust_args+=(-link "/usr/local/cargo/bin/${f##*/}=../../../..$f"); done
+accounts rust
+mkimage "${acct[@]}" -spec images/rust/image.json -closure "$build/rust.closure" "${rust_args[@]}" "${toolchain_args[@]}" \
+  -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env \
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/rust.tar"
 
 gitea=$(cat_with gitea gitea)
 gitea_data=$(cat_out gitea.data)
@@ -694,11 +770,6 @@ mkimage "${acct[@]}" -spec images/playwright/image.json -closure "$build/playwri
 # unpacks keeps its modes: the Dev Containers extension, in a container
 # whose /etc/os-release names darwin, unpacks VS Code's server, a zip, with
 # tar -xz from a pipe.
-busybox_pkgs=()
-for p in coreutils:ls findutils:find diffutils:diff gnugrep:grep gnused:sed gawk:awk libarchive:bsdtar gzip:gzip \
-  bzip2:bzip2 xz:xz unzip:unzip wget:wget which:which; do
-  busybox_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
-done
 closure "${busybox_pkgs[@]}" > "$build/busybox.closure"
 busybox_args=()
 for p in "${busybox_pkgs[@]}"; do busybox_args+=(-pkg "$p"); done
@@ -711,10 +782,6 @@ mkimage "${acct[@]}" -spec images/busybox/image.json -closure "$build/busybox.cl
 # whose Linux userlands and package managers cannot run here: bash, the
 # commands of fws/busybox, and curl, git, jq and less, with Mozilla's CA
 # bundle where Debian's ca-certificates puts it.
-base_pkgs=("${busybox_pkgs[@]}")
-for p in bash:bash curl:curl git:git jq:jq less:less; do
-  base_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
-done
 closure "${base_pkgs[@]}" > "$build/base.closure"
 base_args=()
 for p in "${base_pkgs[@]}"; do base_args+=(-pkg "$p"); done

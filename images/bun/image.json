@@ -3,12 +3,16 @@
   "files": {},
   "dirs": [
     "/app",
+    "/home/bun",
+    "/root",
     "/tmp"
   ],
   "config": {
     "Env": [
-      "PATH=/bin",
-      "TZ=UTC"
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin",
+      "TZ=UTC",
+      "BUN_RUNTIME_TRANSPILER_CACHE_PATH=0",
+      "BUN_INSTALL_BIN=/usr/local/bin"
     ],
     "Cmd": [
       "bun"

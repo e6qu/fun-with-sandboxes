@@ -95,7 +95,10 @@ variables, files and arguments:
 | `fws/dynamodb-local:2` | arguments to DynamoDB Local (default `-sharedDb -dbPath /home/dynamodblocal/data`); port 8000 |
 | `fws/gitea:28` | `GITEA__section__KEY` variables, written into `/data/gitea/conf/app.ini`; HTTP on 3000, SSH on 22 |
 | `fws/nginx:1` | `/usr/share/nginx/html`, and `/etc/nginx/templates/*.template`, rendered into `conf.d` with environment variables substituted; the default server listens on 80 |
-| `fws/python:3.11`, `fws/python:3.12`, `fws/python:3.13`, `fws/python:3.14`, `fws/python:3.15`, `fws/node:22`, `fws/node:24`, `fws/node:26`, `fws/bun:1` | the language and its package manager (`python3 -m ensurepip` for pip) |
+| `fws/python:3.11`, `fws/python:3.12`, `fws/python:3.13`, `fws/python:3.14`, `fws/python:3.15` | the language and its package manager (`python3 -m ensurepip` for pip) |
+| `fws/node:22`, `fws/node:24`, `fws/node:26` | `node`, `npm` and `npx`, and on 22 and 24 `corepack` and Yarn 1, which Node.js 25 and its images dropped, in `/usr/local/bin`; `npm install -g` into `/usr/local`; node-gyp builds native addons with the image's `python3`, `make`, `cc`/`c++` (clang with the macOS SDK) and Node.js's headers in `/usr/local/include/node`; `NODE_USE_ENV_PROXY=1`, so Node.js's own `fetch`, corepack's included, goes through the egress proxy; `fws/base`'s commands |
+| `fws/bun:1` | `bun` and `bunx` in `/usr/local/bin`, and `bun` as `node` in `/usr/local/bun-node-fallback-bin`; packages' scripts run under `/bin/sh` with `fws/busybox`'s commands |
+| `fws/rust:1.100` | Rust 1.100.0, the release's own build: `rustc`, `cargo`, `rustfmt` and `clippy` in `CARGO_HOME` (`/usr/local/cargo`)'s `bin`, first on `PATH`, for `aarch64-apple-darwin`; `cc` (clang with the macOS SDK, which `SDKROOT` names), with which rustc links and the cc crate compiles; `make` and `fws/base`'s commands; no rustup |
 | `fws/lambda/python:3.11`, `fws/lambda/python:3.12`, `fws/lambda/python:3.13`, `fws/lambda/python:3.14`, `fws/lambda/nodejs:22`, `fws/lambda/nodejs:24`, `fws/lambda/java:17` | the handler as the command; functions in `/var/task`, invoked at `POST /2015-03-31/functions/function/invocations` on port 8080 through AWS's Runtime Interface Emulator |
 | `fws/playwright:1.65` | Node.js 24 with `playwright` and `@playwright/test`, so `npx playwright test` runs a mounted project's specs, and the browsers in `/ms-playwright` (`PLAYWRIGHT_BROWSERS_PATH`) that a project's own `@playwright/test@1.65.1` also finds: Chromium's headless shell, Chromium itself (`channel: 'chromium'`), Firefox, and ffmpeg for videos; no WebKit ([LIMITATIONS](../LIMITATIONS.md#images)). Firefox's own sandboxes are off (`MOZ_DISABLE_*_SANDBOX`), as Chromium runs with `--no-sandbox` |
 | `fws/busybox:1` | a shell, `sh` by default, and the commands scripts run in BusyBox's image (`ls`, `cat`, `grep`, `sed`, `awk`, `find`, `tar`, `gzip`, `wget`, `nc -z`…) as separate programs, since BusyBox builds for Linux alone; `busybox CMD` runs them by name |
@@ -169,10 +172,26 @@ must load its libraries from the image or macOS, by relative path
 (`@loader_path`, `@executable_path`) rather than from `/opt/homebrew` or
 `/nix/store`, which a container cannot read.
 
-A native extension a package manager compiles (a Python wheel built from
-source, a node-gyp addon) needs a compiler, which the images do not carry;
-take packages that ship macOS arm64 builds, or build the extension on the
-host and copy it in.
+`fws/node` and `fws/rust` carry a C and C++ toolchain, as the official
+images' build-essential does: nixpkgs' clang, ld64 and the macOS SDK
+behind nixpkgs' wrappers, `make`, and cctools' `libtool`, `lipo` and
+`otool`, with `gcc` and `g++` naming clang as on macOS. A node-gyp addon,
+a crate's build script and rustc's link use it as on Linux:
+
+```dockerfile
+FROM fws/rust:1.100 AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release
+FROM fws/base:1
+COPY --from=build /src/target/release/app /usr/local/bin/app
+CMD ["app"]
+```
+
+There is no Xcode: what runs `xcodebuild` or `xcrun` fails. A Python wheel
+built from source needs a compiler `fws/python` does not put on `PATH`;
+take packages that ship macOS arm64 builds there, or build the extension
+on the host and copy it in.
 
 Multi-platform builds and `# syntax=` frontends other than Docker's own
 are refused, as gateway frontends ship as Linux images.
@@ -213,7 +232,8 @@ for t in ./images-out/*.tar; do docker load -i "$t"; done
    build (MongoDB, Vault). `images/servers.nix` builds MySQL and MariaDB
    with their vendors' compilation comments, `images/kubernetes` builds
    Kubernetes, its darwin-patched kubelet and the pause program at their
-   releases, and `images/etcd` etcd.
+   releases, `images/etcd` etcd, and `images/rust` Rust from the
+   release's own macOS build.
 2. **A closure.** `nix-store -qR` lists every store path the packages
    reference: the image's whole dependency tree, and nothing else.
 3. **`cmd/fws-mkimage`** turns the closure into an image:

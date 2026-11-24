@@ -46,6 +46,14 @@ offers an unprivileged process. Non-goals are in
     runs with `--no-sandbox`, and stay off only where a launch keeps the
     container's environment.
   - `fws/neo4j` is the Community Edition.
+  - `fws/node` and `fws/rust` compile C and C++ with nixpkgs' clang, ld64
+    and macOS 14.4 SDK, not Xcode's: there is no `xcrun`, `xcodebuild` or
+    Swift, and node-gyp is nixpkgs' build, which takes the Xcode version
+    as 11.0 rather than ask `xcodebuild`.
+  - `fws/rust` has no rustup: its toolchain is the release's build for
+    `aarch64-apple-darwin` alone, with rustfmt and clippy: `rustup`
+    commands and other targets are not available, and a
+    `rust-toolchain.toml` goes unread.
   - `fws/opensearch` is the minimal distribution with the security plugin,
     without the k-NN and ML Commons plugins, whose native libraries are
     built for Linux.

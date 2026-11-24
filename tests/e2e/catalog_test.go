@@ -251,6 +251,157 @@ git -C /tmp/r log --format=%s`, "bash 5\n42\n200\nfirst\n"},
 	}
 }
 
+// toolchainRun runs script under sh in a container of image, with dir at
+// /app, and fails the test unless the output holds every one of want.
+func toolchainRun(t *testing.T, image, dir, script string, want ...string) {
+	t.Helper()
+	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "-w", "/app", image, "sh", "-c", "set -e\n"+script)
+	for _, w := range want {
+		if err != nil || !strings.Contains(out, w) {
+			t.Errorf("%s: %q, %v; want %q", image, out, err, w)
+			return
+		}
+	}
+}
+
+// The Node.js images build what the official images build: npm installs a
+// package whose native addon node-gyp compiles with the image's python3,
+// make, C++ compiler and the macOS SDK against the image's Node.js
+// headers; corepack's pnpm installs a package from the registry through
+// the egress proxy, which corepack reaches through NODE_USE_ENV_PROXY; and
+// Yarn 1 is there, as in node:22 and node:24.
+func TestNodeToolchain(t *testing.T) {
+	for _, v := range []string{"22", "24", "26"} {
+		t.Run(v, func(t *testing.T) {
+			image := "fws/node:" + v
+			dir := t.TempDir()
+			writeTree(t, dir, map[string]string{
+				"package.json":       `{"name": "app", "version": "1.0.0", "private": true, "dependencies": {"hello-addon": "file:./addon"}}`,
+				"addon/package.json": `{"name": "hello-addon", "version": "1.0.0", "main": "index.js"}`,
+				"addon/index.js":     "module.exports = require('./build/Release/hello.node');\n",
+				"addon/binding.gyp":  `{"targets": [{"target_name": "hello", "sources": ["hello.cc"]}]}`,
+				"addon/hello.cc": `#include <node_api.h>
+#include <string>
+
+static napi_value Hello(napi_env env, napi_callback_info) {
+  std::string s = "native " + std::to_string(6 * 7);
+  napi_value v;
+  napi_create_string_utf8(env, s.c_str(), s.size(), &v);
+  return v;
+}
+
+static napi_value Init(napi_env env, napi_value exports) {
+  napi_value fn;
+  napi_create_function(env, "hello", NAPI_AUTO_LENGTH, Hello, nullptr, &fn);
+  napi_set_named_property(env, exports, "hello", fn);
+  return exports;
+}
+
+NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)
+`,
+			})
+			// --install-links installs the addon as a copy, as from the
+			// registry, so npm runs its default install script, node-gyp
+			// rebuild.
+			toolchainRun(t, image, dir, `npx --version >/dev/null
+cc --version | head -n 1 && python3 --version && make --version | head -n 1
+npm install --install-links --no-audit --no-fund --loglevel=error
+node -e 'console.log(require("hello-addon").hello())'`, "clang version", "Python 3", "GNU Make", "native 42")
+			if v == "26" {
+				// Node.js 25 and its official images dropped corepack and Yarn.
+				return
+			}
+			toolchainRun(t, image, dir, `yarn --version
+corepack enable pnpm
+mkdir -p /tmp/p && cd /tmp/p
+echo '{"name": "p", "version": "1.0.0", "private": true, "dependencies": {"is-number": "7.0.0"}}' > package.json
+pnpm install --reporter=silent
+node -e 'console.log("pnpm", require("is-number")(5))'`, "1.22.22", "pnpm true")
+		})
+	}
+}
+
+// Bun installs from the registry through the egress proxy, runs the
+// project's postinstall script with /bin/sh, where node is bun, runs a
+// dependency's bin with bunx, and runs bun test.
+func TestBunToolchain(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"package.json": `{"name": "b", "version": "1.0.0", "private": true,
+ "scripts": {"postinstall": "echo postinstall ran > postinstall.txt && node -e 'console.log(1 + 1)' >> postinstall.txt"},
+ "dependencies": {"semver": "7.6.3"}}`,
+		"semver.test.ts": `import { expect, test } from "bun:test";
+import semver from "semver";
+
+test("semver orders versions", () => {
+  expect(semver.gt("1.2.3", "1.2.2")).toBe(true);
+});
+`,
+	})
+	toolchainRun(t, "fws/bun:1", dir, `bun install
+cat postinstall.txt
+bunx semver 1.2.3
+bun test 2>&1`, "postinstall ran\n2\n", "1.2.3", "1 pass")
+}
+
+// fws/rust builds and runs a crate with cargo, formats and lints it with
+// rustfmt and clippy, builds a crate whose build script compiles C with the
+// cc crate from crates.io, and builds a Dockerfile FROM it whose binary a
+// second stage copies into fws/base.
+func TestRustToolchain(t *testing.T) {
+	const image = "fws/rust:1.100"
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"Cargo.toml": `[package]
+name = "addc"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+cc = "1"
+`,
+		"build.rs": `fn main() {
+    cc::Build::new().file("src/add.c").compile("add");
+}
+`,
+		"src/add.c": "int add(int a, int b) { return a + b; }\n",
+		"src/main.rs": `unsafe extern "C" {
+    fn add(a: i32, b: i32) -> i32;
+}
+
+fn main() {
+    println!("c says {}", unsafe { add(40, 2) });
+}
+`,
+	})
+	toolchainRun(t, image, dir, `rustc --version && cargo --version && cargo fmt --version && cargo clippy --version
+cd /tmp && cargo new --vcs none --quiet hello && cd hello
+cargo build --release --quiet && ./target/release/hello
+cargo fmt --check && cargo clippy --quiet --release -- -D warnings
+cd /app && cargo run --release --quiet`, "rustc 1.100.0", "Hello, world!", "c says 42")
+
+	ctx := t.TempDir()
+	writeTree(t, ctx, map[string]string{
+		"Cargo.toml":  "[package]\nname = \"hello\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+		"src/main.rs": "fn main() {\n    println!(\"built FROM {}\", env!(\"CARGO_PKG_NAME\"));\n}\n",
+		"Dockerfile": `FROM ` + image + ` AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release
+FROM fws/base:1
+COPY --from=build /src/target/release/hello /usr/local/bin/hello
+CMD ["hello"]
+`,
+	})
+	if out, err := exec.Command("docker", "buildx", "build", "--load", "-t", "e2e/rust-hello:1", ctx).CombinedOutput(); err != nil {
+		t.Fatalf("docker build FROM %s: %v\n%s", image, err, out)
+	}
+	defer docker(t, "rmi", "e2e/rust-hello:1")
+	if out := mustDocker(t, "run", "--rm", "e2e/rust-hello:1"); out != "built FROM hello\n" {
+		t.Errorf("the binary built FROM %s, run in fws/base:1: %q", image, out)
+	}
+}
+
 func TestGitea(t *testing.T) {
 	const name = "fws-e2e-gitea"
 	waitedRun(t, name, "-p", "127.0.0.1::3000", "-e", "GITEA__security__INSTALL_LOCK=true", "fws/gitea:28")
