@@ -85,4 +85,13 @@ func TestProxyHoldsAMemberToItsAllowList(t *testing.T) {
 	if code, err := get("127.88.0.3", "127.0.0.1"); err != nil || code != 200 {
 		t.Errorf("a member without a list: %d, %v", code, err)
 	}
+	// Without credentials a client could be the limited member.
+	res, err := client(p).Get("http://" + net.JoinHostPort("remote.test", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusProxyAuthRequired {
+		t.Errorf("an anonymous client on a stack with allow lists: %d", res.StatusCode)
+	}
 }

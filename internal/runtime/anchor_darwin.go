@@ -38,6 +38,10 @@ type anchorRequest struct {
 	MemoryMiB int `json:",omitempty"`
 }
 
+// maxAnchorRequest bounds a request's JSON: arguments and environment
+// within macOS's ARG_MAX of 1 MiB, with room for JSON's escapes.
+const maxAnchorRequest = 16 << 20
+
 type anchorReply struct {
 	Pid   int    `json:",omitempty"`
 	Code  *int   `json:",omitempty"`
@@ -115,11 +119,25 @@ func serveExec(c *net.UnixConn, main int) {
 			}
 		}
 	}
-	defer closeAll(files)
+	// The child holds its own copies once started, so the files close right
+	// after the start; the deferred close covers the returns before it.
+	started := false
+	defer func() {
+		if !started {
+			closeAll(files)
+		}
+	}()
 	if _, err := io.ReadFull(c, hdr[n:]); err != nil {
 		return
 	}
-	body := make([]byte, binary.BigEndian.Uint64(hdr))
+	// A length past any request's would make the anchor, which every
+	// exec of the container needs, allocate it or panic.
+	size := binary.BigEndian.Uint64(hdr)
+	if size > maxAnchorRequest {
+		enc.Encode(anchorReply{Error: "exec anchor: a malformed request"})
+		return
+	}
+	body := make([]byte, size)
 	if _, err := io.ReadFull(c, body); err != nil {
 		return
 	}
@@ -144,8 +162,8 @@ func serveExec(c *net.UnixConn, main int) {
 		// spawn helper's processes do.
 		Sys: &syscall.SysProcAttr{Setsid: req.TTY, Setctty: req.TTY, Setpgid: !req.TTY},
 	})
+	started = true
 	closeAll(files)
-	files = nil
 	if err != nil {
 		enc.Encode(anchorReply{Error: err.Error()})
 		return

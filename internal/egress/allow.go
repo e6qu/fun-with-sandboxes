@@ -129,17 +129,37 @@ func (t *allowTable) lists(address string) [][]rule {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if !t.load() {
+		// An unreadable file allows nothing rather than everything.
+		return [][]rule{nil}
+	}
+	return t.byAddr[address]
+}
+
+// any reports whether a member of the stack has an allow list, or the
+// file of them cannot be read.
+func (t *allowTable) any() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return !t.load() || len(t.byAddr) > 0
+}
+
+// load reads the file again if it changed, and reports false when it
+// exists but cannot be read. t.mu is held.
+func (t *allowTable) load() bool {
 	info, err := os.Stat(t.path)
 	if err != nil {
 		t.byAddr, t.mod, t.size = nil, time.Time{}, 0
-		return nil
+		return true
 	}
 	if !info.ModTime().Equal(t.mod) || info.Size() != t.size {
 		b, err := os.ReadFile(t.path)
 		var specs map[string][]string
 		if err != nil || json.Unmarshal(b, &specs) != nil {
-			// An unreadable file allows nothing rather than everything.
-			return [][]rule{nil}
+			return false
 		}
 		next := map[string][][]rule{}
 		for a, ss := range specs {
@@ -153,5 +173,5 @@ func (t *allowTable) lists(address string) [][]rule {
 		}
 		t.byAddr, t.mod, t.size = next, info.ModTime(), info.Size()
 	}
-	return t.byAddr[address]
+	return true
 }

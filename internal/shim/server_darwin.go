@@ -411,6 +411,16 @@ func (s *server) accept(l net.Listener) {
 			return
 		}
 		s.mu.Lock()
+		// A connection accepted as the socket closed comes after run
+		// stopped counting the handled ones; it learns of the exit by
+		// the connection's end.
+		select {
+		case <-s.exited:
+			s.mu.Unlock()
+			c.Close()
+			return
+		default:
+		}
 		s.conns[c] = struct{}{}
 		s.handled.Add(1)
 		s.mu.Unlock()
@@ -453,32 +463,32 @@ func (s *server) handle(c net.Conn) {
 		return
 	}
 	switch req.Op {
-	case "wait":
+	case OpWait:
 		<-s.exited
 		s.mu.Lock()
 		e := s.exit
 		s.mu.Unlock()
 		respond(c, Response{Exit: &e})
-	case "state":
+	case OpState:
 		st, err := s.enf.state()
 		if err != nil {
 			fail(c, err)
 			return
 		}
 		respond(c, Response{State: &st})
-	case "signal":
+	case OpSignal:
 		fail(c, s.proc.Signal(syscall.Signal(req.Signal)))
-	case "resize":
+	case OpResize:
 		if s.master == nil {
 			fail(c, errors.New("the container has no TTY"))
 			return
 		}
 		fail(c, pty.Setsize(s.master, &pty.Winsize{Rows: req.Height, Cols: req.Width}))
-	case "pause":
+	case OpPause:
 		fail(c, s.enf.pause(true))
-	case "unpause":
+	case OpUnpause:
 		fail(c, s.enf.pause(false))
-	case "update":
+	case OpUpdate:
 		if req.Resources != nil {
 			s.enf.update(*req.Resources)
 		}
@@ -487,10 +497,10 @@ func (s *server) handle(c net.Conn) {
 			return
 		}
 		fail(c, nil)
-	case "track":
+	case OpTrack:
 		s.enf.track()
 		fail(c, nil)
-	case "stdin":
+	case OpStdin:
 		s.mu.Lock()
 		w := s.stdin
 		s.mu.Unlock()
@@ -509,7 +519,7 @@ func (s *server) handle(c net.Conn) {
 			s.mu.Unlock()
 		}
 		c.(*net.UnixConn).CloseWrite()
-	case "logs":
+	case OpLogs:
 		ch := make(chan struct{}, 1)
 		s.mu.Lock()
 		s.logSubs[ch] = struct{}{}

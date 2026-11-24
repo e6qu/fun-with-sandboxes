@@ -189,6 +189,8 @@ func (r *Router) stackAnswer(h dnsmessage.Header, q dnsmessage.Question) ([]byte
 	}
 	var rrs []dnsmessage.Resource
 	hdr := dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: dnsTTL}
+	// A member has addresses alone: any other type has no records.
+	//exhaustive:ignore
 	switch q.Type {
 	case dnsmessage.TypeA:
 		if a, err := netip.ParseAddr(m.SeenBy(me)); err == nil && a.Is4() {

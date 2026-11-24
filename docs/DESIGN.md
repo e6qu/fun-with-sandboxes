@@ -172,7 +172,8 @@ knobs, each enforced by a real mechanism or refused:
   (`network.allow`), and the egress proxy, the one way out of the machine
   Seatbelt leaves a container, refuses a destination off any of them:
   `403 Forbidden` over HTTP, "connection not allowed by ruleset" over
-  SOCKS5.
+  SOCKS5. While any member has a list, a client without a member's
+  credentials could be that member, so the proxy refuses it.
 - **Root size quota.** `--storage-opt size` puts the container's root on a
   sparse APFS disk image (`root.sparseimage` beside it), created with
   `hdiutil` at the image's files' size and the quota beside them and

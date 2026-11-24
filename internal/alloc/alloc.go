@@ -162,6 +162,10 @@ func (a *Allocator) freeRangeLocked(n int) (int, error) {
 // a container takes its stacks' ports from them. It returns the range,
 // the same one on each call for the name.
 func (a *Allocator) Reserve(name string, n int) (base, limit int, err error) {
+	if n < 1 {
+		// No blocks would be a stack with no ports, overlapping the next.
+		return 0, 0, fmt.Errorf("alloc: reserve %d blocks", n)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	dir, err := a.Dir(name)

@@ -122,9 +122,25 @@ type Exit struct {
 	FinishedAt time.Time
 }
 
+// Op is a request's operation.
+type Op string
+
+const (
+	OpWait    Op = "wait"
+	OpState   Op = "state"
+	OpSignal  Op = "signal"
+	OpResize  Op = "resize"
+	OpPause   Op = "pause"
+	OpUnpause Op = "unpause"
+	OpUpdate  Op = "update"
+	OpTrack   Op = "track"
+	OpStdin   Op = "stdin"
+	OpLogs    Op = "logs"
+)
+
 // Request is the first line of every connection to the shim's socket.
 type Request struct {
-	Op string
+	Op Op
 	// Signal is for "signal".
 	Signal int `json:",omitempty"`
 	// Height and Width are for "resize".

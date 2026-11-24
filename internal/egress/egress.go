@@ -231,6 +231,11 @@ func Listen(addr string, policy Policy) (*Proxy, error) {
 			}
 		}),
 		ConnState: func(c net.Conn, s http.ConnState) {
+			// A hijacked connection stays tracked, so Close severs a tunnel,
+			// and its CONNECT handler untracks it; the server reports no
+			// StateClosed for it. Active and idle connections stay as
+			// tracked at StateNew.
+			//exhaustive:ignore
 			switch s {
 			case http.StateNew:
 				p.track(c)
@@ -269,8 +274,13 @@ func Variables(port int, member, password string) [][2]string {
 func (p *Proxy) Addr() *net.TCPAddr { return p.l.Addr().(*net.TCPAddr) }
 
 func (p *Proxy) fail(w http.ResponseWriter, err error) {
-	if errors.Is(err, ErrDenied) {
+	switch {
+	case errors.Is(err, ErrDenied):
 		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	case errors.Is(err, ErrCredentials):
+		w.Header().Set("Proxy-Authenticate", `Basic realm="fws egress"`)
+		http.Error(w, err.Error(), http.StatusProxyAuthRequired)
 		return
 	}
 	http.Error(w, "egress proxy: "+err.Error(), http.StatusBadGateway)
@@ -295,6 +305,17 @@ func (p *Proxy) dialChecked(ctx context.Context, client, addr string) (net.Conn,
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
+	}
+	// A numeric port, as the allow lists name them: a service name would
+	// dial a port the lists never compare.
+	portNum, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || portNum == 0 {
+		return nil, fmt.Errorf("egress: %q is not a port", port)
+	}
+	// A client that names no member could be any of them, so it may not
+	// leave a stack whose members' allow lists hold them.
+	if client == "" && p.allow.any() {
+		return nil, ErrCredentials
 	}
 	if p.policy.Members != "" && client != "" {
 		// A short name is completed with the client's search domains, as
@@ -329,9 +350,8 @@ func (p *Proxy) dialChecked(ctx context.Context, client, addr string) (net.Conn,
 	// The container's allow lists, its own and its networks', each hold
 	// the destination to the hosts it names.
 	if lists := p.allow.lists(client); len(lists) > 0 {
-		n, _ := strconv.Atoi(port)
 		for _, rules := range lists {
-			if !allows(rules, strings.Trim(host, "[]"), ips, n) {
+			if !allows(rules, strings.Trim(host, "[]"), ips, int(portNum)) {
 				return nil, fmt.Errorf("%w: %s is not on the container's egress allow list (%s)", ErrDenied, net.JoinHostPort(host, port), AllowKey)
 			}
 		}
@@ -403,11 +423,11 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	if !p.track(up) {
 		up.Close()
-		client.Close()
+		p.untrack(client)
 		return
 	}
 	defer p.untrack(up)
-	defer client.Close()
+	defer p.untrack(client)
 	io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n")
 	// Bytes the client sent after its request line are already buffered.
 	if n := rw.Reader.Buffered(); n > 0 {

@@ -275,7 +275,7 @@ func socksReply(c net.Conn, code byte, bound net.Addr) error {
 func socksCode(err error) byte {
 	var dnsErr *net.DNSError
 	switch {
-	case errors.Is(err, ErrDenied):
+	case errors.Is(err, ErrDenied), errors.Is(err, ErrCredentials):
 		return socksNotAllowed
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return socksRefused

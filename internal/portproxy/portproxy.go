@@ -41,11 +41,10 @@ func (p *proxy) serve() {
 			c.Close()
 			continue
 		}
-		if !p.track(c) {
+		if !p.start(c) {
 			c.Close()
 			return
 		}
-		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
 			defer p.untrack(c)
@@ -60,11 +59,29 @@ func (p *proxy) serve() {
 				c.Close()
 				return
 			}
-			p.track(up)
+			// After Close, an untracked upstream would hold the pipe, and
+			// Close's wait, open until the container ends it.
+			if !p.track(up) {
+				up.Close()
+				return
+			}
 			defer p.untrack(up)
 			pipe(c, up)
 		}()
 	}
+}
+
+// start tracks a connection whose goroutine Close waits for; the count
+// rises under the lock Close takes, so Close never waits as it rises.
+func (p *proxy) start(c net.Conn) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return false
+	}
+	p.conns[c] = struct{}{}
+	p.wg.Add(1)
+	return true
 }
 
 func (p *proxy) track(c net.Conn) bool {

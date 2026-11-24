@@ -13,7 +13,7 @@ func TestParseRate(t *testing.T) {
 			t.Errorf("ParseRate(%q) = %d, %v; want %d", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"", "M", "-1M", "fast", "999", "10Mbps"} {
+	for _, in := range []string{"", "M", "-1M", "fast", "999", "10Mbps", "NaN", "Inf", "1e300", "2P"} {
 		if _, err := ParseRate(in); err == nil {
 			t.Errorf("ParseRate(%q) accepted", in)
 		}

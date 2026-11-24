@@ -64,8 +64,11 @@ type enforcer struct {
 
 	kq      int
 	running bool
-	quit    chan struct{}
-	done    chan struct{}
+	// closed is set by close: an update after it starts no loop, which
+	// nothing would end.
+	closed bool
+	quit   chan struct{}
+	done   chan struct{}
 }
 
 type member struct {
@@ -93,7 +96,7 @@ func newEnforcer(tag string, main int, r Resources, net *netstat.Watcher) *enfor
 // process lives: once it ends, macOS holds each process it answered for
 // responsible for itself.
 func (e *enforcer) startLocked() {
-	if e.running {
+	if e.running || e.closed {
 		return
 	}
 	kq, err := unix.Kqueue()
@@ -226,6 +229,7 @@ func (e *enforcer) pidsLocked() []int {
 
 func (e *enforcer) close() {
 	e.mu.Lock()
+	e.closed = true
 	running := e.running
 	e.mu.Unlock()
 	if running {
