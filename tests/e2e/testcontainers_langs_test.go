@@ -269,9 +269,7 @@ class FwsTest {
 // a compatible substitute for postgres, a GenericContainer on a Network
 // reached by its alias, and its reaper, Ryuk 0.14.0, which it runs
 // privileged by default. Its startup checks are off, as the README tells
-// its users: the server-version check compares the version /version
-// reports, fws's own 0.1.0, with Docker's 1.6.0, and the file-mounting
-// check runs alpine:3.17, a Linux image.
+// its users: the file-mounting check runs alpine:3.17, a Linux image.
 func TestTestcontainersJava(t *testing.T) {
 	tools := langTools(t, "java", "mvn")
 	dir := t.TempDir()

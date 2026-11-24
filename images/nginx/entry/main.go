@@ -4,6 +4,7 @@
 // configuration that keeps every path nginx writes inside the container and,
 // unless a conf.d file defines servers, serves /usr/share/nginx/html on the
 // container's port 80, which the container library puts on its host port.
+// A main configuration at /etc/nginx/nginx.conf replaces the generated one.
 package main
 
 import (
@@ -45,6 +46,12 @@ func main() {
 		log.Fatal(err)
 	}
 	args := []string{"nginx", "-p", sandboxenv.Path("/var/lib/nginx"), "-c", conf, "-e", "stderr"}
+	// A main configuration of the user's own, mounted or copied to
+	// /etc/nginx/nginx.conf, stands instead of the generated one, run in
+	// the foreground as the official image's command runs it.
+	if own := sandboxenv.Path("/etc/nginx/nginx.conf"); fileExists(own) {
+		args = []string{"nginx", "-p", sandboxenv.Path("/var/lib/nginx"), "-c", own, "-e", "stderr", "-g", "daemon off;"}
+	}
 	if len(os.Args) > 1 && os.Args[1] != "nginx" {
 		log.Fatalf("unknown command %q: the image runs nginx", os.Args[1])
 	}
@@ -105,4 +112,9 @@ http {
 `, sandboxenv.Path("/var/run/nginx.pid"), filepath.Join(pkg, "conf", "mime.types"), temps.String(), confd, servers)
 	path := filepath.Join(state, "nginx.conf")
 	return path, os.WriteFile(path, []byte(main), 0o644)
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
 }

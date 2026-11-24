@@ -357,6 +357,10 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 
 ## API surface
 
+- **Testcontainers for Java's startup checks run `alpine`**, a Linux
+  image, so they are turned off (`TESTCONTAINERS_CHECKS_DISABLE=true` or
+  `checks.disable=true`); the libraries' reapers run as the catalog's
+  `fws/ryuk` under the names each pins (README).
 - **Not served:** swarm, services, nodes, secrets, configs and plugins.
   The engine serves what Docker Compose, the Docker CLI and Testcontainers
   use ([DESIGN](docs/DESIGN.md#8-docker-engine-api-surface)).

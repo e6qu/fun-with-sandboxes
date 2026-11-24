@@ -658,11 +658,11 @@ keeps each server's process limits small.
 
 ## 8. Docker Engine API surface
 
-Served on `unix://~/.fws/docker.sock` at API version 1.51 (minimum 1.24),
+Served on `unix://~/.fws/docker.sock` at API version 1.52 (minimum 1.24),
 with or without the `/v1.xx` prefix:
 
 - `GET|HEAD /_ping`, `GET /version`, `GET /info`, `GET /events`,
-  `GET /system/df` (in API 1.51's shape: image sizes counting each layer
+  `GET /system/df` (in API 1.52's shape: image sizes counting each layer
   once, containers' writes, volume usage, and both builders' caches)
 - Containers: `create`, `json` (list, with Docker's filters, and sizes with
   `size`), `{id}/json`, `{id}/changes` (`docker diff`),

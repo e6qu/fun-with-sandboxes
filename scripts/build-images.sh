@@ -243,7 +243,8 @@ nginx=$(cat_with nginx nginx)
 closure "$nginx" > "$build/nginx.closure"
 accounts nginx nginx 101 101 /nonexistent
 mkimage "${acct[@]}" -spec images/nginx/image.json -closure "$build/nginx.closure" -pkg "$nginx" \
-  -file "/entry=$build/nginx-entry" -file "/usr/share/nginx/html/index.html=$nginx/html/index.html" -out "$out/nginx.tar"
+  -file "/entry=$build/nginx-entry" -file "/usr/share/nginx/html/index.html=$nginx/html/index.html" \
+  -link "/etc/nginx/mime.types=../..$nginx/conf/mime.types" -out "$out/nginx.tar"
 
 mariadb=$(server_with mariadb mariadbd)
 closure "$mariadb" > "$build/mariadb.closure"
@@ -560,9 +561,15 @@ for p in $(nix-store -qR "$dynamodb"); do
 done
 [ -n "$jre" ] || { echo "DynamoDB Local's closure holds no Java runtime" >&2; exit 1; }
 closure "$dynamodb" > "$build/dynamodb.closure"
+# The jar and its native libraries in the working directory, as the
+# official image has them, where Testcontainers' module runs
+# java -jar DynamoDBLocal.jar.
 accounts dynamodb dynamodblocal 1000 1000 /home/dynamodblocal
 mkimage "${acct[@]}" -spec images/dynamodb/image.json -closure "$build/dynamodb.closure" -pkg "$jre" \
-  -env "DYNAMODB_HOME=$dynamodb/share/dynamodb-local" -file "/entry=$build/dynamodb-entry" -out "$out/dynamodb.tar"
+  -env "DYNAMODB_HOME=$dynamodb/share/dynamodb-local" -file "/entry=$build/dynamodb-entry" \
+  -link "/home/dynamodblocal/DynamoDBLocal.jar=../..$dynamodb/share/dynamodb-local/DynamoDBLocal.jar" \
+  -link "/home/dynamodblocal/DynamoDBLocal_lib=../..$dynamodb/share/dynamodb-local/DynamoDBLocal_lib" \
+  -out "$out/dynamodb.tar"
 
 rabbitmq=$(cat_with rabbitmq-server rabbitmq-server)
 # RabbitMQ's scripts run the POSIX tools from PATH.

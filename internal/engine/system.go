@@ -24,15 +24,21 @@ import (
 )
 
 const (
-	Version       = "0.1.0"
-	APIVersion    = "1.51"
+	// Version is fws's own version.
+	Version = "0.1.0"
+	// DockerVersion is the Docker Engine release whose API, APIVersion,
+	// the engine serves, which /version and /info report as the server's
+	// version: clients compare it with Docker's releases, as
+	// Testcontainers for Java requires 1.6.0 or later.
+	DockerVersion = "29.0.0"
+	APIVersion    = "1.52"
 	MinAPIVersion = "1.24"
 )
 
 func (e *Engine) Version() system.VersionResponse {
 	return system.VersionResponse{
 		Platform:      system.PlatformInfo{Name: "fun-with-sandboxes"},
-		Version:       Version,
+		Version:       DockerVersion,
 		APIVersion:    APIVersion,
 		MinAPIVersion: MinAPIVersion,
 		Os:            runtime.GOOS,
@@ -40,8 +46,10 @@ func (e *Engine) Version() system.VersionResponse {
 		GoVersion:     runtime.Version(),
 		KernelVersion: kernelVersion(),
 		Components: []system.ComponentVersion{{
-			Name: "Engine", Version: Version,
+			Name: "Engine", Version: DockerVersion,
 			Details: map[string]string{"ApiVersion": APIVersion, "MinAPIVersion": MinAPIVersion, "Os": runtime.GOOS, "Arch": runtime.GOARCH},
+		}, {
+			Name: "fun-with-sandboxes", Version: Version,
 		}},
 	}
 }
@@ -83,7 +91,7 @@ func (e *Engine) Info() system.Info {
 		Images: len(e.images.List()), Driver: "apfs-clone", LoggingDriver: "json-file",
 		KernelVersion: kernelVersion(), OperatingSystem: "macOS " + productVersion(), OSVersion: productVersion(),
 		OSType: runtime.GOOS, Architecture: runtime.GOARCH, NCPU: runtime.NumCPU(), MemTotal: int64(memTotal()),
-		DockerRootDir: e.cfg.Root, Name: host, ServerVersion: Version, IndexServerAddress: "https://index.docker.io/v1/",
+		DockerRootDir: e.cfg.Root, Name: host, ServerVersion: DockerVersion, IndexServerAddress: "https://index.docker.io/v1/",
 		SystemTime: time.Now().Format(time.RFC3339Nano), DefaultRuntime: "seatbelt",
 		SecurityOptions: []string{"name=seatbelt", "name=no-new-privileges"}, Labels: []string{}, Warnings: []string{},
 		// Each container's supervisor enforces these limits without cgroups.

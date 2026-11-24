@@ -241,14 +241,17 @@ func initScript(path, db string, psql func(string, io.Reader, string) error) err
 	return nil
 }
 
-// relay copies the server's log to the entry's and closes ready when the
-// server logs that it accepts connections.
+// relay copies the setup server's log to the entry's standard output, where
+// the official image's pg_ctl leaves it, and closes ready when the server
+// logs that it accepts connections. The server the container then runs
+// logs to standard error, so "ready to accept connections" comes once on
+// each, which clients such as testcontainers-rs wait for.
 func relay(r io.Reader, ready chan<- struct{}) {
 	sc := bufio.NewScanner(r)
 	announced := false
 	for sc.Scan() {
 		line := sc.Text()
-		fmt.Fprintln(os.Stderr, line)
+		fmt.Fprintln(os.Stdout, line)
 		if !announced && strings.Contains(line, "ready to accept connections") {
 			announced = true
 			close(ready)
@@ -256,7 +259,7 @@ func relay(r io.Reader, ready chan<- struct{}) {
 	}
 	// A line too long to scan ends the scan: the rest is copied as it
 	// comes, so the server never blocks on a full pipe.
-	io.Copy(os.Stderr, r)
+	io.Copy(os.Stdout, r)
 }
 
 func ident(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
