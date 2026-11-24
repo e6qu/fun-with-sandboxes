@@ -2,6 +2,7 @@ package engine
 
 import (
 	"crypto/rand"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -146,7 +147,15 @@ func (e *Engine) ensureEgress(stack string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	start, _ := processStart(proc.Pid)
+	// A proxy whose start time cannot be read could never be told from
+	// another process with its pid later, and would never be stopped: it
+	// is stopped now instead.
+	start, ok := processStart(proc.Pid)
+	if !ok {
+		proc.Kill()
+		proc.Wait()
+		return 0, fmt.Errorf("egress proxy for %s: its process %d cannot be read", stack, proc.Pid)
+	}
 	p := &egressProc{Pid: proc.Pid, Start: start, Port: port, Members: nf, Key: kf}
 	if err := writeJSON(e.egressFile(stack), p); err != nil {
 		stopProcess(p)

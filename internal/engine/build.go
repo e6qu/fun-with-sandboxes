@@ -196,11 +196,13 @@ func (b *builder) run(ctx context.Context, ins []dockerfile.Instruction) (*stage
 			return nil, invalid("line %d: %s before the first FROM; only ARG may come first", ins[i].Line, ins[i].Cmd)
 		}
 		b.progress(stepLine(i+1, len(ins), ins[i]))
-		k, v, err := b.arg(ins[i], func(string) (string, bool) { return "", false })
+		kvs, err := b.args(ins[i], func(string) (string, bool) { return "", false })
 		if err != nil {
 			return nil, err
 		}
-		globals[k] = v
+		for _, kv := range kvs {
+			globals[kv[0]] = kv[1]
+		}
 	}
 	if i == len(ins) {
 		return nil, invalid("the Dockerfile has no FROM instruction")
@@ -279,24 +281,36 @@ func fromParts(in dockerfile.Instruction) (ref, name string) {
 	return "", ""
 }
 
-func (b *builder) arg(in dockerfile.Instruction, lookup func(string) (string, bool)) (string, string, error) {
+// args reads an ARG instruction's names and defaults, one or more pairs on
+// the line (ARG a=1 b), each taking its build argument, else its default,
+// else, without one, the value lookup has for it.
+func (b *builder) args(in dockerfile.Instruction, lookup func(string) (string, bool)) ([][2]string, error) {
 	if len(in.Args) == 0 {
-		return "", "", invalid("line %d: ARG requires a name", in.Line)
+		return nil, invalid("line %d: ARG requires a name", in.Line)
 	}
 	raw, err := dockerfile.Expand(in.Raw, lookup)
 	if err != nil {
-		return "", "", invalid("line %d: %v", in.Line, err)
+		return nil, invalid("line %d: %v", in.Line, err)
 	}
-	name, def, hasDef := strings.Cut(strings.TrimSpace(raw), "=")
-	if v, ok := b.opts.BuildArgs[name]; ok && v != nil {
-		return name, *v, nil
+	words, err := dockerfile.Words(raw)
+	if err != nil || len(words) == 0 {
+		return nil, invalid("line %d: ARG requires a name", in.Line)
 	}
-	if !hasDef {
-		if v, ok := lookup(name); ok {
-			return name, v, nil
+	var out [][2]string
+	for _, w := range words {
+		name, def, hasDef := strings.Cut(w, "=")
+		if name == "" {
+			return nil, invalid("line %d: ARG names an empty argument", in.Line)
 		}
+		switch v, ok := b.opts.BuildArgs[name]; {
+		case ok && v != nil:
+			def = *v
+		case !hasDef:
+			def, _ = lookup(name)
+		}
+		out = append(out, [2]string{name, def})
 	}
-	return name, strings.Trim(def, `"`), nil
+	return out, nil
 }
 
 func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals map[string]string) (*stage, error) {
@@ -430,7 +444,7 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 	cfg := &s.cfg.Config
 	switch in.Cmd {
 	case "ARG":
-		k, v, err := b.arg(in, func(k string) (string, bool) {
+		kvs, err := b.args(in, func(k string) (string, bool) {
 			if v, ok := s.args[k]; ok {
 				return v, ok
 			}
@@ -440,8 +454,11 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		if err != nil {
 			return err
 		}
-		s.args[k] = v
-		s.key = cacheKey(key, k, v)
+		s.key = key
+		for _, kv := range kvs {
+			s.args[kv[0]] = kv[1]
+			s.key = cacheKey(s.key, kv[0], kv[1])
+		}
 		return nil
 	case "ENV":
 		raw, err := expand(in.Raw)
@@ -709,7 +726,10 @@ func (b *builder) copy(ctx context.Context, s *stage, in dockerfile.Instruction,
 		if in.Cmd == "ADD" {
 			return invalid("line %d: ADD does not take --from", in.Line)
 		}
-		if st := b.stageNamed(from); st != nil {
+		if st := b.stageNamed(from); st == s {
+			// The stage's own root is still being built.
+			return invalid("line %d: COPY --from=%s: circular dependency detected on stage: %s", in.Line, from, from)
+		} else if st != nil {
 			srcRoot = st.root
 		} else {
 			img, err := b.baseImage(ctx, from)
