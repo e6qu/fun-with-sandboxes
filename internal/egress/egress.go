@@ -102,6 +102,10 @@ type Proxy struct {
 	// allow are the stack's members' egress allow lists.
 	allow  *allowTable
 	closed bool
+	// done ends dials the SOCKS side has under way when the proxy closes;
+	// the HTTP side's end with their requests.
+	done context.Context
+	stop context.CancelFunc
 }
 
 // Password is the proxy password of the member at address, which the
@@ -197,6 +201,7 @@ func Listen(addr string, policy Policy) (*Proxy, error) {
 		return nil, err
 	}
 	p := &Proxy{l: l, policy: policy, conns: map[net.Conn]struct{}{}, transports: map[string]*http.Transport{}}
+	p.done, p.stop = context.WithCancel(context.Background())
 	if policy.Members != "" {
 		p.rates = bandwidth.NewTable(bandwidth.RatesPath(policy.Members))
 		p.allow = &allowTable{path: AllowPath(policy.Members)}
@@ -313,8 +318,8 @@ func (p *Proxy) dialChecked(ctx context.Context, client, addr string) (net.Conn,
 		return nil, fmt.Errorf("egress: %q is not a port", port)
 	}
 	// A client that names no member could be any of them, so it may not
-	// leave a stack whose members' allow lists hold them.
-	if client == "" && p.allow.any() {
+	// leave a stack whose members' allow lists or rates hold them.
+	if client == "" && (p.allow.any() || p.rates.Any()) {
 		return nil, ErrCredentials
 	}
 	if p.policy.Members != "" && client != "" {
@@ -470,6 +475,7 @@ func (p *Proxy) untrack(c net.Conn) {
 
 // Close stops accepting and severs every open connection.
 func (p *Proxy) Close() error {
+	p.stop()
 	p.mu.Lock()
 	p.closed = true
 	for c := range p.conns {

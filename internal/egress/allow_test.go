@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/e6qu/fun-with-sandboxes/internal/bandwidth"
 )
 
 func TestParseAllow(t *testing.T) {
@@ -93,5 +95,32 @@ func TestProxyHoldsAMemberToItsAllowList(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusProxyAuthRequired {
 		t.Errorf("an anonymous client on a stack with allow lists: %d", res.StatusCode)
+	}
+}
+
+// A client without credentials could be a member held to a rate, so a
+// stack whose members have rates refuses it, as it refuses one on a stack
+// with allow lists.
+func TestProxyRefusesAnonymousClientsWhenMembersHaveRates(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") }))
+	defer up.Close()
+	network := filepath.Join(t.TempDir(), "network")
+	os.WriteFile(network, []byte("127.88.0.2\tslow\t\t0\tproj_default\t0\n"), 0o644)
+	os.WriteFile(bandwidth.RatesPath(network), []byte(`{"127.88.0.2":{"Egress":1000000,"Ingress":0}}`), 0o644)
+	policy := testPolicy()
+	policy.Members = network
+	policy.Key = []byte("stack key")
+	p, err := Listen("127.0.0.1:0", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	res, err := client(p).Get(up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusProxyAuthRequired {
+		t.Errorf("an anonymous client on a stack with rates: %d", res.StatusCode)
 	}
 }

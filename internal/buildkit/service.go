@@ -190,18 +190,30 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("buildkit worker: %w", err)
 	}
+	// What New opened is closed again if a later step fails, so a daemon
+	// that goes on without BuildKit holds none of its databases.
+	var opened []func() error
+	fail := func(err error) (*Service, error) {
+		for i := len(opened) - 1; i >= 0; i-- {
+			opened[i]()
+		}
+		return nil, err
+	}
+	opened = append(opened, w.Close)
 	wc := &worker.Controller{}
 	if err := wc.Add(w); err != nil {
-		return nil, err
+		return fail(err)
 	}
 	cacheStorage, err := bboltcachestorage.NewStore(filepath.Join(cfg.Root, "cache.db"))
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
+	opened = append(opened, cacheStorage.Close)
 	historyDB, err := boltutil.Open(filepath.Join(cfg.Root, "history.db"), 0o600, &bolt.Options{FreelistType: bolt.FreelistMapType, NoFreelistSync: true})
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
+	opened = append(opened, historyDB.Close)
 	hosts := resolver.NewRegistryConfig(nil)
 	ctl, err := control.NewController(control.Opt{
 		SessionManager:   sm,
@@ -226,7 +238,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		GarbageCollect: w.GarbageCollect,
 	})
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	srv := grpc.NewServer()
 	ctl.Register(srv)

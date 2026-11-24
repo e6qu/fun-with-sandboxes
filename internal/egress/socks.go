@@ -2,7 +2,6 @@ package egress
 
 import (
 	"bufio"
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -118,7 +117,7 @@ func (p *Proxy) socks(c net.Conn) {
 	if err != nil {
 		return
 	}
-	up, err := p.dial(context.Background(), client, target)
+	up, err := p.dial(p.done, client, target)
 	if err != nil {
 		socksReply(c, socksCode(err), nil)
 		return

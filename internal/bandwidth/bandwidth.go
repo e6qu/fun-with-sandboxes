@@ -203,6 +203,17 @@ func (t *Table) Limiters(address string) (out, in *rate.Limiter) {
 	return nil, nil
 }
 
+// Any reports whether a member of the stack has a rate.
+func (t *Table) Any() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.reload()
+	return len(t.byAddr) > 0
+}
+
 func (t *Table) reload() {
 	info, err := os.Stat(t.path)
 	if err != nil {
