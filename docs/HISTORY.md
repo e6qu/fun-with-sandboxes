@@ -224,6 +224,26 @@ no VM and no more than microseconds per call.
   `fws catalog` lists the catalog, and CI checks each tag it lists
   publishes. `fws-mkimage -env` replaced none of a spec's variables, so
   an image could carry two of one name.
+- **A review of the whole codebase**, package by package, found and
+  fixed:
+  - security holes: a layer's hard link to its own symlink linked a host
+    file into the root (macOS `link(2)` follows a symlink source),
+    whiteouts of `.` and `..` removed outside it, a loaded layout's
+    symlinked index read host files, and clients without proxy
+    credentials skipped allow lists and rates;
+  - a nested-network deadlock, double starts, and `docker update` racing
+    starts, execs and health probes, the last caught by the race
+    detector in the end-to-end suite;
+  - goroutine and descriptor leaks, and in the container library
+    locale-aware calls on the path mapping, thread-local state and
+    inherited descriptors.
+
+  CI gained checks that cost the engine nothing at run time:
+  `scripts/lint.sh` (ineffassign, nilness, exhaustive, ShellCheck,
+  actionlint) and the C library's `-Wextra -Wshadow -Wsign-compare` and
+  clang's analyzer. A length check added to the interface list in the
+  review stopped at lo0's address messages, which are shorter than an
+  interface's; the probes caught it on the first macOS run.
 
 ## Investigations
 

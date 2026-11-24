@@ -61,7 +61,7 @@ what is presented without being enforced.
 ## Roadmap
 
 Four pull requests, in this order, each with the end-to-end tests that
-prove its claims on macOS:
+proved its claims on macOS:
 
 1. **Enforced isolation** (done,
    [#84](https://github.com/e6qu/fun-with-sandboxes/pull/84)): reads
@@ -70,22 +70,23 @@ prove its claims on macOS:
 2. **Limits macOS can enforce** (done,
    [#85](https://github.com/e6qu/fun-with-sandboxes/pull/85)): cpusets, a
    root size quota on an APFS disk image, and bandwidth.
-3. **Networks: ingress, egress and routes** (in
+3. **Networks: ingress, egress and routes** (done,
    [#86](https://github.com/e6qu/fun-with-sandboxes/pull/86)): egress allow
    lists per network and per container in the egress proxy, a source
    allow list on published ports, a routing table presented through the
    routing sysctl, and the bridge driver's options that translate
    (`enable_icc`, `enable_ip_masquerade`, `host_binding_ipv4`), with the
    rest refused.
-4. **Images and the CLI** (in
+4. **Images and the CLI** (done,
    [#86](https://github.com/e6qu/fun-with-sandboxes/pull/86)): Python
    3.11–3.15, Node.js 22, 24 and 26, and the Lambda runtimes AWS offers for
    them; `fws catalog`; and [IMAGES](docs/IMAGES.md), how images work.
 
-Done when #86 has merged and `main` is green through `publish`.
-Compatibility with Compose, Testcontainers, Podman, Kubernetes, kind and
-k3s is kept by the tests that already run them; gaps they turn up go into
-the open pull request.
+The roadmap is finished. From here the work is upkeep (below) and
+correctness: the static checks CI runs (`scripts/lint.sh`, the C
+library's warnings and analyzer) stay clean, every bug found is fixed
+where it is found, and compatibility with Compose, Testcontainers,
+Podman, Kubernetes, kind and k3s is kept by the tests that run them.
 
 ## Upkeep
 
