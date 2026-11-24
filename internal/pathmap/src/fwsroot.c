@@ -3090,6 +3090,15 @@ static char *route_dump(const int mib[6], size_t more, size_t *n) {
     return NULL;
 }
 
+// IFM_HEAD is how much of a message the interface walks read: the fields
+// every interface-list message begins with, through the index, which an
+// address message's struct ifa_msghdr and a multicast one's struct
+// ifma_msghdr share with struct if_msghdr. Those are shorter than a
+// struct if_msghdr, so a walk that wanted one whole stopped at them.
+#define IFM_HEAD (offsetof(struct if_msghdr, ifm_index) + sizeof(unsigned short))
+_Static_assert(offsetof(struct ifa_msghdr, ifam_index) == offsetof(struct if_msghdr, ifm_index), "address messages' index");
+_Static_assert(offsetof(struct ifma_msghdr, ifmam_index) == offsetof(struct if_msghdr, ifm_index), "multicast messages' index");
+
 // The host's interfaces, by index: Darwin's indexes are 16 bits.
 typedef unsigned char ifindex_set[65536 / 8];
 
@@ -3101,9 +3110,9 @@ static int if_in(const ifindex_set set, unsigned short index) { return (set[inde
 // index names one.
 static unsigned short loopbacks(const char *buf, size_t n, ifindex_set loop) {
     unsigned short top = 0;
-    for (size_t off = 0; off + sizeof(struct if_msghdr) <= n;) {
+    for (size_t off = 0; off + IFM_HEAD <= n;) {
         const struct if_msghdr *m = (const void *)(buf + off);
-        if (m->ifm_msglen < sizeof(struct if_msghdr) || m->ifm_msglen > n - off) break;
+        if (m->ifm_msglen < IFM_HEAD || m->ifm_msglen > n - off) break;
         if (m->ifm_index > top) top = m->ifm_index;
         if ((m->ifm_type == RTM_IFINFO || m->ifm_type == RTM_IFINFO2) && (m->ifm_flags & IFF_LOOPBACK)) {
             loop[m->ifm_index / 8] |= (unsigned char)(1u << (m->ifm_index % 8));
@@ -3258,10 +3267,10 @@ static int iflist(const int name[6], void *old, size_t *oldlen) {
     ifindex_set loop = {0};
     unsigned short top = loopbacks(buf, n, loop);
     size_t out = 0;
-    for (size_t off = 0; off + sizeof(struct if_msghdr) <= n;) {
+    for (size_t off = 0; off + IFM_HEAD <= n;) {
         const struct if_msghdr *m = (const void *)(buf + off);
         size_t len = m->ifm_msglen;
-        if (len < sizeof(struct if_msghdr) || len > n - off) break;
+        if (len < IFM_HEAD || len > n - off) break;
         if (if_in(loop, m->ifm_index) && (!want || want == m->ifm_index)) {
             memmove(buf + out, m, len);
             out += len;
