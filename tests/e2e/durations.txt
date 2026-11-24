@@ -20,6 +20,10 @@ TestConsul 4
 TestContainerNetworkMode 7
 TestDaemonsStayContained 1
 TestDetachKeys 4
+TestDevcontainerDockerOutsideOfDocker 45
+TestDevcontainerLifecycle 60
+TestDevcontainerPlaywright 45
+TestDevcontainerUsers 45
 TestDiffSizeDiskUsageAndSearch 165
 TestDigestReferencesAndPrune 8
 TestDockerBuild 9
@@ -74,7 +78,8 @@ TestPauseUnpauseUpdate 5
 TestPidContainer 2
 TestPidHost 2
 TestPidsLimit 1
-TestPlaywright 5
+TestPlaywright 20
+TestPlaywrightTest 60
 TestPodmanAndDockerNested 5
 TestPodmanCompose 10
 TestPodmanRemote 14
@@ -107,6 +112,9 @@ TestToxiproxy 3
 TestTwoStacksRunSideBySideInIsolation 9
 TestUlimits 2
 TestUserHostnameAndWorkdir 4
+TestVSCodeDevContainersCustomizations 120
+TestVSCodeDevContainersExtension 55
+TestVSCodeDevContainersForwardsCredentials 90
 TestValkey 4
 TestVault 4
 TestVolumeSubpathAndNoCopy 10
