@@ -100,21 +100,47 @@ type ExecIO struct {
 }
 
 // ExecStart runs the exec under the container's profile and blocks until it
-// exits.
+// exits, or its client detaches from its terminal.
 func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) error {
-	x, c, err := e.exec(id)
+	wait, err := e.execBegin(id, tty, size, stdio)
 	if err != nil {
 		return err
+	}
+	wait()
+	return nil
+}
+
+// ExecStartDetached starts the exec as ExecStart does, its output dropped,
+// and returns once it runs, with the error that kept it from starting.
+func (e *Engine) ExecStartDetached(id string, tty bool, size *[2]uint) error {
+	_, err := e.execBegin(id, tty, size, ExecIO{Stdout: io.Discard, Stderr: io.Discard})
+	return err
+}
+
+// execBegin starts the exec and returns what waits for it to exit or
+// detach. An exec that fails before its process starts may be started
+// again; one whose process fails to start has exited.
+func (e *Engine) execBegin(id string, tty bool, size *[2]uint, stdio ExecIO) (wait func(), err error) {
+	x, c, err := e.exec(id)
+	if err != nil {
+		return nil, err
 	}
 	x.mu.Lock()
 	if x.phase != execCreated {
 		x.mu.Unlock()
-		return conflict("exec %s has already been started", id)
+		return nil, conflict("exec %s has already been started", id)
 	}
 	x.phase = execStarting
 	x.mu.Unlock()
+	defer func() {
+		x.mu.Lock()
+		if x.phase == execStarting {
+			x.phase = execCreated
+		}
+		x.mu.Unlock()
+	}()
 	if !c.isRunning() {
-		return conflict("container %s is not running", c.rec.ID)
+		return nil, conflict("container %s is not running", c.rec.ID)
 	}
 	tty = tty || x.cfg.Tty
 	if size == nil {
@@ -123,7 +149,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 
 	spec, err := e.profile(c)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	wd := x.cfg.WorkingDir
 	if wd == "" {
@@ -131,7 +157,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	}
 	limits, _, err := containerLimits(c.resources())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	limits.QoSClamp = max(limits.QoSClamp, e.cfg.QoSClamp)
 	user := x.cfg.User
@@ -140,11 +166,11 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	}
 	env, err := e.processEnv(c, x.cfg.Env, user, tty)
 	if err != nil {
-		return invalid("%v", err)
+		return nil, invalid("%v", err)
 	}
 	anchor, err := e.anchor(c)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rs := runtime.Spec{
 		Root: c.root(), Argv: x.cfg.Cmd, Env: env, WorkDir: wd,
@@ -155,7 +181,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 	var master, slave *os.File
 	if tty {
 		if master, slave, err = pty.Open(); err != nil {
-			return err
+			return nil, err
 		}
 		if size != nil && size[0] > 0 && size[1] > 0 {
 			pty.Setsize(master, &pty.Winsize{Rows: uint16(size[0]), Cols: uint16(size[1])})
@@ -184,7 +210,7 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 		x.phase, x.exitCode = execExited, 126
 		x.mu.Unlock()
 		close(x.done)
-		return invalid("exec failed: %v", err)
+		return nil, invalid("exec failed: %v", err)
 	}
 	x.mu.Lock()
 	x.phase, x.pid, x.master = execRunning, proc.Pid(), master
@@ -238,12 +264,13 @@ func (e *Engine) ExecStart(id string, tty bool, size *[2]uint, stdio ExecIO) err
 		close(x.done)
 		e.publishContainer(c, events.ActionExecDie, map[string]string{"execID": id, "exitCode": itoa(code)})
 	}()
-	select {
-	case <-finished:
-	case <-detached:
-		e.publishContainer(c, events.ActionExecDetach, map[string]string{"execID": id})
-	}
-	return nil
+	return func() {
+		select {
+		case <-finished:
+		case <-detached:
+			e.publishContainer(c, events.ActionExecDetach, map[string]string{"execID": id})
+		}
+	}, nil
 }
 
 func (e *Engine) ExecInspect(id string) (container.ExecInspectResponse, error) {

@@ -653,28 +653,18 @@ func (s *Server) execStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	x, err := s.e.ExecInspect(id)
-	if err != nil {
-		writeEngineError(w, err)
-		return
-	}
 	if req.Detach {
-		// A detached start answers before the exec runs, so the
-		// conflicts ExecStart would report are answered here, as
-		// dockerd answers them.
-		if x.Running || x.ExitCode != nil {
-			writeError(w, http.StatusConflict, "exec "+id+" has already been started")
-			return
-		}
-		if c, err := s.e.Inspect(x.ContainerID); err != nil {
+		// A detached start answers once the exec runs, with the conflict
+		// or failure that kept it from starting, as dockerd answers.
+		if err := s.e.ExecStartDetached(id, req.Tty, req.ConsoleSize); err != nil {
 			writeEngineError(w, err)
 			return
-		} else if c.State == nil || !c.State.Running {
-			writeError(w, http.StatusConflict, "container "+x.ContainerID+" is not running")
-			return
 		}
-		go s.e.ExecStart(id, req.Tty, req.ConsoleSize, engine.ExecIO{Stdout: io.Discard, Stderr: io.Discard})
 		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if _, err := s.e.ExecInspect(id); err != nil {
+		writeEngineError(w, err)
 		return
 	}
 	conn, rw, err := hijack(w, r, req.Tty)
