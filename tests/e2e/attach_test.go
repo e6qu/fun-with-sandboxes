@@ -1,3 +1,5 @@
+//go:build e2e && darwin
+
 package e2e
 
 import (
