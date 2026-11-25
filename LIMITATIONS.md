@@ -45,10 +45,14 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
     has no WebKit: Playwright's WebKit on macOS starts its web content,
     network and GPU processes as XPC services, which launchd runs outside
     the container's sandbox and library, and its builds differ by macOS
-    release, which an image cannot choose for its host. Firefox's own
-    sandboxes are off (`MOZ_DISABLE_*_SANDBOX`), as Chromium runs with
-    `--no-sandbox`, and stay off only where a launch keeps the container's
-    environment.
+    release, which an image cannot choose for its host. Firefox MUST run
+    in a container granted the user's session (`--security-opt
+    seatbelt=gui`, as the engine's user): macOS Firefox starts AppKit even
+    headless, which registers the process with the window server and
+    Launch Services, and AppKit aborts where the container's profile denies
+    those, as it does by default. Firefox's own sandboxes are off
+    (`MOZ_DISABLE_*_SANDBOX`), as Chromium runs with `--no-sandbox`, and
+    stay off only where a launch keeps the container's environment.
   - `fws/neo4j` is the Community Edition.
   - `fws/node` and `fws/rust` compile C and C++ with nixpkgs' clang, ld64
     and macOS SDK, not Xcode's: there is no `xcrun`, `xcodebuild` or

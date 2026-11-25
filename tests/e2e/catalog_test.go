@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -602,13 +603,17 @@ func TestRabbitMQ(t *testing.T) {
 
 // Playwright's library drives each browser the image carries, from a
 // script that requires playwright through the image's NODE_PATH: Chromium's
-// headless shell, Chromium itself in its new headless mode, and Firefox.
+// headless shell in a container like any other, and Firefox in one granted
+// the user's session (--security-opt seatbelt=gui, as the engine's user):
+// macOS Firefox starts AppKit even headless, which registers with the
+// window server and Launch Services, and aborts where the profile denies
+// them (LIMITATIONS).
 func TestPlaywright(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "page.js"), []byte(`const { chromium, firefox } = require("playwright");
+	os.WriteFile(filepath.Join(dir, "page.js"), []byte(`const playwright = require("playwright");
 (async () => {
-  for (const [name, type, options] of [["chromium", chromium, {}], ["firefox", firefox, {}]]) {
-    const browser = await type.launch(options);
+  for (const name of process.argv.slice(2)) {
+    const browser = await playwright[name].launch();
     const page = await browser.newPage();
     await page.setContent("<title>rendered in fws</title><p id=p>painted</p>");
     console.log(name, "title", await page.title(), "text", await page.textContent("#p"));
@@ -618,13 +623,21 @@ func TestPlaywright(t *testing.T) {
   }
 })().catch((e) => { console.error(e); process.exit(1); });
 `), 0o644)
-	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "fws/playwright:1.65", "node", "page.js")
-	if err != nil {
-		t.Fatalf("playwright: %q, %v\nSeatbelt refused Firefox:\n%s\nFirefox's crash report:\n%s", out, err, sandboxDenials(t, "firefox"), crashReport("firefox"))
-	}
-	for _, name := range []string{"chromium", "firefox"} {
-		if !strings.Contains(out, name+" title rendered in fws text painted") || !strings.Contains(out, name+" screenshot true") {
-			t.Errorf("playwright with %s: %q", name, out)
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"chromium", nil},
+		{"firefox", []string{"--security-opt", "seatbelt=gui", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "-e", "HOME=/tmp"}},
+	} {
+		args := append(append([]string{"run", "--rm"}, c.args...), "-v", dir+":/app", "fws/playwright:1.65", "node", "page.js", c.name)
+		out, err := docker(t, args...)
+		if err != nil {
+			t.Errorf("playwright with %s: %q, %v\nSeatbelt refused %s:\n%s", c.name, out, err, c.name, sandboxDenials(t, c.name))
+			continue
+		}
+		if !strings.Contains(out, c.name+" title rendered in fws text painted") || !strings.Contains(out, c.name+" screenshot true") {
+			t.Errorf("playwright with %s: %q", c.name, out)
 		}
 	}
 }
@@ -633,6 +646,8 @@ func TestPlaywright(t *testing.T) {
 // that mounts only its config and specs, as Microsoft's image runs one:
 // each browser project launches its browser headless, renders a page,
 // screenshots it and records a video of it through the image's ffmpeg.
+// Firefox's project runs in a container granted the user's session, as
+// TestPlaywright says why.
 func TestPlaywrightTest(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "playwright.config.ts"), []byte(`import { defineConfig, devices } from "@playwright/test";
@@ -657,18 +672,27 @@ test("renders and screenshots a page", async ({ page, browserName }, testInfo) =
   expect(shot.length).toBeGreaterThan(1000);
 });
 `), 0o644)
-	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "fws/playwright:1.65", "npx", "playwright", "test")
-	if err != nil || !strings.Contains(out, "2 passed") {
-		t.Fatalf("npx playwright test: %q, %v", out, err)
-	}
-	// npx runs the image's runner, from its global prefix, and fetches none.
-	if strings.Contains(out, "will be installed") {
-		t.Errorf("npx fetched playwright rather than run the image's: %q", out)
+	for _, c := range []struct {
+		project string
+		args    []string
+	}{
+		{"chromium", nil},
+		{"firefox", []string{"--security-opt", "seatbelt=gui", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "-e", "HOME=/tmp"}},
+	} {
+		args := append(append([]string{"run", "--rm"}, c.args...), "-v", dir+":/app", "fws/playwright:1.65", "npx", "playwright", "test", "--project", c.project, "--output", "test-results/"+c.project)
+		out, err := docker(t, args...)
+		if err != nil || !strings.Contains(out, "1 passed") {
+			t.Errorf("npx playwright test --project %s: %q, %v", c.project, out, err)
+		}
+		// npx runs the image's runner, from its global prefix, and fetches none.
+		if strings.Contains(out, "will be installed") {
+			t.Errorf("npx fetched playwright rather than run the image's: %q", out)
+		}
 	}
 	// Each test's output directory ends with its project's name.
 	for _, project := range []string{"chromium", "firefox"} {
 		for _, f := range []string{"page.png", "video.webm"} {
-			found, _ := filepath.Glob(filepath.Join(dir, "test-results", "*-"+project, f))
+			found, _ := filepath.Glob(filepath.Join(dir, "test-results", project, "*-"+project, f))
 			if len(found) != 1 {
 				t.Errorf("%s: %s %v", project, f, found)
 				continue
