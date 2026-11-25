@@ -221,9 +221,9 @@ operation family and then allows what the container owns:
 |---|---|
 | Baseline | `(deny default)` with Apple's `system.sb`, then forks, sysctl reads but the process table's listings (`ProcListings`, unless on the host's PID namespace), pseudo-terminals, `file-ioctl`, IPC, inbound network and socket creation, except kernel control and link-layer sockets (domains 32 and 27) |
 | File writes | the container's root (unless read-only), its writable volumes, its port directory, files the engine names (such as the shared-memory ledger) and a few devices |
-| File reads | nothing, then allowed, as under chroot: the container's root and volumes, its port directory, the container library and helper, its stack's network file, the system trees every process needs (`SystemReadPaths`), and the host files a root would hold (`HostReadPaths`: the shells, `/private/var/select`, the time zone, `/private/etc/ssl`, `services`, `protocols`). A container granted the user's session reads everything under `/` but the engine's state directory and the trees that hold user data or other software (`DeniedReadRoots`). Only the libraries may be mapped executable from outside the root |
-| Execution | programs in the root and in volumes not mounted `noexec`, the system shells `popen()` and `system()` hard-code, `/usr/bin/env` for scripts' interpreters (`SystemShells`), and the engine's helper binary `fws-shim`, which starts the container's exec anchor and holds what the anchor and `docker-init` start to the memory limit (`fws-memexec`) |
-| Network | Unix sockets in the root, volumes and port directory, the supervisor's socket and syslog's; binds on the loopback host ports behind the container's ports; TCP connections to those ports, its router's and, when the container has internet access, the egress proxy's, so it reaches another member only through its router, which checks they share a network; UDP datagrams to its stack's block, where the routers' relays lie |
+| File reads | nothing, then, as under chroot: the container's root and volumes, its port directory, the container library and helper, its stack's network file and limit files, the system trees every process needs (`SystemReadPaths`), and the host files a root would hold (`HostReadPaths`: the shells, `/private/var/select`, the time zone, `/private/etc/ssl`, `services`, `protocols`). A container granted the user's session reads everything under `/` but the engine's state and the trees that hold user data or other software (`DeniedReadRoots`). Of the files outside the root and the system tree, only the container library may be mapped executable |
+| Execution | programs in the root and in volumes not mounted `noexec`, the system shells `popen()` and `system()` hard-code and `/usr/bin/env` for scripts' interpreters (`SystemShells`), and the engine's helper binary `fws-shim`, which starts the exec anchor and runs `fws-memexec` |
+| Network | Unix sockets in the root, volumes and port directory, the shim's sockets, a privileged container's nested engine API, and syslog's; binds on the loopback host ports behind the container's ports; connections to those ports, its router's and, with internet access, the egress proxy's; UDP datagrams to its stack's block, where the routers' relays and flow ports lie. Another member is reached only through the container's router, which checks they share a network |
 | Mach services | lookups of a fixed list of Apple services (`MachServices`), and registering and looking up the container's own under its IPC prefix |
 | IPC | POSIX shared memory and semaphores under the container's IPC prefix, and System V IPC, whose keys the container library keeps apart; `--ipc none` denies both, `--ipc host` leaves POSIX names open |
 | Signals and process information | processes in the same sandbox only, and their task name ports; every process with `--pid host` |
@@ -231,19 +231,24 @@ operation family and then allows what the container owns:
 | Read-only and masked paths | last, so no allowance above reaches them: writes denied under read-only paths, reads and writes under masked ones |
 | IOKit and the rest | nothing: `(deny default)` keeps them denied |
 
-The engine applies the profile without `sandbox-exec`:
+A denied operation fails with `EPERM`, with one exception the container
+library makes: a TCP connection to a loopback port outside the container's
+reach, the host's, fails with `ECONNREFUSED`, as it would in a network
+namespace where nothing listens there.
+
+The engine applies the profile without `sandbox-exec`
+([DESIGN §3a](DESIGN.md#3a-isolation-and-limits-without-cgroups) has the
+details):
 
 - `fws-shim`, the container's supervisor, spawns each process through the
-  C spawn helper (`internal/pathmap/src/spawn.c`).
-- The engine compiles the profile once, with libsandbox's
-  `sandbox_compile_string`, and keeps the bytecode beside the profile's
-  text, keyed by the text and the macOS build. The helper applies it with
-  `sandbox_apply`, in microseconds (compiling takes about 15 ms), and then
-  executes the container's program. Where macOS refuses the bytecode, the
-  helper compiles the text itself with `sandbox_init`.
+  C spawn helper (`internal/pathmap/src/spawn.c`), which applies the
+  profile's compiled bytecode with `sandbox_apply` and executes the
+  container's program. The engine compiles each profile text once, with
+  `sandbox_compile_string`, and keeps the bytecode as `profile.bin`; where
+  macOS refuses it, the helper compiles the text with `sandbox_init`.
 - No Apple-signed binary sits between the helper and the program, so the
-  container library (see [DESIGN](DESIGN.md)) reaches every container
-  process: macOS strips `DYLD_INSERT_LIBRARIES` from programs Apple signs.
+  container library reaches every container process: macOS strips
+  `DYLD_INSERT_LIBRARIES` from programs Apple signs.
 - dyld drops the variable for programs signed with the hardened runtime
   too, as vendors' downloads are. The helper, and the library at every
   exec, replace such a program's signature with an ad hoc one without the
@@ -253,9 +258,9 @@ The engine applies the profile without `sandbox-exec`:
   refuses a second profile; Chromium-based applications therefore run with
   `--no-sandbox`.
 - A process may signal only processes of its own sandbox, and a process
-  that enters a profile by itself is a sandbox of its own, as step 4 of the
-  tutorial shows from the other side. So the main process's helper starts
-  an anchor inside the sandbox before it executes the program, and
+  that enters a profile by itself is a sandbox of its own (step 4 of the
+  tutorial shows the inheritance). So the main process's helper starts an
+  exec anchor inside the sandbox before it executes the program, and
   `docker exec` and health checks start through the anchor, in the same
   sandbox as the main process.
 

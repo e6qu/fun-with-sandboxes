@@ -695,7 +695,8 @@ static const char *host_of(const char *p, char *buf) {
 
 // place returns the path container path p names, its symbolic links
 // resolved: a mount's source under a mount's destination, the root's when
-// the root holds it or its parent, else p.
+// the root holds it or its parent, else p where the host's is there for
+// the container to read, else the root's.
 static const char *place(const char *p, char *buf) {
     const char *m = mount_source(p, buf);
     if (m) {
@@ -726,7 +727,14 @@ static const char *place(const char *p, char *buf) {
     *slash = 0;
     int parent = lstat(buf, &st) == 0;
     *slash = '/';
-    return parent ? buf : p;
+    if (parent) {
+        return buf;
+    }
+    // Neither the path nor its parent is the root's: the host's file where
+    // the container may read it, such as a shell or the time zone a root
+    // lacks, else the root's, where the call fails as under chroot, with
+    // ENOENT, rather than with Seatbelt's EPERM for a host path it denies.
+    return lstat(p, &st) == 0 ? p : buf;
 }
 
 // meets_link reports whether the kernel, resolving path relative to fd,

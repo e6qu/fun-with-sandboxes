@@ -2,8 +2,9 @@
 // port. The container library listens on such a port with a Unix socket in
 // the container's port directory, which no other container can reach.
 //
-// For TCP, a client sends the port it wants to the container's router, a
-// loopback port every member of its stack may reach, and the router joins
+// For TCP, a client sends the port it wants to its own container's router,
+// the one loopback router port its sandbox reaches, and the router, which
+// carries a connection to a member only when the two share a network, joins
 // the connection to the socket, first writing the client's address there,
 // so that the listener's side reports its peer as a TCP server's does.
 //

@@ -36,6 +36,25 @@ func TestArgumentsNameTheContainersFiles(t *testing.T) {
 	}
 }
 
+// A path the root lacks, down to its parent, is missing, as under chroot:
+// git and others take a missing file for none, but stop at any other
+// error, such as the EPERM Seatbelt answers for a host path it denies.
+func TestMissingPathsAreMissing(t *testing.T) {
+	out, err := docker(t, "run", "--rm", "fws/python:3.14", "python3", "-c", `import os
+for p in ("/nowhere/at/all", "/root/.config/git/config", "/Users/nobody/file"):
+    try:
+        os.stat(p)
+        print(p, "exists")
+    except FileNotFoundError:
+        print(p, "missing")
+    except OSError as e:
+        print(p, e.strerror)
+`)
+	if want := "/nowhere/at/all missing\n/root/.config/git/config missing\n/Users/nobody/file missing\n"; err != nil || out != want {
+		t.Errorf("stat of paths the root lacks: %q, %v; want %q", out, err, want)
+	}
+}
+
 func TestEntrypointAndCmdWithAbsolutePaths(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(`FROM fws/toolbox:1
