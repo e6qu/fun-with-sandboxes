@@ -976,6 +976,12 @@ func (e *Engine) resolveNetworksLocked(name, service string, req container.Creat
 	if mode == "" || mode == "default" {
 		mode = "bridge"
 	}
+	// The mode names its network by name or ID, as EndpointsConfig's keys
+	// do, and the endpoint EndpointsConfig gave it, with its aliases, is
+	// the one it joins by: Testcontainers for Java names both by ID.
+	if n, err := e.checkNetworkLocked(mode); err == nil {
+		mode = n.Name
+	}
 	if _, ok := out[mode]; !ok {
 		if err := add(mode, nil); err != nil {
 			return nil, err
