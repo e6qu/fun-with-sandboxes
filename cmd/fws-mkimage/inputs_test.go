@@ -10,7 +10,7 @@ import (
 // another build directory give the same digest, and a changed file, flag
 // or store path another.
 func TestInputsDigest(t *testing.T) {
-	inputs := func(content string) (spec, entry string) {
+	files := func(content string) (spec, entry string) {
 		dir := t.TempDir()
 		spec = filepath.Join(dir, "image.json")
 		if err := os.WriteFile(spec, []byte(`{"tag":"fws/x:1","config":{}}`), 0o644); err != nil {
@@ -23,20 +23,20 @@ func TestInputsDigest(t *testing.T) {
 		return spec, entry
 	}
 	digest := func(spec, entry string, pkgs ...string) string {
-		d, err := inputsDigest(spec, "", pkgs, []string{"/entry=" + entry}, "arm64", "", nil, nil, nil)
+		d, err := inputsDigest(inputs{spec: spec, pkgs: pkgs, files: []string{"/entry=" + entry}, arch: "arm64"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return d
 	}
-	a := digest(inputs("v1"))
-	if b := digest(inputs("v1")); a != b {
+	a := digest(files("v1"))
+	if b := digest(files("v1")); a != b {
 		t.Errorf("the same inputs in another directory: %s, want %s", b, a)
 	}
-	if b := digest(inputs("v2")); a == b {
+	if b := digest(files("v2")); a == b {
 		t.Error("a changed file left the digest as it was")
 	}
-	spec, entry := inputs("v1")
+	spec, entry := files("v1")
 	if digest(spec, entry, "/nix/store/aaa-x") == digest(spec, entry, "/nix/store/bbb-x") {
 		t.Error("another store path left the digest as it was")
 	}

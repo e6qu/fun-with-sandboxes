@@ -24,6 +24,18 @@ func TestParseK3sServer(t *testing.T) {
 	if _, err := parseK3sServer([]string{"agent"}, func(string) string { return "" }); err == nil {
 		t.Error("an argument was taken")
 	}
+	// A flag whose effect fws/k3s cannot give is refused, not dropped.
+	for _, args := range [][]string{{"--token", "s3cret"}, {"--flannel-backend=none"}, {"--disable=coredns"}, {"--kubelet-arg", "max-pods=10"}, {"--secrets-encryption"}} {
+		if _, err := parseK3sServer(args, func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "--") {
+			t.Errorf("%q: %v, want a refusal naming the flag", args, err)
+		}
+	}
+	// Disabling what fws/k3s does not run is already so; disabling
+	// local-storage leaves the StorageClass out.
+	o, err = parseK3sServer([]string{"--disable", "traefik,servicelb,metrics-server", "--disable=local-storage"}, func(string) string { return "" })
+	if err != nil || !o.NoLocalStorage {
+		t.Errorf("disabling absent components and local-storage: %+v, %v", o, err)
+	}
 }
 
 func TestK3sKubeadmConfig(t *testing.T) {

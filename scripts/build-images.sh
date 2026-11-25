@@ -202,27 +202,34 @@ deps_of() {
   done < <(nix-store -qR "$@")
 }
 # /bin/nc answers the in-container port check Testcontainers runs, which
-# reads /proc/net/tcp on Linux.
+# reads /proc/net/tcp on Linux. These come before the image's own
+# arguments, where a later -link or -file of the same path wins, so an
+# image's /bin/sh=bash stands over the dash default.
 mkimage() {
-  "$build/fws-mkimage" -reuse "$@" -pkg "$dash" -link /bin/sh=dash -file "/bin/nc=$build/nc" \
-    -file "/etc/services=$iana/etc/services" -file "/etc/protocols=$iana/etc/protocols"
+  "$build/fws-mkimage" -reuse -pkg "$dash" -link /bin/sh=dash -file "/bin/nc=$build/nc" \
+    -file "/etc/services=$iana/etc/services" -file "/etc/protocols=$iana/etc/protocols" "$@"
 }
 
 # accounts NAME [USER UID GID HOME]... writes the /etc/passwd and
 # /etc/group of image NAME, which hold root, nobody and the users the
-# official image has, and sets acct to the -file arguments that add them.
+# official image has, and sets acct to the -file arguments that add them
+# and the -own arguments that give each user its home, as the official
+# image's useradd makes it; /nonexistent stays absent, as its name says.
 accounts() {
   local d="$build/etc-$1"
   shift
   mkdir -p "$d"
   printf 'root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/nonexistent:/bin/false\n' > "$d/passwd"
   printf 'root:x:0:\nnobody:x:65534:\n' > "$d/group"
+  acct=(-file "/etc/passwd=$d/passwd" -file "/etc/group=$d/group")
   while [ $# -ge 4 ]; do
     printf '%s:x:%s:%s::%s:/bin/sh\n' "$1" "$2" "$3" "$4" >> "$d/passwd"
     printf '%s:x:%s:\n' "$1" "$3" >> "$d/group"
+    if [ "$4" != /nonexistent ]; then
+      acct+=(-own "$4=$2:$3")
+    fi
     shift 4
   done
-  acct=(-file "/etc/passwd=$d/passwd" -file "/etc/group=$d/group")
 }
 
 # The commands fws/busybox carries, as separate programs from the GNU tools
@@ -281,7 +288,7 @@ mariadb=$(server_with mariadb mariadbd)
 closure "$mariadb" > "$build/mariadb.closure"
 accounts mariadb mysql 999 999 /var/lib/mysql
 mkimage "${acct[@]}" -spec images/mariadb/image.json -closure "$build/mariadb.closure" -pkg "$mariadb" \
-  -file "/entry=$build/mariadb-entry" -out "$out/mariadb.tar"
+  -file "/entry=$build/mariadb-entry" -file "/etc/mysql/my.cnf=images/mariadb/my.cnf" -out "$out/mariadb.tar"
 
 mysql=$(server_with mysql mysqld)
 closure "$mysql" > "$build/mysql.closure"

@@ -116,7 +116,7 @@ func ConfigGet(key string, args []string) string {
 		if v, ok := strings.CutPrefix(a, "--"+key+"="); ok {
 			return v
 		}
-		if strings.HasPrefix(a, "--"+key) {
+		if a == "--"+key {
 			if i+1 < len(args) {
 				return args[i+1]
 			}
