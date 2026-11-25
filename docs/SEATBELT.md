@@ -231,6 +231,42 @@ operation family and then allows what the container owns:
 | Read-only and masked paths | last, so no allowance above reaches them: writes denied under read-only paths, reads and writes under masked ones |
 | IOKit and the rest | nothing: `(deny default)` keeps them denied |
 
+Since the last matching rule wins, a container's read of a file, by its
+resolved host path, comes out of the profile's rules
+(`internal/seatbelt/profile.go`) as this shows:
+
+```mermaid
+flowchart TD
+  R["file read, by resolved host path"] --> MASK{"under a masked path?"}
+  MASK -->|"yes"| DENY["denied: EPERM"]
+  MASK -->|"no"| OWN{"the root, a volume, the port directory, the system tree, the library, a file the engine names?"}
+  OWN -->|"yes"| ALLOW["allowed"]
+  OWN -->|"no"| GUI{"created with seatbelt=gui?"}
+  GUI -->|"yes"| DR{"under DeniedReadRoots or the engine's state?"}
+  DR -->|"yes"| DENY
+  DR -->|"no"| ALLOW
+  GUI -->|"no"| HRP{"under HostReadPaths?"}
+  HRP -->|"yes"| ALLOW
+  HRP -->|"no"| DENY
+```
+
+A connection or datagram the container sends comes out of the network
+rules so:
+
+```mermaid
+flowchart TD
+  S["connect or send"] --> UX{"a Unix socket?"}
+  UX -->|"yes"| UOK{"in the root, a volume or the port directory, or the shim's, syslog's or a nested engine's socket?"}
+  UOK -->|"yes"| ALLOW["allowed"]
+  UOK -->|"no"| DENY["denied: EPERM"]
+  UX -->|"no"| TCP{"TCP to localhost: a port it binds, its router or its egress proxy?"}
+  TCP -->|"yes"| ALLOW
+  TCP -->|"no"| UDP{"UDP to localhost, on a port of its stack's block?"}
+  UDP -->|"yes"| ALLOW
+  UDP -->|"no"| DENY
+  DENY -->|"TCP to loopback: the library reports"| REF["ECONNREFUSED"]
+```
+
 A denied operation fails with `EPERM`, with one exception the container
 library makes: a TCP connection to a loopback port outside the container's
 reach, the host's, fails with `ECONNREFUSED`, as it would in a network

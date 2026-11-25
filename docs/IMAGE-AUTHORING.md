@@ -667,7 +667,27 @@ run's `--- PASS` line when it is far from that.
 
 ## How a catalog image is built
 
-The reference for each piece of a catalog image's build.
+The reference for each piece of a catalog image's build. The pieces and
+what each hands the next, from Nix to the engine and the registry:
+
+```mermaid
+flowchart LR
+  NIX["Nix: pinned nixpkgs, images/catalog"] -->|"package store paths"| CL["closure file: the store paths, dash's included"]
+  GO["go build: entry programs, fws-mkimage"] -->|"via -file"| MK
+  SPEC["images/NAME/image.json"] -->|"via -spec"| MK
+  CL -->|"via -closure and -pkg"| MK
+  subgraph MK["fws-mkimage"]
+    direction TB
+    S1["copy the closure"] --> S2["relocate Mach-O files, re-sign ad hoc"]
+    S2 --> S3["link bin, rewrite scripts' interpreter lines"]
+    S3 --> S4["add files, check no /nix/store load is left"]
+    S4 --> S5["dirs and -own, -remove, -link"]
+    S5 --> S6["OCI image: a layer per store path, then one more"]
+  end
+  MK -->|"OUT/NAME.tar"| AR["image archive"]
+  AR -->|"docker load or fwsd -image-archives"| ENG["engine"]
+  AR -->|"publish-images.sh, on main"| GHCR["ghcr.io/e6qu/fws-NAME"]
+```
 
 ### The build script
 

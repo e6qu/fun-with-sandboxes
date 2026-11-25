@@ -165,7 +165,18 @@ on any machine; the unit tests' probes and the end-to-end suite need macOS.
 ### CI
 
 `.github/workflows/ci.yml` runs these jobs on pull requests, pushes to
-`main` and by hand:
+`main` and by hand, each waiting for those its `needs:` names:
+
+```mermaid
+flowchart LR
+  L["linux"] --> IM
+  M["macos: macOS 15 and 26"] --> IM
+  P["prebuilt: nine groups"] -->|"Nix store artifacts"| IM["images"]
+  IM -->|"fws-images artifact"| E["e2e: four shards"]
+  IM -->|"fws-images artifact"| PUB["publish: pushes to main only"]
+  E --> PUB
+  PUB -->|"crane push"| G["ghcr.io"]
+```
 
 - `linux`: formatting, the cross-build, the static checks, the portable
   unit tests, 30 s of each fuzz target, that the end-to-end shards hold

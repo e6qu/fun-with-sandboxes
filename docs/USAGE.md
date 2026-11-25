@@ -168,6 +168,25 @@ export CONTAINER_HOST=unix://$HOME/.fws/docker.sock
 crictl --runtime-endpoint unix://$HOME/.fws/docker.sock --image-endpoint unix://$HOME/.fws/docker.sock version
 ```
 
+Every client reaches the one socket, and `fwsd` tells the APIs apart by
+each request (`internal/api/server.go`):
+
+```mermaid
+flowchart LR
+  D["docker, compose, buildx, Testcontainers, kind, devcontainer"] -->|"DOCKER_HOST or a docker context"| SOCK
+  P["podman"] -->|"CONTAINER_HOST"| SOCK
+  K["crictl"] -->|"--runtime-endpoint"| SOCK
+  SOCK["~/.fws/docker.sock"] --> F{"fwsd: which API?"}
+  F -->|"HTTP/2 with a gRPC content type"| CRI["Kubernetes CRI"]
+  F -->|"/libpod/..."| LP["Podman's API"]
+  F -->|"/grpc and /session"| BK["BuildKit"]
+  F -->|"any other path"| DK["Docker Engine API"]
+  CRI --> ENG["the engine"]
+  LP --> ENG
+  BK --> ENG
+  DK --> ENG
+```
+
 `docker version` reports the server's OS as `darwin`, and the engine
 serves Docker's API version 1.52, down to 1.24.
 
@@ -1153,6 +1172,25 @@ they run:
 
 ```bash
 kind load docker-image fws/nginx:1
+```
+
+How a kind cluster sits on the engine (`images/kind-node/entry`,
+`internal/engine/nested.go`, `cmd/fws-kube-proxy`):
+
+```mermaid
+flowchart TD
+  KIND["kind create cluster"] -->|"DOCKER_HOST"| OUT["fwsd"]
+  OUT -->|"a privileged container per node"| NODE
+  OUT -->|"opens one per node"| NEST["nested engine, its API on FWS_ENGINE"]
+  subgraph NODE["node container: fws/kind-node"]
+    KUBELET["kubeadm, kubelet"]
+    KP["fws-kube-proxy"]
+  end
+  KUBELET -->|"CRI on FWS_ENGINE"| NEST
+  KP -->|"PUT the Services"| NEST
+  NEST -->|"each a host process tree in a sandbox of its own"| PODS["pods, the API server's among them"]
+  KP -->|"poll Services and EndpointSlices"| PODS
+  KUBECTL["kubectl"] -->|"the loopback port kind publishes"| PODS
 ```
 
 `kubectl` works as usual: Deployments, Services (cluster IPs, DNS names,
