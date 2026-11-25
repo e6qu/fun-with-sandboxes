@@ -128,6 +128,9 @@ static char helper_comm[MAXCOMLEN + 1];
 // pids.max holds it: a number, or "max" for none. The engine rewrites it
 // as the limit changes.
 static char pids_path[PATH_MAX];
+// The nested engine's API socket a privileged container is handed
+// (FWS_ENGINE), a host path its programs connect to by that name.
+static char engine_socket[PATH_MAX];
 // The socket the container's supervisor answers on with how many processes
 // the container runs (FWS_PIDS_SOCKET), as pids.current holds it.
 static char pids_socket[sizeof(((struct sockaddr_un *)0)->sun_path)];
@@ -522,6 +525,10 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     if (ps && ps[0] == '/' && strlen(ps) < sizeof pids_socket) {
         strcpy(pids_socket, ps);
     }
+    const char *es = getenv("FWS_ENGINE");
+    if (es && es[0] == '/' && strlen(es) < sizeof engine_socket) {
+        strcpy(engine_socket, es);
+    }
     const char *hc = getenv("FWS_HELPER");
     if (hc) {
         strlcpy(helper_comm, hc, sizeof helper_comm);
@@ -693,6 +700,14 @@ static const char *host_of(const char *p, char *buf) {
     return buf;
 }
 
+// host_socket reports whether p is a host socket the container's profile
+// lets it connect to by its host path: syslog's, which libSystem names,
+// and a privileged container's nested engine's.
+static int host_socket(const char *p) {
+    return strcmp(p, "/private/var/run/syslog") == 0 || strcmp(p, "/var/run/syslog") == 0 ||
+           (engine_socket[0] && strcmp(p, engine_socket) == 0);
+}
+
 // place returns the path container path p names, its symbolic links
 // resolved: a mount's source under a mount's destination, the root's when
 // the root holds it or its parent, else p where the host's is there for
@@ -730,11 +745,12 @@ static const char *place(const char *p, char *buf) {
     if (parent) {
         return buf;
     }
-    // Neither the path nor its parent is the root's: the host's file where
-    // the container can read it, such as a shell or the time zone a root
-    // lacks, else the root's, where the call fails as under chroot, with
-    // ENOENT, rather than with Seatbelt's EPERM for a host path it denies.
-    return lstat(p, &st) == 0 ? p : buf;
+    // Neither the path nor its parent is the root's: the host's where the
+    // container reaches it, a file it reads, such as a shell or the time
+    // zone a root lacks, or a socket it connects to but cannot stat, else
+    // the root's, where the call fails as under chroot, with ENOENT, rather
+    // than with Seatbelt's EPERM for a host path it denies.
+    return lstat(p, &st) == 0 || host_socket(p) ? p : buf;
 }
 
 // meets_link reports whether the kernel, resolving path relative to fd,
