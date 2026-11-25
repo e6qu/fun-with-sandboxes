@@ -19,37 +19,6 @@ import (
 // darwin build.
 const electronVersion = "38.2.0"
 
-// crashReport is the start of the newest crash report macOS wrote in the
-// last minutes for a process named like name: what killed it and where.
-func crashReport(name string) string {
-	home, _ := os.UserHomeDir()
-	var newest string
-	var at time.Time
-	for _, dir := range []string{filepath.Join(home, "Library/Logs/DiagnosticReports"), "/Library/Logs/DiagnosticReports"} {
-		ents, _ := os.ReadDir(dir)
-		for _, e := range ents {
-			fi, err := e.Info()
-			if err != nil || !strings.Contains(strings.ToLower(e.Name()), name) || time.Since(fi.ModTime()) > 10*time.Minute {
-				continue
-			}
-			if fi.ModTime().After(at) {
-				newest, at = filepath.Join(dir, e.Name()), fi.ModTime()
-			}
-		}
-	}
-	if newest == "" {
-		return "none"
-	}
-	b, err := os.ReadFile(newest)
-	if err != nil {
-		return err.Error()
-	}
-	if len(b) > 16<<10 {
-		b = b[:16<<10]
-	}
-	return newest + "\n" + string(b)
-}
-
 // sandboxDenials lists what Seatbelt refused the processes named like
 // name in the last minutes, each operation once: what a profile lacks.
 func sandboxDenials(t *testing.T, name string) string {
