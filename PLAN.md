@@ -51,7 +51,8 @@ Docker's CLI, Compose, buildx and BuildKit, Testcontainers for Go, Java,
 Python, Node.js, Bun and Rust, Podman's remote client, `podman-compose`,
 pods and `kube play`, the Dev Containers CLI and VS Code's extension,
 graphical applications (`--security-opt seatbelt=gui`), `crictl`, the
-kubelet, kind and k3s run against the engine in CI on macOS 15 and 26. A
+kubelet, kind and k3s run against the engine in CI's end-to-end tests on
+macOS 15; the engine's own tests run on macOS 15 and 26. A
 catalog of 46 darwin images at 57 tags is published to
 `ghcr.io/e6qu/fws-*` ([IMAGES](docs/IMAGES.md)); Kubernetes is at 1.37.2.
 

@@ -212,7 +212,10 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
   proxy alone; its router carries a connection on only to a member it
   shares a network with. A connection to any other loopback port is
   refused (`ECONNREFUSED`), as in a network namespace where nothing
-  listens there. Datagrams can go to any port of the stack's
+  listens there. So no container reaches a service of the host's:
+  `--add-host name:host-gateway` (and Compose's `extra_hosts`) names the
+  host, on `127.0.0.1`, as Docker does, but a connection to a host port
+  there is refused like any other. Datagrams can go to any port of the stack's
   block, where routers' relays lie, so a program without the library
   reaches a member's UDP host port, and a host process that later binds a
   UDP port in the block is reachable from that stack.

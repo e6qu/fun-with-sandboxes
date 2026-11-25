@@ -34,7 +34,7 @@ func main() {
 	portBase := flag.Int("port-base", 20000, "first host port handed to stacks")
 	portLimit := flag.Int("port-limit", 30000, "end of the host port range handed to stacks (exclusive)")
 	block := flag.Int("block-size", 100, "host ports reserved for each stack")
-	egress := flag.Bool("egress", true, "give each stack an HTTP proxy to the internet that refuses destinations on this host")
+	egress := flag.Bool("egress", true, "give each stack an HTTP and SOCKS5 proxy to the internet that refuses destinations on this host")
 	withBuildKit := flag.Bool("buildkit", true, "serve BuildKit for docker build, buildx and docker compose build")
 	liveRestore := flag.Bool("live-restore", false, "keep containers running while the engine stops, and reconnect to them when it starts")
 	archives := flag.String("image-archives", "", "a directory of image archives (*.tar, as docker save writes them) whose images load the first time they are asked for")
