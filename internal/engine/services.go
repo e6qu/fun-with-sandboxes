@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/netip"
 	"slices"
@@ -41,7 +42,7 @@ type Service struct {
 	// SessionAffinity ClientIP keeps each client on the endpoint it
 	// reached while it comes back within AffinitySeconds of its last
 	// connection or UDP flow; empty or None takes the endpoints by turns.
-	SessionAffinity string `json:"sessionAffinity,omitempty"`
+	SessionAffinity SessionAffinity `json:"sessionAffinity,omitempty"`
 	// AffinitySeconds is ClientIP affinity's timeout; 0 is
 	// Kubernetes' default, three hours.
 	AffinitySeconds int `json:"sessionAffinityTimeout,omitempty"`
@@ -54,15 +55,46 @@ type Service struct {
 // ServicePort is a TCP or UDP port of a service and the endpoints behind it: the
 // addresses of members on the service's network, and their ports.
 type ServicePort struct {
-	Port int `json:"port"`
-	// Protocol is TCP or UDP; empty is TCP.
-	Protocol string `json:"protocol"`
+	Port     int             `json:"port"`
+	Protocol ServiceProtocol `json:"protocol"`
 	// NodePort, when set, is the port of the engine's node where the
 	// service port answers too, as a NodePort Service's does: for an
 	// engine nested in a privileged container, that container's port,
 	// which the members of its networks reach.
 	NodePort  int              `json:"nodePort,omitempty"`
 	Endpoints []netip.AddrPort `json:"endpoints"`
+}
+
+// SessionAffinity is a service's session affinity, as Kubernetes spells
+// it; checkService takes either in any case, and empty for None.
+type SessionAffinity string
+
+const (
+	AffinityNone     SessionAffinity = "None"
+	AffinityClientIP SessionAffinity = "ClientIP"
+)
+
+func (a SessionAffinity) clientIP() bool {
+	return strings.EqualFold(string(a), string(AffinityClientIP))
+}
+
+func (a SessionAffinity) valid() bool {
+	return a == "" || a.clientIP() || strings.EqualFold(string(a), string(AffinityNone))
+}
+
+// ServiceProtocol is a service port's protocol, as Kubernetes spells it;
+// checkService takes either in any case, and empty for TCP.
+type ServiceProtocol string
+
+const (
+	ProtocolTCP ServiceProtocol = "TCP"
+	ProtocolUDP ServiceProtocol = "UDP"
+)
+
+func (p ServiceProtocol) udp() bool { return strings.EqualFold(string(p), string(ProtocolUDP)) }
+
+func (p ServiceProtocol) valid() bool {
+	return p == "" || p.udp() || strings.EqualFold(string(p), string(ProtocolTCP))
 }
 
 // ClusterDomain is the domain of the services' names.
@@ -110,12 +142,37 @@ type serviceListener struct {
 	// container holds the address or the port goes. The services' lock
 	// guards it.
 	clients map[netip.Addr]*clientListener
-	// node and nodePC listen on the node's port nodePort, TCP or UDP,
-	// where one is set; nodeFlows serves nodePC.
-	node      net.Listener
-	nodePC    net.PacketConn
-	nodeFlows io.Closer
-	nodePort  int
+	// node serves the port on a node port as well, where one is set.
+	node *nodeListener
+}
+
+// nodeListener serves a service port on one of the node's ports: l a TCP
+// one, pc and flows a UDP one.
+type nodeListener struct {
+	port  int
+	l     net.Listener
+	pc    net.PacketConn
+	flows io.Closer
+}
+
+func (n *nodeListener) close() {
+	if n.l != nil {
+		n.l.Close()
+	}
+	if n.flows != nil {
+		n.flows.Close()
+	}
+	if n.pc != nil {
+		n.pc.Close()
+	}
+}
+
+// nodePort is the node port the service port is served on as well, or 0.
+func (sl *serviceListener) nodePort() int {
+	if sl.node == nil {
+		return 0
+	}
+	return sl.node.port
 }
 
 type stickyEndpoint struct {
@@ -170,15 +227,9 @@ func (sl *serviceListener) close() {
 
 func (sl *serviceListener) closeNode() {
 	if sl.node != nil {
-		sl.node.Close()
+		sl.node.close()
+		sl.node = nil
 	}
-	if sl.nodeFlows != nil {
-		sl.nodeFlows.Close()
-	}
-	if sl.nodePC != nil {
-		sl.nodePC.Close()
-	}
-	sl.node, sl.nodePC, sl.nodeFlows, sl.nodePort = nil, nil, nil, 0
 }
 
 func (sl *serviceListener) closeClients() {
@@ -239,7 +290,7 @@ func (s Service) clusterIPv4() (netip.Addr, bool) {
 // affinity is how long the service keeps a client's endpoint, 0 for no
 // affinity.
 func (s Service) affinity() time.Duration {
-	if !strings.EqualFold(s.SessionAffinity, "ClientIP") {
+	if !s.SessionAffinity.clientIP() {
 		return 0
 	}
 	if s.AffinitySeconds == 0 {
@@ -307,7 +358,7 @@ func checkService(s Service) error {
 			return invalid("service %s/%s: external IP %v: the service has no cluster IP of its family", s.Namespace, s.Name, a)
 		}
 	}
-	if a := s.SessionAffinity; a != "" && !strings.EqualFold(a, "None") && !strings.EqualFold(a, "ClientIP") {
+	if a := s.SessionAffinity; !a.valid() {
 		return invalid("service %s/%s: session affinity %q is neither None nor ClientIP", s.Namespace, s.Name, a)
 	}
 	if s.AffinitySeconds < 0 || s.AffinitySeconds > maxAffinity {
@@ -317,7 +368,7 @@ func checkService(s Service) error {
 		if p.Port < 1 || p.Port > 65535 || p.NodePort < 0 || p.NodePort > 65535 {
 			return invalid("service %s/%s: port %d (node port %d) is out of range", s.Namespace, s.Name, p.Port, p.NodePort)
 		}
-		if p.Protocol != "" && !strings.EqualFold(p.Protocol, "tcp") && !strings.EqualFold(p.Protocol, "udp") {
+		if !p.Protocol.valid() {
 			return unsupported("service %s/%s: port %d/%s: only TCP and UDP ports are supported", s.Namespace, s.Name, p.Port, p.Protocol)
 		}
 		for _, ep := range p.Endpoints {
@@ -375,49 +426,159 @@ func (e *Engine) SetServices(network string, svcs []Service) error {
 	}
 	sv := &e.svcs
 	sv.mu.Lock()
+	err = e.setServicesLocked(network, svcs, taken)
+	sv.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return e.rewriteNetworks()
+}
+
+// nodeID names a node port: its number and whether it is UDP's.
+type nodeID struct {
+	port int
+	udp  bool
+}
+
+// setServicesLocked replaces network's services, under the services' lock,
+// all at once or not at all: what the update opens, it opens before it
+// closes anything, so an update that fails, on a node port another
+// process holds, say, leaves the network's services as they were. A node
+// port one of the network's ports gives up and another takes in the same
+// update is the exception, which can only move once its holder lets it go:
+// if it fails to, the ports it moved from have theirs back.
+func (e *Engine) setServicesLocked(network string, svcs []Service, taken map[string]bool) error {
+	sv := &e.svcs
 	if sv.byNetwork == nil {
 		sv.byNetwork, sv.listeners, sv.member = map[string][]Service{}, map[serviceKey]*serviceListener{}, map[serviceID]string{}
 	}
-	if err := sv.assignMembers(network, svcs, taken); err != nil {
-		sv.mu.Unlock()
+	member, err := sv.assignMembers(network, svcs, taken)
+	if err != nil {
 		return err
 	}
-	want := map[serviceKey]bool{}
+	want := map[serviceKey]int{}
+	for _, s := range svcs {
+		for _, p := range s.Ports {
+			want[serviceKey{network, s.Namespace, s.Name, p.Port, p.udp()}] = p.NodePort
+		}
+	}
+	// The network's node ports this update takes from the port holding
+	// them, as that port goes or moves to another node port.
+	released := map[nodeID]*serviceListener{}
+	for k, sl := range sv.listeners {
+		if k.network != network || sl.node == nil {
+			continue
+		}
+		if np, ok := want[k]; !ok || np != sl.node.port {
+			released[nodeID{sl.node.port, sl.udp}] = sl
+		}
+	}
+
+	// The update's new listeners, and its new node ports but the
+	// released ones: nothing the network serves changes yet.
+	fresh := map[serviceKey]*serviceListener{}
+	nodes := map[serviceKey]*nodeListener{}
+	undo := func() {
+		for _, n := range nodes {
+			n.close()
+		}
+		for _, sl := range fresh {
+			sl.close()
+		}
+	}
+	type move struct {
+		k serviceKey
+		s Service
+		p ServicePort
+	}
+	var moves []move
 	for _, s := range svcs {
 		for _, p := range s.Ports {
 			k := serviceKey{network, s.Namespace, s.Name, p.Port, p.udp()}
-			want[k] = true
 			sl := sv.listeners[k]
-			if sl == nil && p.udp() {
-				pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-				if err != nil {
-					sv.mu.Unlock()
+			if sl == nil {
+				if sl, err = e.listenService(network, p.udp()); err != nil {
+					undo()
 					return err
 				}
-				sl = &serviceListener{udp: true, pc: pc}
-				sl.flows = portproxy.ServeUDPFlows(pc, func(c *net.UDPAddr) (net.Conn, error) {
-					return e.dialEndpointUDP(network, sl, clientAddr(c))
-				}, nil)
-				sv.listeners[k] = sl
-			} else if sl == nil {
-				l, err := net.Listen("tcp", "127.0.0.1:0")
-				if err != nil {
-					sv.mu.Unlock()
-					return err
-				}
-				sl = &serviceListener{l: l}
-				sv.listeners[k] = sl
-				go e.serveService(network, sl, l, remoteAddr)
+				fresh[k] = sl
 			}
-			if sl.nodePort != p.NodePort {
-				sl.closeNode()
-				if p.NodePort != 0 {
-					if err := e.serveOnNode(network, sl, p.NodePort); err != nil {
-						sv.mu.Unlock()
-						return fmt.Errorf("service %s/%s: node port %d/%s: %w", s.Namespace, s.Name, p.NodePort, p.proto(), err)
-					}
-				}
+			if p.NodePort == 0 || sl.nodePort() == p.NodePort {
+				continue
 			}
+			if released[nodeID{p.NodePort, p.udp()}] != nil {
+				moves = append(moves, move{k, s, p})
+				continue
+			}
+			n, err := e.listenServiceOnNode(network, sl, p.NodePort)
+			if err != nil {
+				undo()
+				return fmt.Errorf("service %s/%s: node port %d/%s: %w", s.Namespace, s.Name, p.NodePort, p.proto(), err)
+			}
+			nodes[k] = n
+		}
+	}
+
+	// The released node ports move: each holder lets its port go, and the
+	// port that takes it listens on it. A move that fails puts back the
+	// ports moved so far.
+	type held struct {
+		sl   *serviceListener
+		port int
+	}
+	var given []held
+	putBack := func() {
+		for _, h := range given {
+			n, err := e.listenServiceOnNode(network, h.sl, h.port)
+			if err != nil {
+				log.Printf("services on %s: node port %d: %v", network, h.port, err)
+				continue
+			}
+			h.sl.node = n
+		}
+	}
+	for _, m := range moves {
+		id := nodeID{m.p.NodePort, m.p.udp()}
+		if holder := released[id]; holder.node != nil && holder.node.port == id.port {
+			holder.closeNode()
+			given = append(given, held{holder, id.port})
+		}
+		sl := sv.listeners[m.k]
+		if sl == nil {
+			sl = fresh[m.k]
+		}
+		n, err := e.listenServiceOnNode(network, sl, m.p.NodePort)
+		if err != nil {
+			undo()
+			putBack()
+			return fmt.Errorf("service %s/%s: node port %d/%s: %w", m.s.Namespace, m.s.Name, m.p.NodePort, m.p.proto(), err)
+		}
+		nodes[m.k] = n
+	}
+
+	// Nothing fails from here: the ports that go close, and the rest take
+	// their new node ports, services and endpoints.
+	for k, sl := range sv.listeners {
+		if k.network != network {
+			continue
+		}
+		switch np, ok := want[k]; {
+		case !ok:
+			sl.close()
+			delete(sv.listeners, k)
+		case sl.nodePort() != np:
+			sl.closeNode()
+		}
+	}
+	for k, sl := range fresh {
+		sv.listeners[k] = sl
+	}
+	for k, n := range nodes {
+		sv.listeners[k].node = n
+	}
+	for _, s := range svcs {
+		for _, p := range s.Ports {
+			sl := sv.listeners[serviceKey{network, s.Namespace, s.Name, p.Port, p.udp()}]
 			sl.mu.Lock()
 			if s.affinity() != sl.svc.affinity() {
 				sl.sticky = nil
@@ -426,42 +587,57 @@ func (e *Engine) SetServices(network string, svcs []Service) error {
 			sl.mu.Unlock()
 		}
 	}
-	for k, sl := range sv.listeners {
-		if k.network == network && !want[k] {
-			sl.close()
-			delete(sv.listeners, k)
-		}
-	}
+	sv.member = member
 	if len(svcs) == 0 {
 		delete(sv.byNetwork, network)
 	} else {
 		sv.byNetwork[network] = append([]Service(nil), svcs...)
 	}
-	sv.mu.Unlock()
-	return e.rewriteNetworks()
+	return nil
+}
+
+// listenService opens a loopback listener for a service port of network,
+// TCP or UDP, and serves it.
+func (e *Engine) listenService(network string, udp bool) (*serviceListener, error) {
+	if udp {
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		sl := &serviceListener{udp: true, pc: pc}
+		sl.flows = portproxy.ServeUDPFlows(pc, func(c *net.UDPAddr) (net.Conn, error) {
+			return e.dialEndpointUDP(network, sl, clientAddr(c))
+		}, nil)
+		return sl, nil
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	sl := &serviceListener{l: l}
+	go e.serveService(network, sl, l, remoteAddr)
+	return sl, nil
 }
 
 // assignMembers gives each of network's services without an IPv4 cluster
 // IP a member address, keeping the one it holds, from the top of the
 // member block down, where containers take theirs from the bottom up; it
-// frees those of the network's services that are gone.
-func (sv *services) assignMembers(network string, svcs []Service, taken map[string]bool) error {
+// frees those of the network's services that are gone. It returns the
+// services' member addresses after the update, leaving sv's as they are.
+func (sv *services) assignMembers(network string, svcs []Service, taken map[string]bool) (map[serviceID]string, error) {
 	need := map[serviceID]bool{}
 	for _, s := range svcs {
 		if _, ok := s.clusterIPv4(); !ok && s.ExternalName == "" {
 			need[serviceID{network, s.Namespace, s.Name}] = true
 		}
 	}
-	for id := range sv.member {
-		if id.network == network && !need[id] {
-			delete(sv.member, id)
-		}
-	}
+	member := map[serviceID]string{}
 	for id, a := range sv.member {
-		taken[a] = true
-		if need[id] {
-			delete(need, id)
+		if id.network == network && !need[id] {
+			continue
 		}
+		member[id], taken[a] = a, true
+		delete(need, id)
 	}
 	ids := make([]serviceID, 0, len(need))
 	for id := range need {
@@ -473,34 +649,31 @@ func (sv *services) assignMembers(network string, svcs []Service, taken map[stri
 		for ; i >= 2 && taken[fmt.Sprintf("%s%d.%d", memberBlock, i>>8, i&255)]; i-- {
 		}
 		if i < 2 {
-			return fmt.Errorf("service %s/%s: no member address is free", id.namespace, id.name)
+			return nil, fmt.Errorf("service %s/%s: no member address is free", id.namespace, id.name)
 		}
 		a := fmt.Sprintf("%s%d.%d", memberBlock, i>>8, i&255)
-		sv.member[id], taken[a] = a, true
+		member[id], taken[a] = a, true
 	}
-	return nil
+	return member, nil
 }
 
-// serveOnNode serves the service port on the node's port p as well.
-func (e *Engine) serveOnNode(network string, sl *serviceListener, p int) error {
+// listenServiceOnNode serves sl's port on the node's port p as well.
+func (e *Engine) listenServiceOnNode(network string, sl *serviceListener, p int) (*nodeListener, error) {
 	if sl.udp {
 		pc, err := e.listenUDPOnNode(p)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		sl.nodePC, sl.nodePort = pc, p
-		sl.nodeFlows = portproxy.ServeUDPFlows(pc, func(c *net.UDPAddr) (net.Conn, error) {
+		return &nodeListener{port: p, pc: pc, flows: portproxy.ServeUDPFlows(pc, func(c *net.UDPAddr) (net.Conn, error) {
 			return e.dialEndpointUDP(network, sl, clientAddr(c))
-		}, nil)
-		return nil
+		}, nil)}, nil
 	}
 	nl, err := e.listenOnNode(p)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	sl.node, sl.nodePort = nl, p
 	go e.serveService(network, sl, nl, remoteAddr)
-	return nil
+	return &nodeListener{port: p, l: nl}, nil
 }
 
 // Services are the services on network.
@@ -624,7 +797,7 @@ func (e *Engine) dialEndpoint(network string, sl *serviceListener, client netip.
 }
 
 // udp reports whether the port is a UDP one.
-func (p ServicePort) udp() bool { return strings.EqualFold(p.Protocol, "udp") }
+func (p ServicePort) udp() bool { return p.Protocol.udp() }
 
 func (p ServicePort) proto() string {
 	if p.udp() {

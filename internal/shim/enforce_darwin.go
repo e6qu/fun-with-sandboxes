@@ -92,7 +92,7 @@ func newEnforcer(tag string, main int, r Resources, net *netstat.Watcher) *enfor
 }
 
 // startLocked starts the loop that follows the members, and enforces the
-// limits when there are any. The members must be known while the main
+// limits when there are any. The members have to be known while the main
 // process lives: once it ends, macOS holds each process it answered for
 // responsible for itself.
 func (e *enforcer) startLocked() {
@@ -115,7 +115,7 @@ func (e *enforcer) startLocked() {
 	for _, pid := range pids {
 		e.watchLocked(pid)
 	}
-	// A member may have forked between the scan and its watch, and ended
+	// A member might have forked between the scan and its watch, and ended
 	// too, leaving what it forked to launchd.
 	if !e.followLocked(pids) {
 		e.scanLocked()
@@ -161,7 +161,7 @@ func killedAtLimit(ev unix.Kevent_t) bool {
 
 // followLocked admits the children of the given members, and theirs, as
 // members. It reports false when one ended before it was watched, or
-// before its children were read, as what it started may then have gone to
+// before its children were read, as what it started might then have gone to
 // launchd.
 func (e *enforcer) followLocked(parents []int) bool {
 	whole := true
@@ -177,7 +177,7 @@ func (e *enforcer) followLocked(parents []int) bool {
 		}
 		// A forker that ended before its children were read left them to
 		// launchd, where its list no longer holds them: the process table
-		// is read whole for them, as its exit may come in a later batch of
+		// is read whole for them, as its exit can come in a later batch of
 		// events, without its fork.
 		if m, ok := e.members[ppid]; ok {
 			if p, alive := procs.Find(ppid); !alive || p.Start != m.start {
@@ -242,7 +242,7 @@ func (e *enforcer) close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.kq >= 0 {
-		// The loop may end before it reads the main process's exit, which
+		// The loop can end before it reads the main process's exit, which
 		// ends the container: whether the kernel killed it at its memory
 		// limit is in that event.
 		events := make([]unix.Kevent_t, 16)
@@ -335,7 +335,7 @@ func (e *enforcer) loop() {
 // scanLocked updates the member set from the process table: the main
 // process's group, the descendants of members, and any process that
 // started with the container's tag. A member it finds that ends before it
-// is watched may have forked after the table was read, so the table is
+// is watched might have forked after the table was read, so the table is
 // read again, a few times at most.
 func (e *enforcer) scanLocked() {
 	for range 8 {
@@ -555,7 +555,7 @@ func (e *enforcer) update(r Resources) {
 	e.startLocked()
 }
 
-// renice sets the members' scheduling priority. Only root may lower a nice
+// renice sets the members' scheduling priority. Only root can lower a nice
 // value, so a request for a higher priority than the processes have fails.
 func (e *enforcer) renice(nice int) error {
 	e.mu.Lock()

@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e && darwin
 
 package e2e
 
@@ -7,12 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -79,7 +79,15 @@ func devcontainerUp(t *testing.T, files map[string]string) (string, upResult) {
 			t.Fatal(err)
 		}
 	}
-	out, err := devcontainer(t, "up", "--workspace-folder", dir)
+	return dir, devcontainerUpIn(t, dir)
+}
+
+// devcontainerUpIn runs devcontainer up in the workspace dir with args, as
+// VS Code's Reopen in Container and Rebuild Container do, and removes the
+// container it reports when the test ends.
+func devcontainerUpIn(t *testing.T, dir string, args ...string) upResult {
+	t.Helper()
+	out, err := devcontainer(t, append([]string{"up", "--workspace-folder", dir}, args...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +103,7 @@ func devcontainerUp(t *testing.T, files map[string]string) (string, upResult) {
 	if res.Outcome != "success" {
 		t.Fatalf("devcontainer up: %+v", res)
 	}
-	return dir, res
+	return res
 }
 
 // The Dev Containers CLI brings up a devcontainer.json on a darwin image:
@@ -253,7 +261,7 @@ func TestDevcontainerAppPort(t *testing.T) {
 	})
 	var body string
 	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		res, err := http.Get("http://127.0.0.1:" + port + "/index.txt")
+		res, err := pollClient.Get("http://127.0.0.1:" + port + "/index.txt")
 		if err != nil {
 			continue
 		}
@@ -268,8 +276,9 @@ func TestDevcontainerAppPort(t *testing.T) {
 }
 
 // A dev container that is a service of a Compose project: the CLI brings
-// the project up with an override file of its own, runs commands in the
-// named service, and the service reaches its neighbour by name.
+// the project up with an override file of its own, starting the services
+// runServices names alone, runs commands in the named service, and the
+// service reaches its neighbour by name.
 func TestDevcontainerCompose(t *testing.T) {
 	dir, res := devcontainerUp(t, map[string]string{
 		"index.txt": "from the neighbour\n",
@@ -285,10 +294,14 @@ func TestDevcontainerCompose(t *testing.T) {
     command: ["python3", "-m", "http.server", "8000"]
     volumes:
       - ..:/srv
+  idle:
+    image: fws/base:1
+    command: ["sleep", "600"]
 `,
 		".devcontainer/devcontainer.json": `{
   "dockerComposeFile": "compose.yaml",
   "service": "dev",
+  "runServices": ["dev", "web"],
   "workspaceFolder": "/workspace",
   "postCreateCommand": "echo created > /tmp/created"
 }
@@ -317,6 +330,204 @@ func TestDevcontainerCompose(t *testing.T) {
 	}
 	if out != "from the neighbour\ncreated\n" {
 		t.Errorf("the Compose dev container printed %q", out)
+	}
+	if ids, _ := docker(t, "ps", "-aq", "--filter", "label="+project, "--filter", "label=com.docker.compose.service=idle"); strings.TrimSpace(ids) != "" {
+		t.Errorf("a service runServices leaves out has containers: %s", ids)
+	}
+}
+
+// The lifecycle commands run where and when the Dev Containers CLI runs
+// them, as VS Code's Reopen in Container and Rebuild Container do:
+// initializeCommand on the host before each up; the creation commands
+// once per container, in order, in their string, array and parallel
+// object forms; postStartCommand at each start, and postAttachCommand at
+// each attach. A stopped container starts again with its files, a rebuild
+// makes a new container, and a named volume of mounts keeps what the
+// first one wrote. devcontainer exec passes the command's exit status and
+// streams through, with the environment --remote-env adds.
+func TestDevcontainerLifecycle(t *testing.T) {
+	const volume = "fws-e2e-devcontainer-cache"
+	docker(t, "volume", "rm", "-f", volume)
+	t.Cleanup(func() { docker(t, "volume", "rm", "-f", volume) })
+	dir, first := devcontainerUp(t, map[string]string{
+		".devcontainer/devcontainer.json": `{
+  "image": "fws/base:1",
+  "initializeCommand": "echo initialized >> '${localWorkspaceFolder}/initialized'",
+  "mounts": ["source=` + volume + `,target=/cache,type=volume"],
+  "onCreateCommand": "echo on-create >> /tmp/lifecycle; echo created >> /cache/creations",
+  "updateContentCommand": ["/bin/sh", "-c", "echo update-content >> /tmp/lifecycle"],
+  "postCreateCommand": {
+    "logged": "echo post-create >> /tmp/lifecycle",
+    "beside": ["sh", "-c", "echo beside > /tmp/post-create-beside"]
+  },
+  "postStartCommand": "echo post-start >> /tmp/lifecycle",
+  "postAttachCommand": "echo post-attach >> /tmp/lifecycle"
+}
+`,
+	})
+	read := func(want string) {
+		t.Helper()
+		out, err := devcontainer(t, "exec", "--workspace-folder", dir, "sh", "-c", "cat /tmp/lifecycle /tmp/post-create-beside /cache/creations initialized")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out != want {
+			t.Errorf("the lifecycle commands left %q, want %q", out, want)
+		}
+	}
+	read("on-create\nupdate-content\npost-create\npost-start\npost-attach\nbeside\ncreated\ninitialized\n")
+
+	// The command's own status and streams, apart from the CLI's log.
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "devcontainer", "exec", "--workspace-folder", dir, "--remote-env", "FROM_FLAG=flag",
+		"sh", "-c", "echo $FROM_FLAG; echo to-stderr >&2; exit 3")
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if cmd.ProcessState == nil {
+		t.Fatalf("devcontainer exec: %v", err)
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 3 || stdout.String() != "flag\n" || !strings.Contains(stderr.String(), "to-stderr") {
+		t.Errorf("devcontainer exec of a command that exits 3: status %d (%v), stdout %q, stderr %q", code, err, stdout.String(), stderr.String())
+	}
+
+	// Reopening a stopped container starts it again: postStartCommand runs
+	// for the new start, postAttachCommand for the new attach, nothing else.
+	mustDocker(t, "stop", first.ContainerID)
+	if again := devcontainerUpIn(t, dir); again.ContainerID != first.ContainerID {
+		t.Errorf("reopening a stopped dev container made another: %s, was %s", again.ContainerID, first.ContainerID)
+	}
+	read("on-create\nupdate-content\npost-create\npost-start\npost-attach\npost-start\npost-attach\nbeside\ncreated\ninitialized\ninitialized\n")
+
+	// A rebuild replaces the container and runs every command again; the
+	// volume is the one the first container wrote to.
+	rebuilt := devcontainerUpIn(t, dir, "--remove-existing-container")
+	if rebuilt.ContainerID == first.ContainerID {
+		t.Errorf("a rebuild kept the container %s", first.ContainerID)
+	}
+	if _, err := docker(t, "inspect", first.ContainerID); err == nil {
+		t.Errorf("a rebuild left the container it replaced, %s", first.ContainerID)
+	}
+	read("on-create\nupdate-content\npost-create\npost-start\npost-attach\nbeside\ncreated\ncreated\ninitialized\ninitialized\ninitialized\n")
+}
+
+// A dev container whose image has users of its own, as most dev container
+// images do: containerUser runs the container, remoteUser the lifecycle
+// commands and devcontainer exec, with that user's home and the
+// environment remoteEnv builds from the container's and the host's. The
+// workspace belongs to the remote user, as updateRemoteUserUID arranges on
+// Linux (the CLI applies it on Linux hosts alone; here every process runs
+// as the engine's user, who owns the workspace on the host): Git works in
+// it, and what the user writes there is the host user's on the host.
+func TestDevcontainerUsers(t *testing.T) {
+	t.Setenv("FWS_E2E_LOCAL", "local")
+	dir, res := devcontainerUp(t, map[string]string{
+		".devcontainer/Dockerfile": `FROM fws/base:1
+RUN echo 'dev:x:1000:1000:dev:/home/dev:/bin/bash' >> /etc/passwd && echo 'dev:x:1000:' >> /etc/group \
+ && echo 'app:x:1001:1001:app:/home/app:/bin/bash' >> /etc/passwd && echo 'app:x:1001:' >> /etc/group \
+ && mkdir -p /home/dev /home/app && chown dev:dev /home/dev && chown app:app /home/app
+`,
+		".devcontainer/devcontainer.json": `{
+  "build": {"dockerfile": "Dockerfile"},
+  "containerUser": "app",
+  "remoteUser": "dev",
+  "updateRemoteUserUID": true,
+  "containerEnv": {"FROM_CONTAINER": "container"},
+  "remoteEnv": {"PATH": "${containerEnv:PATH}:/home/dev/bin", "FROM_LOCAL": "${localEnv:FWS_E2E_LOCAL}"},
+  "postCreateCommand": "id -un > /tmp/created-by"
+}
+`,
+	})
+	if res.RemoteUser != "dev" {
+		t.Errorf("devcontainer up: %+v, want the remote user dev", res)
+	}
+	if out, err := exec.Command("git", "init", "--quiet", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	out, err := devcontainer(t, "exec", "--workspace-folder", dir, "sh", "-c",
+		`id -un; id -u; echo $HOME; cat /tmp/created-by; echo $FROM_CONTAINER $FROM_LOCAL ${PATH##*:}; echo by dev > made-by-dev; stat -c %U made-by-dev; git status --porcelain`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "dev\n1000\n/home/dev\ndev\ncontainer local /home/dev/bin\ndev\n?? .devcontainer/\n?? made-by-dev\n"; out != want {
+		t.Errorf("the remote user's command printed %q, want %q\nSeatbelt refused git:\n%s", out, want, sandboxDenials(t, "git"))
+	}
+	if out := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.Config.User}}", res.ContainerID)); out != "app" {
+		t.Errorf("the container runs as %q, want containerUser app", out)
+	}
+	if out := strings.TrimSpace(mustDocker(t, "exec", res.ContainerID, "id", "-un")); out != "app" {
+		t.Errorf("docker exec runs as %q, want the container's user app", out)
+	}
+	fi, err := os.Stat(filepath.Join(dir, "made-by-dev"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uid := fi.Sys().(*syscall.Stat_t).Uid; int(uid) != os.Getuid() {
+		t.Errorf("the file the remote user wrote in the workspace belongs to uid %d on the host, want %d", uid, os.Getuid())
+	}
+}
+
+// Docker outside of Docker, as the docker-outside-of-docker feature sets
+// it up on Linux: the engine's socket mounted into the dev container, with
+// fws/dind's darwin Docker CLI, drives the engine that runs the container
+// (the CLI overrides the image's command, so no daemon of its own starts).
+// The container finds itself, and runs a sibling that mounts the workspace
+// by its host path, which remoteEnv hands in. The Dockerfile builds on
+// fws/dind rather than copying its store into another image: a layer of
+// the whole store took four minutes to export on a CI runner.
+func TestDevcontainerDockerOutsideOfDocker(t *testing.T) {
+	sock := strings.TrimPrefix(dockerHost, "unix://")
+	dir, res := devcontainerUp(t, map[string]string{
+		"README": "from the workspace\n",
+		".devcontainer/Dockerfile": `FROM fws/dind:29
+`,
+		".devcontainer/devcontainer.json": `{
+  "build": {"dockerfile": "Dockerfile"},
+  "mounts": ["type=bind,source=` + sock + `,target=/var/run/docker.sock"],
+  "remoteEnv": {"LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"}
+}
+`,
+	})
+	out, err := devcontainer(t, "exec", "--workspace-folder", dir, "sh", "-c",
+		`docker ps -q --no-trunc && docker run --rm -v "$LOCAL_WORKSPACE_FOLDER:/w" fws/base:1 cat /w/README`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, res.ContainerID+"\n") || !strings.HasSuffix(out, "from the workspace\n") {
+		t.Errorf("the Docker CLI in the dev container printed %q; want the container %s listed and the sibling's output", out, res.ContainerID)
+	}
+}
+
+// Playwright in a dev container on the catalog's Playwright image, which
+// carries the commands the CLI runs in it: a test in the workspace,
+// run by devcontainer exec as a developer runs it, requires the image's
+// playwright package, drives its Chromium and saves a screenshot to the
+// workspace.
+func TestDevcontainerPlaywright(t *testing.T) {
+	dir, _ := devcontainerUp(t, map[string]string{
+		"page.js": `const { chromium } = require("playwright");
+(async () => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  await page.setContent("<title>rendered in a dev container</title><p id=p>painted</p>");
+  console.log("title", await page.title(), "text", await page.textContent("#p"));
+  await page.screenshot({ path: "shot.png" });
+  await browser.close();
+})().catch((e) => { console.error(e); process.exit(1); });
+`,
+		".devcontainer/devcontainer.json": `{"image": "fws/playwright:1.65"}
+`,
+	})
+	out, err := devcontainer(t, "exec", "--workspace-folder", dir, "node", "page.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "title rendered in a dev container text painted\n" {
+		t.Errorf("Playwright in the dev container printed %q", out)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "shot.png")); err != nil || len(b) < 1000 || !strings.HasPrefix(string(b), "\x89PNG") {
+		t.Errorf("the screenshot in the workspace: %d bytes, %v", len(b), err)
 	}
 }
 
@@ -356,7 +567,7 @@ func TestDevcontainerVSCodeServer(t *testing.T) {
 	})
 	var version string
 	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(500 * time.Millisecond) {
-		res, err := http.Get("http://127.0.0.1:" + port + "/version")
+		res, err := pollClient.Get("http://127.0.0.1:" + port + "/version")
 		if err != nil {
 			continue
 		}

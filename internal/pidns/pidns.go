@@ -6,7 +6,7 @@
 // signals them and reads their information for its container's library,
 // which asks it over a Unix socket only that container reaches.
 //
-// The namespace's file, which the engine keeps and no container may write,
+// The namespace's file, which the engine keeps and no container can write,
 // lists the tags (SANDBOX_ROOT=<root>) of the containers that share it, the
 // one whose main process is the namespace's pid 1 first.
 package pidns

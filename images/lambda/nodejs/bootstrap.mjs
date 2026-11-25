@@ -1,7 +1,7 @@
 // The Node.js runtime of the fws Lambda images: a client of the Lambda
 // Runtime API that loads the handler and runs each invocation, as AWS's
 // runtime interface client does. The handler is file.function, the file
-// an .mjs, .js or .cjs module under LAMBDA_TASK_ROOT; it may return a
+// an .mjs, .js or .cjs module under LAMBDA_TASK_ROOT; it MAY return a
 // promise or take a callback.
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";

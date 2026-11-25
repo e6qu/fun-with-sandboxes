@@ -238,7 +238,7 @@ func Build(dir string) (string, error) {
 	if err := clang(append(append([]string{"clang", "-O2", "-Wall", "-Werror"}, extra...), "-o", spawn, spawnSrc, "-lsandbox")); err != nil {
 		return "", err
 	}
-	// Another engine may have built them meanwhile; either build is the
+	// Another engine might have built them meanwhile; either build is the
 	// same. The library goes last: its presence says the helper is there.
 	if err := os.Rename(spawn, Spawner(out)); err != nil {
 		return "", err

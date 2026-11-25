@@ -267,4 +267,27 @@ func TestSystemDF(t *testing.T) {
 	if res := call(t, ts, "GET", "/system/df?type=nonsense", "", nil); res.StatusCode != 400 {
 		t.Fatalf("system df for an unknown type: %d", res.StatusCode)
 	}
+	// API 1.52 adds each kind's usage, with its items where verbose, which
+	// then leaves the legacy lists out, as the Docker CLI 29 reads it.
+	var v152 struct {
+		Images     []any
+		ImageUsage *struct {
+			TotalCount, ActiveCount, TotalSize int64
+			Items                              []any
+		}
+		VolumeUsage *struct{ TotalCount int64 }
+	}
+	call(t, ts, "GET", "/v1.52/system/df?verbose=1", "", &v152)
+	if v152.Images != nil || v152.ImageUsage == nil || v152.ImageUsage.TotalCount != 2 || len(v152.ImageUsage.Items) != 2 ||
+		v152.ImageUsage.TotalSize != du.LayersSize || v152.VolumeUsage == nil || v152.VolumeUsage.TotalCount != 1 {
+		t.Fatalf("system df at API 1.52, verbose: %+v", v152)
+	}
+	var brief struct {
+		Images     []any
+		ImageUsage *struct{ Items []any }
+	}
+	call(t, ts, "GET", "/v1.52/system/df", "", &brief)
+	if len(brief.Images) != 2 || brief.ImageUsage == nil || brief.ImageUsage.Items != nil {
+		t.Fatalf("system df at API 1.52: %+v", brief)
+	}
 }

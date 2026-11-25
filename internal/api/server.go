@@ -140,12 +140,26 @@ func linkReference(u *url.URL) {
 	}
 }
 
+// info answers GET /info. Testcontainers for Java refuses an engine whose
+// OSType is anything but "linux", with no setting to allow another, though
+// it only warns where the OSType is blank. Its images are named, and fws
+// runs the darwin ones of those names, so that client, which names itself
+// tc-java/<version>, is given a blank OSType; every other client the
+// host's, "darwin".
+func (s *Server) info(w http.ResponseWriter, r *http.Request) {
+	i := s.e.Info()
+	if strings.HasPrefix(r.UserAgent(), "tc-java/") {
+		i.OSType = ""
+	}
+	writeJSON(w, http.StatusOK, i)
+}
+
 func (s *Server) routes() {
 	m := s.mux
 	m.HandleFunc("GET /_ping", s.ping)
 	m.HandleFunc("HEAD /_ping", s.ping)
 	m.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, s.e.Version()) })
-	m.HandleFunc("GET /info", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, s.e.Info()) })
+	m.HandleFunc("GET /info", s.info)
 	m.HandleFunc("GET /events", s.events)
 	m.HandleFunc("GET /system/df", s.systemDF)
 	m.HandleFunc("GET /distribution/{ref...}", s.distribution)
@@ -967,8 +981,9 @@ func (s *Server) buildPrune(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, report)
 }
 
-// systemDF serves GET /system/df in API 1.51's shape, the build cache
-// holding the classic builder's steps and BuildKit's records.
+// systemDF serves GET /system/df, in the shape the request's API version
+// takes, the build cache holding the classic builder's steps and
+// BuildKit's records.
 func (s *Server) systemDF(w http.ResponseWriter, r *http.Request) {
 	want := map[string]bool{}
 	for _, t := range r.URL.Query()["type"] {
@@ -992,6 +1007,10 @@ func (s *Server) systemDF(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u.BuildCache = append(u.BuildCache, records...)
+	}
+	if cmpVersion(apiVersion(r), "1.52") >= 0 {
+		writeJSON(w, http.StatusOK, diskUsageFor(r, u, want))
+		return
 	}
 	writeJSON(w, http.StatusOK, u)
 }

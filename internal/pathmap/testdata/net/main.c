@@ -249,7 +249,7 @@ int main(int argc, char **argv) {
         char *rt = NULL;
         int defaults = 0, others = 0, got = 0;
         char gwtext[INET_ADDRSTRLEN] = "none";
-        // The table may grow between the two calls, as connections to
+        // The table can grow between the two calls, as connections to
         // loopback addresses clone routes.
         for (int tries = 0; tries < 8 && !got && sysctl(mib, 6, NULL, &len, NULL, 0) == 0; tries++) {
             len += len / 4 + 1024;

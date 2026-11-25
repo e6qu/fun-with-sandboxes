@@ -2,6 +2,7 @@ package engine
 
 import (
 	"crypto/rand"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -104,14 +105,21 @@ func (e *Engine) ensureEgress(stack string) (int, error) {
 		return 0, err
 	}
 	kf := e.egressKeyFile(stack)
-	if p, ok := e.egress[stack]; ok && p.Port == port && p.Members == nf && p.Key == kf && p.alive() {
-		return port, nil
+	serves := func(p *egressProc) bool { return p.Port == port && p.Members == nf && p.Key == kf && p.alive() }
+	// A proxy that serves elsewhere, or no longer, makes way for the new
+	// one: left running, it would hold its port and serve stale members.
+	if p, ok := e.egress[stack]; ok {
+		if serves(p) {
+			return port, nil
+		}
+		stopProcess(p)
+		delete(e.egress, stack)
 	}
 	// A proxy an earlier engine left running keeps serving unless it
 	// predates the network file or the key, which it would not know.
 	var left egressProc
-	if ok, _ := readJSON(e.egressFile(stack), &left); ok && left.Port == port && left.alive() {
-		if left.Members == nf && left.Key == kf {
+	if ok, _ := readJSON(e.egressFile(stack), &left); ok {
+		if serves(&left) {
 			e.egress[stack] = &left
 			return port, nil
 		}
@@ -139,7 +147,15 @@ func (e *Engine) ensureEgress(stack string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	start, _ := processStart(proc.Pid)
+	// A proxy whose start time cannot be read could never be told from
+	// another process with its pid later, and would never be stopped: it
+	// is stopped now instead.
+	start, ok := processStart(proc.Pid)
+	if !ok {
+		proc.Kill()
+		proc.Wait()
+		return 0, fmt.Errorf("egress proxy for %s: its process %d cannot be read", stack, proc.Pid)
+	}
 	p := &egressProc{Pid: proc.Pid, Start: start, Port: port, Members: nf, Key: kf}
 	if err := writeJSON(e.egressFile(stack), p); err != nil {
 		stopProcess(p)

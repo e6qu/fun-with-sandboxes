@@ -24,15 +24,21 @@ import (
 )
 
 const (
-	Version       = "0.1.0"
-	APIVersion    = "1.51"
+	// Version is fws's own version.
+	Version = "0.1.0"
+	// DockerVersion is the Docker Engine release whose API, APIVersion,
+	// the engine serves, which /version and /info report as the server's
+	// version: clients compare it with Docker's releases, as
+	// Testcontainers for Java requires 1.6.0 or later.
+	DockerVersion = "29.0.0"
+	APIVersion    = "1.52"
 	MinAPIVersion = "1.24"
 )
 
 func (e *Engine) Version() system.VersionResponse {
 	return system.VersionResponse{
 		Platform:      system.PlatformInfo{Name: "fun-with-sandboxes"},
-		Version:       Version,
+		Version:       DockerVersion,
 		APIVersion:    APIVersion,
 		MinAPIVersion: MinAPIVersion,
 		Os:            runtime.GOOS,
@@ -40,8 +46,10 @@ func (e *Engine) Version() system.VersionResponse {
 		GoVersion:     runtime.Version(),
 		KernelVersion: kernelVersion(),
 		Components: []system.ComponentVersion{{
-			Name: "Engine", Version: Version,
+			Name: "Engine", Version: DockerVersion,
 			Details: map[string]string{"ApiVersion": APIVersion, "MinAPIVersion": MinAPIVersion, "Os": runtime.GOOS, "Arch": runtime.GOARCH},
+		}, {
+			Name: "fun-with-sandboxes", Version: Version,
 		}},
 	}
 }
@@ -83,7 +91,7 @@ func (e *Engine) Info() system.Info {
 		Images: len(e.images.List()), Driver: "apfs-clone", LoggingDriver: "json-file",
 		KernelVersion: kernelVersion(), OperatingSystem: "macOS " + productVersion(), OSVersion: productVersion(),
 		OSType: runtime.GOOS, Architecture: runtime.GOARCH, NCPU: runtime.NumCPU(), MemTotal: int64(memTotal()),
-		DockerRootDir: e.cfg.Root, Name: host, ServerVersion: Version, IndexServerAddress: "https://index.docker.io/v1/",
+		DockerRootDir: e.cfg.Root, Name: host, ServerVersion: DockerVersion, IndexServerAddress: "https://index.docker.io/v1/",
 		SystemTime: time.Now().Format(time.RFC3339Nano), DefaultRuntime: "seatbelt",
 		SecurityOptions: []string{"name=seatbelt", "name=no-new-privileges"}, Labels: []string{}, Warnings: []string{},
 		// Each container's supervisor enforces these limits without cgroups.
@@ -136,8 +144,6 @@ func (e *Engine) ImageList(f Filters) []imagetypes.Summary {
 	return out
 }
 
-// matchReference matches a reference filter, which may omit the tag, against
-// a stored tag.
 // matching keeps the references any of the patterns match.
 func matching(patterns, refs []string) []string {
 	out := []string{}
@@ -152,6 +158,8 @@ func matching(patterns, refs []string) []string {
 	return out
 }
 
+// matchReference matches a reference filter, which can omit the tag, against
+// a stored reference.
 func matchReference(pattern, ref string) bool {
 	if ok, _ := path.Match(pattern, ref); ok {
 		return true
@@ -244,6 +252,10 @@ func (e *Engine) ImagePrune(f Filters) (imagetypes.PruneReport, error) {
 		danglingOnly = d
 	}
 	report := imagetypes.PruneReport{ImagesDeleted: []imagetypes.DeleteResponse{}}
+	// A bad until filter fails the prune whether or not an image reaches it.
+	if _, err := f.until(time.Time{}); err != nil {
+		return report, err
+	}
 	for _, img := range e.images.List() {
 		if danglingOnly && !isDangling(img) {
 			continue
@@ -268,7 +280,9 @@ func (e *Engine) ImagePrune(f Filters) (imagetypes.PruneReport, error) {
 		for _, t := range r.Untagged {
 			report.ImagesDeleted = append(report.ImagesDeleted, imagetypes.DeleteResponse{Untagged: t})
 		}
-		report.ImagesDeleted = append(report.ImagesDeleted, imagetypes.DeleteResponse{Deleted: r.Image.ID})
+		if r.Deleted {
+			report.ImagesDeleted = append(report.ImagesDeleted, imagetypes.DeleteResponse{Deleted: r.Image.ID})
+		}
 		report.SpaceReclaimed += r.Freed
 	}
 	// The classic builder's cache is what dockerd keeps as dangling

@@ -2,8 +2,9 @@
 // port. The container library listens on such a port with a Unix socket in
 // the container's port directory, which no other container can reach.
 //
-// For TCP, a client sends the port it wants to the container's router, a
-// loopback port every member of its stack may reach, and the router joins
+// For TCP, a client sends the port it wants to its own container's router,
+// the one loopback router port its sandbox reaches, and the router, which
+// carries a connection to a member only when the two share a network, joins
 // the connection to the socket, first writing the client's address there,
 // so that the listener's side reports its peer as a TCP server's does.
 //
@@ -511,7 +512,7 @@ func (r *Router) join(c net.Conn) {
 	<-done
 }
 
-// foreign connects to port of the member at addr, which must share a
+// foreign connects to port of the member at addr, which MUST share a
 // network with the router's container: at its host port, or through its
 // router.
 func (r *Router) foreign(addr netip.Addr, port int) (net.Conn, error) {
@@ -528,7 +529,7 @@ func (r *Router) foreign(addr netip.Addr, port int) (net.Conn, error) {
 	return Dial(net.JoinHostPort("127.0.0.1", strconv.Itoa(to.Router)), port)
 }
 
-// peer finds the member at addr, which must share a network with the
+// peer finds the member at addr, which MUST share a network with the
 // router's container or be linked to from it.
 func (r *Router) peer(addr netip.Addr) (members.Member, error) {
 	if r.net.File == "" {
@@ -557,9 +558,9 @@ type relayKey struct {
 
 // relay returns the port of the router's relay to UDP port port of
 // another stack's member at addr, made on the first lookup: a UDP port of
-// the router's stack's block, which its container may send to, whose
+// the router's stack's block, which its container can send to, whose
 // datagrams go on to the member's host port or flow port from a socket on
-// a port of the member's stack's block, which the member may answer, one
+// a port of the member's stack's block, which the member can answer, one
 // for each of the container's sockets. A socket's first datagram checks
 // again that the member shares a network with the container; the relay
 // takes datagrams from the container's own ports alone.

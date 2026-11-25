@@ -102,13 +102,18 @@ func (s *Service) CreateContainer(ctx context.Context, req *runtimeapi.CreateCon
 	if r.CPUShares > 0 {
 		host["CpuShares"] = r.CPUShares
 	}
-	var mounts []map[string]any
+	// A pod's mounts are binds, as cri-dockerd passes them, so a missing
+	// host path is made, as dockerd makes a bind's: a hostPath volume, or a
+	// host-path provisioner's PersistentVolume provisioned on another node.
+	var binds []string
 	for _, mt := range cfg.Mounts {
-		mounts = append(mounts, map[string]any{
-			"Type": "bind", "Source": mt.HostPath, "Target": mt.ContainerPath, "ReadOnly": mt.Readonly,
-		})
+		b := mt.HostPath + ":" + mt.ContainerPath
+		if mt.Readonly {
+			b += ":ro"
+		}
+		binds = append(binds, b)
 	}
-	host["Mounts"] = mounts
+	host["Binds"] = binds
 	create, err := createRequest(config, host)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())

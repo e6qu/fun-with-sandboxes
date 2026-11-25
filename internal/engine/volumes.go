@@ -265,7 +265,7 @@ func tmpfsVolumeMount(o string) (mountRec, error) {
 }
 
 // volumeSource is the directory holding the volume's data: the bound host
-// directory, which must exist, as the local driver's mount needs it, or
+// directory, which MUST exist, as the local driver's mount needs it, or
 // the volume's own.
 func (e *Engine) volumeSource(v *Volume) (string, error) {
 	dev := v.device()

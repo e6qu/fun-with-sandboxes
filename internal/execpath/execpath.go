@@ -62,7 +62,7 @@ func Resolve(root, argv0 string, env []string) (string, error) {
 // HostPath is the host path of container path p, as the container's
 // processes reach it: through its links and onto its mounts, which env's
 // FWS_MOUNTS lists. Components that do not exist are kept as given, so
-// the path may be made. Links that loop leave p in the root as given.
+// the path can be made. Links that loop leave p in the root as given.
 func HostPath(root, p string, env []string) string {
 	if h, ok := hostPath(root, path.Clean("/"+p), mountsOf(env)); ok {
 		return h

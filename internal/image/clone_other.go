@@ -33,8 +33,8 @@ func CopyDirMeta(src, dst string) error {
 	return os.Chmod(dst, fi.Mode().Perm())
 }
 
-// CopyTree copies the file, link or whole tree at src to dst, which must
-// not exist, with modes and modification times: a stand-in for CloneTree.
+// CopyTree copies the file, link or whole tree at src to dst, which MUST
+// NOT exist, with modes and modification times: a stand-in for CloneTree.
 func CopyTree(src, dst string) error {
 	var dirs []string
 	err := filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {

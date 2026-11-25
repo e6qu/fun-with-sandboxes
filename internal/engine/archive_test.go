@@ -129,6 +129,16 @@ func TestExtractIntoContainer(t *testing.T) {
 	if ro.writable(h) {
 		t.Error("read-only mount reported writable")
 	}
+	// A --read-only root takes no writes; its read-write mounts still do.
+	rr := v
+	rr.readOnlyRoot = true
+	etc, err := rr.resolve("/etc", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rr.writable(etc) || !rr.writable(h) {
+		t.Errorf("read-only root: /etc writable %v, /data writable %v", rr.writable(etc), rr.writable(h))
+	}
 }
 
 func keys(m map[string]string) []string {

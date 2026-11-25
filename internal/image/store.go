@@ -363,7 +363,7 @@ type Removal struct {
 // Remove follows `docker rmi`: naming a reference (a tag or a
 // repository@digest) of an image that has others drops only that reference,
 // and the repository's digest references with its last tag; naming the last
-// reference or the ID deletes the image, which no container may still use,
+// reference or the ID deletes the image, unless a container still uses it,
 // and an ID referenced from several repositories needs force.
 func (s *Store) Remove(ref string, force bool, inUse func(id string) bool) (Removal, error) {
 	r, err := s.remove(ref, force, inUse)
@@ -666,7 +666,7 @@ func (s *Store) writeLayer(l v1.Layer) error {
 	return os.Rename(tmp.Name(), s.blobPath(dg))
 }
 
-// writeBlob stores b as the blob dg, which it must hash to, through a
+// writeBlob stores b as the blob dg, which it MUST hash to, through a
 // temporary file.
 func (s *Store) writeBlob(dg v1.Hash, b []byte) error {
 	sum := sha256.Sum256(b)
@@ -781,7 +781,7 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 		img  v1.Image
 		tags []string
 	}
-	var order []v1.Hash
+	var order []*entry
 	found := map[v1.Hash]*entry{}
 	for _, d := range im.Manifests {
 		img, err := platformImage(idx, d)
@@ -796,7 +796,7 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 		if !ok {
 			e = &entry{img: img}
 			found[dg] = e
-			order = append(order, dg)
+			order = append(order, e)
 		}
 		if t := annotatedName(d.Annotations); t != "" {
 			n, err := Normalize(t)
@@ -807,8 +807,8 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 		}
 	}
 	var out []Image
-	for _, dg := range order {
-		added, err := s.Add(found[dg].img, found[dg].tags, "")
+	for _, e := range order {
+		added, err := s.Add(e.img, e.tags, "")
 		if err != nil {
 			return nil, err
 		}
@@ -857,7 +857,7 @@ func platformImage(idx v1.ImageIndex, d v1.Descriptor) (v1.Image, error) {
 
 // enginePlatform reports whether p is the engine's platform: its OS and
 // architecture, and the variant the architecture's CPUs are, which an
-// arm64 platform may leave out.
+// arm64 platform can leave out.
 func enginePlatform(p v1.Platform) bool {
 	return p.OS == Platform.OS && p.Architecture == Platform.Architecture && cpuVariant(p) == cpuVariant(Platform)
 }

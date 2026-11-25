@@ -50,6 +50,9 @@ func TestWriteHostsFiles(t *testing.T) {
 	if err := writeHostsFiles(t.TempDir(), "x", "", nil, []string{"bad"}, nil, dnsSettings{}, nil); err == nil {
 		t.Error("accepted --add-host without an address")
 	}
+	if err := writeHostsFiles(t.TempDir(), "x", "", nil, []string{"db:10.0.0.5\n6.6.6.6 evil"}, nil, dnsSettings{}, nil); err == nil {
+		t.Error("accepted --add-host with an address that is not one")
+	}
 }
 
 // A container's resolv.conf is the host's without its loopback nameservers,
@@ -160,5 +163,25 @@ func TestOSRelease(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "etc", "os-release")); err == nil {
 		t.Error("an os-release was written under a mount's")
+	}
+}
+
+// An --add-host entry reaches /etc/hosts only as a name and an address:
+// text that would add lines of its own is refused.
+func TestAddHost(t *testing.T) {
+	for h, want := range map[string]string{
+		"db:10.0.0.5":     "10.0.0.5",
+		"gw:host-gateway": "127.0.0.1",
+		"v6:::1":          "::1",
+		"v6b:[fd00::5]":   "fd00::5",
+	} {
+		if _, ip, err := addHost(h); err != nil || ip != want {
+			t.Errorf("addHost(%q) = %q, %v; want %q", h, ip, err, want)
+		}
+	}
+	for _, h := range []string{"db", ":1.2.3.4", "db:not-an-ip", "db:1.2.3.4\nevil", "evil\nx:1.2.3.4", "a b:1.2.3.4"} {
+		if _, _, err := addHost(h); err == nil {
+			t.Errorf("addHost(%q) took it", h)
+		}
 	}
 }

@@ -6,7 +6,7 @@ import (
 )
 
 // Every container's library and router read their stack's network file,
-// so no content may crash the reader, and what it reads, written again,
+// so the reader MUST NOT crash on any content, and what it reads, written again,
 // reads the same.
 func FuzzParse(f *testing.F) {
 	f.Add([]byte("127.88.0.2\tdb db-1\t5432=20001\t20050\tdefault\t0\tapp\n"))

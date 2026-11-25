@@ -13,7 +13,7 @@ import (
 // can drop it but by being spawned with it disclaimed. The container's
 // execs start from its anchor, which the main process's spawn helper
 // forked, so they carry it too. Once the main process ends, macOS reports
-// each of them responsible for itself, so they must be found while it
+// each of them responsible for itself, so they have to be found while it
 // lives.
 
 // Answers reports whether macOS holds main, a process that disclaimed its

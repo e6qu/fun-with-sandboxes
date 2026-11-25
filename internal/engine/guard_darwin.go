@@ -8,7 +8,7 @@ func pressureLevel() (int, error) {
 	return int(l), err
 }
 
-// diskFree is the space an unprivileged process may still write on the
+// diskFree is the space an unprivileged process can still write on the
 // volume that holds path.
 func diskFree(path string) (uint64, error) {
 	var st unix.Statfs_t

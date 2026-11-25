@@ -178,6 +178,9 @@ func Listen(proto string, ip netip.Addr, lo, hi int, upstream string, dial FlowD
 			return ok && allow(addrOf(&net.UDPAddr{IP: t.IP}))
 		}
 	}
+	if lo > hi {
+		return nil, 0, fmt.Errorf("portproxy: no port from %d to %d", lo, hi)
+	}
 	var err error
 	for port := lo; port <= hi; port++ {
 		addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
@@ -215,6 +218,9 @@ func ListenUnix(path func(port int) string, lo, hi int, upstream string, header 
 	if lo == 0 {
 		lo, hi = ephemeralLo, ephemeralHi
 	}
+	if lo > hi {
+		return nil, 0, fmt.Errorf("portproxy: no port from %d to %d", lo, hi)
+	}
 	var err error
 	for port := lo; port <= hi; port++ {
 		var l net.Listener
@@ -237,6 +243,9 @@ func ListenUnix(path func(port int) string, lo, hi int, upstream string, header 
 func ListenUnixgram(path func(port int) string, lo, hi int) (*net.UnixConn, int, error) {
 	if lo == 0 {
 		lo, hi = ephemeralLo, ephemeralHi
+	}
+	if lo > hi {
+		return nil, 0, fmt.Errorf("portproxy: no port from %d to %d", lo, hi)
 	}
 	var err error
 	for port := lo; port <= hi; port++ {

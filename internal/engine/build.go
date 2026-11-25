@@ -8,11 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,6 +59,9 @@ type stage struct {
 	// configOnly marks a stage that edits a config alone, as docker commit
 	// and import changes do: WORKDIR makes no directory.
 	configOnly bool
+	// cmdSet marks a stage whose own CMD ENTRYPOINT keeps, as the classic
+	// builder keeps it; an inherited one ENTRYPOINT drops.
+	cmdSet bool
 	// key chains the stage's instructions from its base, keying the build
 	// cache.
 	key     string
@@ -129,7 +133,7 @@ func (e *Engine) Build(ctx context.Context, opts BuildOptions, buildContext io.R
 		return image.Image{}, err
 	}
 	defer os.RemoveAll(dir)
-	// A prune waits for builds that may still read cached layers.
+	// A prune waits for builds that might still read cached layers.
 	e.buildMu.RLock()
 	defer e.buildMu.RUnlock()
 	b := &builder{e: e, opts: opts, dir: dir, context: filepath.Join(dir, "context"), progress: progress, cache: e.buildCache()}
@@ -192,11 +196,13 @@ func (b *builder) run(ctx context.Context, ins []dockerfile.Instruction) (*stage
 			return nil, invalid("line %d: %s before the first FROM; only ARG may come first", ins[i].Line, ins[i].Cmd)
 		}
 		b.progress(stepLine(i+1, len(ins), ins[i]))
-		k, v, err := b.arg(ins[i], func(string) (string, bool) { return "", false })
+		kvs, err := b.args(ins[i], func(string) (string, bool) { return "", false })
 		if err != nil {
 			return nil, err
 		}
-		globals[k] = v
+		for _, kv := range kvs {
+			globals[kv[0]] = kv[1]
+		}
 	}
 	if i == len(ins) {
 		return nil, invalid("the Dockerfile has no FROM instruction")
@@ -275,24 +281,36 @@ func fromParts(in dockerfile.Instruction) (ref, name string) {
 	return "", ""
 }
 
-func (b *builder) arg(in dockerfile.Instruction, lookup func(string) (string, bool)) (string, string, error) {
+// args reads an ARG instruction's names and defaults, one or more pairs on
+// the line (ARG a=1 b), each taking its build argument, else its default,
+// else, without one, the value lookup has for it.
+func (b *builder) args(in dockerfile.Instruction, lookup func(string) (string, bool)) ([][2]string, error) {
 	if len(in.Args) == 0 {
-		return "", "", invalid("line %d: ARG requires a name", in.Line)
+		return nil, invalid("line %d: ARG requires a name", in.Line)
 	}
 	raw, err := dockerfile.Expand(in.Raw, lookup)
 	if err != nil {
-		return "", "", invalid("line %d: %v", in.Line, err)
+		return nil, invalid("line %d: %v", in.Line, err)
 	}
-	name, def, hasDef := strings.Cut(strings.TrimSpace(raw), "=")
-	if v, ok := b.opts.BuildArgs[name]; ok && v != nil {
-		return name, *v, nil
+	words, err := dockerfile.Words(raw)
+	if err != nil || len(words) == 0 {
+		return nil, invalid("line %d: ARG requires a name", in.Line)
 	}
-	if !hasDef {
-		if v, ok := lookup(name); ok {
-			return name, v, nil
+	var out [][2]string
+	for _, w := range words {
+		name, def, hasDef := strings.Cut(w, "=")
+		if name == "" {
+			return nil, invalid("line %d: ARG names an empty argument", in.Line)
 		}
+		switch v, ok := b.opts.BuildArgs[name]; {
+		case ok && v != nil:
+			def = *v
+		case !hasDef:
+			def, _ = lookup(name)
+		}
+		out = append(out, [2]string{name, def})
 	}
-	return name, strings.Trim(def, `"`), nil
+	return out, nil
 }
 
 func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals map[string]string) (*stage, error) {
@@ -305,14 +323,14 @@ func (b *builder) from(ctx context.Context, in dockerfile.Instruction, globals m
 		return nil, invalid("line %d: FROM requires an image", in.Line)
 	}
 	s := &stage{name: name, root: filepath.Join(b.dir, "s"+strconv.Itoa(len(b.stages))), args: map[string]string{}, shell: []string{"/bin/sh", "-c"}}
+	prev := b.stageNamed(ref)
 	switch {
 	case ref == "scratch":
 		if err := os.MkdirAll(s.root, 0o755); err != nil {
 			return nil, err
 		}
 		s.key = cacheKey("scratch")
-	case b.stageNamed(ref) != nil:
-		prev := b.stageNamed(ref)
+	case prev != nil:
 		if err := image.CloneDir(prev.root, s.root); err != nil {
 			return nil, err
 		}
@@ -405,14 +423,19 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 	record := func() error {
 		created := time.Now().UTC()
 		if b.cache != nil {
-			e, ok := b.cached(key)
-			if !ok && emptyLayer {
+			// A step that changed files put its entry already, --no-cache
+			// or not; one that did not is put here, afresh under --no-cache.
+			e, ok := b.cache.get(key)
+			switch {
+			case emptyLayer && (!ok || b.opts.NoCache):
 				var err error
 				if e, err = b.cache.put(key, created, ""); err != nil {
 					return err
 				}
+				created = e.Created
+			case ok:
+				created = e.Created
 			}
-			created = e.Created
 		}
 		s.key = key
 		s.cfg.History = append(s.cfg.History, v1.History{Created: v1.Time{Time: created}, CreatedBy: in.Cmd + " " + in.Raw, EmptyLayer: emptyLayer})
@@ -421,7 +444,7 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 	cfg := &s.cfg.Config
 	switch in.Cmd {
 	case "ARG":
-		k, v, err := b.arg(in, func(k string) (string, bool) {
+		kvs, err := b.args(in, func(k string) (string, bool) {
 			if v, ok := s.args[k]; ok {
 				return v, ok
 			}
@@ -431,8 +454,11 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		if err != nil {
 			return err
 		}
-		s.args[k] = v
-		s.key = cacheKey(key, k, v)
+		s.key = key
+		for _, kv := range kvs {
+			s.args[kv[0]] = kv[1]
+			s.key = cacheKey(s.key, kv[0], kv[1])
+		}
 		return nil
 	case "ENV":
 		raw, err := expand(in.Raw)
@@ -547,12 +573,14 @@ func (b *builder) apply(ctx context.Context, s *stage, in dockerfile.Instruction
 		cfg.Shell = s.shell
 	case "CMD":
 		cfg.Cmd = b.command(s, in)
+		s.cmdSet = true
 	case "ENTRYPOINT":
 		cfg.Entrypoint = b.command(s, in)
-		// Docker drops an inherited CMD when a stage sets ENTRYPOINT.
-		cfg.Cmd = nil
+		if !s.cmdSet {
+			cfg.Cmd = nil
+		}
 	case "HEALTHCHECK":
-		hc, start, err := healthcheck(s, in)
+		hc, start, err := healthcheck(in)
 		if err != nil {
 			return err
 		}
@@ -596,7 +624,7 @@ func (b *builder) command(s *stage, in dockerfile.Instruction) []string {
 	return append(append([]string(nil), s.shell...), in.Raw)
 }
 
-func healthcheck(s *stage, in dockerfile.Instruction) (*v1.HealthConfig, time.Duration, error) {
+func healthcheck(in dockerfile.Instruction) (*v1.HealthConfig, time.Duration, error) {
 	hc := &v1.HealthConfig{}
 	var start time.Duration
 	for k, v := range in.Flags {
@@ -698,7 +726,10 @@ func (b *builder) copy(ctx context.Context, s *stage, in dockerfile.Instruction,
 		if in.Cmd == "ADD" {
 			return invalid("line %d: ADD does not take --from", in.Line)
 		}
-		if st := b.stageNamed(from); st != nil {
+		if st := b.stageNamed(from); st == s {
+			// The stage's own root is still being built.
+			return invalid("line %d: COPY --from=%s: circular dependency detected on stage: %s", in.Line, from, from)
+		} else if st != nil {
 			srcRoot = st.root
 		} else {
 			img, err := b.baseImage(ctx, from)
@@ -719,14 +750,11 @@ func (b *builder) copy(ctx context.Context, s *stage, in dockerfile.Instruction,
 		if err != nil {
 			return err
 		}
-		matches, err := filepath.Glob(pattern)
+		matches, err := globIn(srcRoot, pattern)
 		if err != nil || len(matches) == 0 {
 			return notFound("%s failed: file not found in build context or excluded by .dockerignore: stat %s: file does not exist", in.Cmd, src)
 		}
 		for _, m := range matches {
-			if !within(m, srcRoot) {
-				return invalid("%s failed: %s is outside the build context", in.Cmd, src)
-			}
 			if in.Cmd == "ADD" && isArchive(m) {
 				if err := os.MkdirAll(destHost, 0o755); err != nil {
 					return err
@@ -868,6 +896,35 @@ func (b *builder) applyCached(s *stage, e cacheEntry) error {
 	return nil
 }
 
+// globIn expands pattern, a path in root, to the paths in root it matches.
+// Glob follows the host's links where a wildcard stands for a directory,
+// which can lead out of root, as to the engine user's home from a context
+// that holds a link to it: each match's directory is resolved again in
+// root, as Docker resolves the context's links, and a match that is not
+// there once resolved is dropped.
+func globIn(root, pattern string) ([]string, error) {
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+	out := matches[:0]
+	for _, m := range matches {
+		rel, err := filepath.Rel(root, m)
+		if err != nil || !filepath.IsLocal(rel) {
+			continue
+		}
+		dir, err := rootfs.Join(root, filepath.Dir(rel))
+		if err != nil {
+			return nil, err
+		}
+		m = filepath.Join(dir, filepath.Base(rel))
+		if _, err := os.Lstat(m); err == nil && within(m, root) && !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
 // copyInto copies a file, symlink or directory's contents to dst, a path
 // in root, applying mode when it is non-zero. It resolves each target in
 // root, so a link the root holds below dst leads on inside it, not out to
@@ -976,8 +1033,7 @@ func (b *builder) download(ctx context.Context, src, dest string, destIsDir bool
 		return fmt.Errorf("%s", res.Status)
 	}
 	if destIsDir {
-		u, _ := url.Parse(src)
-		name := path.Base(u.Path)
+		name := path.Base(req.URL.Path)
 		if name == "/" || name == "." || name == "" {
 			return errors.New("cannot determine a file name for the download")
 		}
@@ -1004,10 +1060,11 @@ func (b *builder) ensureStack() (int, error) {
 		return 0, nil
 	}
 	if b.stack == "" {
-		b.stack = "build-" + strings.ToLower(filepath.Base(b.dir))
-		if _, err := b.e.alloc.Stack(b.stack); err != nil {
+		stack := "build-" + strings.ToLower(filepath.Base(b.dir))
+		if _, err := b.e.alloc.Stack(stack); err != nil {
 			return 0, err
 		}
+		b.stack = stack
 		port, err := b.e.ensureEgress(b.stack)
 		if err != nil {
 			return 0, err
@@ -1020,7 +1077,9 @@ func (b *builder) ensureStack() (int, error) {
 func (b *builder) releaseStack() {
 	if b.stack != "" {
 		b.e.closeEgress(b.stack)
-		b.e.alloc.Release(b.stack)
+		if err := b.e.alloc.Release(b.stack); err != nil {
+			log.Printf("build: release stack %s: %v", b.stack, err)
+		}
 	}
 }
 
@@ -1044,6 +1103,9 @@ func (b *builder) runStep(ctx context.Context, s *stage, in dockerfile.Instructi
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(s.root, "root"), 0o755); err != nil {
+		return err
+	}
 	env := append(b.runEnv(s, proxy), id.Env()...)
 	spec := seatbelt.Spec{Root: s.root, StateRoot: b.e.stateRoot(), IPCPrefix: seatbelt.IPCPrefixFor(s.root), Libraries: []string{lib}}
 	if proxy != 0 {
@@ -1065,10 +1127,11 @@ func (b *builder) runStep(ctx context.Context, s *stage, in dockerfile.Instructi
 		<-proc.Done()
 	}
 	proc.KillAll()
-	if err := procs.KillTagged("SANDBOX_ROOT=" + s.root); err != nil {
-		return err
-	}
+	killErr := procs.KillTagged("SANDBOX_ROOT=" + s.root)
 	proc.DrainIO(outputDrain)
+	if killErr != nil {
+		return killErr
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1104,9 +1167,7 @@ func (b *builder) runEnv(s *stage, proxy int) []string {
 		}
 	}
 	vars["PATH"] = strings.Join(mapped, ":")
-	home := filepath.Join(s.root, "root")
-	os.MkdirAll(home, 0o755)
-	set("HOME", home)
+	set("HOME", filepath.Join(s.root, "root"))
 	set("SANDBOX_ROOT", s.root)
 	set("SANDBOX_IPC_PREFIX", seatbelt.IPCPrefixFor(s.root))
 	set("SANDBOX_HOST", "127.0.0.1")

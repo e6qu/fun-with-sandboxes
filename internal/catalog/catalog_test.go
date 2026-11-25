@@ -10,16 +10,19 @@ import (
 
 // The catalog lists every image docs/IMAGES.md's table documents, at its tags,
 // and no other.
-func TestMatchesTheREADME(t *testing.T) {
+func TestMatchesImagesDoc(t *testing.T) {
 	b, err := os.ReadFile("../../docs/IMAGES.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(b)
 	start := strings.Index(s, "| Image |")
-	end := strings.Index(s[start:], "\n\n")
-	if start < 0 || end < 0 {
+	if start < 0 {
 		t.Fatal("docs/IMAGES.md has no image table")
+	}
+	end := strings.Index(s[start:], "\n\n")
+	if end < 0 {
+		t.Fatal("docs/IMAGES.md's image table does not end")
 	}
 	var documented []string
 	for _, line := range strings.Split(s[start:start+end], "\n") {

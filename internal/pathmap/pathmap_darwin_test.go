@@ -134,7 +134,7 @@ func TestIdentityAndOwnership(t *testing.T) {
 	if got := probe(t, root, nil, "chflags"); got["chflags"] != "1000:50 flags=0" {
 		t.Errorf("owner after chflags: %q", got["chflags"])
 	}
-	// A user other than root sees itself, and may not give its files away.
+	// A user other than root sees itself, and cannot give its files away.
 	got = probe(t, root, []string{"FWS_UID=1000", "FWS_GID=50"}, "ids", "user", "write")
 	if got["ids"] != "1000:50" || got["user"] != "app:/home/app" {
 		t.Errorf("as app: ids %q, user %q", got["ids"], got["user"])
@@ -555,7 +555,7 @@ func TestPortsWithoutHostPorts(t *testing.T) {
 	// The router gives the probe's UDP ports these flow ports, which its
 	// sandbox lets it reach. They are bound here, before the probe's
 	// profile names them, and handed to the router as they are: a port
-	// found free and bound again later may be another test's by then, and
+	// found free and bound again later might be another test's by then, and
 	// the probe's datagrams lost.
 	network := filepath.Join(t.TempDir(), "network")
 	var flowConns []*net.UDPConn

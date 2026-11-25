@@ -1,0 +1,19 @@
+# Downloads the modules the engine and the end-to-end suite need, retrying
+# the whole download: the module proxy resets a stream now and then
+# ("stream error: ... INTERNAL_ERROR"), and the go command retries no
+# failed fetch itself, so one dropped stream failed the step that first
+# built and the jobs that needed it with it.
+name: Go modules
+description: Download the module's and the suite's modules, with retries
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        for attempt in 1 2 3 4 5; do
+          if go mod download && (cd tests/e2e && go mod download); then
+            exit 0
+          fi
+          [ "$attempt" -lt 5 ] || exit 1
+          sleep $((attempt * 5))
+        done

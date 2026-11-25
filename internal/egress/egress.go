@@ -1,6 +1,6 @@
 // Package egress is the proxy through which a stack's containers reach the
 // internet: an HTTP proxy, and a SOCKS5 one on the same port for any TCP.
-// Seatbelt can only allow loopback ports or everything, so the containers may
+// Seatbelt can only allow loopback ports or everything, so the containers can
 // connect to this proxy alone, and the proxy refuses every destination on the
 // host itself.
 package egress
@@ -31,9 +31,9 @@ import (
 	"github.com/e6qu/fun-with-sandboxes/internal/router"
 )
 
-// Policy decides which addresses the proxy may dial.
+// Policy decides which addresses the proxy can dial.
 type Policy struct {
-	// Deny reports whether ip must not be dialled.
+	// Deny reports whether the proxy refuses to dial ip.
 	Deny func(ip net.IP) bool
 	// Resolve looks up a host name; it defaults to the system resolver.
 	Resolve func(ctx context.Context, host string) ([]net.IP, error)
@@ -317,7 +317,7 @@ func (p *Proxy) dialChecked(ctx context.Context, client, addr string) (net.Conn,
 	if err != nil || portNum == 0 {
 		return nil, fmt.Errorf("egress: %q is not a port", port)
 	}
-	// A client that names no member could be any of them, so it may not
+	// A client that names no member could be any of them, so it cannot
 	// leave a stack whose members' allow lists or rates hold them.
 	if client == "" && (p.allow.any() || p.rates.Any()) {
 		return nil, ErrCredentials

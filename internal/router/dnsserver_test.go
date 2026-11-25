@@ -229,7 +229,7 @@ func TestRouterServesDNSOverTCP(t *testing.T) {
 		}
 		return m
 	}
-	// Two queries on one connection, as a resolver may send.
+	// Two queries on one connection, as a resolver might send.
 	if m := ask("db."); !equalStrings(answerAddrs(m), []string{"127.88.0.3"}) {
 		t.Errorf("db over TCP: %s %v", m.RCode, answerAddrs(m))
 	}

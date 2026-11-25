@@ -282,7 +282,7 @@ func (c *Container) summary(opts ListOptions) (container.Summary, bool) {
 			ports = append(ports, container.PortSummary{PrivatePort: p.Num(), Type: string(p.Proto())})
 		}
 		for _, b := range bs {
-			hp, _ := strconv.Atoi(b.HostPort)
+			hp, _ := strconv.ParseUint(b.HostPort, 10, 16)
 			ports = append(ports, container.PortSummary{IP: b.HostIP, PrivatePort: p.Num(), PublicPort: uint16(hp), Type: string(p.Proto())})
 		}
 	}

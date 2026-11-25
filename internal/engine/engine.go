@@ -118,7 +118,7 @@ func Open(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	// Seatbelt matches resolved paths, so every path the engine hands a
-	// profile must be free of symlinks such as /var -> /private/var.
+	// profile MUST be free of symlinks such as /var -> /private/var.
 	if root, err = filepath.EvalSymlinks(root); err != nil {
 		return nil, err
 	}

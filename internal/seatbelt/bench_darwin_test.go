@@ -54,7 +54,7 @@ func BenchmarkCompile(b *testing.B) {
 // ways: compiling the text itself, as the spawn helper does, and applying
 // bytecode another process compiled, which a cache of compiled profiles
 // would let every start but a container's first do. Each run then opens a
-// file outside the profile and must be denied, so the precompiled
+// file outside the profile and has to be denied, so the precompiled
 // bytecode is shown to confine as the text does.
 func BenchmarkApply(b *testing.B) {
 	dir, err := filepath.EvalSymlinks(b.TempDir())

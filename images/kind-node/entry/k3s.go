@@ -70,7 +70,7 @@ type k3sOptions struct {
 	KubeconfigMode os.FileMode
 }
 
-// k3sValueFlags are the k3s server flags that take a value, which may
+// k3sValueFlags are the k3s server flags that take a value, which can
 // follow as the next argument; any other is a boolean.
 var k3sValueFlags = map[string]bool{
 	"node-name": true, "tls-san": true, "cluster-cidr": true, "service-cidr": true, "write-kubeconfig": true, "o": true,
@@ -290,7 +290,7 @@ func k3sServer(args []string) {
 			log.Fatalf("kubeadm init: %v", err)
 		}
 	}
-	for _, m := range []string{"/kind/manifests/default-cni.yaml", "/kind/manifests/default-storage.yaml"} {
+	for _, m := range []string{"/kind/manifests/default-cni.yaml", "/kind/manifests/k3s-storage.yaml"} {
 		if err := retry(n, time.Minute, "kubectl", "--kubeconfig="+adminKubeconfig, "apply", "-f", m); err != nil {
 			log.Fatalf("applying %s: %v", m, err)
 		}

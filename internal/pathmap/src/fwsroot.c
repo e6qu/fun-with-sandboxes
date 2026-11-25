@@ -128,6 +128,9 @@ static char helper_comm[MAXCOMLEN + 1];
 // pids.max holds it: a number, or "max" for none. The engine rewrites it
 // as the limit changes.
 static char pids_path[PATH_MAX];
+// The nested engine's API socket a privileged container is handed
+// (FWS_ENGINE), a host path its programs connect to by that name.
+static char engine_socket[PATH_MAX];
 // The socket the container's supervisor answers on with how many processes
 // the container runs (FWS_PIDS_SOCKET), as pids.current holds it.
 static char pids_socket[sizeof(((struct sockaddr_un *)0)->sun_path)];
@@ -246,7 +249,7 @@ static void parse_ports(const char *v) {
 }
 
 // num parses the decimal number at p into v and returns the end, or NULL.
-// The library parses numbers itself where libSystem may hold the locale's
+// The library parses numbers itself where libSystem might hold the locale's
 // lock.
 static const char *num(const char *p, unsigned long *v) {
     if (*p < '0' || *p > '9') {
@@ -336,9 +339,9 @@ static void parse_network(const char *path, const char *address) {
     }
 }
 
-// The variables that make a process the container's, which a program that
-// clears or rebuilds its environment must not shed for its children, as
-// it cannot leave a chroot by doing so.
+// The variables that make a process the container's, which its children
+// keep even where a program clears or rebuilds its environment, as it
+// cannot leave a chroot by doing so.
 // LOADED_NAME is the name DYLD_INSERT_LIBRARIES takes in a process's own
 // environment once the library is loaded, as long as that one.
 #define LOADED_NAME "FWS__INSERT_LIBRARIES"
@@ -403,7 +406,7 @@ int posix_spawnattr_setjetsam_ext(posix_spawnattr_t *attr, short flags, int prio
 
 // limit_memory gives a posix_spawn's attributes the container's memory
 // limit, the fatal footprint limit jetsam holds the program to. A parent
-// may set it only as it starts or executes a program, and nothing changes
+// can set it only as it starts or executes a program, and nothing changes
 // it after, so the library sets it on every program the container's
 // processes start, the limit as it stands. *a is the caller's attributes,
 // which keep it, or none, and then own, which the library initializes and
@@ -522,6 +525,10 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     if (ps && ps[0] == '/' && strlen(ps) < sizeof pids_socket) {
         strcpy(pids_socket, ps);
     }
+    const char *es = getenv("FWS_ENGINE");
+    if (es && es[0] == '/' && strlen(es) < sizeof engine_socket) {
+        strcpy(engine_socket, es);
+    }
     const char *hc = getenv("FWS_HELPER");
     if (hc) {
         strlcpy(helper_comm, hc, sizeof helper_comm);
@@ -554,7 +561,7 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     // The variable that loaded the library takes another name in the
     // environment: getenv hides it, and a program that lists its
     // environment and then looks each variable up, as Node.js does to hand
-    // a worker thread a copy, must find every one it listed. The name
+    // a worker thread a copy, has to find every one it listed. The name
     // changes where it stands, a name as long: the list keeps its length,
     // which the Go runtime counts on to find what follows it. A program the
     // process starts gets the variable back from kept_vars (child_env).
@@ -693,9 +700,18 @@ static const char *host_of(const char *p, char *buf) {
     return buf;
 }
 
+// host_socket reports whether p is a host socket the container's profile
+// lets it connect to by its host path: syslog's, which libSystem names,
+// and a privileged container's nested engine's.
+static int host_socket(const char *p) {
+    return strcmp(p, "/private/var/run/syslog") == 0 || strcmp(p, "/var/run/syslog") == 0 ||
+           (engine_socket[0] && strcmp(p, engine_socket) == 0);
+}
+
 // place returns the path container path p names, its symbolic links
 // resolved: a mount's source under a mount's destination, the root's when
-// the root holds it or its parent, else p.
+// the root holds it or its parent, else p where the host's is there for
+// the container to read, else the root's.
 static const char *place(const char *p, char *buf) {
     const char *m = mount_source(p, buf);
     if (m) {
@@ -726,7 +742,15 @@ static const char *place(const char *p, char *buf) {
     *slash = 0;
     int parent = lstat(buf, &st) == 0;
     *slash = '/';
-    return parent ? buf : p;
+    if (parent) {
+        return buf;
+    }
+    // Neither the path nor its parent is the root's: the host's where the
+    // container reaches it, a file it reads, such as a shell or the time
+    // zone a root lacks, or a socket it connects to but cannot stat, else
+    // the root's, where the call fails as under chroot, with ENOENT, rather
+    // than with Seatbelt's EPERM for a host path it denies.
+    return lstat(p, &st) == 0 || host_socket(p) ? p : buf;
 }
 
 // meets_link reports whether the kernel, resolving path relative to fd,
@@ -748,7 +772,7 @@ static int linked(const char *p) {
     if (!q) {
         return 0;
     }
-    // The root's own path may pass through links, as /var does; its
+    // The root's own path can pass through links, as /var does; its
     // resolved form names the same files without them.
     if (in_root(q) && join(c, sizeof c, croot, q + rootlen, "")) {
         q = c;
@@ -972,8 +996,8 @@ static void unmap(char *p, size_t size) {
 static void made(const char *path, int fd, int nofollow);
 static int fake_user(void);
 
-// creating reports whether opening p with flags makes a file a user other
-// than root must be recorded as owning.
+// creating reports whether opening p with flags makes a file whose owner,
+// a user other than root, needs recording.
 static int creating(const char *p, int flags) {
     struct stat st;
     return fake_user() && (flags & O_CREAT) && lstat(p, &st) != 0;
@@ -988,7 +1012,7 @@ static int follows(int flags) {
 // direct writes to buf container path p's host path in the root, for a
 // call that the kernel then resolves refusing any link on its way: the
 // common case, a file the container holds, costs no lookup of the
-// library's. It reports 0 for a path the mapping must handle: relative,
+// library's. It reports 0 for a path only the mapping handles: relative,
 // on the host's side, on a mount, in a host tree, or through "..".
 static int direct(const char *p, char *buf) {
     if (!rootlen || !p || p[0] != '/' || host_side(p) || in_host_tree(p) || strstr(p, "/..")) {
@@ -1020,8 +1044,8 @@ static const char *rooted(const char *p, char *d) {
 
 // missing settles a direct call that found no file at host path d: the
 // container's answer is ENOENT where the root holds d's parent, as the
-// mapping finds. It reports 0 where the mapping must decide, as the host
-// may hold the path.
+// mapping finds. It reports 0 where the mapping decides, as the host
+// might hold the path.
 static int missing(char *d) {
     char *slash = strrchr(d, '/');
     if (!slash) {
@@ -2106,8 +2130,18 @@ static void own(struct stat *st, const char *path, int fd, int nofollow) {
         return;
     }
     if (!(st->st_flags & META_FLAG)) {
-        st->st_uid = 0;
-        st->st_gid = 0;
+        // A file no image or container gave an owner: the root's are
+        // root's, as an image's unrecorded owner is. A mount's, the host's
+        // own files under a bind or a volume, are the user who looks, as a
+        // Mac's shared files are in Docker's VM, so a workspace is its
+        // user's: Git refuses a repository another user owns.
+        if (path && path[0] == '/' && in_mount(path)) {
+            st->st_uid = fake_euid;
+            st->st_gid = fake_egid;
+        } else {
+            st->st_uid = 0;
+            st->st_gid = 0;
+        }
         return;
     }
     st->st_flags &= ~(uint32_t)META_FLAG;
@@ -2874,7 +2908,7 @@ static struct kinfo_proc *proc_table(int op, int arg, size_t *len) {
 // list_pids writes to buf, of size bytes, the container's processes the
 // process table's listing op of arg holds, those whose parent is ppid when
 // ppid is set, and returns how many it wrote; with no buffer, how many
-// there may be. libproc's listings build on it: the sandbox lets a
+// there might be. libproc's listings build on it: the sandbox lets a
 // container read the process table, not list another sandbox's pids.
 static int list_pids(int op, int arg, pid_t ppid, pid_t *buf, int size) {
     int mib[4] = {CTL_KERN, KERN_PROC, op, arg};
@@ -3090,7 +3124,7 @@ static size_t eth_addr6(char *out, unsigned short index, const struct iface *f) 
 
 // route_dump reads routing sysctl mib into a buffer the caller frees, with
 // more bytes of room after the *n it read; NULL with errno set where it
-// fails. The table may grow between the call that sizes it and the one
+// fails. The table can grow between the call that sizes it and the one
 // that reads it, which then fails with ENOMEM and is tried again.
 static char *route_dump(const int mib[6], size_t more, size_t *n) {
     for (int tries = 0; tries < 8; tries++) {
@@ -3944,7 +3978,7 @@ static const struct in6_addr *dns6_of(int fd) {
     return &net_dns6[fd];
 }
 
-// dns_v6 reports whether an IPv6 address may be a DNS server outside the
+// dns_v6 reports whether an IPv6 address can be a DNS server outside the
 // machine, which the router answers in place of.
 static int dns_v6(const struct in6_addr *a) {
     return !IN6_IS_ADDR_LOOPBACK(a) && !IN6_IS_ADDR_UNSPECIFIED(a) && !IN6_IS_ADDR_LINKLOCAL(a) && !IN6_IS_ADDR_V4MAPPED(a) && !IN6_IS_ADDR_MULTICAST(a);
@@ -5327,7 +5361,7 @@ static int connect_dir(int dir, int fd, const struct sockaddr *sa, socklen_t giv
 
 // unbind_if lets go of the interface fd is bound to, as Network.framework
 // binds its sockets to the one its path takes: a connection the library
-// sends to loopback instead must leave it.
+// sends to loopback instead has to leave it.
 static void unbind_if(int fd) {
     unsigned int i = 0;
     socklen_t n = sizeof i;
@@ -5403,6 +5437,31 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
         net_port[fd] = port;
     }
     return 0;
+}
+
+// refused turns Seatbelt's refusal of a TCP connection to a loopback port
+// into what a network namespace's kernel answers there. A container with a
+// stack of its own reaches, on loopback, its own listeners, its router and
+// its stack's egress proxy; Seatbelt holds it from every other loopback
+// port, the host's, with EPERM. In the container's namespace nothing
+// listens on such a port, so the connection is refused, as programs that
+// wait for a server to come up, retrying on ECONNREFUSED, expect.
+static int refused(int fd, int r, const struct sockaddr *to) {
+    if (r != -1 || errno != EPERM || !router_port || !to) {
+        return r;
+    }
+    int stream = sock_type(fd) == SOCK_STREAM;
+    errno = EPERM;
+    if (!stream) {
+        return r;
+    }
+    if (to->sa_family == AF_INET && (ntohl(((const struct sockaddr_in *)to)->sin_addr.s_addr) >> 24) == 127) {
+        errno = ECONNREFUSED;
+    } else if (to->sa_family == AF_INET6) {
+        const struct in6_addr *a = &((const struct sockaddr_in6 *)to)->sin6_addr;
+        if (IN6_IS_ADDR_LOOPBACK(a) || (IN6_IS_ADDR_V4MAPPED(a) && (ntohl(mapped_v4(a)) >> 24) == 127)) errno = ECONNREFUSED;
+    }
+    return r;
 }
 
 // routed connects fd to sa through a router when sa names a container port
@@ -5554,7 +5613,7 @@ static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
         return -1;
     }
     if (to != sa && dir == -1) unbind_if(fd);
-    return dir == -1 ? connect(fd, to, len) : connect_dir(dir, fd, sa, given, to, len);
+    return dir == -1 ? refused(fd, connect(fd, to, len), to) : connect_dir(dir, fd, sa, given, to, len);
 }
 INTERPOSE(fws_connect, connect);
 
@@ -5581,7 +5640,7 @@ static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len
         return -1;
     }
     if (to != sa && dir == -1) unbind_if(fd);
-    return dir == -1 ? connect_nocancel(fd, to, len) : connect_dir(dir, fd, sa, given, to, len);
+    return dir == -1 ? refused(fd, connect_nocancel(fd, to, len), to) : connect_dir(dir, fd, sa, given, to, len);
 }
 INTERPOSE(fws_connect_nocancel, connect_nocancel);
 
@@ -5635,7 +5694,7 @@ static int fws_connectx(int fd, const sa_endpoints_t *ep, sae_associd_t aid, uns
         return connectx_data(fd, connect_dir(dir, fd, dst, dlen, to, l), iov, iovcnt, len);
     }
     if (to == dst && l == dlen) {
-        return connectx(fd, ep, aid, flags, iov, iovcnt, len, cid);
+        return refused(fd, connectx(fd, ep, aid, flags, iov, iovcnt, len, cid), to);
     }
     sa_endpoints_t e = *ep;
     e.sae_dstaddr = to;
@@ -5646,7 +5705,7 @@ static int fws_connectx(int fd, const sa_endpoints_t *ep, sae_associd_t aid, uns
     }
     unbind_if(fd);
     e.sae_srcif = 0;
-    return connectx(fd, &e, aid, flags, iov, iovcnt, len, cid);
+    return refused(fd, connectx(fd, &e, aid, flags, iov, iovcnt, len, cid), to);
 }
 INTERPOSE(fws_connectx, connectx);
 

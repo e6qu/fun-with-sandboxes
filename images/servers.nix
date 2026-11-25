@@ -11,7 +11,7 @@ let
       cmakeFlagsArray+=("-DCOMPILATION_COMMENT=${comment}")
     '';
   });
-  # The newest release of the series, which nixpkgs may not package yet.
+  # The newest release of the series, which nixpkgs might not package yet.
   release = pkg: version: url: hash: pkg.overrideAttrs {
     inherit version;
     src = pkgs.fetchurl { inherit url hash; };

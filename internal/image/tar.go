@@ -10,14 +10,12 @@ import (
 	"time"
 )
 
-// WriteTar writes dir as one layer: entries in lexical order, relative
+// WriteTarWith writes dir as one layer: entries in lexical order, relative
 // names, and the modes and owners its container sees (root where none is
-// recorded), so the same tree yields the same bytes.
-func WriteTar(dir string, w io.Writer) error { return WriteTarWith(dir, w, nil) }
-
-// WriteTarWith is WriteTar with asEmptyDir naming entries, by path relative
-// to dir, to write as empty directories instead: a container's mount points,
-// which are symlinks to the host directories behind its volumes.
+// recorded), so the same tree yields the same bytes. asEmptyDir names
+// entries, by path relative to dir, to write as empty directories instead:
+// a container's mount points, which are symlinks to the host directories
+// behind its volumes.
 func WriteTarWith(dir string, w io.Writer, asEmptyDir func(rel string) bool) error {
 	tw := tar.NewWriter(w)
 	var paths []string

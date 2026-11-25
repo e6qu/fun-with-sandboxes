@@ -78,13 +78,18 @@ func main() {
 		"--datadir=" + datadir,
 		"--secure-file-priv=" + files,
 		"--tmpdir=" + tmp,
-		"--socket=" + filepath.Join(run, "mysqld.sock"),
+		// The sockets as the container names them: the server checks a
+		// socket's path against macOS's 103-byte limit before it binds,
+		// which a container root deep in the engine's data directory takes
+		// a host path past; the container library binds a long one through
+		// its directory.
+		"--socket=/var/run/mysqld/mysqld.sock",
 		"--pid-file=" + filepath.Join(run, "mysqld.pid"),
 	}
 	if err := initialise(server, datadir, common); err != nil {
 		log.Fatal(err)
 	}
-	argv := append(append([]string{"mysqld"}, common...), "--mysqlx-socket="+filepath.Join(run, "mysqlx.sock"))
+	argv := append(append([]string{"mysqld"}, common...), "--mysqlx-socket=/var/run/mysqld/mysqlx.sock")
 	log.Fatal(syscall.Exec(server, append(argv, args...), os.Environ()))
 }
 

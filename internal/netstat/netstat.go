@@ -195,7 +195,7 @@ type Account struct {
 	byPair    map[pair]*tracked
 	// closing are the container's sockets that closed with no peer found,
 	// by their final addresses: the kernel announces a client's socket
-	// before it connects, so its peer's addresses may be the ones it had
+	// before it connects, so its peer's addresses can be the ones it had
 	// then until the next poll. total settles them once a poll has brought
 	// every socket's addresses up to date.
 	closing map[pair]*tracked
@@ -246,7 +246,7 @@ func (a *Account) ownsLocked(s *source) (own, known bool) {
 		env, err := procs.Environ(s.pid)
 		if err != nil {
 			// Another user's process, which exists, is not the
-			// container's; one that ended may have been.
+			// container's; one that ended might have been.
 			return false, syscall.Kill(s.pid, 0) == syscall.EPERM
 		}
 		for _, kv := range env {
@@ -345,9 +345,8 @@ func (a *Account) settleLocked() {
 	}
 }
 
-// total is the container's traffic as of the latest reports.
 // total is the container's traffic as of the latest reports, which a poll
-// of every socket must precede.
+// of every socket MUST precede.
 func (a *Account) total() Counts {
 	a.mu.Lock()
 	defer a.mu.Unlock()

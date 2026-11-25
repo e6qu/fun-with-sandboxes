@@ -28,7 +28,7 @@ func TestDockerCreateFromPodmanSpec(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, hc := req.Config, req.HostConfig
-	if cfg.Image != "lp/tiny:1" || !reflect.DeepEqual([]string(cfg.Cmd), []string{"/bin/true"}) || !reflect.DeepEqual(cfg.Env, []string{"A=1"}) ||
+	if cfg.Image != "lp/tiny:1" || !reflect.DeepEqual(cfg.Cmd, []string{"/bin/true"}) || !reflect.DeepEqual(cfg.Env, []string{"A=1"}) ||
 		cfg.Labels["k"] != "v" || cfg.User != "1000:1000" || cfg.WorkingDir != "/work" || cfg.Hostname != "h1" ||
 		cfg.StopSignal != "SIGINT" || cfg.StopTimeout == nil || *cfg.StopTimeout != 7 {
 		t.Errorf("config: %+v", cfg)

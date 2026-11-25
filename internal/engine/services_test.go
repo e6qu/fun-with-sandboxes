@@ -120,13 +120,59 @@ func TestServices(t *testing.T) {
 			t.Errorf("the node port answered %q", b)
 		}
 	}
+	// A node port moves from one service to another in one update.
 	svc.Ports[0].NodePort = 0
+	other := Service{Name: "web2", Namespace: "default", ClusterIP: netip.MustParseAddr("10.96.0.11"),
+		Ports: []ServicePort{{Port: 80, NodePort: nodePort, Endpoints: svc.Ports[0].Endpoints}}}
+	if err := e.SetServices("pods", []Service{other, svc}); err != nil {
+		t.Fatalf("a node port moving between services: %v", err)
+	}
+	if res, err := client.Get("http://127.0.0.1:" + strconv.Itoa(nodePort) + "/"); err != nil {
+		t.Errorf("the moved node port: %v", err)
+	} else {
+		res.Body.Close()
+	}
 	if err := e.SetServices("pods", []Service{svc}); err != nil {
 		t.Fatal(err)
 	}
 	if c, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(nodePort)); err == nil {
 		c.Close()
 		t.Error("a node port the service no longer has still listens")
+	}
+
+	// An update that fails changes nothing: here a new service's node
+	// port another process holds, in an update that also takes the node
+	// port another service has and adds a port.
+	svc.Ports[0].NodePort = nodePort
+	if err := e.SetServices("pods", []Service{svc}); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	before := e.Services("pods")
+	changed := svc
+	changed.Ports = []ServicePort{{Port: 80, Endpoints: svc.Ports[0].Endpoints}, {Port: 81, Endpoints: svc.Ports[0].Endpoints}}
+	third := Service{Name: "web3", Namespace: "default", ClusterIP: netip.MustParseAddr("10.96.0.12"),
+		Ports: []ServicePort{{Port: 80, NodePort: nodePort, Endpoints: svc.Ports[0].Endpoints}, {Port: 81, NodePort: busy.Addr().(*net.TCPAddr).Port, Endpoints: svc.Ports[0].Endpoints}}}
+	if err := e.SetServices("pods", []Service{changed, third}); err == nil {
+		t.Fatal("an update with a node port another process holds succeeded")
+	}
+	if after := e.Services("pods"); len(after) != 1 || after[0].Name != "web" || len(after[0].Ports) != 1 || after[0].Ports[0].NodePort != nodePort || len(before) != 1 {
+		t.Errorf("a failed update left the services %+v, were %+v", after, before)
+	}
+	if res, err := client.Get("http://127.0.0.1:" + strconv.Itoa(nodePort) + "/"); err != nil {
+		t.Errorf("a failed update closed the node port it would have moved: %v", err)
+	} else {
+		res.Body.Close()
+	}
+	if got := get(); got != "b" {
+		t.Errorf("a failed update broke the service's port: %q", got)
+	}
+	if n := len(e.svcs.listeners); n != 1 {
+		t.Errorf("a failed update left %d listeners, want the 1 it had", n)
 	}
 
 	if err := e.SetServices("pods", nil); err != nil {

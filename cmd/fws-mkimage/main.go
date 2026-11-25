@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -165,11 +166,17 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 		spec.Files[dst] = src
 	}
 	for dst, src := range spec.Files {
+		if err := outsideHostTrees("file", dst); err != nil {
+			return err
+		}
 		if err := copyTree(src, filepath.Join(stage, dst)); err != nil {
 			return err
 		}
 	}
 	for _, d := range spec.Dirs {
+		if err := outsideHostTrees("dir", d); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(filepath.Join(stage, d), 0o755); err != nil {
 			return err
 		}
@@ -184,6 +191,9 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 		if !ok || filepath.IsAbs(target) {
 			return fmt.Errorf("-link %q: want image-path=relative-target", l)
 		}
+		if err := outsideHostTrees("link", at); err != nil {
+			return err
+		}
 		p := filepath.Join(stage, at)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			return err
@@ -194,6 +204,22 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 		}
 	}
 	return writeArchive(stage, overlay, spec, paths, out, arch)
+}
+
+// hostTrees are the trees the container library (fwsroot.c's host_trees)
+// leaves to the host in every container: the dynamic loader and libSystem
+// read them there. A file an image puts in one is in no container's view.
+var hostTrees = []string{"/System", "/usr/lib", "/dev", "/private/var/db", "/var/db", "/Library/Apple"}
+
+// outsideHostTrees refuses an image path in a host tree.
+func outsideHostTrees(kind, p string) error {
+	clean := filepath.Clean("/" + p)
+	for _, t := range hostTrees {
+		if clean == t || strings.HasPrefix(clean, t+"/") {
+			return fmt.Errorf("%s %s: %s is the host's in every container, so the image's would never be seen", kind, p, t)
+		}
+	}
+	return nil
 }
 
 func readLines(path string) ([]string, error) {
@@ -316,11 +342,23 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if n, err := io.Copy(out, in); err != nil {
 		out.Close()
-		return err
+		// What the file system says on a failed write is often terse
+		// (APFS has answered EILSEQ): say what was copied and how much
+		// room the stage had left.
+		return fmt.Errorf("copy %s (%d of %d bytes): %w; %s", src, n, fi.Size(), err, freeSpace(filepath.Dir(dst)))
 	}
 	return out.Close()
+}
+
+// freeSpace describes the room left on dir's file system.
+func freeSpace(dir string) string {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return fmt.Sprintf("free space unknown: %v", err)
+	}
+	return fmt.Sprintf("%d MiB and %d inodes free there", st.Bavail*uint64(st.Bsize)>>20, st.Ffree)
 }
 
 // relocate rewrites every Mach-O file's absolute store references, then
@@ -353,10 +391,35 @@ func relocate(stage string) error {
 			return fmt.Errorf("install_name_tool %s: %v: %s", p, err, out)
 		}
 		if out, err := exec.Command("codesign", "--force", "--sign", "-", p).CombinedOutput(); err != nil {
-			return fmt.Errorf("codesign %s: %v: %s", p, err, out)
+			return fmt.Errorf("codesign %s: %v: %s; %s", p, err, out, describeMachO(p))
 		}
 		return nil
 	})
+}
+
+// describeMachO says what a file codesign refused looks like, and whether
+// codesign takes it at a second try, so that a failure on a CI runner
+// shows whether the file or the signing went wrong.
+func describeMachO(p string) string {
+	var b strings.Builder
+	if fi, err := os.Stat(p); err == nil {
+		fmt.Fprintf(&b, "%d bytes", fi.Size())
+	}
+	if f, err := os.Open(p); err == nil {
+		head := make([]byte, 16)
+		n, _ := io.ReadFull(f, head)
+		f.Close()
+		fmt.Fprintf(&b, ", starting %x", head[:n])
+	}
+	if out, err := exec.Command("lipo", "-info", p).CombinedOutput(); err == nil {
+		fmt.Fprintf(&b, "; lipo: %s", strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("codesign", "--force", "--sign", "-", p).CombinedOutput(); err != nil {
+		fmt.Fprintf(&b, "; a second codesign fails too: %s", strings.TrimSpace(string(out)))
+	} else {
+		b.WriteString("; a second codesign succeeds")
+	}
+	return b.String()
 }
 
 func loaderRel(stage, file, ref string) string {
@@ -475,7 +538,7 @@ func linkBin(stage, pkg string) error {
 	return nil
 }
 
-// systemShells are the host shells a container may execute; a script whose
+// systemShells are the host shells a container can execute; a script whose
 // interpreter is one of them runs on the host's.
 var systemShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true}
 

@@ -21,12 +21,15 @@ import (
 type fsView struct {
 	root   string
 	mounts []mountRec
+	// readOnlyRoot is --read-only: only the container's read-write mounts
+	// take writes.
+	readOnlyRoot bool
 }
 
 func (c *Container) view() fsView {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return fsView{root: c.root(), mounts: append([]mountRec(nil), c.rec.Mounts...)}
+	return fsView{root: c.root(), mounts: append([]mountRec(nil), c.rec.Mounts...), readOnlyRoot: c.rec.HostConfig.ReadonlyRootfs}
 }
 
 func within(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }
@@ -51,7 +54,7 @@ func (v fsView) writable(h string) bool {
 			return m.RW
 		}
 	}
-	return within(h, v.root)
+	return !v.readOnlyRoot && within(h, v.root)
 }
 
 // mountAt returns the mount whose destination symlink sits at host path h.
@@ -210,11 +213,7 @@ func (e *Engine) ArchiveGet(ref, p string, begin func(container.PathStat), w io.
 		return err
 	}
 	v := c.view()
-	st, _, err := v.stat(p)
-	if err != nil {
-		return err
-	}
-	h, err := v.resolve(p, false)
+	st, h, err := v.stat(p)
 	if err != nil {
 		return err
 	}
@@ -228,8 +227,11 @@ func (e *Engine) ArchiveGet(ref, p string, begin func(container.PathStat), w io.
 	if err := v.writeTree(tw, h, st.Name); err != nil {
 		return err
 	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
 	e.publishContainer(c, events.ActionArchivePath, map[string]string{"path": p})
-	return tw.Close()
+	return nil
 }
 
 // ArchivePut extracts a tar stream into a directory of the container.
@@ -254,6 +256,9 @@ func (e *Engine) ArchivePut(ref, p string, noOverwriteDirNonDir bool, r io.Reade
 		return invalid("extraction point is not a directory")
 	}
 	if !v.writable(h) {
+		if v.readOnlyRoot && within(h, v.root) {
+			return conflict("container rootfs is marked read-only")
+		}
 		return conflict("container path %s is on a read-only mount", p)
 	}
 	if err := image.Extract(h, r, noOverwriteDirNonDir); err != nil {

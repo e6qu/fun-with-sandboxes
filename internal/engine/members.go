@@ -114,7 +114,7 @@ func memberNames(c *Container) []string {
 }
 
 // userNetworks are the user-defined networks c is on: those another stack's
-// containers may share with it.
+// containers can share with it.
 func userNetworks(c *Container) []string {
 	var out []string
 	for n := range c.rec.Networks {
@@ -186,7 +186,7 @@ func (e *Engine) writeStackNetworkLocked(stack string) error {
 	links := e.linkAliasesLocked(stack)
 	for _, o := range e.containers {
 		// Records of an older engine, which numbered each stack's members
-		// alone, may give another stack's member one of this stack's
+		// alone, can give another stack's member one of this stack's
 		// addresses, which the container could not tell apart.
 		if o.rec.Stack == stack || o.rec.Address == "" || !onNetwork(o) || taken[o.rec.Address] {
 			continue

@@ -45,7 +45,7 @@ const dnsInFlight = 64
 // serveDNS answers the queries that arrive on u until it closes.
 func (r *Router) serveDNS(u *net.UDPConn) {
 	buf := make([]byte, 65535)
-	// At most dnsInFlight queries are answered at once, as an answer may
+	// At most dnsInFlight queries are answered at once, as an answer can
 	// wait on an upstream server; past that a query is dropped, which a
 	// resolver retries, rather than spawning without bound.
 	slots := make(chan struct{}, dnsInFlight)

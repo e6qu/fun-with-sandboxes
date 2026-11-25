@@ -218,7 +218,7 @@ func TestStdin(t *testing.T) {
 }
 
 func TestTTY(t *testing.T) {
-	h := launch(t, []string{"tty"}, func(c *Config) { c.TTY, c.Console = true, [2]uint{24, 80} })
+	h := launch(t, []string{"tty"}, func(c *Config) { c.TTY, c.Console = true, [2]uint16{24, 80} })
 	if e := h.wait(); e.ExitCode != 0 {
 		t.Fatalf("exit %+v", e)
 	}
@@ -297,7 +297,7 @@ func TestDaemonLauncher(t *testing.T) {
 		t.Fatalf("the container logged no daemon: %q", h.logs())
 	}
 	// The supervisor finds the daemon as it handles the launcher's fork and
-	// exit, which may come after the main process has waited.
+	// exit, which can come after the main process has waited.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		st, err := h.client.State()
@@ -441,7 +441,7 @@ func TestDiskIOCounted(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if written = uint64(st.DiskWritten); written >= mib<<20 || time.Now().After(deadline) {
+		if written = st.DiskWritten; written >= mib<<20 || time.Now().After(deadline) {
 			break
 		}
 	}

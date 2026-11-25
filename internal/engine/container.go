@@ -327,9 +327,15 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 		}
 	}
 	// A nested engine puts a container on the host's network mode on the
-	// privileged container's network (below); another refuses the mode.
-	if _, node := e.hostNode(); req.HostConfig.NetworkMode == "host" && node == nil {
-		return container.CreateResponse{}, unsupported("network mode \"host\" is not supported: every container is confined to its own stack's ports")
+	// network of node, the privileged container it is nested in; another
+	// refuses the mode. The node is read before this engine's lock, as the
+	// engine that runs it might hold its lock while it waits on this one's;
+	// the container stays in a stack of its own here.
+	var node *Container
+	if req.HostConfig.NetworkMode == "host" {
+		if _, node = e.hostNode(); node == nil {
+			return container.CreateResponse{}, unsupported("network mode \"host\" is not supported: every container is confined to its own stack's ports")
+		}
 	}
 	// A nested engine's routers run in its privileged container's sandbox,
 	// which reaches no DNS server.
@@ -410,15 +416,9 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	}
 	st.mark("clone")
 
-	// node is the privileged container a nested engine's container on the
-	// host's network mode shares the network of, read before this engine's
-	// lock, as the engine that runs it may hold its lock while it waits on
-	// this one's; the container stays in a stack of its own here.
-	var node *Container
 	var nodeHost, nodeDomain string
 	var nodeAddresses []string
-	if req.HostConfig.NetworkMode == "host" {
-		_, node = e.hostNode()
+	if node != nil {
 		node.mu.Lock()
 		nodeHost, nodeDomain, nodeAddresses = hostnameOf(node), node.rec.Config.Domainname, firstAddresses(node.rec.Address, node.rec.Networks)
 		node.mu.Unlock()
@@ -451,7 +451,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	networks := map[string]*network.EndpointSettings{}
 	if net == nil && node == nil {
 		var err error
-		if networks, err = e.resolveNetworksLocked(stack, name, service, req); err != nil {
+		if networks, err = e.resolveNetworksLocked(name, service, req); err != nil {
 			return container.CreateResponse{}, err
 		}
 	}
@@ -633,7 +633,7 @@ func (e *Engine) processEnv(c *Container, extra []string, user string, tty bool)
 	if err != nil {
 		return nil, err
 	}
-	env, err := e.environment(c, ne, net, extra, tty, linkEnv(links))
+	env, err := e.environment(c, ne, net, extra, tty, linkEnv(links), id.Home)
 	if err != nil {
 		return nil, err
 	}
@@ -723,7 +723,7 @@ func checkContainerNetwork(req container.CreateRequest) error {
 	return nil
 }
 
-// heldSysctls are the kernel settings a container may ask for that hold
+// heldSysctls are the kernel settings a container can ask for that hold
 // already, which the engine accepts and sets nothing for, as kind asks
 // for them for an IPv6 or dual-stack cluster's nodes: IPv6 not disabled,
 // as a container on a network with IPv6 has it, and, for a privileged
@@ -795,6 +795,11 @@ func checkHostConfig(hc *container.HostConfig) error {
 	}
 	if err := checkDNS(dnsOf(hc)); err != nil {
 		return err
+	}
+	for _, h := range hc.ExtraHosts {
+		if _, _, err := addHost(h); err != nil {
+			return err
+		}
 	}
 	if hc.VolumeDriver != "" && hc.VolumeDriver != "local" {
 		return unsupported("volume driver %q is not supported; only \"local\" is", hc.VolumeDriver)
@@ -923,7 +928,7 @@ func exposedPorts(cfg container.Config, hc *container.HostConfig) []network.Port
 	return out
 }
 
-func (e *Engine) resolveNetworksLocked(stack, name, service string, req container.CreateRequest) (map[string]*network.EndpointSettings, error) {
+func (e *Engine) resolveNetworksLocked(name, service string, req container.CreateRequest) (map[string]*network.EndpointSettings, error) {
 	out := map[string]*network.EndpointSettings{}
 	add := func(netName string, es *network.EndpointSettings) error {
 		if netName == "default" {
@@ -970,6 +975,12 @@ func (e *Engine) resolveNetworksLocked(stack, name, service string, req containe
 	mode := string(req.HostConfig.NetworkMode)
 	if mode == "" || mode == "default" {
 		mode = "bridge"
+	}
+	// The mode names its network by name or ID, as EndpointsConfig's keys
+	// do, and the endpoint EndpointsConfig gave it, with its aliases, is
+	// the one it joins by: Testcontainers for Java names both by ID.
+	if n, err := e.checkNetworkLocked(mode); err == nil {
+		mode = n.Name
 	}
 	if _, ok := out[mode]; !ok {
 		if err := add(mode, nil); err != nil {
@@ -1294,7 +1305,7 @@ func placeInit(root string) error {
 }
 
 // subpath is the file or directory sub names inside dir, resolved as inside a
-// root, so a symlink cannot lead out of it; it must exist, as Docker
+// root, so a symlink cannot lead out of it; it MUST exist, as Docker
 // requires.
 func subpath(dir, sub string) (string, error) {
 	if sub == "" {
@@ -1433,8 +1444,10 @@ func engineVariable(k string) bool {
 // ne runs: the image and container variables with PATH mapped into the
 // root, plus the variables through which the service learns its root, its
 // own ports and its peers' ports, with net's stack's egress proxy and
-// ports.
-func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []string, tty bool, links []string) ([]string, error) {
+// ports. HOME, where the image and the request name none, is home, the
+// process's user's home directory as /etc/passwd names it, as Docker
+// gives it.
+func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []string, tty bool, links []string, home string) ([]string, error) {
 	root := c.root()
 	vars := map[string]string{}
 	var order []string
@@ -1446,7 +1459,10 @@ func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []s
 		vars[k] = v
 	}
 	set("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	set("HOME=" + filepath.Join(root, "root"))
+	if home == "" {
+		home = "/root"
+	}
+	set("HOME=" + filepath.Join(root, home))
 	set("HOSTNAME=" + hostnameOf(c))
 	if tty {
 		set("TERM=xterm")
@@ -1478,7 +1494,7 @@ func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []s
 	set("SANDBOX_ROOT=" + root)
 	set("SANDBOX_STACK=" + c.rec.Stack)
 	set("SANDBOX_HOST=127.0.0.1")
-	// POSIX shared memory and semaphore names must start with the prefix
+	// POSIX shared memory and semaphore names MUST start with the prefix
 	// under private IPC, so programs that name them need it.
 	if _, prefix, err := e.ipcMode(c); err == nil && prefix != "" {
 		set("SANDBOX_IPC_PREFIX=" + prefix)
@@ -1790,7 +1806,7 @@ func (c *Container) start(e *Engine) error {
 			Root: c.root(), Argv: argv, Env: env, WorkDir: c.rec.Config.WorkingDir,
 			Profile: spec, ProfilePath: filepath.Join(c.dir, "profile.sb"), Limits: limits, Library: spec.Libraries[0],
 		},
-		TTY: c.rec.Config.Tty, Console: c.rec.HostConfig.ConsoleSize, OpenStdin: c.rec.Config.OpenStdin,
+		TTY: c.rec.Config.Tty, Console: consoleSize(c.rec.HostConfig.ConsoleSize), OpenStdin: c.rec.Config.OpenStdin,
 		LogPath: c.logs.path, Socket: e.shimSocket(c), Anchor: e.anchorSocket(c), ExitPath: c.exitPath(),
 		Router: c.rec.RouterPort, PortDir: e.portDir(c),
 		Tag: c.tag(), AllocRoot: e.cfg.Root, Stack: c.rec.Stack, Resources: res, Pids: e.pidsSocket(c),

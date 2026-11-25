@@ -3,13 +3,20 @@
   "files": {},
   "dirs": [
     "/app",
+    "/home/node",
+    "/root",
     "/tmp"
   ],
   "config": {
     "Env": [
-      "PATH=/bin",
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "TZ=UTC",
-      "NODE_ENV=production"
+      "NPM_CONFIG_PREFIX=/usr/local",
+      "npm_config_nodedir=/usr/local",
+      "NODE_USE_ENV_PROXY=1",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+      "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
+      "GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt"
     ],
     "Cmd": [
       "node"

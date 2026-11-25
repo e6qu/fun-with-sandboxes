@@ -8,7 +8,7 @@ import (
 
 // A link in a container's root leads on inside the root, as the container
 // sees it, when the engine writes there: its absolute target names a host
-// directory the engine's writes must never reach.
+// directory the engine's writes MUST NOT reach.
 func TestWritesInARootStayInIt(t *testing.T) {
 	dir := t.TempDir()
 	root, host, ctx := filepath.Join(dir, "root"), filepath.Join(dir, "host"), filepath.Join(dir, "ctx")

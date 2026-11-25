@@ -33,7 +33,7 @@ const (
 	socksAddrUnsupport = 0x08
 )
 
-// greetingTimeout bounds how long a client may take to send its first
+// greetingTimeout bounds how long a client can take to send its first
 // bytes, as the HTTP side bounds its request header.
 const greetingTimeout = 30 * time.Second
 
@@ -139,7 +139,7 @@ func (p *Proxy) socks(c net.Conn) {
 }
 
 // socksHandshake reads the greeting, the client's credentials when it
-// offers them, and the request, answering what it must refuse, and returns
+// offers them, and the request, answering what it refuses, and returns
 // the host:port to connect to and the member the client is.
 func (p *Proxy) socksHandshake(c net.Conn) (string, string, error) {
 	var hdr [2]byte

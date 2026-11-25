@@ -30,7 +30,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 # A Nix that finds no network as it starts skips the binary cache and
 # builds from source what Hydra built, down to the bootstrap tools, whose
 # sources' mirrors move: that run is tried again too, once the network is
-# back, so that it substitutes as it should.
+# back, so that it substitutes from the cache again.
 retry_net() {
   local err attempt
   err=$(mktemp)
@@ -113,7 +113,7 @@ out=${1:?usage: build-images.sh OUTPUT_DIR | --prebuilt-derivations GROUP | --pr
 build=$(mktemp -d)
 trap 'rm -rf "$build"' EXIT
 mkdir -p "$out"
-# OUTPUT_DIR may hold an earlier catalog: fws-mkimage -reuse keeps each
+# OUTPUT_DIR MAY hold an earlier catalog: fws-mkimage -reuse keeps each
 # archive made from the same inputs, as the digest beside it records them,
 # and rewrites that digest, so what this build neither made nor kept is
 # older than this marker and goes at the end.
@@ -225,6 +225,37 @@ accounts() {
   acct=(-file "/etc/passwd=$d/passwd" -file "/etc/group=$d/group")
 }
 
+# The commands fws/busybox carries, as separate programs from the GNU tools
+# and others nixpkgs builds for darwin, and fws/base's, which add bash,
+# curl, git, jq and less: the userland of the images built FROM, whose
+# builds' Makefiles and scripts run them.
+busybox_pkgs=()
+for p in coreutils:ls findutils:find diffutils:diff gnugrep:grep gnused:sed gawk:awk libarchive:bsdtar gzip:gzip \
+  bzip2:bzip2 xz:xz unzip:unzip wget:wget which:which; do
+  busybox_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
+done
+base_pkgs=("${busybox_pkgs[@]}")
+for p in bash:bash curl:curl git:git jq:jq less:less; do
+  base_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
+done
+
+# A C and C++ toolchain for darwin, as the official node and rust images'
+# build-essential gives node-gyp, the cc crate and rustc's linker: the
+# compiler nixpkgs' stdenv builds with (clang, with ld64 and the macOS SDK
+# behind nixpkgs' wrappers), cctools' libtool, lipo and otool, and GNU
+# make. The wrappers are bash scripts, run by the image's /bin/bash, which
+# name the compiler, the linker and the SDK by store path, as the container
+# library finds them in the root. gcc and g++ name clang, as macOS's do, for
+# Makefiles that take make's default CXX, such as gyp's.
+cc=$(pkg_with stdenv.cc clang)
+cctools=$(pkg_with cctools lipo)
+gnumake=$(pkg_with gnumake make)
+# The SDK the wrappers fall back to, which SDKROOT names for the tools that
+# ask xcrun, absent here, for one otherwise: rustc warns at each link.
+sdk=$("${nix[@]}" build --no-link --print-out-paths "$nixpkgs#stdenv.cc.fallback_sdk")
+sdkroot=$sdk/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+toolchain_args=(-pkg "$cctools" -pkg "$gnumake" -pkg "$cc" -link "/bin/gcc=clang" -link "/bin/g++=clang++" -env "SDKROOT=$sdkroot")
+
 for v in 16 18; do
   pg=$(pkg_with "postgresql_$v" postgres)
   closure "$pg" > "$build/pg$v.closure"
@@ -243,7 +274,8 @@ nginx=$(cat_with nginx nginx)
 closure "$nginx" > "$build/nginx.closure"
 accounts nginx nginx 101 101 /nonexistent
 mkimage "${acct[@]}" -spec images/nginx/image.json -closure "$build/nginx.closure" -pkg "$nginx" \
-  -file "/entry=$build/nginx-entry" -file "/usr/share/nginx/html/index.html=$nginx/html/index.html" -out "$out/nginx.tar"
+  -file "/entry=$build/nginx-entry" -file "/usr/share/nginx/html/index.html=$nginx/html/index.html" \
+  -link "/etc/nginx/mime.types=../..$nginx/conf/mime.types" -out "$out/nginx.tar"
 
 mariadb=$(server_with mariadb mariadbd)
 closure "$mariadb" > "$build/mariadb.closure"
@@ -524,23 +556,68 @@ for v in 3.11 3.12 3.13 3.14 3.15; do
   closure "$p" > "$build/python$v.closure"
   accounts python
   mkimage "${acct[@]}" -spec images/python/image.json -tag "fws/python:$v" -closure "$build/python$v.closure" -pkg "$p" \
-    -remove "$p/lib/python$v/EXTERNALLY-MANAGED" -out "$out/python-$v.tar"
+    -remove "$p/lib/python$v/EXTERNALLY-MANAGED" -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/python-$v.tar"
 done
 
+# Node.js as its official images, on Debian's buildpack-deps, carry it:
+# node, npm and npx, and up to Node.js 24 corepack and Yarn 1, which
+# Node.js 25 and its images dropped, in /usr/local/bin as well as /bin;
+# what node-gyp builds native addons with: python3, make and the C
+# toolchain above; and fws/base's commands and CA bundle, which nixpkgs'
+# OpenSSL, Node.js's, reads where SSL_CERT_FILE names it. npm's node-gyp
+# is nixpkgs', which takes Xcode's version as given rather than ask
+# xcodebuild, which no image carries.
+python3=$(pkg_with python3 python3)
+yarn=$(output_with yarn -f images/node/yarn.nix --argstr nixpkgs "$nixpkgs")
+node_tools=("${base_pkgs[@]}" "$python3")
 for v in 22 24 26; do
   printf -v "node_$v" '%s' "$(pkg_with "nodejs_$v" node)"
   p=node_$v
   p=${!p}
-  closure "$p" > "$build/node$v.closure"
+  node_pkgs=("$p")
+  if [ "$v" -lt 25 ]; then node_pkgs+=("$yarn"); fi
+  closure "${node_tools[@]}" "$cctools" "$gnumake" "$cc" "${node_pkgs[@]}" > "$build/node$v.closure"
+  # Node.js's headers where its official images have them, which
+  # npm_config_nodedir names to node-gyp, so an addon builds against them
+  # rather than headers it downloads.
+  node_args=(-link "/usr/local/include/node=../../..$p/include/node")
+  for q in "${node_tools[@]}" "${node_pkgs[@]}"; do node_args+=(-pkg "$q"); done
+  for q in "${node_pkgs[@]}"; do
+    for f in "$q"/bin/*; do node_args+=(-link "/usr/local/bin/${f##*/}=../../../bin/${f##*/}"); done
+  done
   accounts node node 1000 1000 /home/node
   mkimage "${acct[@]}" -spec images/node/image.json -tag "fws/node:$v" -closure "$build/node$v.closure" \
-    -pkg "$p" -out "$out/node-$v.tar"
+    "${node_args[@]}" "${toolchain_args[@]}" -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env \
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/node-$v.tar"
 done
 
+# Bun as its official image lays it out: bun and bunx in /usr/local/bin,
+# and bun as node in the directory its PATH ends with, for packages'
+# scripts that run node; and fws/busybox's commands, which those scripts,
+# run by /bin/sh, run.
 bun=$(cat_with bun bun)
-closure "$bun" > "$build/bun.closure"
+closure "$bun" "${busybox_pkgs[@]}" > "$build/bun.closure"
+bun_args=()
+for p in "${busybox_pkgs[@]}"; do bun_args+=(-pkg "$p"); done
 accounts bun bun 1000 1000 /home/bun
-mkimage "${acct[@]}" -spec images/bun/image.json -closure "$build/bun.closure" -pkg "$bun" -out "$out/bun.tar"
+mkimage "${acct[@]}" -spec images/bun/image.json -closure "$build/bun.closure" "${bun_args[@]}" -pkg "$bun" \
+  -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env -link /usr/local/bin/bun=../../../bin/bun \
+  -link /usr/local/bin/bunx=../../../bin/bunx -link /usr/local/bun-node-fallback-bin/node=../../../bin/bun -out "$out/bun.tar"
+
+# Rust as its official image lays it out: the release's toolchain
+# (images/rust) in CARGO_HOME's bin, which leads PATH, over the C toolchain
+# above, which rustc links with and build scripts compile C with, and
+# fws/base's commands and CA bundle. There is no rustup: the toolchain is
+# the release's, for aarch64-apple-darwin alone.
+rust=$(output_with rustc -f images/rust/rust.nix --argstr nixpkgs "$nixpkgs")
+closure "$rust" "${base_pkgs[@]}" "$cctools" "$gnumake" "$cc" > "$build/rust.closure"
+rust_args=()
+for p in "${base_pkgs[@]}"; do rust_args+=(-pkg "$p"); done
+for f in "$rust"/bin/*; do rust_args+=(-link "/usr/local/cargo/bin/${f##*/}=../../../..$f"); done
+accounts rust
+mkimage "${acct[@]}" -spec images/rust/image.json -closure "$build/rust.closure" "${rust_args[@]}" "${toolchain_args[@]}" \
+  -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env \
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/rust.tar"
 
 gitea=$(cat_with gitea gitea)
 gitea_data=$(cat_out gitea.data)
@@ -560,9 +637,15 @@ for p in $(nix-store -qR "$dynamodb"); do
 done
 [ -n "$jre" ] || { echo "DynamoDB Local's closure holds no Java runtime" >&2; exit 1; }
 closure "$dynamodb" > "$build/dynamodb.closure"
+# The jar and its native libraries in the working directory, as the
+# official image has them, where Testcontainers' module runs
+# java -jar DynamoDBLocal.jar.
 accounts dynamodb dynamodblocal 1000 1000 /home/dynamodblocal
 mkimage "${acct[@]}" -spec images/dynamodb/image.json -closure "$build/dynamodb.closure" -pkg "$jre" \
-  -env "DYNAMODB_HOME=$dynamodb/share/dynamodb-local" -file "/entry=$build/dynamodb-entry" -out "$out/dynamodb.tar"
+  -env "DYNAMODB_HOME=$dynamodb/share/dynamodb-local" -file "/entry=$build/dynamodb-entry" \
+  -link "/home/dynamodblocal/DynamoDBLocal.jar=../..$dynamodb/share/dynamodb-local/DynamoDBLocal.jar" \
+  -link "/home/dynamodblocal/DynamoDBLocal_lib=../..$dynamodb/share/dynamodb-local/DynamoDBLocal_lib" \
+  -out "$out/dynamodb.tar"
 
 rabbitmq=$(cat_with rabbitmq-server rabbitmq-server)
 # RabbitMQ's scripts run the POSIX tools from PATH.
@@ -590,7 +673,7 @@ for v in 3.11 3.12 3.13 3.14; do
     -env "AWS_EXECUTION_ENV=AWS_Lambda_python$v" -closure "$build/lambda-python$v.closure" -pkg "$p" -pkg "$rie" \
     -remove "$p/lib/python$v/EXTERNALLY-MANAGED" \
     -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.py=images/lambda/python/bootstrap.py" -file "/var/runtime/bootstrap=images/lambda/python/bootstrap" \
-    -out "$out/lambda-python-$v.tar"
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/lambda-python-$v.tar"
 done
 # shellcheck disable=SC2154 # set through printf -v above
 node24=$node_24
@@ -602,7 +685,7 @@ for v in 22 24; do
   mkimage "${acct[@]}" -spec images/lambda/nodejs/image.json -tag "fws/lambda/nodejs:$v" \
     -env "AWS_EXECUTION_ENV=AWS_Lambda_nodejs$v.x" -closure "$build/lambda-nodejs$v.closure" -pkg "$p" -pkg "$rie" \
     -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/bootstrap.mjs=images/lambda/nodejs/bootstrap.mjs" -file "/var/runtime/bootstrap=images/lambda/nodejs/bootstrap" \
-    -out "$out/lambda-nodejs-$v.tar"
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/lambda-nodejs-$v.tar"
 done
 
 # The Java runtime's libraries, from Maven Central, checked against their
@@ -626,36 +709,55 @@ closure "$jdk17" "$rie" > "$build/lambda-java.closure"
 accounts lambda-java sbx_user1051 993 990 /home/sbx_user1051
 mkimage "${acct[@]}" -spec images/lambda/java/image.json -closure "$build/lambda-java.closure" -pkg "$jdk17" -pkg "$rie" \
   -file "/lambda-entrypoint=$build/lambda-entrypoint" -file "/var/runtime/lib=$lib" -file "/var/runtime/bootstrap=images/lambda/java/bootstrap" \
-  -out "$out/lambda-java.tar"
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/lambda-java.tar"
 
-# Playwright on Node.js 24, with the playwright packages of the version
-# pinned here and the Chromium headless shell its browsers.json names
-# (revision and Chrome version), Chrome for Testing's build, checked
-# against the digest pinned here.
+# Playwright on Node.js 24: the playwright packages and its test runner,
+# @playwright/test, of the version pinned here, and the mac-arm64 browsers
+# its browsers.json names (revision, and Chrome's version), laid out under
+# /ms-playwright as `playwright install` lays them out, marker files
+# included: Chromium's headless shell, Chrome for Testing's build, which
+# headless launches use; Firefox, Playwright's build with its Juggler protocol; and the ffmpeg that
+# records videos. Each comes from Playwright's CDN at the path its registry
+# (server/registry/index.ts) names, checked against the digest pinned here.
+# Playwright's WebKit is left out (LIMITATIONS): it starts its web content
+# and network processes as XPC services, which launchd runs outside the
+# container's sandbox. So is Chromium itself, which aborts as it starts
+# under the container's profile.
 pw_version=1.65.1
-pw_revision=1255
-pw_chrome=159.0.8154.6
-pw_platform=mac-arm64 pw_sum=b08e7beaf02a19e2ee5ed6955f9c3853ab9176cd5bb57ba87afbb82e9f81cc29
-mkdir -p "$build/playwright/modules" "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
+pw_browsers="$build/playwright/browsers"
+mkdir -p "$build/playwright/modules" "$pw_browsers"
 # The install is retried as curl retries below: a runner's resolver drops a
 # lookup now and then, and npm retries no failed lookup itself.
 for attempt in 1 2 3 4 5; do
   if "$node24/bin/node" "$node24/lib/node_modules/npm/bin/npm-cli.js" install --prefix "$build/playwright/modules" \
-    --no-audit --no-fund --no-package-lock "playwright@$pw_version" "playwright-core@$pw_version"; then
+    --no-audit --no-fund --no-package-lock "playwright@$pw_version" "playwright-core@$pw_version" "@playwright/test@$pw_version"; then
     break
   fi
   [ "$attempt" -lt 5 ] || exit 1
   sleep $((attempt * 2))
 done
-curl -fsSL --retry 5 -o "$build/playwright/shell.zip" \
-  "https://storage.googleapis.com/chrome-for-testing-public/$pw_chrome/$pw_platform/chrome-headless-shell-$pw_platform.zip"
-echo "$pw_sum  $build/playwright/shell.zip" | shasum -a 256 -c - >/dev/null
-unzip -q "$build/playwright/shell.zip" -d "$build/playwright/browsers/chromium_headless_shell-$pw_revision"
-closure "$node24" > "$build/playwright.closure"
+while read -r dir sum path; do
+  curl -fsSL --retry 5 -o "$build/playwright/$dir.zip" "https://cdn.playwright.dev/builds/$path"
+  echo "$sum  $build/playwright/$dir.zip" | shasum -a 256 -c - >/dev/null
+  mkdir -p "$pw_browsers/$dir"
+  unzip -q "$build/playwright/$dir.zip" -d "$pw_browsers/$dir"
+  touch "$pw_browsers/$dir/INSTALLATION_COMPLETE" "$pw_browsers/$dir/DEPENDENCIES_VALIDATED"
+done <<'BROWSERS'
+chromium_headless_shell-1255 b08e7beaf02a19e2ee5ed6955f9c3853ab9176cd5bb57ba87afbb82e9f81cc29 cft/159.0.8154.6/mac-arm64/chrome-headless-shell-mac-arm64.zip
+firefox-1572 9691b4a07405d8faf8a44f6378d66db480d36159d9e9c4ed1d6066687697e1f2 firefox/1572/firefox-mac-arm64.zip
+ffmpeg-1013 63e48ce8d4a6d9d496383e5ac557b26466e719fa29126bbbd5f5f7016ac9229c ffmpeg/1013/ffmpeg-mac-arm64.zip
+BROWSERS
+# coreutils for the commands a dev container's tools run in it (cat,
+# mkdir, sleep), as Microsoft's Debian-based image has them.
+coreutils=$(pkg_with coreutils dirname)
+closure "$node24" "$coreutils" > "$build/playwright.closure"
 accounts playwright pwuser 1000 1000 /home/pwuser
-mkimage "${acct[@]}" -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" \
-  -file "/entry=$build/playwright-entry" -file "/usr/lib/node_modules=$build/playwright/modules/node_modules" \
-  -file "/ms-playwright=$build/playwright/browsers" -out "$out/playwright.tar"
+mkimage "${acct[@]}" -spec images/playwright/image.json -closure "$build/playwright.closure" -pkg "$node24" -pkg "$coreutils" \
+  -link /usr/bin/env=../../bin/env \
+  -file "/entry=$build/playwright-entry" -file "/usr/local/lib/node_modules=$build/playwright/modules/node_modules" \
+  -link /bin/playwright=../usr/local/lib/node_modules/@playwright/test/cli.js \
+  -link /usr/local/bin/playwright=../lib/node_modules/@playwright/test/cli.js \
+  -file "/ms-playwright=$pw_browsers" -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/playwright.tar"
 
 "$build/fws-mkimage" -reuse -spec images/toolbox/image.json -file "/toolbox=$build/toolbox" -out "$out/toolbox.tar"
 
@@ -668,11 +770,6 @@ mkimage "${acct[@]}" -spec images/playwright/image.json -closure "$build/playwri
 # unpacks keeps its modes: the Dev Containers extension, in a container
 # whose /etc/os-release names darwin, unpacks VS Code's server, a zip, with
 # tar -xz from a pipe.
-busybox_pkgs=()
-for p in coreutils:ls findutils:find diffutils:diff gnugrep:grep gnused:sed gawk:awk libarchive:bsdtar gzip:gzip \
-  bzip2:bzip2 xz:xz unzip:unzip wget:wget which:which; do
-  busybox_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
-done
 closure "${busybox_pkgs[@]}" > "$build/busybox.closure"
 busybox_args=()
 for p in "${busybox_pkgs[@]}"; do busybox_args+=(-pkg "$p"); done
@@ -685,17 +782,13 @@ mkimage "${acct[@]}" -spec images/busybox/image.json -closure "$build/busybox.cl
 # whose Linux userlands and package managers cannot run here: bash, the
 # commands of fws/busybox, and curl, git, jq and less, with Mozilla's CA
 # bundle where Debian's ca-certificates puts it.
-base_pkgs=("${busybox_pkgs[@]}")
-for p in bash:bash curl:curl git:git jq:jq less:less; do
-  base_pkgs+=("$(pkg_with "${p%%:*}" "${p#*:}")")
-done
 closure "${base_pkgs[@]}" > "$build/base.closure"
 base_args=()
 for p in "${base_pkgs[@]}"; do base_args+=(-pkg "$p"); done
 accounts base
 mkimage "${acct[@]}" -spec images/base/image.json -closure "$build/base.closure" \
   "${base_args[@]}" -file "/bin/tar=$build/tar" -link /usr/bin/env=../../bin/env \
-  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/base.tar"
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/base.tar"
 
 # Ryuk, Testcontainers' reaper, built from its 0.14.0 release.
 ryuk_commit=b3726afd6cc2c36628abcc08e9cabac43f587384
@@ -718,7 +811,7 @@ for c in kube-apiserver kube-controller-manager kube-scheduler kubectl; do
   accounts "$c" nonroot 65532 65532 /home/nonroot
   mkimage "${acct[@]}" -spec "images/$c/image.json" -closure "$build/kubernetes.closure" \
     -file "/go-runner=$go_runner/bin/go-runner" -file "/usr/local/bin/$c=$k8s/bin/$c" \
-    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/$c.tar"
+    -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/$c.tar"
 done
 pause=$("${nix[@]}" build --no-link --print-out-paths --impure -f images/kubernetes/pause.nix --argstr nixpkgs "$nixpkgs")
 closure "$pause" > "$build/pause.closure"
@@ -730,7 +823,7 @@ closure "${deps[@]}" > "$build/kubelet.closure"
 accounts kubelet
 mkimage "${acct[@]}" -spec images/kubelet/image.json -closure "$build/kubelet.closure" \
   -file "/usr/local/bin/kubelet=$kubelet/bin/kubelet" -file "/usr/local/bin/fws-kube-proxy=$build/fws-kube-proxy" \
-  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -out "$out/kubelet.tar"
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt -out "$out/kubelet.tar"
 
 # kind's node image from the parts above: kubeadm, the kubelet, kubectl
 # and fws-kube-proxy, the control plane's images, which the entrypoint
@@ -778,7 +871,8 @@ node_files=(-pkg "$coreutils" -pkg "$gnutar" -pkg "$bash" -link /bin/sh=bash
   -file "/kind/version=$build/kind-version" -file "/kind/images.txt=$build/kind-images.txt" "${images[@]}"
   -file "/kind/manifests/default-cni.yaml=$here/images/kind-node/manifests/default-cni.yaml"
   -file "/kind/manifests/default-storage.yaml=$here/images/kind-node/manifests/default-storage.yaml"
-  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt")
+  -file "/kind/manifests/k3s-storage.yaml=$here/images/kind-node/manifests/k3s-storage.yaml"
+  -file "/etc/ssl/certs/ca-certificates.crt=$cacert/etc/ssl/certs/ca-bundle.crt" -link /etc/ssl/cert.pem=certs/ca-certificates.crt)
 accounts kind-node
 mkimage "${acct[@]}" -spec images/kind-node/image.json -closure "$build/kind-node.closure" "${node_files[@]}" -out "$out/kind-node.tar"
 

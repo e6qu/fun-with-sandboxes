@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -20,6 +21,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	_ "github.com/go-sql-driver/mysql"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/testcontainers/testcontainers-go"
+	tcdynamodb "github.com/testcontainers/testcontainers-go/modules/dynamodb"
+	tcnginx "github.com/testcontainers/testcontainers-go/modules/nginx"
 )
 
 func httpGet(t *testing.T, url string) string {
@@ -248,6 +252,157 @@ git -C /tmp/r log --format=%s`, "bash 5\n42\n200\nfirst\n"},
 	}
 }
 
+// toolchainRun runs script under sh in a container of image, with dir at
+// /app, and fails the test unless the output holds every one of want.
+func toolchainRun(t *testing.T, image, dir, script string, want ...string) {
+	t.Helper()
+	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "-w", "/app", image, "sh", "-c", "set -e\n"+script)
+	for _, w := range want {
+		if err != nil || !strings.Contains(out, w) {
+			t.Errorf("%s: %q, %v; want %q", image, out, err, w)
+			return
+		}
+	}
+}
+
+// The Node.js images build what the official images build: npm installs a
+// package whose native addon node-gyp compiles with the image's python3,
+// make, C++ compiler and the macOS SDK against the image's Node.js
+// headers; corepack's pnpm installs a package from the registry through
+// the egress proxy, which corepack reaches through NODE_USE_ENV_PROXY; and
+// Yarn 1 is there, as in node:22 and node:24.
+func TestNodeToolchain(t *testing.T) {
+	for _, v := range []string{"22", "24", "26"} {
+		t.Run(v, func(t *testing.T) {
+			image := "fws/node:" + v
+			dir := t.TempDir()
+			writeTree(t, dir, map[string]string{
+				"package.json":       `{"name": "app", "version": "1.0.0", "private": true, "dependencies": {"hello-addon": "file:./addon"}}`,
+				"addon/package.json": `{"name": "hello-addon", "version": "1.0.0", "main": "index.js"}`,
+				"addon/index.js":     "module.exports = require('./build/Release/hello.node');\n",
+				"addon/binding.gyp":  `{"targets": [{"target_name": "hello", "sources": ["hello.cc"]}]}`,
+				"addon/hello.cc": `#include <node_api.h>
+#include <string>
+
+static napi_value Hello(napi_env env, napi_callback_info) {
+  std::string s = "native " + std::to_string(6 * 7);
+  napi_value v;
+  napi_create_string_utf8(env, s.c_str(), s.size(), &v);
+  return v;
+}
+
+static napi_value Init(napi_env env, napi_value exports) {
+  napi_value fn;
+  napi_create_function(env, "hello", NAPI_AUTO_LENGTH, Hello, nullptr, &fn);
+  napi_set_named_property(env, exports, "hello", fn);
+  return exports;
+}
+
+NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)
+`,
+			})
+			// --install-links installs the addon as a copy, as from the
+			// registry, so npm runs its default install script, node-gyp
+			// rebuild.
+			toolchainRun(t, image, dir, `npx --version >/dev/null
+cc --version | head -n 1 && python3 --version && make --version | head -n 1
+npm install --install-links --no-audit --no-fund --loglevel=error
+node -e 'console.log(require("hello-addon").hello())'`, "clang version", "Python 3", "GNU Make", "native 42")
+			if v == "26" {
+				// Node.js 25 and its official images dropped corepack and Yarn.
+				return
+			}
+			toolchainRun(t, image, dir, `yarn --version
+corepack enable pnpm
+mkdir -p /tmp/p && cd /tmp/p
+echo '{"name": "p", "version": "1.0.0", "private": true, "dependencies": {"is-number": "7.0.0"}}' > package.json
+pnpm install --reporter=silent
+node -e 'console.log("pnpm", require("is-number")(5))'`, "1.22.22", "pnpm true")
+		})
+	}
+}
+
+// Bun installs from the registry through the egress proxy, runs the
+// project's postinstall script with /bin/sh, where node is bun, runs a
+// dependency's bin with bunx, and runs bun test.
+func TestBunToolchain(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"package.json": `{"name": "b", "version": "1.0.0", "private": true,
+ "scripts": {"postinstall": "echo postinstall ran > postinstall.txt && node -e 'console.log(1 + 1)' >> postinstall.txt"},
+ "dependencies": {"semver": "7.6.3"}}`,
+		"semver.test.ts": `import { expect, test } from "bun:test";
+import semver from "semver";
+
+test("semver orders versions", () => {
+  expect(semver.gt("1.2.3", "1.2.2")).toBe(true);
+});
+`,
+	})
+	toolchainRun(t, "fws/bun:1", dir, `bun install
+cat postinstall.txt
+bunx semver 1.2.3
+bun test 2>&1`, "postinstall ran\n2\n", "1.2.3", "1 pass")
+}
+
+// fws/rust builds and runs a crate with cargo, formats and lints it with
+// rustfmt and clippy, builds a crate whose build script compiles C with the
+// cc crate from crates.io, and builds a Dockerfile FROM it whose binary a
+// second stage copies into fws/base.
+func TestRustToolchain(t *testing.T) {
+	const image = "fws/rust:1.100"
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"Cargo.toml": `[package]
+name = "addc"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+cc = "1"
+`,
+		"build.rs": `fn main() {
+    cc::Build::new().file("src/add.c").compile("add");
+}
+`,
+		"src/add.c": "int add(int a, int b) { return a + b; }\n",
+		"src/main.rs": `unsafe extern "C" {
+    fn add(a: i32, b: i32) -> i32;
+}
+
+fn main() {
+    println!("c says {}", unsafe { add(40, 2) });
+}
+`,
+	})
+	toolchainRun(t, image, dir, `rustc --version && cargo --version && cargo fmt --version && cargo clippy --version
+cd /tmp && cargo new --vcs none --quiet hello && cd hello
+cargo build --release --quiet && ./target/release/hello
+cargo fmt --check && cargo clippy --quiet --release -- -D warnings
+cd /app && cargo run --release --quiet`, "rustc 1.100.0", "Hello, world!", "c says 42")
+
+	ctx := t.TempDir()
+	writeTree(t, ctx, map[string]string{
+		"Cargo.toml":  "[package]\nname = \"hello\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+		"src/main.rs": "fn main() {\n    println!(\"built FROM {}\", env!(\"CARGO_PKG_NAME\"));\n}\n",
+		"Dockerfile": `FROM ` + image + ` AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release
+FROM fws/base:1
+COPY --from=build /src/target/release/hello /usr/local/bin/hello
+CMD ["hello"]
+`,
+	})
+	if out, err := exec.Command("docker", "buildx", "build", "--load", "-t", "e2e/rust-hello:1", ctx).CombinedOutput(); err != nil {
+		t.Fatalf("docker build FROM %s: %v\n%s", image, err, out)
+	}
+	defer docker(t, "rmi", "e2e/rust-hello:1")
+	if out := mustDocker(t, "run", "--rm", "e2e/rust-hello:1"); out != "built FROM hello\n" {
+		t.Errorf("the binary built FROM %s, run in fws/base:1: %q", image, out)
+	}
+}
+
 func TestGitea(t *testing.T) {
 	const name = "fws-e2e-gitea"
 	waitedRun(t, name, "-p", "127.0.0.1::3000", "-e", "GITEA__security__INSTALL_LOCK=true", "fws/gitea:28")
@@ -306,6 +461,111 @@ func TestDynamoDBLocal(t *testing.T) {
 	}
 }
 
+// Testcontainers' DynamoDB module runs fws/dynamodb-local as it runs
+// amazon/dynamodb-local: its entrypoint is java with DynamoDB Local's
+// native libraries, and its command the jar, both named relative to the
+// image's working directory. WithSharedDB reuses the container by name,
+// so a second Run finds the first's container and its table.
+func TestDynamoDBModule(t *testing.T) {
+	ctx := context.Background()
+	c, err := tcdynamodb.Run(ctx, "fws/dynamodb-local:2", tcdynamodb.WithSharedDB(), tcdynamodb.WithDisableTelemetry())
+	testcontainers.CleanupContainer(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientOf := func(c *tcdynamodb.DynamoDBContainer) *dynamodb.Client {
+		t.Helper()
+		hostPort, err := c.ConnectionString(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return dynamodb.New(dynamodb.Options{
+			Region: "us-east-1", BaseEndpoint: aws.String("http://" + hostPort),
+			Credentials: credentials.NewStaticCredentialsProvider("local", "local", ""),
+		})
+	}
+	client := clientOf(c)
+	if _, err := client.CreateTable(ctx, &dynamodb.CreateTableInput{
+		TableName:            aws.String("notes"),
+		AttributeDefinitions: []types.AttributeDefinition{{AttributeName: aws.String("id"), AttributeType: types.ScalarAttributeTypeS}},
+		KeySchema:            []types.KeySchemaElement{{AttributeName: aws.String("id"), KeyType: types.KeyTypeHash}},
+		BillingMode:          types.BillingModePayPerRequest,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String("notes"), Item: map[string]types.AttributeValue{
+		"id": &types.AttributeValueMemberS{Value: "1"}, "body": &types.AttributeValueMemberS{Value: "shared"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := tcdynamodb.Run(ctx, "fws/dynamodb-local:2", tcdynamodb.WithSharedDB(), tcdynamodb.WithDisableTelemetry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.GetContainerID() != c.GetContainerID() {
+		testcontainers.CleanupContainer(t, again)
+		t.Fatalf("WithSharedDB made a second container, %s beside %s", again.GetContainerID(), c.GetContainerID())
+	}
+	got, err := clientOf(again).GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String("notes"), Key: map[string]types.AttributeValue{"id": &types.AttributeValueMemberS{Value: "1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, ok := got.Item["body"].(*types.AttributeValueMemberS); !ok || b.Value != "shared" {
+		t.Fatalf("the reused container's item %v", got.Item)
+	}
+}
+
+// Testcontainers' nginx module runs fws/nginx with a server of the
+// test's in conf.d, WithCustomConfig, and with a main configuration of
+// the test's in place of the image's, WithConfigFile, as it runs the
+// official image.
+func TestNginxModule(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	get := func(t *testing.T, c *tcnginx.Container) string {
+		t.Helper()
+		endpoint, err := c.HTTPEndpoint(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return httpGet(t, endpoint+"/")
+	}
+	t.Run("custom config", func(t *testing.T) {
+		snippet := filepath.Join(dir, "default.conf")
+		os.WriteFile(snippet, []byte("server {\n    listen 80;\n    location / { return 200 \"from the module's server\\n\"; }\n}\n"), 0o644)
+		c, err := tcnginx.Run(ctx, "fws/nginx:1", tcnginx.WithCustomConfig(snippet))
+		testcontainers.CleanupContainer(t, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body := get(t, c); body != "from the module's server\n" {
+			t.Errorf("the server of the module's conf.d answered %q", body)
+		}
+	})
+	t.Run("config file", func(t *testing.T) {
+		main := filepath.Join(dir, "nginx.conf")
+		os.WriteFile(main, []byte(`pid /tmp/nginx.pid;
+error_log stderr;
+events {}
+http {
+    access_log off;
+    server {
+        listen 80;
+        location / { return 200 "from the module's nginx.conf\n"; }
+    }
+}
+`), 0o644)
+		c, err := tcnginx.Run(ctx, "fws/nginx:1", tcnginx.WithConfigFile(main))
+		testcontainers.CleanupContainer(t, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body := get(t, c); body != "from the module's nginx.conf\n" {
+			t.Errorf("nginx with the module's nginx.conf answered %q", body)
+		}
+	})
+}
+
 func TestRabbitMQ(t *testing.T) {
 	const name = "fws-e2e-rabbitmq"
 	waitedRun(t, name, "-p", "127.0.0.1::5672", "-e", "RABBITMQ_DEFAULT_USER=e2e", "-e", "RABBITMQ_DEFAULT_PASS=e2e-pass", "fws/rabbitmq:4")
@@ -341,23 +601,106 @@ func TestRabbitMQ(t *testing.T) {
 	}
 }
 
-// Playwright drives the image's Chromium headless shell.
+// Playwright's library drives each browser the image carries, from a
+// script that requires playwright through the image's NODE_PATH: Chromium's
+// headless shell in a container like any other, and Firefox in one granted
+// the user's session (--security-opt seatbelt=gui, as the engine's user):
+// macOS Firefox starts AppKit even headless, which registers with the
+// window server and Launch Services, and aborts where the profile denies
+// them (LIMITATIONS).
 func TestPlaywright(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "page.js"), []byte(`const { chromium } = require("playwright");
+	os.WriteFile(filepath.Join(dir, "page.js"), []byte(`const playwright = require("playwright");
 (async () => {
-  const browser = await chromium.launch();
-  const page = await browser.newPage();
-  await page.setContent("<title>rendered in fws</title><p id=p>painted</p>");
-  console.log("title", await page.title(), "text", await page.textContent("#p"));
-  const shot = await page.screenshot();
-  console.log("screenshot", shot.length > 1000);
-  await browser.close();
+  for (const name of process.argv.slice(2)) {
+    const browser = await playwright[name].launch();
+    const page = await browser.newPage();
+    await page.setContent("<title>rendered in fws</title><p id=p>painted</p>");
+    console.log(name, "title", await page.title(), "text", await page.textContent("#p"));
+    const shot = await page.screenshot();
+    console.log(name, "screenshot", shot.length > 1000);
+    await browser.close();
+  }
 })().catch((e) => { console.error(e); process.exit(1); });
 `), 0o644)
-	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "fws/playwright:1.65", "node", "page.js")
-	if err != nil || !strings.Contains(out, "title rendered in fws text painted") || !strings.Contains(out, "screenshot true") {
-		t.Fatalf("playwright: %q, %v", out, err)
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"chromium", nil},
+		{"firefox", []string{"--security-opt", "seatbelt=gui", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "-e", "HOME=/tmp"}},
+	} {
+		args := append(append([]string{"run", "--rm"}, c.args...), "-v", dir+":/app", "fws/playwright:1.65", "node", "page.js", c.name)
+		out, err := docker(t, args...)
+		if err != nil {
+			t.Errorf("playwright with %s: %q, %v\nSeatbelt refused %s:\n%s", c.name, out, err, c.name, sandboxDenials(t, c.name))
+			continue
+		}
+		if !strings.Contains(out, c.name+" title rendered in fws text painted") || !strings.Contains(out, c.name+" screenshot true") {
+			t.Errorf("playwright with %s: %q", c.name, out)
+		}
+	}
+}
+
+// `npx playwright test` runs the image's @playwright/test over a project
+// that mounts only its config and specs, as Microsoft's image runs one:
+// each browser project launches its browser headless, renders a page,
+// screenshots it and records a video of it through the image's ffmpeg.
+// Firefox's project runs in a container granted the user's session, as
+// TestPlaywright says why.
+func TestPlaywrightTest(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "playwright.config.ts"), []byte(`import { defineConfig, devices } from "@playwright/test";
+
+export default defineConfig({
+  reporter: "list",
+  use: { video: "on" },
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
+  ],
+});
+`), 0o644)
+	os.MkdirAll(filepath.Join(dir, "tests"), 0o755)
+	os.WriteFile(filepath.Join(dir, "tests", "page.spec.ts"), []byte(`import { test, expect } from "@playwright/test";
+
+test("renders and screenshots a page", async ({ page, browserName }, testInfo) => {
+  await page.setContent("<title>rendered in fws</title><p id=p style='font-size:40px'>painted by " + browserName + "</p>");
+  await expect(page).toHaveTitle("rendered in fws");
+  await expect(page.locator("#p")).toHaveText("painted by " + browserName);
+  const shot = await page.screenshot({ path: testInfo.outputPath("page.png") });
+  expect(shot.length).toBeGreaterThan(1000);
+});
+`), 0o644)
+	for _, c := range []struct {
+		project string
+		args    []string
+	}{
+		{"chromium", nil},
+		{"firefox", []string{"--security-opt", "seatbelt=gui", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "-e", "HOME=/tmp"}},
+	} {
+		args := append(append([]string{"run", "--rm"}, c.args...), "-v", dir+":/app", "fws/playwright:1.65", "npx", "playwright", "test", "--project", c.project, "--output", "test-results/"+c.project)
+		out, err := docker(t, args...)
+		if err != nil || !strings.Contains(out, "1 passed") {
+			t.Errorf("npx playwright test --project %s: %q, %v", c.project, out, err)
+		}
+		// npx runs the image's runner, from its global prefix, and fetches none.
+		if strings.Contains(out, "will be installed") {
+			t.Errorf("npx fetched playwright rather than run the image's: %q", out)
+		}
+	}
+	// Each test's output directory ends with its project's name.
+	for _, project := range []string{"chromium", "firefox"} {
+		for _, f := range []string{"page.png", "video.webm"} {
+			found, _ := filepath.Glob(filepath.Join(dir, "test-results", project, "*-"+project, f))
+			if len(found) != 1 {
+				t.Errorf("%s: %s %v", project, f, found)
+				continue
+			}
+			if fi, err := os.Stat(found[0]); err != nil || fi.Size() == 0 {
+				t.Errorf("%s: %s empty: %v", project, found[0], err)
+			}
+		}
 	}
 }
 

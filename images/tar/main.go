@@ -93,8 +93,8 @@ func extractsStdin(args []string) bool {
 			}
 		case strings.HasPrefix(a, "--"):
 		case strings.HasPrefix(a, "-") || i == 0:
-			// A bundle of short options, the first argument's dash being
-			// optional; an f in it takes the next argument, or the rest
+			// A bundle of short options, where the first argument can
+			// leave out the dash; an f in it takes the next argument, or the rest
 			// of the bundle, as the file.
 			opts := strings.TrimPrefix(a, "-")
 			for j, c := range opts {

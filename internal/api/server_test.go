@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,29 @@ func TestPingAndVersionNegotiation(t *testing.T) {
 	var e errorBody
 	if res := call(t, ts, "GET", "/v9.99/version", "", &e); res.StatusCode != 400 || !strings.Contains(e.Message, "too new") {
 		t.Fatalf("too-new version: %d %v", res.StatusCode, e)
+	}
+}
+
+// Testcontainers for Java refuses an engine whose OSType isn't "linux" but
+// takes a blank one; every other client is told the host's.
+func TestInfoOSTypeByClient(t *testing.T) {
+	ts := newServer(t)
+	for ua, want := range map[string]string{"tc-java/2.0.5": "", "Docker-Client/29.0.0 (darwin)": runtime.GOOS} {
+		req, err := http.NewRequest("GET", ts.URL+"/info", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("User-Agent", ua)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var info struct{ OSType string }
+		err = json.NewDecoder(res.Body).Decode(&info)
+		res.Body.Close()
+		if err != nil || res.StatusCode != 200 || info.OSType != want {
+			t.Errorf("%s: %d %q %v, want OSType %q", ua, res.StatusCode, info.OSType, err, want)
+		}
 	}
 }
 
@@ -214,7 +238,7 @@ func TestCreateOnDefaultNetwork(t *testing.T) {
 }
 
 // The build context arrives while progress already streams back, so the
-// handler must keep reading the upload after it starts responding.
+// handler MUST keep reading the upload after it starts responding.
 func TestBuildReadsContextWhileStreaming(t *testing.T) {
 	ts, e := newEngineServer(t)
 	loadImage(t, e, "fws/tiny:1")

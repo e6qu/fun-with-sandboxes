@@ -75,7 +75,7 @@ func (p *Pusher) PushLayer(repo name.Repository, l v1.Layer, from *name.Reposito
 }
 
 // PushManifest sends img's config, unless the repository holds it, and
-// then its manifest under ref. The layers must be there already.
+// then its manifest under ref. The layers MUST be there already.
 func (p *Pusher) PushManifest(ref name.Reference, img v1.Image) error {
 	cl, err := partial.ConfigLayer(img)
 	if err != nil {

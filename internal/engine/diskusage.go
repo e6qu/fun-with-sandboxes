@@ -137,8 +137,8 @@ func (c *Container) sizeRw(ctx context.Context) (int64, error) {
 			size += fi.Size()
 			return nil
 		}
-		if !seen[uint64(st.Ino)] {
-			seen[uint64(st.Ino)] = true
+		if !seen[st.Ino] {
+			seen[st.Ino] = true
 			size += st.Blocks * 512
 		}
 		return nil

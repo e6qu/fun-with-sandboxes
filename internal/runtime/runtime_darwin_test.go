@@ -48,8 +48,8 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// A main process that exits while a child still holds its stdout must end the
-// container promptly, and KillAll must take the child with it.
+// A main process that exits while a child still holds its stdout MUST end the
+// container promptly, and KillAll MUST take the child with it.
 func TestExitWithLingeringChild(t *testing.T) {
 	state, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -183,7 +183,7 @@ func probePriority(t *testing.T, clamp QoSClamp) int {
 	s.Limits = Limits{QoSClamp: clamp}
 	// A clamped process yields the CPU and the disk to every other, as
 	// the clamp means it to: while the other packages' tests load the
-	// runner, the probe may wait minutes for either.
+	// runner, the probe can wait minutes for either.
 	if p := runWithin(t, s, 5*time.Minute); p.ExitCode() != 0 {
 		t.Fatalf("exit %d: %s", p.ExitCode(), out.String())
 	}
@@ -197,7 +197,7 @@ func probePriority(t *testing.T, clamp QoSClamp) int {
 
 // A QoS clamp holds every thread of the process at most at the class's
 // priority, whatever QoS the thread asks for: utility's base priority is
-// 20, background's 4, where a default thread's is 31. A CI runner may run
+// 20, background's 4, where a default thread's is 31. A CI runner might run
 // the tests themselves at utility, so the unclamped probe is held to no
 // less than the utility one.
 func TestQoSClamp(t *testing.T) {
@@ -280,8 +280,8 @@ func TestTTYIsTheControllingTerminal(t *testing.T) {
 }
 
 // An exec the container's anchor starts runs in the main process's
-// sandbox, where it may signal the main process; one that enters the same
-// profile by itself is a sandbox of its own, and may not.
+// sandbox, where it can signal the main process; one that enters the same
+// profile by itself is a sandbox of its own, and cannot.
 func TestExecsRunInTheMainProcesssSandbox(t *testing.T) {
 	state, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

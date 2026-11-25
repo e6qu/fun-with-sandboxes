@@ -11,7 +11,7 @@ import (
 // makeQuotaRoot puts a root of a size quota on a sparse APFS disk image of
 // its own, attached at root, of the image's files' size and the quota
 // beside them, and copies the staged root into it: the volume's free space
-// is what the container may write.
+// is what the container can write.
 func makeQuotaRoot(dir, staged, root string, quota int64) error {
 	used, err := treeBytes(staged)
 	if err != nil {

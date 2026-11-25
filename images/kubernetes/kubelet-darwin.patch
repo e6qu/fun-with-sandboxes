@@ -957,7 +957,7 @@ index 00000000..7a4a38b4
 +}
 +
 +// PrepareSafeSubpath gives the subPath's path with its links resolved,
-+// which must lie in the volume.
++// and fails where it lies outside the volume.
 +func (sp *subpath) PrepareSafeSubpath(subPath Subpath) (newHostPath string, cleanupAction func(), err error) {
 +	volume, err := filepath.EvalSymlinks(subPath.VolumePath)
 +	if err != nil {

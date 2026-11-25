@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sync"
 	"syscall"
@@ -118,7 +119,7 @@ func (e *Engine) ExecStartDetached(id string, tty bool, size *[2]uint) error {
 }
 
 // execBegin starts the exec and returns what waits for it to exit or
-// detach. An exec that fails before its process starts may be started
+// detach. An exec that fails before its process starts can be started
 // again; one whose process fails to start has exited.
 func (e *Engine) execBegin(id string, tty bool, size *[2]uint, stdio ExecIO) (wait func(), err error) {
 	x, c, err := e.exec(id)
@@ -184,7 +185,8 @@ func (e *Engine) execBegin(id string, tty bool, size *[2]uint, stdio ExecIO) (wa
 			return nil, err
 		}
 		if size != nil && size[0] > 0 && size[1] > 0 {
-			pty.Setsize(master, &pty.Winsize{Rows: uint16(size[0]), Cols: uint16(size[1])})
+			s := consoleSize(*size)
+			pty.Setsize(master, &pty.Winsize{Rows: s[0], Cols: s[1]})
 		}
 		rs.TTY = slave
 	} else {
@@ -291,6 +293,12 @@ func (e *Engine) ExecInspect(id string) (container.ExecInspectResponse, error) {
 		OpenStdin: x.cfg.AttachStdin, OpenStdout: x.cfg.AttachStdout, OpenStderr: x.cfg.AttachStderr,
 		ContainerID: x.containerID, Pid: x.pid, DetachKeys: x.detachKeys,
 	}, nil
+}
+
+// consoleSize is a client's terminal size, rows and columns, as a terminal
+// holds it: the API takes any uint, which a size past 65535 would wrap.
+func consoleSize(s [2]uint) [2]uint16 {
+	return [2]uint16{uint16(min(s[0], math.MaxUint16)), uint16(min(s[1], math.MaxUint16))}
 }
 
 func (e *Engine) ExecResize(id string, h, w uint16) error {

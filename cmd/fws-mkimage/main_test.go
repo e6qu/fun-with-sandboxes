@@ -221,3 +221,16 @@ func TestStorePathLayersIgnoreBin(t *testing.T) {
 		t.Errorf("pip reads %q with /bin, want %q", binPip, want)
 	}
 }
+
+func TestOutsideHostTrees(t *testing.T) {
+	for _, p := range []string{"/usr/lib/node_modules", "/usr/lib", "usr/lib/x", "/System/Library", "/dev/null", "/var/db/x", "/usr/./lib/x"} {
+		if outsideHostTrees("file", p) == nil {
+			t.Errorf("%s: accepted", p)
+		}
+	}
+	for _, p := range []string{"/usr/local/lib/node_modules", "/usr/libexec/x", "/usr/bin/env", "/library", "/var/dbx"} {
+		if err := outsideHostTrees("file", p); err != nil {
+			t.Errorf("%s: %v", p, err)
+		}
+	}
+}

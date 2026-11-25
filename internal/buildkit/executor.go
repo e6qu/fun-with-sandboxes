@@ -68,7 +68,7 @@ func newExecutor(opt execOpt) (*seatbeltExecutor, error) {
 
 // mountMap places each BuildKit mount at its destination inside the root as
 // a symlink to the directory or file behind it, and undoes it afterwards:
-// the root is a snapshot, and the mounts must not end up in its layer.
+// the root is a snapshot, and the mounts MUST NOT end up in its layer.
 type mountMap struct {
 	links   []string
 	hidden  map[string]string
@@ -354,7 +354,7 @@ func (x *seatbeltExecutor) exec(ctx context.Context, r *run, process executor.Pr
 			go io.Copy(master, process.Stdin)
 		}
 		go io.Copy(writerOrDiscard(process.Stdout), master)
-		// BuildKit may never send on or close Resize, so the
+		// BuildKit might never send on or close Resize, so the
 		// forwarding ends with the process.
 		if process.Resize != nil {
 			go func() {
@@ -364,7 +364,7 @@ func (x *seatbeltExecutor) exec(ctx context.Context, r *run, process executor.Pr
 						if !ok {
 							return
 						}
-						pty.Setsize(master, &pty.Winsize{Rows: uint16(ws.Rows), Cols: uint16(ws.Cols)})
+						pty.Setsize(master, &pty.Winsize{Rows: uint16(min(ws.Rows, 65535)), Cols: uint16(min(ws.Cols, 65535))})
 					case <-proc.Done():
 						return
 					}

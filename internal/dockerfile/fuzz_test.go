@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// The parser reads Dockerfiles a build is handed, so no input may crash it.
+// The parser reads Dockerfiles a build is handed, so it MUST NOT crash on any input.
 func FuzzParse(f *testing.F) {
 	for _, s := range []string{
 		"FROM fws/base:1\nRUN echo hi\n",

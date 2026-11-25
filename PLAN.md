@@ -10,21 +10,26 @@ Mechanism: [`docs/DESIGN.md`](docs/DESIGN.md). What differs from Docker:
 [`LIMITATIONS.md`](LIMITATIONS.md). How it got here:
 [`docs/HISTORY.md`](docs/HISTORY.md).
 
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
+
 ## Constraints
 
-- **No virtual machine, no root.** Everything runs as the invoking user: no
-  hypervisor, `sudo`, root daemon, kernel extension or change to System
-  Integrity Protection.
-- **Isolation the kernel enforces.** Seatbelt confines every container
-  process, and a test tries to break each property claimed.
-- **Honour or refuse.** An option the engine cannot enforce fails with a
-  Docker API error; none is accepted and dropped.
-- **OCI throughout.** Images are layered OCI images in a content-addressed
-  store; manifests and digests survive a pull, save, load and push byte for
-  byte, and the engine speaks the distribution protocol to any registry.
-- **Close to native.** A container costs what its processes cost; CI
+- **No virtual machine, no root.** Everything MUST run as the invoking
+  user: the engine MUST NOT need a hypervisor, `sudo`, a root daemon, a
+  kernel extension or a change to System Integrity Protection.
+- **Isolation the kernel enforces.** Seatbelt MUST confine every container
+  process, and a test MUST try to break each property claimed.
+- **Honour or refuse.** An option the engine cannot enforce MUST fail with
+  a Docker API error; it MUST NOT be accepted and dropped.
+- **OCI throughout.** Images MUST be layered OCI images in a
+  content-addressed store; manifests and digests MUST survive a pull, save,
+  load and push byte for byte, and the engine MUST speak the distribution
+  protocol to any registry.
+- **Close to native.** A container SHOULD cost what its processes cost; CI
   measures a process start and each interposed call against the native one.
-- **Go, and C only inside a process start**, built for `darwin/arm64` alone.
+- **Go, and C only inside a process start.** The engine MUST be written in
+  Go, with C only inside a process start, and built for `darwin/arm64`
+  alone.
 
 Dockerfiles built `FROM` fws's base images are in scope: fws provides the
 darwin base images (`fws/base`, the language and service images), and
@@ -42,13 +47,13 @@ Consuming Dockerfiles written for Linux is not a goal.
 
 ## Where it stands
 
-Docker's CLI, Compose, buildx and BuildKit, Testcontainers, Podman's
-remote client, `podman-compose`, pods and `kube play`, the Dev Containers
-CLI and VS Code's extension, graphical applications
-(`--security-opt seatbelt=gui`), `crictl`, the kubelet, kind and k3s run
-against the engine in CI on macOS 15 and 26. A catalog of 45 darwin images
-at 56 tags is published to `ghcr.io/e6qu/fws-*` at the newest upstream
-releases ([IMAGES](docs/IMAGES.md)); Kubernetes is at 1.37.2.
+Docker's CLI, Compose, buildx and BuildKit, Testcontainers for Go, Java,
+Python, Node.js, Bun and Rust, Podman's remote client, `podman-compose`,
+pods and `kube play`, the Dev Containers CLI and VS Code's extension,
+graphical applications (`--security-opt seatbelt=gui`), `crictl`, the
+kubelet, kind and k3s run against the engine in CI on macOS 15 and 26. A
+catalog of 46 darwin images at 57 tags is published to
+`ghcr.io/e6qu/fws-*` ([IMAGES](docs/IMAGES.md)); Kubernetes is at 1.37.2.
 
 Seatbelt enforces a container's file reads and writes, its TCP
 connections, its process listing and its IPC; its supervisor enforces its
@@ -60,39 +65,19 @@ what is presented without being enforced.
 
 ## Roadmap
 
-Four pull requests, in this order, each with the end-to-end tests that
-prove its claims on macOS:
-
-1. **Enforced isolation** (done,
-   [#84](https://github.com/e6qu/fun-with-sandboxes/pull/84)): reads
-   allow-listed as chroot would, TCP held to the container's own ports and
-   its networks' members, and the process table its own.
-2. **Limits macOS can enforce** (done,
-   [#85](https://github.com/e6qu/fun-with-sandboxes/pull/85)): cpusets, a
-   root size quota on an APFS disk image, and bandwidth.
-3. **Networks: ingress, egress and routes** (in
-   [#86](https://github.com/e6qu/fun-with-sandboxes/pull/86)): egress allow
-   lists per network and per container in the egress proxy, a source
-   allow list on published ports, a routing table presented through the
-   routing sysctl, and the bridge driver's options that translate
-   (`enable_icc`, `enable_ip_masquerade`, `host_binding_ipv4`), with the
-   rest refused.
-4. **Images and the CLI** (in
-   [#86](https://github.com/e6qu/fun-with-sandboxes/pull/86)): Python
-   3.11–3.15, Node.js 22, 24 and 26, and the Lambda runtimes AWS offers for
-   them; `fws catalog`; and [IMAGES](docs/IMAGES.md), how images work.
-
-Done when #86 has merged and `main` is green through `publish`.
-Compatibility with Compose, Testcontainers, Podman, Kubernetes, kind and
-k3s is kept by the tests that already run them; gaps they turn up go into
-the open pull request.
+The roadmap is finished: enforced isolation
+([#84](https://github.com/e6qu/fun-with-sandboxes/pull/84)), the limits
+macOS can enforce ([#85](https://github.com/e6qu/fun-with-sandboxes/pull/85)),
+and networks, images and the CLI
+([#86](https://github.com/e6qu/fun-with-sandboxes/pull/86)). From here the
+work is correctness and upkeep: the static checks CI runs MUST stay clean,
+every bug found MUST be fixed where it is found, and compatibility with Compose,
+Testcontainers, Podman, Kubernetes, kind and k3s is kept by the tests that
+run them.
 
 ## Upkeep
 
-Done at any time, never ahead of the roadmap: the catalog, Kubernetes,
-etcd and kind at their newest upstream releases. The images take
-`nixpkgs-26.05-darwin`'s packages. Where it lags, they take
-`images/catalog`'s instead: nixpkgs-unstable's packages, its recipes at
-the newest release, or the release's own macOS build. `images/servers.nix`
-builds MySQL and MariaDB, `images/etcd` builds etcd, and
-`images/kubernetes` builds Kubernetes.
+The catalog, Kubernetes, etcd and kind SHOULD be at their newest upstream
+releases. This upkeep MAY be done at any time, but MUST NOT go ahead of
+the roadmap. How a release reaches an
+image is in [IMAGES](docs/IMAGES.md#add-an-image-or-a-release).

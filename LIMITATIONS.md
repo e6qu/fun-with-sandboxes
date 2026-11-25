@@ -5,15 +5,17 @@ follows from running with no root and no virtual machine, on what macOS
 offers an unprivileged process. Non-goals are in
 [PLAN.md](PLAN.md#non-goals).
 
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
+
 ## Images
 
 - **macOS-native images only.** Nothing on macOS runs Linux ELF binaries
   without a VM, so stock Docker Hub images do not run.
-- **Images follow the container contract.** A service finds its root and
-  ports at their container paths and port numbers through the container
-  library, or reads them from the `SANDBOX_*` variables
+- **Images MUST follow the container contract.** A service finds its
+  root and ports at their container paths and port numbers through the
+  container library, or reads them from the `SANDBOX_*` variables
   ([IMAGES](docs/IMAGES.md#the-container-contract)). Software the library
-  cannot load into needs an entrypoint that configures it from the
+  cannot load into MUST have an entrypoint that configures it from the
   variables.
 - **Only the engine's platform.** A `--platform` or `FROM --platform` other
   than the engine's `darwin/<arch>` is refused. A multi-platform index
@@ -26,9 +28,10 @@ offers an unprivileged process. Non-goals are in
 - **`docker diff`, `commit` and `ps -s` compare files by size and
   whole-second modification time**, reading only those changed since the
   root was cloned.
-- **Catalog images are built by Nix**, mostly from source; MongoDB and
-  Vault are the vendors' own macOS builds. Where Linux parts are missing
-  they differ from upstream's:
+- **Catalog images are built by Nix**, mostly from source; MongoDB,
+  Vault, ClickHouse, Bun, Rust and Playwright's browsers are the vendors'
+  own macOS builds. Where Linux parts are missing they differ from
+  upstream's:
   - `fws/kafka` is Apache Kafka in Confluent's layout, without Confluent's
     own components such as the REST Proxy.
   - `fws/busybox` holds separate GNU and other darwin programs, not
@@ -36,7 +39,29 @@ offers an unprivileged process. Non-goals are in
     macOS's is; its `nc` only checks a port (`nc -z`); it has no `ps`,
     `top` or `vi`. `fws/base` has no package manager: add programs with
     `COPY` or by downloading darwin builds.
+  - `fws/playwright` carries Chromium's headless shell and Firefox. It
+    has no full Chromium, which aborts as it starts under the container's
+    profile, so `channel: 'chromium'` and headed Chromium are absent. It
+    has no WebKit: Playwright's WebKit on macOS starts its web content,
+    network and GPU processes as XPC services, which launchd runs outside
+    the container's sandbox and library, and its builds differ by macOS
+    release, which an image cannot choose for its host. Firefox MUST run
+    in a container granted the user's session (`--security-opt
+    seatbelt=gui`, as the engine's user): macOS Firefox starts AppKit even
+    headless, which registers the process with the window server and
+    Launch Services, and AppKit aborts where the container's profile denies
+    those, as it does by default. Firefox's own sandboxes are off
+    (`MOZ_DISABLE_*_SANDBOX`), as Chromium runs with `--no-sandbox`, and
+    stay off only where a launch keeps the container's environment.
   - `fws/neo4j` is the Community Edition.
+  - `fws/node` and `fws/rust` compile C and C++ with nixpkgs' clang, ld64
+    and macOS SDK, not Xcode's: there is no `xcrun`, `xcodebuild` or
+    Swift, and node-gyp is nixpkgs' build, which takes a fixed Xcode
+    version rather than ask `xcodebuild`.
+  - `fws/rust` has no rustup: its toolchain is the release's build for
+    `aarch64-apple-darwin` alone, with rustfmt and clippy, so `rustup`
+    commands and other targets are not available and a
+    `rust-toolchain.toml` goes unread.
   - `fws/opensearch` is the minimal distribution with the security plugin,
     without the k-NN and ML Commons plugins, whose native libraries are
     built for Linux.
@@ -54,6 +79,16 @@ offers an unprivileged process. Non-goals are in
   `--network none`). The classic builder (`DOCKER_BUILDKIT=0`) refuses
   `RUN --mount`, `--network` and `--security`, and any option it does not
   implement or that is given twice, as dockerd's does.
+- **Dev container features install darwin programs.** The containers.dev
+  collection's features (`common-utils`, `docker-outside-of-docker`,
+  `docker-in-docker`, `node`, `python` and the rest) install Linux
+  packages or binaries and fail; a feature whose `install.sh` fetches or
+  builds darwin programs works. Docker outside of Docker is the engine's
+  socket in `mounts` with a darwin Docker CLI copied from `fws/dind`.
+  VS Code's server in a dev container is its macOS build, so an extension
+  published for Linux alone does not run there. The Dev Containers CLI
+  applies `updateRemoteUserUID` on Linux hosts alone; here every process
+  runs as the engine's user, who owns the workspace on the host.
 
 ## Isolation
 
@@ -67,8 +102,12 @@ offers an unprivileged process. Non-goals are in
   `exec -u`, `--group-add`, `--hostname`, `--domainname` and `-w` behave as
   in Docker. Its limits:
   - A path names the root's file when the root holds it, or its parent;
-    any other path, such as `/dev` or the system frameworks, names the
-    host's. `/proc` is an empty directory. Symbolic links resolve inside
+    any other path names the host's. `/System`, `/usr/lib`, `/dev`,
+    `/private/var/db`, `/var/db` and `/Library/Apple` are always the
+    host's, as the loader and libSystem read them there, so an image
+    cannot put files in them: `fws-mkimage` refuses such a path, and
+    `npm install -g` in the catalog's Node.js images goes to `/usr/local`.
+    `/proc` is an empty directory. Symbolic links resolve inside
     the container, as under chroot; a link loop fails with `ENOENT`, not
     `ELOOP`.
   - Programs Apple signs, static binaries and programs making system calls
@@ -86,7 +125,7 @@ offers an unprivileged process. Non-goals are in
     `UF_NODUMP` file flag to mark such files.
   - A script's `#!` interpreter runs from the root when the root holds it,
     else from the host.
-- **Chromium-based applications take `--no-sandbox`.** macOS refuses a
+- **Chromium-based applications MUST run with `--no-sandbox`.** macOS refuses a
   second Seatbelt profile to a sandboxed process, so Chromium's helpers
   cannot enter their own (`TestSecondSandboxRefused`); the container's
   profile confines them.
@@ -144,7 +183,7 @@ offers an unprivileged process. Non-goals are in
 - **Container addresses are presented, not routed.** Members have
   addresses in `127.88.0.0/16`, or in their network's subnets (the default
   bridge holds `172.17.0.0/16`, where `--ip` is refused, as in Docker);
-  networks may be IPv4, IPv6-only or dual-stack. The kernel never sees
+  networks can be IPv4, IPv6-only or dual-stack. The kernel never sees
   these addresses:
   - Servers see clients connect from `127.0.0.1`; a UDP server sees an
     IPv6 client at its IPv4-mapped address.
@@ -171,7 +210,9 @@ offers an unprivileged process. Non-goals are in
 - **Network membership is enforced for TCP, presented for UDP.** A
   container connects over TCP to its own ports, its router and the egress
   proxy alone; its router carries a connection on only to a member it
-  shares a network with. Datagrams may go to any port of the stack's
+  shares a network with. A connection to any other loopback port is
+  refused (`ECONNREFUSED`), as in a network namespace where nothing
+  listens there. Datagrams can go to any port of the stack's
   block, where routers' relays lie, so a program without the library
   reaches a member's UDP host port, and a host process that later binds a
   UDP port in the block is reachable from that stack.
@@ -192,9 +233,9 @@ offers an unprivileged process. Non-goals are in
 - **Egress allow lists hold what goes through the egress proxy.** A
   container's `fws.egress.allow` label and its networks' option of that
   name (`docker network create --opt fws.egress.allow=...`) name the
-  hosts, `*.domains`, addresses and prefixes, each with an optional
-  `:port`, it may reach outside the machine; a destination must be on
-  every list that applies. Docker has no such setting. A name is matched
+  hosts, `*.domains`, addresses and prefixes, each with or without a
+  `:port`, it can reach outside the machine; a destination is reached only
+  when it is on every list that applies. Docker has no such setting. A name is matched
   as the client asks for it, an address or prefix against every address
   it resolves to; UDP, which does not leave the machine, is not on them.
 - **DNS is answered in the container and by its router.** The library
@@ -212,8 +253,12 @@ offers an unprivileged process. Non-goals are in
   is pinged by the router given internet access. Raw sockets need root.
 - **Published UDP clients are bounded by the stack's block**, one flow
   port each, idle-closed after 90 seconds. SCTP cannot be published.
-- **Unix socket paths are capped at 104 bytes**, as the container sees
-  them; a longer host path binds through the mount or root below it.
+- **Unix socket paths are capped at 104 bytes**, macOS's `sun_path`, as
+  the container sees them; a longer host path binds through the mount or
+  root below it. A program given a socket path SHOULD be given its
+  container path, as `fws/postgres` and `fws/mysql` are
+  (`/var/run/postgresql`, `/var/run/mysqld`): a host path under a stack's
+  root often runs past the limit.
 
 ## Kubernetes
 
@@ -242,8 +287,9 @@ offers an unprivileged process. Non-goals are in
   not ready and names what it does not apply.
 - **`fws/k3s` is kubeadm's cluster under k3s's names.** `k3s agent`,
   joining servers, Traefik, ServiceLB, the Helm controller, the embedded
-  registry and etcd snapshots are absent. Its node needs an address
-  outside loopback: the default bridge or a network with a subnet.
+  registry and etcd snapshots are absent. Its default storage class, `local-path`, is
+  the controller manager's host-path provisioner. Its node MUST have an
+  address outside loopback: the default bridge or a network with a subnet.
 
 ## Resources
 
@@ -255,7 +301,7 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   (jetsam's fatal limit) and their sum in the shim; past either, the
   process, or the largest, is killed and the container reports
   `OOMKilled`. An allocation never fails first. A process forked without
-  an exec is held by the sum alone. `--memory-swap` may only equal the
+  an exec is held by the sum alone. `--memory-swap` MUST equal the
   limit (or be -1); `--memory-reservation`, swappiness and
   `--oom-kill-disable` are refused. A running container's limit can be
   lowered, not raised: the kernel lets no process raise its own.
@@ -317,12 +363,6 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 - **Local volumes bind host directories only** (`type=none,o=bind`) or are
   tmpfs; other filesystem types need root. A read-only bind source the
   host cannot create, such as `/lib/modules`, mounts empty.
-- **A Podman pod shares its network, IPC and PID namespaces** through an
-  infra container running `fws/pause`. `kube play` runs Pods, and
-  Deployments of one replica, with their ConfigMaps' values, claims'
-  volumes and init containers; `kube generate` writes a pod or container
-  back and `kube down` removes what a file made. Checkpoints and quadlets
-  are not served.
 - **Refused, having no macOS counterpart**: `--sysctl` beyond those below,
   runtimes other than runc, log drivers other than `json-file` and
   `local`, devices, `--gpus`, device cgroup rules, `--cgroup-parent`,
@@ -338,6 +378,16 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 
 ## API surface
 
+- **Testcontainers needs a few settings**: the libraries' reapers run as
+  the catalog's `fws/ryuk` under the names each pins, Testcontainers for
+  Java sees a blank `OSType` in `/info`, and its startup checks, which run
+  `alpine`, are turned off ([README](README.md#testcontainers)).
+- **A Podman pod shares its network, IPC and PID namespaces** through an
+  infra container running `fws/pause`. `kube play` runs Pods, and
+  Deployments of one replica, with their ConfigMaps' values, claims'
+  volumes and init containers; `kube generate` writes a pod or container
+  back and `kube down` removes what a file made. Checkpoints and quadlets
+  are not served.
 - **Not served:** swarm, services, nodes, secrets, configs and plugins.
   The engine serves what Docker Compose, the Docker CLI and Testcontainers
   use ([DESIGN](docs/DESIGN.md#8-docker-engine-api-surface)).

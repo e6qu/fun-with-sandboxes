@@ -69,7 +69,7 @@ func Find(pid int) (Entry, bool) {
 	if err != nil {
 		return Entry{}, false
 	}
-	// The command, in parentheses, may hold spaces; the fields after it
+	// The command, in parentheses, can hold spaces; the fields after it
 	// are state, ppid, pgrp and, nineteenth, the start time.
 	i := bytes.LastIndexByte(b, ')')
 	if i < 0 {

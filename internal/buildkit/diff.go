@@ -176,7 +176,7 @@ func (s comparer) Compare(ctx context.Context, lower, upper []mount.Mount, opts 
 		cfg.Labels = map[string]string{}
 	}
 	// The layer carries the modes and owners containers see, and reads
-	// only the files the step may have changed (settledSince).
+	// only the files the step might have changed (settledSince).
 	// The trees behind BuildKit's views are the same as the views', and
 	// their files say when each last changed.
 	lowerDir, upperDir = behindView(lowerDir), behindView(upperDir)

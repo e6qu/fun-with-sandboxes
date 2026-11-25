@@ -109,6 +109,11 @@ func gitContext(ctx context.Context, remote, dir string) error {
 	if u, err := url.Parse(repo); err == nil && u.Scheme == "file" {
 		return invalid("unable to prepare context: file:// Git repositories are not supported")
 	}
+	// git fetch would take a ref such as --upload-pack=<command> as an
+	// option and run the command on the host, as dockerd refuses it.
+	if strings.HasPrefix(ref, "-") {
+		return invalid("unable to prepare context: invalid refspec: %s", ref)
+	}
 	checkout := filepath.Join(filepath.Dir(dir), "git")
 	if err := os.MkdirAll(checkout, 0o700); err != nil {
 		return err

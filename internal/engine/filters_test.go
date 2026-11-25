@@ -40,3 +40,13 @@ func TestNameFilterMatchesRegexps(t *testing.T) {
 		t.Error("an absent filter refused a name")
 	}
 }
+
+// A boolean filter takes true, false, 1 or 0, as dockerd's does.
+func TestParseFiltersRefusesBadBooleans(t *testing.T) {
+	if _, err := ParseFilters(`{"dangling":["foo"]}`); err == nil {
+		t.Error("dangling=foo was taken")
+	}
+	if f, err := ParseFilters(`{"dangling":{"TRUE":true},"all":{"0":true}}`); err != nil || len(f["dangling"]) != 1 {
+		t.Errorf("good booleans: %v, %v", f, err)
+	}
+}

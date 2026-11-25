@@ -15,7 +15,7 @@ const lockLogAfter = 100 * time.Millisecond
 // timedMutex is the engine's lock. With timed set, as -debug sets it, it
 // logs a wait for it or a hold of it that lasts past lockLogAfter, with the
 // function that waited or held it: most requests take the lock, so a slow
-// one may be waiting on another's.
+// one might be waiting on another's.
 type timedMutex struct {
 	mu    sync.Mutex
 	timed bool

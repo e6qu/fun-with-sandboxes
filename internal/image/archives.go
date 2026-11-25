@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // A store can stand on a directory of image archives, as `docker save`
@@ -70,18 +72,27 @@ func (s *Store) fromArchive(ref string) bool {
 	}
 	a.mu.Lock()
 	path, ok := a.byName[n]
-	var l *archiveLoad
-	if ok {
-		if l = a.loads[path]; l == nil {
-			l = &archiveLoad{}
-			a.loads[path] = l
-		}
-	}
-	a.mu.Unlock()
 	if !ok {
+		a.mu.Unlock()
 		return false
 	}
-	l.once.Do(func() { _, l.err = s.loadPath(path) })
+	l := a.loads[path]
+	if l == nil {
+		l = &archiveLoad{}
+		a.loads[path] = l
+	}
+	a.mu.Unlock()
+	l.once.Do(func() {
+		// Loading an archive takes as long as unpacking it, tens of seconds
+		// for a large image, which the request that asked waits through;
+		// one that fails leaves its name unknown, so its error is said here.
+		began := time.Now()
+		if _, l.err = s.loadPath(path); l.err != nil {
+			log.Printf("image archive %s, for %s: %v", path, n, l.err)
+		} else if d := time.Since(began); d >= time.Second {
+			log.Printf("image archive %s, for %s, loaded in %s", path, n, d.Round(time.Millisecond))
+		}
+	})
 	return l.err == nil
 }
 

@@ -320,12 +320,37 @@ func (e *Engine) Search(ctx context.Context, term string, limit int, f Filters, 
 	index, query := "index.docker.io", term
 	if host, rest, ok := strings.Cut(term, "/"); ok && (strings.ContainsAny(host, ".:") || host == "localhost") {
 		index, query = host, rest
+		// dockerd takes docker.io for Docker Hub's index.
+		if host == "docker.io" {
+			index = "index.docker.io"
+		}
 	}
 	if limit <= 0 {
 		limit = 25
 	}
 	if limit > 100 {
 		return nil, invalid("limit %d is outside the range of [1, 100]", limit)
+	}
+	// The filters are checked before the registry is asked, as dockerd
+	// checks them.
+	minStars := 0
+	if v := f["stars"]; len(v) > 0 {
+		n, err := strconv.Atoi(v[0])
+		if err != nil {
+			return nil, invalid("invalid filter 'stars=%s'", v[0])
+		}
+		minStars = n
+	}
+	wantOfficial, official := false, false
+	if v := f["is-official"]; len(v) > 0 {
+		switch v[0] {
+		case "1", "true":
+			official = true
+		case "0", "false":
+		default:
+			return nil, invalid("invalid filter 'is-official=%s'", v[0])
+		}
+		wantOfficial = true
 	}
 	reg, err := name.NewRegistry(index)
 	if err != nil {
@@ -351,15 +376,6 @@ func (e *Engine) Search(ctx context.Context, term string, limit int, f Filters, 
 	if err := json.NewDecoder(res.Body).Decode(&found); err != nil {
 		return nil, fmt.Errorf("search %s: %w", index, err)
 	}
-	minStars := 0
-	if v := f["stars"]; len(v) > 0 {
-		n, err := strconv.Atoi(v[0])
-		if err != nil {
-			return nil, invalid("invalid filter 'stars=%s'", v[0])
-		}
-		minStars = n
-	}
-	official, wantOfficial := f.boolValue("is-official")
 	out := []registrytypes.SearchResult{}
 	for _, r := range found.Results {
 		if r.StarCount < minStars || (wantOfficial && r.IsOfficial != official) {
