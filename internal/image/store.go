@@ -757,18 +757,24 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 	if err != nil {
 		return nil, err
 	}
+	began := time.Now()
 	err = Extract(dir, f, false)
 	f.Close()
 	if err != nil {
 		return nil, err
 	}
+	extracted := time.Since(began)
 	if err := noLinks(dir); err != nil {
 		return nil, err
 	}
 	// The layout stores blobs under the names they come with, which go on
 	// to name them in the store and share them between images.
+	began = time.Now()
 	if err := verifyBlobs(dir); err != nil {
 		return nil, err
+	}
+	if verified := time.Since(began); extracted+verified >= time.Second {
+		log.Printf("image archive %s: extracted %s, blobs verified %s", filepath.Base(archivePath), extracted.Round(time.Millisecond), verified.Round(time.Millisecond))
 	}
 	idx, err := layout.ImageIndexFromPath(dir)
 	if err != nil {
