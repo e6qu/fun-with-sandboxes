@@ -80,6 +80,11 @@ type extraction struct {
 	written              map[string]bool
 	// holding are the directories above the paths in written.
 	holding map[string]bool
+	// dirsSeen are the directories, by their paths under dir, this
+	// extraction has found to be directories and not links, so that an
+	// entry's parents are looked up once rather than for every entry. Any
+	// removal of a directory forgets them all.
+	dirsSeen map[string]bool
 }
 
 // dirTime is a directory's times, which extract sets once the stream is
@@ -102,7 +107,7 @@ func extract(dir string, r io.Reader, kind streamKind, noOverwriteDirNonDir bool
 		r = br
 	}
 	tr := tar.NewReader(r)
-	x := &extraction{dir: filepath.Clean(dir), kind: kind, noOverwriteDirNonDir: noOverwriteDirNonDir}
+	x := &extraction{dir: filepath.Clean(dir), kind: kind, noOverwriteDirNonDir: noOverwriteDirNonDir, dirsSeen: map[string]bool{}}
 	if kind == applyWhiteouts {
 		x.written, x.holding = map[string]bool{}, map[string]bool{}
 	}
@@ -160,7 +165,7 @@ func (x *extraction) entry(h *tar.Header, r io.Reader) error {
 	}
 	dir := x.dir
 	target := filepath.Join(dir, rel)
-	if err := checkParents(dir, rel); err != nil {
+	if err := x.checkParents(rel); err != nil {
 		return err
 	}
 	base := path.Base(rel)
@@ -180,6 +185,7 @@ func (x *extraction) entry(h *tar.Header, r io.Reader) error {
 			return err
 		}
 		if x.kind == applyWhiteouts {
+			x.forgetDirs()
 			if hidden == "" {
 				return x.opaque(parent)
 			}
@@ -187,8 +193,10 @@ func (x *extraction) entry(h *tar.Header, r io.Reader) error {
 		}
 	}
 
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return err
+	if parentRel := path.Dir(rel); parentRel == "." || !x.dirsSeen[parentRel] {
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			return err
+		}
 	}
 	x.wrote(target)
 	mode := FileModeBits(h.Mode)
@@ -211,35 +219,37 @@ func (x *extraction) entry(h *tar.Header, r io.Reader) error {
 		if err := os.MkdirAll(target, 0o755); err != nil {
 			return err
 		}
+		x.dirsSeen[rel] = true
 		if err := os.Chmod(target, perm|0o700); err != nil {
 			return err
 		}
 		x.dirs = append(x.dirs, dirTime{rel: rel, atime: h.AccessTime, mtime: h.ModTime})
 		return recordMeta(target, mode, perm|0o700, uid, gid, fresh)
 	case tar.TypeReg:
-		if err := removeNonDir(target); err != nil {
+		if err := x.removeNonDir(target); err != nil {
 			return err
 		}
 		f, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm|0o600)
 		if err != nil {
 			return err
 		}
-		if _, err := io.Copy(f, r); err != nil {
-			f.Close()
-			return err
+		// The mode and the records go through the open file, not its path.
+		_, err = io.Copy(f, r)
+		if err == nil {
+			err = f.Chmod(perm | 0o600)
 		}
-		if err := f.Close(); err != nil {
-			return err
+		if err == nil {
+			err = recordMetaFile(f, mode, perm|0o600, uid, gid)
 		}
-		if err := os.Chmod(target, perm|0o600); err != nil {
-			return err
+		if cerr := f.Close(); err == nil {
+			err = cerr
 		}
-		if err := recordMeta(target, mode, perm|0o600, uid, gid, true); err != nil {
+		if err != nil {
 			return err
 		}
 		return setTimes(target, h.AccessTime, h.ModTime)
 	case tar.TypeSymlink:
-		if err := removeNonDir(target); err != nil {
+		if err := x.removeNonDir(target); err != nil {
 			return err
 		}
 		if err := os.Symlink(h.Linkname, target); err != nil {
@@ -257,7 +267,7 @@ func (x *extraction) entry(h *tar.Header, r io.Reader) error {
 		if err := checkParents(dir, src); err != nil {
 			return err
 		}
-		if err := removeNonDir(target); err != nil {
+		if err := x.removeNonDir(target); err != nil {
 			return err
 		}
 		// link(2) on macOS follows a symbolic link it is given, which
@@ -355,6 +365,62 @@ func checkParents(dir, rel string) error {
 		}
 	}
 	return nil
+}
+
+// checkParents is checkParents for this extraction, looking up only the
+// parents it has not found to be directories already.
+func (x *extraction) checkParents(rel string) error {
+	parts := strings.Split(rel, "/")
+	cur := ""
+	for _, p := range parts[:len(parts)-1] {
+		if cur == "" {
+			cur = p
+		} else {
+			cur += "/" + p
+		}
+		if x.dirsSeen[cur] {
+			continue
+		}
+		fi, err := os.Lstat(filepath.Join(x.dir, cur))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("parent %q is a symlink", "/"+cur)
+		}
+		if fi.IsDir() {
+			x.dirsSeen[cur] = true
+		}
+	}
+	return nil
+}
+
+// forgetDirs drops what the extraction knew of its directories, as a
+// removal can take one away and a later entry put a link in its place.
+func (x *extraction) forgetDirs() {
+	if len(x.dirsSeen) > 0 {
+		x.dirsSeen = map[string]bool{}
+	}
+}
+
+// removeNonDir is removeNonDir, forgetting the directories it knew where
+// it removes one.
+func (x *extraction) removeNonDir(p string) error {
+	fi, err := os.Lstat(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if fi.IsDir() {
+		x.forgetDirs()
+		return os.RemoveAll(p)
+	}
+	return os.Remove(p)
 }
 
 func removeNonDir(p string) error {

@@ -12,6 +12,9 @@ import (
 // record, run on macOS only.
 func recordMeta(path string, mode, onDisk os.FileMode, uid, gid int, fresh bool) error { return nil }
 
+// recordMetaFile records nothing, as recordMeta does.
+func recordMetaFile(f *os.File, mode, onDisk os.FileMode, uid, gid int) error { return nil }
+
 // RecordOwner records nothing: only macOS records owners.
 func RecordOwner(path string, uid, gid int) error { return nil }
 
