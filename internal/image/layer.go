@@ -406,8 +406,8 @@ func (x *extraction) forgetDirs() {
 	}
 }
 
-// removeNonDir is removeNonDir, forgetting the directories it knew where
-// it removes one.
+// removeNonDir removes what stands at p for an entry to take its place,
+// forgetting the directories the extraction knew where it removes one.
 func (x *extraction) removeNonDir(p string) error {
 	fi, err := os.Lstat(p)
 	if errors.Is(err, os.ErrNotExist) {
@@ -418,20 +418,6 @@ func (x *extraction) removeNonDir(p string) error {
 	}
 	if fi.IsDir() {
 		x.forgetDirs()
-		return os.RemoveAll(p)
-	}
-	return os.Remove(p)
-}
-
-func removeNonDir(p string) error {
-	fi, err := os.Lstat(p)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if fi.IsDir() {
 		return os.RemoveAll(p)
 	}
 	return os.Remove(p)
