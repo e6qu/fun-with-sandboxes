@@ -620,7 +620,7 @@ func TestPlaywright(t *testing.T) {
 `), 0o644)
 	out, err := docker(t, "run", "--rm", "-v", dir+":/app", "fws/playwright:1.65", "node", "page.js")
 	if err != nil {
-		t.Fatalf("playwright: %q, %v", out, err)
+		t.Fatalf("playwright: %q, %v\nSeatbelt refused Firefox:\n%s\nFirefox's crash report:\n%s", out, err, sandboxDenials(t, "firefox"), crashReport("firefox"))
 	}
 	for _, name := range []string{"chromium", "firefox"} {
 		if !strings.Contains(out, name+" title rendered in fws text painted") || !strings.Contains(out, name+" screenshot true") {

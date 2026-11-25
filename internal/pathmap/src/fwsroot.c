@@ -5415,6 +5415,31 @@ static int route(int fd, in_addr_t addr, unsigned short router, unsigned short p
     return 0;
 }
 
+// refused turns Seatbelt's refusal of a TCP connection to a loopback port
+// into what a network namespace's kernel answers there. A container with a
+// stack of its own reaches, on loopback, its own listeners, its router and
+// its stack's egress proxy; Seatbelt holds it from every other loopback
+// port, the host's, with EPERM. In the container's namespace nothing
+// listens on such a port, so the connection is refused, as programs that
+// wait for a server to come up, retrying on ECONNREFUSED, expect.
+static int refused(int fd, int r, const struct sockaddr *to) {
+    if (r != -1 || errno != EPERM || !router_port || !to) {
+        return r;
+    }
+    int stream = sock_type(fd) == SOCK_STREAM;
+    errno = EPERM;
+    if (!stream) {
+        return r;
+    }
+    if (to->sa_family == AF_INET && (ntohl(((const struct sockaddr_in *)to)->sin_addr.s_addr) >> 24) == 127) {
+        errno = ECONNREFUSED;
+    } else if (to->sa_family == AF_INET6) {
+        const struct in6_addr *a = &((const struct sockaddr_in6 *)to)->sin6_addr;
+        if (IN6_IS_ADDR_LOOPBACK(a) || (IN6_IS_ADDR_V4MAPPED(a) && (ntohl(mapped_v4(a)) >> 24) == 127)) errno = ECONNREFUSED;
+    }
+    return r;
+}
+
 // routed connects fd to sa through a router when sa names a container port
 // without a host port: its own container's, which it listens on, or a
 // member's. It reports whether it did, with *r the result.
@@ -5564,7 +5589,7 @@ static int fws_connect(int fd, const struct sockaddr *sa, socklen_t len) {
         return -1;
     }
     if (to != sa && dir == -1) unbind_if(fd);
-    return dir == -1 ? connect(fd, to, len) : connect_dir(dir, fd, sa, given, to, len);
+    return dir == -1 ? refused(fd, connect(fd, to, len), to) : connect_dir(dir, fd, sa, given, to, len);
 }
 INTERPOSE(fws_connect, connect);
 
@@ -5591,7 +5616,7 @@ static int fws_connect_nocancel(int fd, const struct sockaddr *sa, socklen_t len
         return -1;
     }
     if (to != sa && dir == -1) unbind_if(fd);
-    return dir == -1 ? connect_nocancel(fd, to, len) : connect_dir(dir, fd, sa, given, to, len);
+    return dir == -1 ? refused(fd, connect_nocancel(fd, to, len), to) : connect_dir(dir, fd, sa, given, to, len);
 }
 INTERPOSE(fws_connect_nocancel, connect_nocancel);
 
@@ -5645,7 +5670,7 @@ static int fws_connectx(int fd, const sa_endpoints_t *ep, sae_associd_t aid, uns
         return connectx_data(fd, connect_dir(dir, fd, dst, dlen, to, l), iov, iovcnt, len);
     }
     if (to == dst && l == dlen) {
-        return connectx(fd, ep, aid, flags, iov, iovcnt, len, cid);
+        return refused(fd, connectx(fd, ep, aid, flags, iov, iovcnt, len, cid), to);
     }
     sa_endpoints_t e = *ep;
     e.sae_dstaddr = to;
@@ -5656,7 +5681,7 @@ static int fws_connectx(int fd, const sa_endpoints_t *ep, sae_associd_t aid, uns
     }
     unbind_if(fd);
     e.sae_srcif = 0;
-    return connectx(fd, &e, aid, flags, iov, iovcnt, len, cid);
+    return refused(fd, connectx(fd, &e, aid, flags, iov, iovcnt, len, cid), to);
 }
 INTERPOSE(fws_connectx, connectx);
 

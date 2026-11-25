@@ -451,7 +451,7 @@ RUN echo 'dev:x:1000:1000:dev:/home/dev:/bin/bash' >> /etc/passwd && echo 'dev:x
 		t.Fatal(err)
 	}
 	if want := "dev\n1000\n/home/dev\ndev\ncontainer local /home/dev/bin\ndev\n?? .devcontainer/\n?? made-by-dev\n"; out != want {
-		t.Errorf("the remote user's command printed %q, want %q", out, want)
+		t.Errorf("the remote user's command printed %q, want %q\nSeatbelt refused git:\n%s", out, want, sandboxDenials(t, "git"))
 	}
 	if out := strings.TrimSpace(mustDocker(t, "inspect", "-f", "{{.Config.User}}", res.ContainerID)); out != "app" {
 		t.Errorf("the container runs as %q, want containerUser app", out)

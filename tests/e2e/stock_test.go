@@ -126,13 +126,21 @@ try:
     print("closed port open")
 except ConnectionRefusedError:
     print("closed port refused")
+for host in ("127.0.0.1", "::1"):
+    try:
+        socket.create_connection((host, 8009), timeout=5)
+        print("loopback", host, "open")
+    except ConnectionRefusedError:
+        print("loopback", host, "refused")
 u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 u.settimeout(5)
 u.sendto(b"from a peer", ("web", 8004))
 print(u.recvfrom(2048))
 `
 	out := mustDocker(t, append(append([]string{"run", "--rm"}, labels("client")...), "fws/python:3.14", "python3", "-c", client)...)
-	for _, want := range []string{"200\n", ", 8002)", "closed port refused", "(b'FROM A PEER', ('", ", 8004))"} {
+	// A loopback port nothing in the container listens on is refused, as
+	// in a network namespace of its own, not held as the host's.
+	for _, want := range []string{"200\n", ", 8002)", "closed port refused", "loopback 127.0.0.1 refused", "loopback ::1 refused", "(b'FROM A PEER', ('", ", 8004))"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the client printed %q, want %q in it", out, want)
 		}

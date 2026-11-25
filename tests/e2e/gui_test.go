@@ -19,6 +19,37 @@ import (
 // darwin build.
 const electronVersion = "38.2.0"
 
+// crashReport is the start of the newest crash report macOS wrote in the
+// last minutes for a process named like name: what killed it and where.
+func crashReport(name string) string {
+	home, _ := os.UserHomeDir()
+	var newest string
+	var at time.Time
+	for _, dir := range []string{filepath.Join(home, "Library/Logs/DiagnosticReports"), "/Library/Logs/DiagnosticReports"} {
+		ents, _ := os.ReadDir(dir)
+		for _, e := range ents {
+			fi, err := e.Info()
+			if err != nil || !strings.Contains(strings.ToLower(e.Name()), name) || time.Since(fi.ModTime()) > 10*time.Minute {
+				continue
+			}
+			if fi.ModTime().After(at) {
+				newest, at = filepath.Join(dir, e.Name()), fi.ModTime()
+			}
+		}
+	}
+	if newest == "" {
+		return "none"
+	}
+	b, err := os.ReadFile(newest)
+	if err != nil {
+		return err.Error()
+	}
+	if len(b) > 16<<10 {
+		b = b[:16<<10]
+	}
+	return newest + "\n" + string(b)
+}
+
 // sandboxDenials lists what Seatbelt refused the processes named like
 // name in the last minutes, each operation once: what a profile lacks.
 func sandboxDenials(t *testing.T, name string) string {
@@ -345,7 +376,7 @@ func windowLogs(data string) string {
 // processes show, for a test that failed to find what it looked for there.
 func (w *devContainerWindow) inContainer(t *testing.T) string {
 	t.Helper()
-	out, _ := docker(t, "exec", w.id, "/bin/sh", "-c", "exec 2>&1; ls -la /tmp /root /root/.vscode-server /root/.vscode-server/extensions; cat /root/.gitconfig /etc/gitconfig; for f in $(find /root/.vscode-server/data/logs -name '*.log' | head -20); do echo \"== $f\"; tail -n 40 \"$f\"; done")
+	out, _ := docker(t, "exec", w.id, "/bin/sh", "-c", "exec 2>&1; ls -la /tmp /root /root/.vscode-server /root/.vscode-server/extensions; for f in /tmp/attached.trace /tmp/serve.log; do echo \"== $f\"; cat \"$f\"; done; cat /root/.gitconfig /etc/gitconfig; for f in $(find /root/.vscode-server/data/logs -name '*.log' | head -20); do echo \"== $f\"; tail -n 40 \"$f\"; done")
 	top, _ := docker(t, "top", w.id)
 	return top + "\n" + out + "\nThe extension's log:\n" + extensionLog(w.data)
 }
@@ -409,9 +440,13 @@ func TestVSCodeDevContainersCustomizations(t *testing.T) {
 `,
 		// A server on the port, run by the node VS Code's server brings,
 		// as fws/base has none of its own.
-		".devcontainer/attached.sh": `echo attached > /tmp/attached
+		// Each step is traced, for a failure to show how far it came.
+		".devcontainer/attached.sh": `exec 2> /tmp/attached.trace
+set -x
+echo attached > /tmp/attached
 node=$(ls /root/.vscode-server/bin/*/node | head -1)
 nohup "$node" .devcontainer/serve.js "$1" > /tmp/serve.log 2>&1 &
+echo "started $!" >&2
 `,
 		".devcontainer/serve.js": `require("http").createServer((req, res) => res.end("forwarded\n")).listen(Number(process.argv[2]));
 `,
