@@ -813,15 +813,57 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 			e.tags = append(e.tags, n)
 		}
 	}
+	// The verified blobs are linked into the store's layout, on the same
+	// file system, rather than copied there: writing the images then finds
+	// them in place, and the images read them from either name. A collection waits for the images to be recorded, as
+	// it does for any add, so no moved blob is taken for an orphan.
+	s.blobs.RLock()
+	defer s.blobs.RUnlock()
+	if err := s.adoptBlobs(filepath.Join(dir, "blobs")); err != nil {
+		return nil, err
+	}
 	var out []Image
 	for _, e := range order {
-		added, err := s.Add(e.img, e.tags, "")
+		added, err := s.add(e.img, e.tags, "")
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, added)
 	}
 	return out, nil
+}
+
+// adoptBlobs hard-links the blobs under dir, an extracted layout's blobs
+// directory whose blobs are verified, into the store's layout, where it
+// does not hold them already.
+func (s *Store) adoptBlobs(dir string) error {
+	algs, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, alg := range algs {
+		if !alg.IsDir() {
+			continue
+		}
+		dst := filepath.Join(string(s.layout()), "blobs", alg.Name())
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return err
+		}
+		blobs, err := os.ReadDir(filepath.Join(dir, alg.Name()))
+		if err != nil {
+			return err
+		}
+		for _, b := range blobs {
+			to := filepath.Join(dst, b.Name())
+			if _, err := os.Lstat(to); err == nil {
+				continue
+			}
+			if err := os.Link(filepath.Join(dir, alg.Name(), b.Name()), to); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // annotatedName is the image name an index descriptor carries:
