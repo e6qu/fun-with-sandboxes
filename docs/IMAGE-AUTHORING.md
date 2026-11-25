@@ -1,30 +1,23 @@
 # Image authoring
 
-How fws images are made: how a catalog image is built, how to add one,
-change one, move one to a new upstream release and adapt an upstream
-image's behaviour to macOS, how to write a Dockerfile `FROM` the catalog,
-how to build, test and publish images, and how to find out why an image
-fails. [IMAGES](IMAGES.md) is the catalog and the reference of each
-image's customizations; this guide is how to make them.
+How to make fws images: the rules an image follows, how to write a
+Dockerfile `FROM` the catalog, and how to add, change, update, build, test
+and publish a catalog image. [IMAGES](IMAGES.md) is the catalog and each
+image's reference.
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
 
-## The pieces
-
-A catalog image is made from these files; an image that changes MUST
-change every one of them that describes it, in the same pull request:
-
-| File | What it holds |
-|---|---|
-| `images/<name>/image.json` | the image's spec: its default tag, extra files and directories, and its OCI config (`Entrypoint`, `Cmd`, `Env`, ports, volumes, health check) |
-| `images/<name>/entry/main.go` | the entry program, a Go stand-in for the official image's entrypoint script, where the image has one |
-| `images/*.nix`, `images/<name>/*.nix`, `images/catalog/*.nix` | Nix expressions that build packages at releases nixpkgs does not carry |
-| `scripts/build-images.sh` | the build of every image: which packages, which files, which users, which flags to `fws-mkimage` |
-| `cmd/fws-mkimage` | turns a Nix closure and the spec into a darwin OCI archive |
-| `internal/catalog/catalog.go` | the list of images and tags, which `fws catalog` prints and CI checks are published |
-| [`docs/IMAGES.md`](IMAGES.md) | the catalog table, which `internal/catalog`'s test compares with `catalog.go`, and each image's reference section |
-| `tests/e2e/*_test.go` | the end-to-end test that drives the image through the client its users use |
-| `.github/workflows/ci.yml` | the `prebuilt` groups of packages built from source |
+- [The container contract](#the-container-contract)
+- [Write a Dockerfile FROM fws images](#write-a-dockerfile-from-fws-images)
+- [Catalog images](#catalog-images)
+- [Add an image](#add-an-image)
+- [Change an image](#change-an-image)
+- [Update an image to a new upstream release](#update-an-image-to-a-new-upstream-release)
+- [Adapt an upstream image's behaviour](#adapt-an-upstream-images-behaviour)
+- [Build, load and publish](#build-load-and-publish)
+- [Test an image](#test-an-image)
+- [Troubleshoot](#troubleshoot)
+- [How a catalog image is built](#how-a-catalog-image-is-built): [the build script](#the-build-script), [pinned releases](#nix-expressions-and-pinned-releases), [fws-mkimage](#fws-mkimage), [the spec](#the-spec-imagesnameimagejson), [entry programs](#entry-programs), [the catalog list](#the-catalog-list-and-the-docs-table)
 
 ## The container contract
 
@@ -75,11 +68,11 @@ What an image MUST and MUST NOT do follows from the contract:
   `/usr/local` instead, as `fws/node` and `fws/playwright` do for
   `npm install -g`.
 - **A shell of its own.** macOS's loader drops the container library from
-  Apple's own shells, and with it from `system()` and `popen()`, so every
-  catalog image built through `scripts/build-images.sh`'s `mkimage`
-  carries `dash` as `/bin/sh`, and `/bin/nc`, which answers the in-container
-  port check Testcontainers runs where a Linux image would read
-  `/proc/net/tcp`.
+  Apple's own shells, and with it from `system()` and `popen()`, so an
+  image SHOULD carry its own `/bin/sh`. Every catalog image carries one
+  (`dash`, unless it links its own), and `/bin/nc`, which answers the
+  in-container port check Testcontainers runs where a Linux image would
+  read `/proc/net/tcp`.
 - **Container paths for sockets.** macOS caps a Unix socket's path at 104
   bytes, which a host path under a stack's root often passes. A program
   SHOULD be given a socket's container path, not its host path: the
@@ -93,263 +86,98 @@ What an image MUST and MUST NOT do follows from the contract:
 [LIMITATIONS](../LIMITATIONS.md#isolation) lists what the library
 presents without the kernel enforcing it.
 
-## How a catalog image is built
+## Write a Dockerfile FROM fws images
 
-`scripts/build-images.sh DIR` builds every catalog image into an archive
-in `DIR`, on macOS with Nix (it needs `install_name_tool` and `codesign`):
+`docker build`, `docker buildx build` and `docker compose build` run on an
+embedded BuildKit with a darwin worker; `DOCKER_BUILDKIT=0` picks the
+classic builder. A Dockerfile MUST be based on a darwin image: `fws/base:1`
+in place of Alpine or Debian, or a language image for an app in that
+language:
 
-```bash
-scripts/build-images.sh ./images-out
+```dockerfile
+FROM fws/python:3.14
+COPY requirements.txt /app/
+RUN python3 -m ensurepip && python3 -m pip install -r requirements.txt
+COPY . /app
+CMD ["python3", "main.py"]
 ```
 
-```bash
-for t in ./images-out/*.tar; do docker load -i "$t"; done
+Every instruction builds. A `RUN` step runs what its image holds, under
+the same Seatbelt confinement as a container, with the internet through a
+build-only egress proxy (none with `--network none`), so pip, npm, bun,
+`curl` and `git` download as they do on Linux.
+
+`fws/node` and `fws/rust` carry a C and C++ toolchain, as the official
+images' build-essential does: nixpkgs' clang, ld64 and the macOS SDK
+behind nixpkgs' wrappers, `make`, and cctools' `libtool`, `lipo` and
+`otool`, with `gcc` and `g++` naming clang as on macOS. A node-gyp addon,
+a crate's build script and rustc's link use it as on Linux:
+
+```dockerfile
+FROM fws/rust:1.100 AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release
+FROM fws/base:1
+COPY --from=build /src/target/release/app /usr/local/bin/app
+CMD ["app"]
 ```
 
-The archive is a `docker save` archive: an OCI image layout with Docker's
-`manifest.json` beside it, which `docker load` and the engine's
-`-image-archives` read.
+A program the images lack is added by downloading its macOS arm64 build,
+or by copying one in:
 
-### The build script
-
-`scripts/build-images.sh` runs from the repository's root and does, in
-order:
-
-1. **Builds the Go programs** the images carry: `fws-mkimage`,
-   `fws-kube-proxy`, each `images/<name>/entry`, `images/toolbox`,
-   `images/nc`, `images/busybox`, `images/tar`, `images/kafka/ub` and
-   `images/dind/dockerd`, with `go build -o "$build/<name>-entry"`.
-2. **Builds every `images/catalog` package at once**, with
-   `--keep-going`, so a failure names each package that fails.
-3. **Builds the shared parts**: `dash` (every image's `/bin/sh`),
-   `iana-etc` (`/etc/services` and `/etc/protocols`), `cacert` (Mozilla's
-   CA bundle), the command sets `busybox_pkgs` and `base_pkgs`, and the C
-   toolchain `toolchain_args` (nixpkgs' clang with ld64 and the macOS SDK,
-   cctools, GNU make, `gcc`/`g++` links to clang, `SDKROOT`).
-4. **Builds each image** with the same few lines:
-
-   ```bash
-   valkey=$(cat_with valkey valkey-server)
-   closure "$valkey" > "$build/valkey.closure"
-   accounts valkey valkey 999 999 /data
-   mkimage "${acct[@]}" -spec images/valkey/image.json -closure "$build/valkey.closure" -pkg "$valkey" \
-     -file "/entry=$build/valkey-entry" -out "$out/valkey.tar"
-   ```
-
-   - `pkg_with ATTR BIN` builds nixpkgs' (the pinned
-     `nixpkgs-26.05-darwin`) package `ATTR` and prints the output that
-     holds `bin/BIN`; `cat_with` does the same for `images/catalog`'s
-     packages, `server_with` for `images/servers.nix`'s, and
-     `output_with BIN INSTALLABLE...` for any Nix expression, such as
-     `-f images/etcd/etcd.nix --argstr nixpkgs "$nixpkgs"`.
-     Unfree packages build (`NIXPKGS_ALLOW_UNFREE=1`).
-   - `closure PATH...` prints the store paths those packages reference,
-     `dash`'s included: the image's whole dependency tree, and nothing
-     else. `deps_of PATH...` sets `deps` to a closure without the paths
-     themselves, for images that add one binary with `-file` rather than
-     the whole package.
-   - `accounts NAME [USER UID GID HOME]...` writes the image's
-     `/etc/passwd` and `/etc/group`: `root` (0), `nobody` (65534) and the
-     users the official image has, at the official image's ids, each with
-     `/bin/sh` as its shell, and sets `acct` to the `-file` arguments that
-     add them.
-   - `mkimage ARGS...` runs `fws-mkimage -reuse ARGS...` and then adds
-     what every image carries: `-pkg "$dash" -link /bin/sh=dash`,
-     `/bin/nc`, `/etc/services` and `/etc/protocols`. These come after the
-     image's own arguments, so they win: an image built through `mkimage`
-     cannot replace `/bin/sh` or `/bin/nc`. `fws/toolbox` and `fws/ryuk`
-     call `fws-mkimage` directly: neither has a shell or `/etc/passwd`, and
-     only `fws/ryuk` has `/bin/nc`.
-5. **Removes stale archives**: any `DIR/*.tar` whose `.inputs` record this
-   run neither wrote nor kept, which is how an image the catalog drops
-   leaves `DIR`.
-
-Two modes serve CI:
-
-- `scripts/build-images.sh --inputs` prints every file the build reads:
-  the script, `go.mod`, `go.sum`, `git ls-files images` and the Go sources
-  of every package the image programs compile. CI keys the archives'
-  cache on their content, so a new file an image reads MUST be under
-  `images/` or a Go package an image program imports.
-- `scripts/build-images.sh --prebuilt GROUP` builds a group of the
-  packages no binary cache holds for darwin, and `--prebuilt-derivations
-  GROUP` prints their derivations, which CI keys each group's cache on.
-  The groups are:
-
-  | Group | Packages |
-  |---|---|
-  | `mysql`, `mariadb` | `images/servers.nix`'s servers |
-  | `qdrant`, `meilisearch`, `influxdb` | `images/catalog`'s `qdrant`, `meilisearch`, `influxdb2-server` |
-  | `gitea` | `images/catalog`'s `gitea`, `gitea.data` and `mailpit` |
-  | `tools` | `images/catalog`'s `podman`, `seaweedfs`, `toxiproxy`, `docker-client`, `docker-buildx`, `docker-compose`, `valkey`, `rabbitmq-server` |
-  | `kubernetes` | `images/kubernetes`'s `kubernetes.nix`, `kubelet.nix`, `go-runner.nix`, `pause.nix`, and `images/etcd/etcd.nix` |
-  | `consul` | nixpkgs' `consul`, which Hydra does not build under its licence |
-
-  A package that compiles from source for hours MUST be in a group: its
-  name in `build-images.sh`'s `case`, and a new group also in the
-  `prebuilt` job's `matrix.group` in `.github/workflows/ci.yml`
-  ([CONTRIBUTING](../CONTRIBUTING.md#ci)).
-
-### Nix expressions and pinned releases
-
-Every package is pinned, so a rebuild makes the same images:
-
-| Where | What it pins |
-|---|---|
-| `scripts/build-images.sh`: `nixpkgs=` | `nixpkgs-26.05-darwin` at a commit, overridable with `NIXPKGS`; the default for every `pkg_with` package (PostgreSQL, Python, Node.js, memcached, Consul, DynamoDB Local, the Lambda emulator, the InfluxDB CLI, the shared parts) |
-| `scripts/build-images.sh`: `unstable=` | `nixpkgs-unstable` at a commit, overridable with `NIXPKGS_UNSTABLE`, whose packages and recipes `images/catalog` uses |
-| `images/catalog/default.nix` | the catalog's packages at releases `nixpkgs-26.05` lags: nixpkgs-unstable's package where it has the release (`redis`, `nats-server`, `neo4j`, `mongodb-ce`, `mongosh`, `nginxMainline`), an override of one (`docker_29` at 29.10.0, client only), a vendor build (ClickHouse's macOS binary), and a recipe of its own for the rest |
-| `images/catalog/<pkg>.nix` | a recipe copied from nixpkgs-unstable and set to the release: `version`, `src` and its `hash`, and `vendorHash`, `cargoHash` or the like (Valkey, Vault's release zip, Bun, Meilisearch, Qdrant, RabbitMQ, SeaweedFS, Toxiproxy, InfluxDB, Gitea, Mailpit, Podman, buildx, Compose, Kafka through `kafka.nix`'s `kafkaVersion` and `hash`) |
-| `images/servers.nix` | MySQL and MariaDB at their series' newest release (`release pkg version url hash`), built with their vendors' compilation comment |
-| `images/kubernetes/*.nix` | Kubernetes (`version`, `KUBE_GIT_COMMIT`), the darwin-patched kubelet (`kubelet-darwin.patch`), go-runner and pause (`version`) |
-| `images/etcd/etcd.nix` | etcd's `version`, source `hash` and the three `vendorHashes` |
-| `images/rust/rust.nix` | Rust's `version`, its release `date` and each component's digest from the release's channel manifest |
-| `images/clickhouse/docker.nix`, `images/opensearch/docker.nix` | the official images' own files (entrypoint scripts, configuration) at the release, and OpenSearch's minimal distribution and security plugin |
-| `images/node/yarn.nix` | Yarn 1 without a Node.js of its own, for `fws/node:22` and `:24` |
-| `scripts/build-images.sh` | Playwright (`pw_version` and each browser's revision and digest under `BROWSERS`), the Lambda Java runtime's jars and digests under `JARS`, Ryuk's commit (`ryuk_commit`), crictl's module version, and the Python, Node.js and Lambda releases the loops build |
-
-### fws-mkimage
-
-`cmd/fws-mkimage` turns a closure and a spec into an archive. Its flags:
-
-| Flag | Meaning |
-|---|---|
-| `-spec FILE` | the image spec, `images/<name>/image.json` (REQUIRED) |
-| `-out FILE` | the archive to write (REQUIRED); it takes its name only once whole, through a temporary file and a rename |
-| `-closure FILE` | a file listing the Nix store paths to copy, one per line |
-| `-pkg STORE_PATH` | link each entry of the package's `bin/` into `/bin` (repeatable); the path MUST be in the closure, and a later package's entry replaces an earlier one's of the same name |
-| `-file IMAGE_PATH=HOST_PATH` | add a file or directory (repeatable); it overrides the spec's `files` entry at the same image path |
-| `-link IMAGE_PATH=TARGET` | add a symbolic link (repeatable); the target MUST be relative, as in `/bin/sh=dash` or `/usr/bin/env=../../bin/env` |
-| `-env KEY=VALUE` | set a variable in the config (repeatable), replacing the spec's of that name |
-| `-remove IMAGE_PATH` | leave a path out of the image, such as a store path's file (repeatable); the path MUST exist |
-| `-tag NAME:TAG` | the image's tag, overriding the spec's `tag` |
-| `-arch ARCH` | the image's architecture, by default the build machine's; `arm64` gets variant `v8` |
-| `-reuse` | keep the archive at `-out` where it was made from the same inputs, as `<out>.inputs` records them |
-
-It works in this order:
-
-1. **Copies the closure** under `/nix/store` in the image. A store
-   symlink to an absolute store path becomes relative; one that leaves the
-   store fails the build.
-2. **Relocates Mach-O files.** Every absolute store reference a file loads
-   through (`LC_LOAD_DYLIB`, its weak, re-export, lazy and upward forms, and
-   `LC_RPATH`) is rewritten with `install_name_tool` to an
-   `@loader_path`-relative one, and the file is re-signed ad hoc
-   (`codesign --force --sign -`), as arm64 macOS refuses modified code
-   otherwise. It then fails if any closure file still loads from the store.
-3. **Links each `-pkg`'s `bin/`** into `/bin`.
-4. **Rewrites the closure's scripts' `#!` lines**, which the kernel
-   resolves outside the container's root: an interpreter that is a shell
-   (`sh`, `bash`, `zsh`, `dash`) becomes `#!/bin/<shell>`, with every store
-   path in the script prefixed by `${SANDBOX_ROOT}`; an interpreter the
-   image has on `/bin` becomes `#!/usr/bin/env -S <name>`, written to the
-   image's last layer; any other is left as it is, and that script runs in
-   no container.
-5. **Adds the spec's `files` and each `-file`.** A directory is copied
-   whole, following the source where it is a link; a relative link inside
-   it is kept, an absolute one fails the build. These files are neither
-   relocated nor checked: a Mach-O file added with `-file` MUST NOT load
-   anything from `/nix/store` (the Go programs, the static Kubernetes
-   binaries and `pause` load only libSystem).
-6. **Creates the spec's `dirs`**, then **removes each `-remove`**, then
-   **adds each `-link`**. Files, directories and links in a host tree are
-   refused: `<path>: /usr/lib is the host's in every container, so the
-   image's would never be seen`.
-7. **Writes the OCI image**: a layer per store path, in sorted order, then
-   a last layer with everything else. A store path's layer depends on that
-   path alone, so images that share libraries share layers, in the store
-   and in a registry; a `-remove` of a store path's file changes that
-   path's layer. Every time stamp is the epoch, so the same inputs make
-   the same digest. The config is the spec's `config` with `-env` over it,
-   `os` `darwin`, and the manifest carries
-   `org.opencontainers.image.source` and the epoch as its creation time.
-
-`-reuse` keeps an archive whose inputs digest matches: the digest covers
-`fws-mkimage`'s own binary, every flag, the spec's and the closure file's
-content, and each added file's content (a store path by its name). A
-rebuild of the catalog therefore rebuilds only the archives whose inputs
-changed.
-
-### The spec: `images/<name>/image.json`
-
-```json
-{
-  "tag": "fws/valkey:9",
-  "files": {},
-  "dirs": ["/data", "/tmp"],
-  "config": {
-    "Env": ["PATH=/bin", "TZ=UTC"],
-    "Entrypoint": ["/entry"],
-    "Cmd": ["valkey-server"],
-    "WorkingDir": "/data",
-    "ExposedPorts": {"6379/tcp": {}},
-    "Volumes": {"/data": {}},
-    "Healthcheck": {"Test": ["CMD", "/entry", "health"], "Interval": 1000000000, "Timeout": 5000000000, "Retries": 30},
-    "Labels": {"org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"}
-  }
-}
+```dockerfile
+FROM fws/base:1
+RUN curl -fsSL -o /tmp/tool.tar.gz https://example.com/tool-darwin-arm64.tar.gz \
+ && tar -xzf /tmp/tool.tar.gz -C /usr/local/bin tool && rm /tmp/tool.tar.gz
 ```
 
-| Field | Meaning |
+Besides [the container contract](#the-container-contract)'s rules:
+
+- A Dockerfile MUST NOT install with a system package manager: there is
+  none, and `apt-get`, `apk` and `yum` install Linux binaries and fail.
+- A program MUST be a macOS binary for the engine's architecture; a
+  `FROM --platform` other than `darwin/arm64` is refused.
+- A program whose load commands a build step rewrites with
+  `install_name_tool` MUST be re-signed (`codesign --force --sign -`)
+  before it runs, which no image carries the tools for: rewrite and sign
+  it on the host and `COPY` it in.
+- A program signed with the hardened runtime is re-signed ad hoc when a
+  container executes it, so it loads the container library, except on a
+  read-only mount.
+- There is no Xcode: what runs `xcodebuild` or `xcrun` fails. A Python
+  wheel built from source needs a compiler `fws/python` does not put on
+  `PATH`; a Dockerfile there SHOULD take packages that ship macOS arm64
+  builds, or copy in an extension built on the host.
+- `USER` and `chown` are presented, not enforced: every process runs as
+  the engine's user.
+- Multi-platform builds and `# syntax=` frontends other than Docker's own
+  are refused; the classic builder refuses `RUN --mount`, `--network` and
+  `--security`. [LIMITATIONS](../LIMITATIONS.md#images-and-builds) lists the rest.
+- A script's `#!/usr/bin/env` line runs the program the container's
+  `PATH` names.
+
+## Catalog images
+
+The catalog's images are built from Nix packages by
+`scripts/build-images.sh` on macOS. Each is made from these files; an
+image that changes MUST change every one of them that describes it, in the
+same pull request:
+
+| File | What it holds |
 |---|---|
-| `tag` | the image's name and tag, `fws/<name>:<tag>`; `-tag` overrides it where one spec builds several tags (Python, Node.js, PostgreSQL, the Lambda images) |
-| `files` | a map of image path to host path, relative to the repository's root, added as `-file` adds them; the catalog's specs leave it empty and pass `-file` |
-| `dirs` | empty directories to create, mode 755: data directories, `/tmp`, a user's home |
-| `config` | the OCI image config, as `docker image inspect` shows `.Config`; the engine honours it as dockerd does |
+| `images/<name>/image.json` | the image's spec: its default tag, extra files and directories, and its OCI config (`Entrypoint`, `Cmd`, `Env`, ports, volumes, health check) |
+| `images/<name>/entry/main.go` | the entry program, a Go stand-in for the official image's entrypoint script, where the image has one |
+| `images/*.nix`, `images/<name>/*.nix`, `images/catalog/*.nix` | Nix expressions that build packages at releases nixpkgs does not carry |
+| `scripts/build-images.sh` | the build of every image: which packages, which files, which users, which flags to `fws-mkimage` |
+| `cmd/fws-mkimage` | turns a Nix closure and the spec into a darwin OCI archive |
+| `internal/catalog/catalog.go` | the list of images and tags, which `fws catalog` prints and CI checks are published |
+| [`docs/IMAGES.md`](IMAGES.md) | the catalog table, which `internal/catalog`'s test compares with `catalog.go`, and each image's reference section |
+| `tests/e2e/*_test.go` | the end-to-end test that drives the image through the client its users use |
+| `.github/workflows/ci.yml` | the `prebuilt` groups of packages built from source |
 
-The `config` fields the catalog uses:
-
-| Field | Use |
-|---|---|
-| `Env` | `PATH` (most images use `PATH=/bin`; images built `FROM` use Debian's full `PATH`), `TZ=UTC`, CA bundle variables (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`) where the image carries `/etc/ssl/certs/ca-certificates.crt`, and the official image's own variables |
-| `Entrypoint`, `Cmd` | as the official image has them; the entry program at the official script's path where clients or Testcontainers modules name it, else `/entry` |
-| `User` | the official image's user, where it sets one (`fws/kafka`, `fws/memcached`, `fws/opensearch`, `fws/pause`); most images start as root and their entry program drops to the user |
-| `WorkingDir`, `ExposedPorts`, `Volumes`, `StopSignal` | as the official image has them |
-| `Healthcheck` | `Test`, and `Interval`, `Timeout`, `StartPeriod` and `StartInterval` in nanoseconds, with `Retries`; `fws-mkimage` writes `StartInterval`, which go-containerregistry's config lacks, itself |
-| `Labels` | `org.opencontainers.image.source`, on every image |
-
-### Entry programs
-
-Where the official image's entrypoint is a shell script, the fws image
-runs a small Go program in its place, `images/<name>/entry/main.go`,
-built by `scripts/build-images.sh` and added with
-`-file "/entry=$build/<name>-entry"` or at the official script's path.
-Go programs on macOS load libSystem, so an entry program loads the
-container library like any other process. They use two small packages,
-which depend on nothing else of the engine's, so an entry is not rebuilt
-whenever the runtime changes ([CONTRIBUTING](../CONTRIBUTING.md#ci)):
-
-- `internal/sandboxenv`: `Root()` is `SANDBOX_ROOT`; `Path(p)` maps a
-  container path to its host path in the root; `Port(n)` and `Peer(svc,
-  n)` read the `SANDBOX_*` ports; `IPCName` adds the IPC prefix; and
-  `Become(user, own...)` does what the official scripts do with `gosu`:
-  under root it gives `user` the paths in `own` and everything under them,
-  then switches to the user and sets `HOME` and `USER`; under any other
-  user, the container's choice stands and it does nothing.
-- `internal/execpath`: `Resolve(root, argv0, env)` finds an executable as
-  `execve` and a shell's `PATH` search would in the container, through
-  links and mounts (`FWS_MOUNTS`).
-
-An entry program's own unit tests (`main_test.go`) run with the module's
-on any machine; keep the logic worth testing (argument rewriting, file
-formats) in plain functions.
-
-### The catalog list and the docs table
-
-`internal/catalog/catalog.go`'s `Images` lists each image with its tags,
-its kind (`base`, `language`, `lambda`, `tool`, `database`, `storage`,
-`messaging`, `service`, `kubernetes`) and a summary. `fws catalog` prints
-it, and CI's `images` job publishes the built archives to a local
-registry and checks that every tag `fws catalog -published` lists is
-there as a darwin image. `TestMatchesImagesDoc` in
-`internal/catalog/catalog_test.go` reads [IMAGES](IMAGES.md)'s table, from
-the line starting `| Image |` to the first blank line, takes each
-`` `fws/<name>:<tag>` `` in each row's first cell, and fails unless they
-are exactly the catalog's tags:
-
-```bash
-go test ./internal/catalog
-```
+[How a catalog image is built](#how-a-catalog-image-is-built) describes each
+piece in detail.
 
 ## Add an image
 
@@ -565,9 +393,8 @@ Build it with the others at the top of `scripts/build-images.sh`
   every test, Compose file and document that names the old tag
   (`grep -rn 'fws/<name>:' .`).
 
-Then rebuild, run the image's end-to-end tests, and update
-[IMAGES](IMAGES.md), [LIMITATIONS](../LIMITATIONS.md) and the README where
-they describe what changed ([CONTRIBUTING](../CONTRIBUTING.md#change-things)).
+Then rebuild, run the image's end-to-end tests, and update every document
+that describes what changed ([CONTRIBUTING](../CONTRIBUTING.md#change-things)).
 
 ## Update an image to a new upstream release
 
@@ -670,7 +497,8 @@ differs. The conventions:
   `/usr/bin/env=../../bin/env` to coreutils' `env`, as most do.
 - **Sockets.** Give the server a socket's container path
   (`--socket=/var/run/mysqld/mysqld.sock`, PostgreSQL's
-  `unix_socket_directories`), not its host path.
+  `unix_socket_directories`), not its host path
+  ([the container contract](#the-container-contract)).
 - **Logs** go to standard output or standard error, as Docker collects
   them: nginx with `-e stderr`, RabbitMQ with `RABBITMQ_LOGS=-`,
   SeaweedFS with `-logtostderr=true`, Kafka through a console appender.
@@ -689,105 +517,28 @@ differs. The conventions:
   - **Linux daemons a script talks to** (systemd, containerd, rootlesskit)
     are replaced by small stand-ins, as `fws/kind-node`'s `ctr`,
     `containerd` and `journalctl` are.
+- **Arguments.** What follows the server's name in the command goes to the
+  server, as the official entrypoints pass it on (`nginx -T`,
+  `rabbitmq-server ...`).
 - **Honour or refuse.** An option the image cannot honour SHOULD make the
-  entry program fail with a message, as `fws/nginx` and `fws/rabbitmq` do
-  for a command other than their server and `fws/dind`'s `dockerd` does
-  for a flag the nested engine does not take, rather than be dropped. Where
-  an image takes an option and ignores it, its
-  [IMAGES](IMAGES.md#image-reference) section MUST say so.
-
-## Write a Dockerfile FROM fws images
-
-`docker build`, `docker buildx build` and `docker compose build` run on an
-embedded BuildKit with a darwin worker; `DOCKER_BUILDKIT=0` picks the
-classic builder. A Dockerfile MUST be based on a darwin image: `fws/base:1`
-in place of Alpine or Debian, or a language image for an app in that
-language:
-
-```dockerfile
-FROM fws/python:3.14
-COPY requirements.txt /app/
-RUN python3 -m ensurepip && python3 -m pip install -r requirements.txt
-COPY . /app
-CMD ["python3", "main.py"]
-```
-
-Every instruction builds. A `RUN` step runs what its image holds, under
-the same Seatbelt confinement as a container, with the internet through a
-build-only egress proxy (none with `--network none`), so pip, npm, bun,
-`curl` and `git` download as they do on Linux.
-
-`fws/node` and `fws/rust` carry a C and C++ toolchain, as the official
-images' build-essential does: nixpkgs' clang, ld64 and the macOS SDK
-behind nixpkgs' wrappers, `make`, and cctools' `libtool`, `lipo` and
-`otool`, with `gcc` and `g++` naming clang as on macOS. A node-gyp addon,
-a crate's build script and rustc's link use it as on Linux:
-
-```dockerfile
-FROM fws/rust:1.100 AS build
-WORKDIR /src
-COPY . .
-RUN cargo build --release
-FROM fws/base:1
-COPY --from=build /src/target/release/app /usr/local/bin/app
-CMD ["app"]
-```
-
-A program the images lack is added by downloading its macOS arm64 build,
-or by copying one in:
-
-```dockerfile
-FROM fws/base:1
-RUN curl -fsSL -o /tmp/tool.tar.gz https://example.com/tool-darwin-arm64.tar.gz \
- && tar -xzf /tmp/tool.tar.gz -C /usr/local/bin tool && rm /tmp/tool.tar.gz
-```
-
-What works and what MUST NOT be done:
-
-- A Dockerfile MUST NOT install with a system package manager: there is
-  none, and `apt-get`, `apk` and `yum` install Linux binaries and fail.
-- A program MUST be a macOS binary for the engine's architecture; a
-  `FROM --platform` other than `darwin/arm64` is refused.
-- A program MUST land outside the host's trees (`/System`, `/usr/lib`,
-  `/dev`, `/private/var/db`, `/var/db`, `/Library/Apple`), which no
-  container sees in its image; `/usr/local` is the place.
-- A program MUST load its libraries from the image or macOS, by relative
-  path (`@loader_path`, `@executable_path`), and MUST NOT load them from
-  `/opt/homebrew` or `/nix/store`. One whose load commands a build step
-  rewrites with `install_name_tool` MUST be re-signed
-  (`codesign --force --sign -`) before it runs, which no image carries the
-  tools for: rewrite and sign it on the host and `COPY` it in.
-- A program signed with the hardened runtime is re-signed ad hoc when a
-  container executes it, so it loads the container library, except on a
-  read-only mount.
-- There is no Xcode: what runs `xcodebuild` or `xcrun` fails. A Python
-  wheel built from source needs a compiler `fws/python` does not put on
-  `PATH`; a Dockerfile there SHOULD take packages that ship macOS arm64
-  builds, or copy in an extension built on the host.
-- `USER` and `chown` are presented, not enforced: every process runs as
-  the engine's user.
-- Multi-platform builds and `# syntax=` frontends other than Docker's own
-  are refused; the classic builder refuses `RUN --mount`, `--network` and
-  `--security`. [LIMITATIONS](../LIMITATIONS.md#images) lists the rest.
-
-### Run software of your own in an image
-
-A program built for macOS runs unchanged when it reads its paths and ports
-from its configuration: the container library presents `/` as the
-container's root and container ports as its own. Where a program cannot
-load the library (a static binary, one whose code signature forbids
-injected libraries), its entrypoint MUST read the `SANDBOX_*` variables
-instead ([the container contract](#the-container-contract)). A program
-SHOULD be given a Unix socket's container path, not its host path.
-
-A script's `#!/usr/bin/env` line runs the program the container's `PATH`
-names, as Apple's `env` cannot load the library.
+  entry program fail with a message rather than be dropped, as `fws/nginx`
+  and `fws/rabbitmq` do for a command other than their server, `fws/k3s`
+  for a `k3s server` flag it cannot give, and `fws/dind`'s `dockerd` for a
+  flag the nested engine does not take. Where an image takes an option and
+  ignores it, its [IMAGES](IMAGES.md#image-reference) section MUST say so.
 
 ## Build, load and publish
 
 - **Build** the catalog with `scripts/build-images.sh DIR` on macOS with
-  Nix. A first build compiles what no binary cache holds for darwin (the
-  `--prebuilt` groups), which takes hours on one machine.
+  Nix. It writes a `docker save` archive per image (an OCI image layout
+  with Docker's `manifest.json` beside it) and keeps each archive whose
+  inputs are unchanged. A first build compiles what no binary cache holds
+  for darwin (the `--prebuilt` groups), which takes hours on one machine:
+
+  ```bash
+  scripts/build-images.sh images-out
+  ```
+
 - **Load** an archive with `docker load -i DIR/<name>.tar`, or start the
   engine with `fwsd -image-archives DIR`, which loads an archive the first
   time one of its images is asked for.
@@ -818,9 +569,7 @@ layer once for CI's cache.
 
 The end-to-end suite in `tests/e2e`, a Go module of its own, runs on
 macOS against the archives in `FWS_E2E_IMAGES`. It starts an engine of its
-own, under its own state directory, which loads each archive the first
-time a test asks for one of its images
-([CONTRIBUTING](../CONTRIBUTING.md#test)). Each file starts with
+own ([CONTRIBUTING](../CONTRIBUTING.md#test)). Each file starts with
 `//go:build e2e && darwin`. The tests of the catalog's images:
 
 | Images | Tests |
@@ -873,14 +622,12 @@ run's `--- PASS` line when it is far from that.
   absolute `-link` target (`want image-path=relative-target`) becomes
   relative; an absolute link in a `-file` directory, or a store link that
   leaves the store, is fixed in what is copied.
-- **`still references /nix/store/... after relocation`**: a Mach-O file
-  loads a library by a path `install_name_tool` could not rewrite, or one
+- **`<file> loads /nix/store/..., which the image's closure does not
+  hold`**: a Mach-O file, from the closure or a `-file`, loads a library
   outside the closure: add the library's package to the `closure`
   arguments.
-- **`dyld: Library not loaded: /nix/store/...` when a program starts**:
-  the program came in with `-file`, which is neither relocated nor
-  checked. Add its package to the closure and `-pkg` it, or `-link` to the
-  binary inside the store path.
+- **`still references /nix/store/... after relocation`**: a Mach-O file
+  loads a library by a path `install_name_tool` could not rewrite.
 - **`exec: "<name>": executable file not found in $PATH`**: the spec's
   `PATH` does not name the directory, or no `-pkg` or `-link` put the
   program there. Check with `docker run --rm --entrypoint /bin/sh IMAGE
@@ -896,31 +643,16 @@ run's `--- PASS` line when it is far from that.
 - **A socket path is too long** (a bind or connect that fails, or a
   server's own check of the path's length): the program was given a host
   path; give it the container's.
-- **Seatbelt denied something.** Seatbelt logs every denial. While the
-  container runs:
-
-  ```bash
-  log stream --style compact --predicate 'sender == "Sandbox"'
-  ```
-
-  and afterwards, each distinct denial once, by process:
-
-  ```bash
-  log show --last 1h --style compact --predicate 'sender == "Sandbox"' | sed -n 's/.*Sandbox: \([^(]*\)([0-9]*) \(deny.*\)/\1 \2/p' | sort | uniq -c | sort -rn
-  ```
-
-  The container's profile is `profile.sb` in its state directory
-  (`~/.fws/stacks/*/c/<id>/profile.sb`); [SEATBELT](SEATBELT.md#finding-what-a-container-was-denied)
-  shows how to read both. A denial of the window server, Launch Services
+- **Seatbelt denied something.** Seatbelt logs every denial;
+  [SEATBELT](SEATBELT.md#finding-what-a-container-was-denied) shows how to
+  read the log and the container's profile. A denial of the window server, Launch Services
   or the pasteboard means the program needs the user's session
   (`--security-opt seatbelt=gui`, run as the engine's user, as Firefox in
   `fws/playwright` does). A denial of a path outside the root means the
   program reached a host path: it loads no library, or was given a host
   path.
 - **A program loses its way between container and host paths.** Run it
-  with `-e FWS_TRACE=1`: the container library writes to standard error
-  each call that asks about a file's place (`stat`, `getattrlist`,
-  `statfs`, `realpath`), what the path mapped to and what came back.
+  with `-e FWS_TRACE=1` ([USAGE](USAGE.md#tracing-paths)).
 - **A process crashes.** macOS writes a crash report for it to
   `~/Library/Logs/DiagnosticReports/*.ips`: a JSON header line, then a
   JSON body whose `procPath`, `exception`, `termination` and `asi` say what
@@ -932,3 +664,252 @@ run's `--- PASS` line when it is far from that.
   variables; macOS refuses a second Seatbelt profile.
 - **A server runs out of semaphores** as it starts: lower its process or
   connection limits, as `fws/postgres` does.
+
+## How a catalog image is built
+
+The reference for each piece of a catalog image's build.
+
+### The build script
+
+`scripts/build-images.sh` runs from the repository's root and does, in
+order:
+
+1. **Builds the Go programs** the images carry: `fws-mkimage`,
+   `fws-kube-proxy`, each `images/<name>/entry`, `images/toolbox`,
+   `images/nc`, `images/busybox`, `images/tar`, `images/kafka/ub` and
+   `images/dind/dockerd`, with `go build -o "$build/<name>-entry"`.
+2. **Builds every `images/catalog` package at once**, with
+   `--keep-going`, so a failure names each package that fails.
+3. **Builds the shared parts**: `dash` (every image's `/bin/sh`),
+   `iana-etc` (`/etc/services` and `/etc/protocols`), `cacert` (Mozilla's
+   CA bundle), the command sets `busybox_pkgs` and `base_pkgs`, and the C
+   toolchain `toolchain_args` (nixpkgs' clang with ld64 and the macOS SDK,
+   cctools, GNU make, `gcc`/`g++` links to clang, `SDKROOT`).
+4. **Builds each image** with the same few lines:
+
+   ```bash
+   valkey=$(cat_with valkey valkey-server)
+   closure "$valkey" > "$build/valkey.closure"
+   accounts valkey valkey 999 999 /data
+   mkimage "${acct[@]}" -spec images/valkey/image.json -closure "$build/valkey.closure" -pkg "$valkey" \
+     -file "/entry=$build/valkey-entry" -out "$out/valkey.tar"
+   ```
+
+   - `pkg_with ATTR BIN` builds nixpkgs' (the pinned
+     `nixpkgs-26.05-darwin`) package `ATTR` and prints the output that
+     holds `bin/BIN`; `cat_with` does the same for `images/catalog`'s
+     packages, `server_with` for `images/servers.nix`'s, and
+     `output_with BIN INSTALLABLE...` for any Nix expression, such as
+     `-f images/etcd/etcd.nix --argstr nixpkgs "$nixpkgs"`.
+     Unfree packages build (`NIXPKGS_ALLOW_UNFREE=1`).
+   - `closure PATH...` prints the store paths those packages reference,
+     `dash`'s included: the image's whole dependency tree, and nothing
+     else. `deps_of PATH...` sets `deps` to a closure without the paths
+     themselves, for images that add one binary with `-file` rather than
+     the whole package.
+   - `accounts NAME [USER UID GID HOME]...` writes the image's
+     `/etc/passwd` and `/etc/group`: `root` (0), `nobody` (65534) and the
+     users the official image has, at the official image's ids, each with
+     `/bin/sh` as its shell. It sets `acct` to the `-file` arguments that
+     add them and an `-own HOME=UID:GID` for each user's home, but
+     `/nonexistent`.
+   - `mkimage ARGS...` runs `fws-mkimage -reuse` with what every image
+     carries, `-pkg "$dash" -link /bin/sh=dash`, `/bin/nc`,
+     `/etc/services` and `/etc/protocols`, and then `ARGS`. The image's own
+     arguments come last, so they win: `fws/kind-node`'s
+     `-link /bin/sh=bash` replaces the dash default. `fws/toolbox` and
+     `fws/ryuk` call `fws-mkimage` directly: neither has a shell or
+     `/etc/passwd`, and only `fws/ryuk` has `/bin/nc`.
+5. **Removes stale archives**: any `DIR/*.tar` whose `.inputs` record this
+   run neither wrote nor kept, which is how an image the catalog drops
+   leaves `DIR`.
+
+Two modes serve CI:
+
+- `scripts/build-images.sh --inputs` prints every file the build reads:
+  the script, `go.mod`, `go.sum`, `git ls-files images` and the Go sources
+  of every package the image programs compile. CI keys the archives'
+  cache on their content, so a new file an image reads MUST be under
+  `images/` or a Go package an image program imports.
+- `scripts/build-images.sh --prebuilt GROUP` builds a group of the
+  packages no binary cache holds for darwin, and `--prebuilt-derivations
+  GROUP` prints their derivations, which CI keys each group's cache on.
+  The groups are:
+
+  | Group | Packages |
+  |---|---|
+  | `mysql`, `mariadb` | `images/servers.nix`'s servers |
+  | `qdrant`, `meilisearch`, `influxdb` | `images/catalog`'s `qdrant`, `meilisearch`, `influxdb2-server` |
+  | `gitea` | `images/catalog`'s `gitea`, `gitea.data` and `mailpit` |
+  | `tools` | `images/catalog`'s `podman`, `seaweedfs`, `toxiproxy`, `docker-client`, `docker-buildx`, `docker-compose`, `valkey`, `rabbitmq-server` |
+  | `kubernetes` | `images/kubernetes`'s `kubernetes.nix`, `kubelet.nix`, `go-runner.nix`, `pause.nix`, and `images/etcd/etcd.nix` |
+  | `consul` | nixpkgs' `consul`, which Hydra does not build under its licence |
+
+  A package that compiles from source for hours MUST be in a group: its
+  name in `build-images.sh`'s `case`, and a new group also in the
+  `prebuilt` job's `matrix.group` in `.github/workflows/ci.yml`
+  ([CONTRIBUTING](../CONTRIBUTING.md#ci)).
+
+### Nix expressions and pinned releases
+
+Every package is pinned, so a rebuild makes the same images:
+
+| Where | What it pins |
+|---|---|
+| `scripts/build-images.sh`: `nixpkgs=` | `nixpkgs-26.05-darwin` at a commit, overridable with `NIXPKGS`; the default for every `pkg_with` package (PostgreSQL, Python, Node.js, memcached, Consul, DynamoDB Local, the Lambda emulator, the InfluxDB CLI, the shared parts) |
+| `scripts/build-images.sh`: `unstable=` | `nixpkgs-unstable` at a commit, overridable with `NIXPKGS_UNSTABLE`, whose packages and recipes `images/catalog` uses |
+| `images/catalog/default.nix` | the catalog's packages at releases `nixpkgs-26.05` lags: nixpkgs-unstable's package where it has the release (`redis`, `nats-server`, `neo4j`, `mongodb-ce`, `mongosh`, `nginxMainline`), an override of one (`docker_29` at 29.10.0, client only), a vendor build (ClickHouse's macOS binary), and a recipe of its own for the rest |
+| `images/catalog/<pkg>.nix` | a recipe copied from nixpkgs-unstable and set to the release: `version`, `src` and its `hash`, and `vendorHash`, `cargoHash` or the like (Valkey, Vault's release zip, Bun, Meilisearch, Qdrant, RabbitMQ, SeaweedFS, Toxiproxy, InfluxDB, Gitea, Mailpit, Podman, buildx, Compose, Kafka through `kafka.nix`'s `kafkaVersion` and `hash`) |
+| `images/servers.nix` | MySQL and MariaDB at their series' newest release (`release pkg version url hash`), built with their vendors' compilation comment |
+| `images/kubernetes/*.nix` | Kubernetes (`version`, `KUBE_GIT_COMMIT`), the darwin-patched kubelet (`kubelet-darwin.patch`), go-runner and pause (`version`) |
+| `images/etcd/etcd.nix` | etcd's `version`, source `hash` and the three `vendorHashes` |
+| `images/rust/rust.nix` | Rust's `version`, its release `date` and each component's digest from the release's channel manifest |
+| `images/clickhouse/docker.nix`, `images/opensearch/docker.nix` | the official images' own files (entrypoint scripts, configuration) at the release, and OpenSearch's minimal distribution and security plugin |
+| `images/node/yarn.nix` | Yarn 1 without a Node.js of its own, for `fws/node:22` and `:24` |
+| `scripts/build-images.sh` | Playwright (`pw_version` and each browser's revision and digest under `BROWSERS`), the Lambda Java runtime's jars and digests under `JARS`, Ryuk's commit (`ryuk_commit`), crictl's module version, and the Python, Node.js and Lambda releases the loops build |
+
+### fws-mkimage
+
+`cmd/fws-mkimage` turns a closure and a spec into an archive. Its flags:
+
+| Flag | Meaning |
+|---|---|
+| `-spec FILE` | the image spec, `images/<name>/image.json` (REQUIRED) |
+| `-out FILE` | the archive to write (REQUIRED); it takes its name only once whole, through a temporary file and a rename |
+| `-closure FILE` | a file listing the Nix store paths to copy, one per line |
+| `-pkg STORE_PATH` | link each entry of the package's `bin/` into `/bin` (repeatable); the path MUST be in the closure, and a later package's entry replaces an earlier one's of the same name |
+| `-file IMAGE_PATH=HOST_PATH` | add a file or directory (repeatable); it overrides the spec's `files` entry, and an earlier `-file`, at the same image path |
+| `-link IMAGE_PATH=TARGET` | add a symbolic link (repeatable), replacing what is at the path; the target MUST be relative, as in `/bin/sh=dash` or `/usr/bin/env=../../bin/env` |
+| `-env KEY=VALUE` | set a variable in the config (repeatable), replacing the spec's of that name |
+| `-own IMAGE_PATH=UID:GID` | make a directory, if missing, owned by that user and group in the layer, such as an account's home (repeatable) |
+| `-remove IMAGE_PATH` | leave a path out of the image, such as a store path's file (repeatable); the path MUST exist |
+| `-tag NAME:TAG` | the image's tag, overriding the spec's `tag` |
+| `-arch ARCH` | the image's architecture, by default the build machine's; `arm64` gets variant `v8` |
+| `-reuse` | keep the archive at `-out` where it was made from the same inputs, as `<out>.inputs` records them |
+
+It works in this order:
+
+1. **Copies the closure** under `/nix/store` in the image. A store
+   symlink to an absolute store path becomes relative; one that leaves the
+   store fails the build.
+2. **Relocates Mach-O files.** Every absolute store reference a file loads
+   through (`LC_LOAD_DYLIB`, its weak, re-export, lazy and upward forms, and
+   `LC_RPATH`) is rewritten with `install_name_tool` to an
+   `@loader_path`-relative one, and the file is re-signed ad hoc
+   (`codesign --force --sign -`), as arm64 macOS refuses modified code
+   otherwise. A load of a store path the closure lacks fails the build.
+3. **Links each `-pkg`'s `bin/`** into `/bin`.
+4. **Rewrites the closure's scripts' `#!` lines**, which the kernel
+   resolves outside the container's root: an interpreter that is a shell
+   (`sh`, `bash`, `zsh`, `dash`) becomes `#!/bin/<shell>`, with every store
+   path in the script prefixed by `${SANDBOX_ROOT}`; an interpreter the
+   image has on `/bin` becomes `#!/usr/bin/env -S <name>`, written to the
+   image's last layer; any other is left as it is, and that script runs in
+   no container.
+5. **Adds the spec's `files` and each `-file`.** A directory is copied
+   whole, following the source where it is a link; a relative link inside
+   it is kept, an absolute one fails the build. Mach-O files among them
+   are relocated as the closure's are, to the store paths the closure
+   holds. Then every Mach-O file in the image is checked: one that still
+   loads from `/nix/store` fails the build.
+6. **Creates the spec's `dirs` and each `-own` directory**, then **removes
+   each `-remove`**, then **adds each `-link`**. Files, directories and
+   links in a host tree are refused: `file <path>: /usr/lib is the host's in
+   every container, so the image's would never be seen`.
+7. **Writes the OCI image**: a layer per store path, in sorted order, then
+   a last layer with everything else. A store path's layer depends on that
+   path alone, so images that share libraries share layers, in the store
+   and in a registry; a `-remove` of a store path's file changes that
+   path's layer. Every entry is root's but the `-own` directories, and
+   every time stamp is the epoch, so the same inputs make the same
+   digest. The config is the spec's `config` with `-env` over it,
+   `os` `darwin`, and the manifest carries
+   `org.opencontainers.image.source` and the epoch as its creation time.
+
+`-reuse` keeps an archive whose inputs digest matches: the digest covers
+`fws-mkimage`'s own binary, every flag, the spec's and the closure file's
+content, and each added file's content (a store path by its name). A
+rebuild of the catalog therefore rebuilds only the archives whose inputs
+changed.
+
+### The spec: `images/<name>/image.json`
+
+```json
+{
+  "tag": "fws/valkey:9",
+  "files": {},
+  "dirs": ["/data", "/tmp"],
+  "config": {
+    "Env": ["PATH=/bin", "TZ=UTC"],
+    "Entrypoint": ["/entry"],
+    "Cmd": ["valkey-server"],
+    "WorkingDir": "/data",
+    "ExposedPorts": {"6379/tcp": {}},
+    "Volumes": {"/data": {}},
+    "Healthcheck": {"Test": ["CMD", "/entry", "health"], "Interval": 1000000000, "Timeout": 5000000000, "Retries": 30},
+    "Labels": {"org.opencontainers.image.source": "https://github.com/e6qu/fun-with-sandboxes"}
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `tag` | the image's name and tag, `fws/<name>:<tag>`; `-tag` overrides it where one spec builds several tags (Python, Node.js, PostgreSQL, the Lambda images) |
+| `files` | a map of image path to host path, relative to the repository's root, added as `-file` adds them; the catalog's specs leave it empty and pass `-file` |
+| `dirs` | empty directories to create, mode 755: data directories, `/tmp`, a user's home |
+| `config` | the OCI image config, as `docker image inspect` shows `.Config`; the engine honours it as dockerd does |
+
+The `config` fields the catalog uses:
+
+| Field | Use |
+|---|---|
+| `Env` | `PATH` (most images use `PATH=/bin`; images built `FROM` use Debian's full `PATH`), `TZ=UTC`, CA bundle variables (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`) where the image carries `/etc/ssl/certs/ca-certificates.crt`, and the official image's own variables |
+| `Entrypoint`, `Cmd` | as the official image has them; the entry program at the official script's path where clients or Testcontainers modules name it, else `/entry` |
+| `User` | the official image's user, where it sets one (`fws/kafka`, `fws/memcached`, `fws/opensearch`, `fws/pause`); most images start as root and their entry program drops to the user |
+| `WorkingDir`, `ExposedPorts`, `Volumes`, `StopSignal` | as the official image has them |
+| `Healthcheck` | `Test`, and `Interval`, `Timeout`, `StartPeriod` and `StartInterval` in nanoseconds, with `Retries`; `fws-mkimage` writes `StartInterval`, which go-containerregistry's config lacks, itself |
+| `Labels` | `org.opencontainers.image.source`, on every image |
+
+### Entry programs
+
+Where the official image's entrypoint is a shell script, the fws image
+runs a small Go program in its place, `images/<name>/entry/main.go`,
+built by `scripts/build-images.sh` and added with
+`-file "/entry=$build/<name>-entry"` or at the official script's path.
+Go programs on macOS load libSystem, so an entry program loads the
+container library like any other process. They use two small packages,
+which depend on nothing else of the engine's. An entry program is
+rebuilt, with every image, whenever a package it imports changes, so what
+entries need SHOULD stay in such small packages:
+
+- `internal/sandboxenv`: `Root()` is `SANDBOX_ROOT`; `Path(p)` maps a
+  container path to its host path in the root; `Port(n)` and `Peer(svc,
+  n)` read the `SANDBOX_*` ports; `IPCName` adds the IPC prefix; and
+  `Become(user, own...)` does what the official scripts do with `gosu`:
+  under root it gives `user` the paths in `own` and everything under them,
+  then switches to the user and sets `HOME` and `USER`; under any other
+  user, the container's choice stands and it does nothing.
+- `internal/execpath`: `Resolve(root, argv0, env)` finds an executable as
+  `execve` and a shell's `PATH` search would in the container, through
+  links and mounts (`FWS_MOUNTS`).
+
+An entry program's own unit tests (`main_test.go`) run with the module's
+on any machine; keep the logic worth testing (argument rewriting, file
+formats) in plain functions.
+
+### The catalog list and the docs table
+
+`internal/catalog/catalog.go`'s `Images` lists each image with its tags,
+its kind (`base`, `language`, `lambda`, `tool`, `database`, `storage`,
+`messaging`, `service`, `kubernetes`) and a summary. `fws catalog` prints
+it, and CI's `images` job publishes the built archives to a local
+registry and checks that every tag `fws catalog -published` lists is
+there as a darwin image. `TestMatchesImagesDoc` in
+`internal/catalog/catalog_test.go` reads [IMAGES](IMAGES.md#the-catalog)'s table, from
+the line starting `| Image |` to the first blank line, takes each
+`` `fws/<name>:<tag>` `` in each row's first cell, and fails unless they
+are exactly the catalog's tags:
+
+```bash
+go test ./internal/catalog
+```

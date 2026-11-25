@@ -1,72 +1,49 @@
 # Images
 
-What fws images are, where they come from, what each catalog image holds
-and how it differs from the official image it mirrors.
-[IMAGE-AUTHORING](IMAGE-AUTHORING.md) is the guide to making them: how
-the catalog is built, adding, changing, updating and adapting an image,
-writing a Dockerfile `FROM` the catalog, and testing, publishing and
-troubleshooting images.
+The fws image catalog: what each image holds and how it differs from the
+official image it mirrors. How to get the images is in
+[USAGE](USAGE.md#get-images); how to write images of your own, and how to
+add, change or update a catalog image, is in
+[IMAGE-AUTHORING](IMAGE-AUTHORING.md).
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
 
+- [What an fws image is](#what-an-fws-image-is)
+- [The catalog](#the-catalog)
+- [What every image shares](#what-every-image-shares)
+- [Image reference](#image-reference):
+  - Base and tools: [base](#fwsbase), [busybox](#fwsbusybox)
+  - Languages: [python](#fwspython), [node](#fwsnode), [bun](#fwsbun), [rust](#fwsrust), [lambda](#fwslambdapython-fwslambdanodejs-fwslambdajava), [playwright](#fwsplaywright)
+  - Databases: [postgres](#fwspostgres), [mysql](#fwsmysql), [mariadb](#fwsmariadb), [mongo](#fwsmongo), [redis](#fwsredis), [valkey](#fwsvalkey), [memcached](#fwsmemcached), [etcd](#fwsetcd)
+  - Search and analytics: [neo4j](#fwsneo4j), [clickhouse](#fwsclickhouse), [influxdb](#fwsinfluxdb), [opensearch](#fwsopensearch), [qdrant](#fwsqdrant), [meilisearch](#fwsmeilisearch)
+  - Storage and messaging: [dynamodb-local](#fwsdynamodb-local), [seaweedfs](#fwsseaweedfs), [kafka](#fwskafka), [rabbitmq](#fwsrabbitmq), [nats](#fwsnats)
+  - Services: [mailpit](#fwsmailpit), [consul](#fwsconsul), [vault](#fwsvault), [gitea](#fwsgitea), [nginx](#fwsnginx), [toxiproxy](#fwstoxiproxy)
+  - Docker and Testcontainers: [dind](#fwsdind), [ryuk](#fwsryuk), [toolbox](#fwstoolbox)
+  - Kubernetes: [kube-apiserver and the control plane](#fwskube-apiserver-fwskube-controller-manager-fwskube-scheduler-fwskubectl), [kubelet](#fwskubelet), [kind-node](#fwskind-node), [k3s](#fwsk3s), [pause](#fwspause)
+
 ## What an fws image is
 
-An fws image is an ordinary OCI image whose platform is `darwin/arm64`. A
-container runs its programs as processes on the Mac, so an image's
-programs MUST be macOS binaries: nothing on macOS runs a Linux ELF binary without a
-virtual machine, so images from Docker Hub do not run, and a `--platform`
-other than `darwin/arm64` is refused.
+An fws image is an ordinary OCI image whose platform is `darwin/arm64`.
+Its programs are macOS binaries, run as processes on the Mac; a Linux
+image does not run, and a `--platform` other than `darwin/arm64` is
+refused. Inside, it is laid out as a Linux image is (`/bin`, `/etc`,
+`/usr`, `/var`), and the engine honours its config (`Entrypoint`, `Cmd`,
+`Env`, `ExposedPorts`, `Volumes`, `Healthcheck`) as dockerd does.
 
-Inside, an image is laid out as a Linux image is (`/bin`, `/etc`, `/usr`,
-`/var`), with an `Entrypoint`, `Cmd`, `Env`, `ExposedPorts`, `Volumes` and
-`Healthcheck` in its config that the engine honours as dockerd does. Two
-things differ from a Linux image:
+It differs from a Linux image in two ways:
 
-- **Everything it runs is in the image.** The Seatbelt profile lets a
-  container read the macOS system tree (`/usr/lib`, `/System`) and run the
-  system shells, nothing else of the host's, so an image MUST carry every
-  program and library its programs load, and they MUST load them by
-  relative paths. The catalog's images carry their own `/bin/sh` (`dash`): macOS's
-  loader drops the container library from Apple's own shells, and with it
-  from `system()` and `popen()`. The system trees are the host's in every
-  container, so an image MUST NOT put anything under `/System`,
-  `/usr/lib`, `/dev`, `/private/var/db`, `/var/db` or `/Library/Apple`; it
-  SHOULD use `/usr/local` instead ([LIMITATIONS](../LIMITATIONS.md#isolation)).
-- **It MUST follow the [container contract](#the-container-contract)**:
-  its programs find their paths and ports at their container values
-  through the container library, which the engine loads into every
-  process.
+- **It carries everything it runs**, loaded by relative paths, as a
+  container reads nothing of the host but the macOS system tree and the
+  shells.
+- **It follows the container contract**: its programs find their paths
+  and ports at their container values through the container library.
 
-## Get the catalog
+[IMAGE-AUTHORING](IMAGE-AUTHORING.md#the-container-contract) gives the
+rules both lead to.
 
-CI publishes `fws/<name>:<tag>` as `ghcr.io/e6qu/fws-<name>:<tag>` on
-each push to `main` whose tests pass:
-
-```bash
-docker pull ghcr.io/e6qu/fws-postgres:16
-```
-
-`fws catalog` lists each image's tags, kind and what it holds;
-`-published` prints where each tag is published, `-json` the whole
-catalog, and arguments keep the images of a kind (`base`, `language`,
-`lambda`, `tool`, `database`, `storage`, `messaging`, `service`,
-`kubernetes`) or a name:
-
-```bash
-go install github.com/e6qu/fun-with-sandboxes/cmd/fws@latest
-```
-
-```bash
-fws catalog database
-```
-
-Compose files and tests name the images as `fws/<name>:<tag>`; tag a
-pulled image with that name, or build the archives locally
-([IMAGE-AUTHORING](IMAGE-AUTHORING.md#how-a-catalog-image-is-built)) and
-start the engine with `fwsd -image-archives DIR`, which loads an archive
-the first time one of its images is asked for. The engine never
-substitutes one image name for another: `postgres:16` is Docker Hub's
-Linux image, and its pull fails.
+CI publishes each tag `fws/<name>:<tag>` as
+`ghcr.io/e6qu/fws-<name>:<tag>`; `fws catalog` lists them
+([USAGE](USAGE.md#the-fws-command)).
 
 ## The catalog
 
@@ -75,73 +52,66 @@ variables, files and arguments:
 
 | Image | Configured like the official image through |
 |---|---|
-| `fws/postgres:16`, `fws/postgres:18` | `POSTGRES_PASSWORD`, `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_HOST_AUTH_METHOD`, `POSTGRES_INITDB_ARGS`, `/docker-entrypoint-initdb.d/*.sql`, `*.sql.gz` and `*.sh`, run against a server that listens on its socket alone; sockets in `/var/run/postgresql`; arguments to `postgres`, or another command, which runs as given |
-| `fws/mariadb:11` | `MARIADB_ROOT_PASSWORD` (or the `ALLOW_EMPTY`/`RANDOM` forms), `MARIADB_DATABASE`, `MARIADB_USER`, `MARIADB_PASSWORD`, `MARIADB_ROOT_HOST`, their `MYSQL_` names, `/docker-entrypoint-initdb.d/*.sql`; a command other than the server runs as given |
-| `fws/redis:8` | arguments to `redis-server`, with protected mode off unless a configuration file given first sets it, as the official entrypoint does |
-| `fws/mysql:8.4` | `MYSQL_ROOT_PASSWORD` (or `MYSQL_ALLOW_EMPTY_PASSWORD`/`MYSQL_RANDOM_ROOT_PASSWORD`), `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_HOST`, `MYSQL_ONETIME_PASSWORD`, `/etc/mysql/conf.d/*.cnf`, `/docker-entrypoint-initdb.d/*.sql` and `*.sql.gz`; sockets in `/var/run/mysqld` |
-| `fws/valkey:9` | arguments to `valkey-server`, or a `.conf` file; protected mode off unless that file sets it |
-| `fws/memcached:1.6` | arguments to `memcached` |
-| `fws/seaweedfs:4.54` | the subcommand and its flags, as `mini` (the default: master, volume, filer, S3 on 8333, WebDAV and the admin UI), `server`, `master`, `volume`, `filer`, `s3` or `shell`; `/data` |
-| `fws/mongo:8.3` | `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD` (or their `_FILE` forms), `MONGO_INITDB_DATABASE`, `/docker-entrypoint-initdb.d/*.js` and `*.sh`, run against a server that listens on loopback alone; arguments to `mongod`, which binds every address unless they or its configuration name some; `mongosh` |
-| `fws/etcd:3.7` | arguments to `etcd`, with `etcdctl` and `etcdutl`; clients on 2379, peers on 2380 |
-| `fws/kube-apiserver:1.37`, `fws/kube-controller-manager:1.37`, `fws/kube-scheduler:1.37`, `fws/kubectl:1.37` | Kubernetes 1.37.2, the release kind's node image ships, laid out as its release images are: the command and its flags, run through `/go-runner` (its `--log-file` and `--also-stdout`), with the binary in `/usr/local/bin`; the API server on 6443, the controller manager on 10257, the scheduler on 10259 |
-| `fws/kubelet:1.37` | Kubernetes 1.37.2's kubelet with its darwin parts (`images/kubernetes/kubelet-darwin.patch`): the node's capacity and use from macOS's kernel, and no cgroups; run privileged, it runs its pods on the engine nested in its container, through the CRI that engine serves at `$FWS_ENGINE` |
-| `fws/k3s:1.37` | k3s's image, as Testcontainers' k3s module runs it, from `fws/kind-node`'s parts: `k3s server` brings up a single-node cluster with kubeadm on the node's address on the default bridge network and writes `/etc/rancher/k3s/k3s.yaml`; `k3s kubectl`, `ctr` and `crictl` run against it. `k3s.Run(ctx, "fws/k3s:1.37")` |
-| `fws/kind-node:1.37` | kind's node image from the parts above: `kind create cluster --image fws/kind-node:1.37` runs kubeadm, the kubelet and `fws-kube-proxy` in each node, with the control plane's images loaded into the node's engine under the names kubeadm gives them (see [kind](../README.md#kind)) |
-| `fws/pause:3.10.2` | Kubernetes' pause program, the infra container of a CRI pod sandbox |
-| `fws/consul:2.1` | `CONSUL_LOCAL_CONFIG`, `CONSUL_BIND_INTERFACE`, `CONSUL_CLIENT_INTERFACE`; arguments to `consul` (default `agent -dev -client 0.0.0.0`); HTTP on 8500, DNS on 8600 |
-| `fws/vault:2.2` | `VAULT_DEV_ROOT_TOKEN_ID`, `VAULT_DEV_LISTEN_ADDRESS`, `VAULT_LOCAL_CONFIG`, `VAULT_REDIRECT_INTERFACE`, `VAULT_CLUSTER_INTERFACE`; arguments to `vault` (default `server -dev`); port 8200 |
-| `fws/kafka:4.4` | `KAFKA_` variables, written into `/etc/kafka/kafka.properties` as Confluent's images write them (`KAFKA_ADVERTISED_LISTENERS` becomes `advertised.listeners`), `CLUSTER_ID`, and `KAFKA_LOG4J_ROOT_LOGLEVEL` and `KAFKA_LOG4J_LOGGERS` for its log on standard output, through the `/etc/confluent/docker` scripts Testcontainers' module drives; one KRaft broker and controller by default, clients on 9092; Kafka's tools in `/usr/bin` |
-| `fws/mailpit:1.34` | `MP_` variables and arguments to `mailpit`; SMTP on 1025, POP3 on 1110, the web UI and API on 8025 |
-| `fws/meilisearch:1.57` | `MEILI_` variables, such as `MEILI_MASTER_KEY`, and arguments to `meilisearch`, which runs in `/meili_data`; the API on 7700 |
-| `fws/qdrant:1.20` | `QDRANT__` variables over `/qdrant/config`, and `QDRANT_ALLOW_RECOVERY_MODE` as the official entrypoint reads it; storage and snapshots in `/qdrant`; REST and the dashboard on 6333, gRPC on 6334 |
-| `fws/neo4j:2026.10` | `NEO4J_AUTH`, `NEO4J_PLUGINS` and `NEO4J_` settings, written into `/var/lib/neo4j/conf/neo4j.conf` as the official entrypoint writes them (`NEO4J_server_memory_heap_max__size` becomes `server.memory.heap.max_size`), and mounted `/conf`, `/plugins`, `/import`, `/licenses` and `/ssl`; data in `/data`, logs in `/logs`; HTTP on 7474, Bolt on 7687 |
-| `fws/clickhouse:26.10` | `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`, `/docker-entrypoint-initdb.d` and the other variables of the official image's own `entrypoint.sh`, which it runs; configuration in `/etc/clickhouse-server`, data in `/var/lib/clickhouse`; HTTP on 8123, native on 9000 |
-| `fws/influxdb:2.10` | `DOCKER_INFLUXDB_INIT_*` setup and upgrade, `*_FILE` secrets and `/docker-entrypoint-initdb.d` scripts, as the official entrypoint handles them; the influx CLI configured in `/etc/influxdb2`, data in `/var/lib/influxdb2`; the API and UI on 8086 |
-| `fws/opensearch:3.10` | the minimal distribution under the official image's entrypoint script, so dotted variables such as `discovery.type` become settings; runs as user 1000 from `/usr/share/opensearch`; REST on 9200 |
-| `fws/dind:29` | Docker in Docker: run it `--privileged`, and its `dockerd` serves an engine of its own, which the official image's entrypoint arguments, `DOCKER_TLS_CERTDIR` and dockerd's `--host` and TLS flags configure; the Docker CLI with buildx and Compose; 2375, or 2376 with TLS |
-| `fws/toxiproxy:2.13` | arguments to the server at `/toxiproxy`, with `/toxiproxy-cli` beside it; the API on 8474 |
-| `fws/nats:2.15` | arguments to `nats-server`; `/nats-server.conf` serves clients on 4222, monitoring on 8222 and routes on 6222 |
-| `fws/rabbitmq:4` | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`; AMQP on 5672, the Erlang port mapper on 4369 and distribution on 25672 |
-| `fws/dynamodb-local:2` | arguments to DynamoDB Local (default `-sharedDb -dbPath /home/dynamodblocal/data`); port 8000 |
-| `fws/gitea:28` | `GITEA__section__KEY` variables, written into `/data/gitea/conf/app.ini`; HTTP on 3000, SSH on 22 |
-| `fws/nginx:1` | `/usr/share/nginx/html`, and `/etc/nginx/templates/*.template`, rendered into `conf.d` with environment variables substituted; the default server listens on 80 |
+| `fws/base:1` | a base to build `FROM` in place of Alpine or Debian: `bash` by default, `fws/busybox`'s commands, `curl`, `git`, `jq`, `less`, and a CA bundle at `/etc/ssl/certs/ca-certificates.crt`; no package manager, as theirs install Linux binaries |
+| `fws/busybox:1` | a shell, `sh` by default, and the commands scripts run in BusyBox's image (`ls`, `cat`, `grep`, `sed`, `awk`, `find`, `tar`, `gzip`, `wget`, `nc -z`…) as separate programs, since BusyBox builds for Linux alone; `busybox CMD` runs them by name |
 | `fws/python:3.11`, `fws/python:3.12`, `fws/python:3.13`, `fws/python:3.14`, `fws/python:3.15` | the language and its package manager (`python3 -m ensurepip` for pip) |
 | `fws/node:22`, `fws/node:24`, `fws/node:26` | `node`, `npm` and `npx`, and on 22 and 24 `corepack` and Yarn 1, which Node.js 25 and its images dropped, in `/usr/local/bin`; `npm install -g` into `/usr/local`; node-gyp builds native addons with the image's `python3`, `make`, `cc`/`c++` (clang with the macOS SDK) and Node.js's headers in `/usr/local/include/node`; `NODE_USE_ENV_PROXY=1`, so Node.js's own `fetch`, corepack's included, goes through the egress proxy; `fws/base`'s commands |
 | `fws/bun:1` | `bun` and `bunx` in `/usr/local/bin`, and `bun` as `node` in `/usr/local/bun-node-fallback-bin`; packages' scripts run under `/bin/sh` with `fws/busybox`'s commands |
 | `fws/rust:1.100` | Rust 1.100.0, the release's own build: `rustc`, `cargo`, `rustfmt` and `clippy` in `CARGO_HOME` (`/usr/local/cargo`)'s `bin`, first on `PATH`, for `aarch64-apple-darwin`; `cc` (clang with the macOS SDK, which `SDKROOT` names), with which rustc links and the cc crate compiles; `make` and `fws/base`'s commands; no rustup |
 | `fws/lambda/python:3.11`, `fws/lambda/python:3.12`, `fws/lambda/python:3.13`, `fws/lambda/python:3.14`, `fws/lambda/nodejs:22`, `fws/lambda/nodejs:24`, `fws/lambda/java:17` | the handler as the command; functions in `/var/task`, invoked at `POST /2015-03-31/functions/function/invocations` on port 8080 through AWS's Runtime Interface Emulator |
-| `fws/playwright:1.65` | Node.js 24 with `playwright` and `@playwright/test` 1.65.1 in `/usr/local/lib/node_modules` (`npm install -g` goes to `/usr/local`), so `npx playwright test` runs a mounted project's specs, and the browsers in `/ms-playwright` (`PLAYWRIGHT_BROWSERS_PATH`) that a project's own `@playwright/test@1.65.1` also finds: Chromium's headless shell, which headless launches use, Firefox, which MUST run with `--security-opt seatbelt=gui`, and ffmpeg for videos; no WebKit or headed Chromium ([LIMITATIONS](../LIMITATIONS.md#images)) |
-| `fws/busybox:1` | a shell, `sh` by default, and the commands scripts run in BusyBox's image (`ls`, `cat`, `grep`, `sed`, `awk`, `find`, `tar`, `gzip`, `wget`, `nc -z`…) as separate programs, since BusyBox builds for Linux alone; `busybox CMD` runs them by name |
-| `fws/base:1` | a base to build `FROM` in place of Alpine or Debian: `bash` by default, `fws/busybox`'s commands, `curl`, `git`, `jq`, `less`, and a CA bundle at `/etc/ssl/certs/ca-certificates.crt`; no package manager, as theirs install Linux binaries |
-| `fws/ryuk:0.14.0` | Testcontainers' reaper (see [Testcontainers](../README.md#testcontainers)) |
+| `fws/playwright:1.65` | Node.js 24 with `playwright` and `@playwright/test` 1.65.1 in `/usr/local/lib/node_modules` (`npm install -g` goes to `/usr/local`), so `npx playwright test` runs a mounted project's specs, and the browsers in `/ms-playwright` (`PLAYWRIGHT_BROWSERS_PATH`) that a project's own `@playwright/test@1.65.1` also finds: Chromium's headless shell, which headless launches use, Firefox, which MUST run with `--security-opt seatbelt=gui`, and ffmpeg for videos; no WebKit or headed Chromium ([below](#fwsplaywright)) |
+| `fws/postgres:16`, `fws/postgres:18` | `POSTGRES_PASSWORD`, `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_HOST_AUTH_METHOD`, `POSTGRES_INITDB_ARGS`, `/docker-entrypoint-initdb.d/*.sql`, `*.sql.gz` and `*.sh`, run against a server that listens on its socket alone; sockets in `/var/run/postgresql`; arguments to `postgres`, or another command, which runs as given |
+| `fws/mysql:8.4` | `MYSQL_ROOT_PASSWORD` (or `MYSQL_ALLOW_EMPTY_PASSWORD`/`MYSQL_RANDOM_ROOT_PASSWORD`), `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_HOST`, `MYSQL_ONETIME_PASSWORD`, `/etc/mysql/conf.d/*.cnf`, `/docker-entrypoint-initdb.d/*.sql` and `*.sql.gz`; sockets in `/var/run/mysqld` |
+| `fws/mariadb:11` | `MARIADB_ROOT_PASSWORD` (or the `ALLOW_EMPTY`/`RANDOM` forms), `MARIADB_DATABASE`, `MARIADB_USER`, `MARIADB_PASSWORD`, `MARIADB_ROOT_HOST`, their `MYSQL_` names, `/etc/mysql/conf.d/*.cnf`, `/docker-entrypoint-initdb.d/*.sql`; a socket in `/run/mysqld`; a command other than the server runs as given |
+| `fws/mongo:8.3` | `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD` (or their `_FILE` forms), `MONGO_INITDB_DATABASE`, `/docker-entrypoint-initdb.d/*.js` and `*.sh`, run against a server that listens on loopback alone; arguments to `mongod`, which binds every address unless they or its configuration name some; `mongosh` |
+| `fws/redis:8` | arguments to `redis-server`, with protected mode off unless a configuration file given first sets it, as the official entrypoint does |
+| `fws/valkey:9` | arguments to `valkey-server`, or a `.conf` file; protected mode off unless that file sets it |
+| `fws/memcached:1.6` | arguments to `memcached` |
+| `fws/etcd:3.7` | arguments to `etcd`, with `etcdctl` and `etcdutl`; clients on 2379, peers on 2380 |
+| `fws/neo4j:2026.10` | `NEO4J_AUTH`, `NEO4J_PLUGINS` and `NEO4J_` settings, written into `/var/lib/neo4j/conf/neo4j.conf` as the official entrypoint writes them (`NEO4J_server_memory_heap_max__size` becomes `server.memory.heap.max_size`), and mounted `/conf`, `/plugins`, `/import`, `/licenses` and `/ssl`; data in `/data`, logs in `/logs`; HTTP on 7474, Bolt on 7687 |
+| `fws/clickhouse:26.10` | `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`, `/docker-entrypoint-initdb.d` and the other variables of the official image's own `entrypoint.sh`, which it runs; configuration in `/etc/clickhouse-server`, data in `/var/lib/clickhouse`; HTTP on 8123, native on 9000 |
+| `fws/influxdb:2.10` | `DOCKER_INFLUXDB_INIT_*` setup and upgrade, `*_FILE` secrets and `/docker-entrypoint-initdb.d` scripts, as the official entrypoint handles them; the influx CLI configured in `/etc/influxdb2`, data in `/var/lib/influxdb2`; the API and UI on 8086 |
+| `fws/opensearch:3.10` | the minimal distribution under the official image's entrypoint script, so dotted variables such as `discovery.type` become settings; runs as user 1000 from `/usr/share/opensearch`; REST on 9200 |
+| `fws/qdrant:1.20` | `QDRANT__` variables over `/qdrant/config`, and `QDRANT_ALLOW_RECOVERY_MODE` as the official entrypoint reads it; storage and snapshots in `/qdrant`; REST and the dashboard on 6333, gRPC on 6334 |
+| `fws/meilisearch:1.57` | `MEILI_` variables, such as `MEILI_MASTER_KEY`, and arguments to `meilisearch`, which runs in `/meili_data`; the API on 7700 |
+| `fws/dynamodb-local:2` | arguments to DynamoDB Local (default `-sharedDb -dbPath /home/dynamodblocal/data`); port 8000 |
+| `fws/seaweedfs:4.54` | the subcommand and its flags, as `mini` (the default: master, volume, filer, S3 on 8333, WebDAV and the admin UI), `server`, `master`, `volume`, `filer`, `s3` or `shell`; `/data` |
+| `fws/kafka:4.4` | `KAFKA_` variables, written into `/etc/kafka/kafka.properties` as Confluent's images write them (`KAFKA_ADVERTISED_LISTENERS` becomes `advertised.listeners`), `CLUSTER_ID`, and `KAFKA_LOG4J_ROOT_LOGLEVEL` and `KAFKA_LOG4J_LOGGERS` for its log on standard output, through the `/etc/confluent/docker` scripts Testcontainers' module drives; one KRaft broker and controller by default, clients on 9092; Kafka's tools in `/usr/bin` |
+| `fws/rabbitmq:4` | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`; arguments to `rabbitmq-server`; AMQP on 5672, the Erlang port mapper on 4369 and distribution on 25672 |
+| `fws/nats:2.15` | arguments to `nats-server`; `/nats-server.conf` serves clients on 4222, monitoring on 8222 and routes on 6222 |
+| `fws/mailpit:1.34` | `MP_` variables and arguments to `mailpit`; SMTP on 1025, POP3 on 1110, the web UI and API on 8025 |
+| `fws/consul:2.1` | `CONSUL_LOCAL_CONFIG`, `CONSUL_BIND_INTERFACE`, `CONSUL_CLIENT_INTERFACE`; arguments to `consul` (default `agent -dev -client 0.0.0.0`); HTTP on 8500, DNS on 8600 |
+| `fws/vault:2.2` | `VAULT_DEV_ROOT_TOKEN_ID`, `VAULT_DEV_LISTEN_ADDRESS`, `VAULT_LOCAL_CONFIG`, `VAULT_REDIRECT_INTERFACE`, `VAULT_CLUSTER_INTERFACE`; arguments to `vault` (default `server -dev`); port 8200 |
+| `fws/gitea:28` | `GITEA__section__KEY` variables, written into `/data/gitea/conf/app.ini`; HTTP on 3000, SSH on 22 |
+| `fws/nginx:1` | `/usr/share/nginx/html`; `/etc/nginx/templates/*.template`, rendered into `conf.d` with the environment variables that are set substituted; `/etc/nginx/nginx.conf`; arguments to `nginx`; the default server listens on 80 |
+| `fws/toxiproxy:2.13` | arguments to the server at `/toxiproxy`, with `/toxiproxy-cli` beside it; the API on 8474 |
+| `fws/dind:29` | Docker in Docker: run it `--privileged`, and its `dockerd` serves an engine of its own, which the official image's entrypoint arguments, `DOCKER_TLS_CERTDIR` and dockerd's `--host` and TLS flags configure; the Docker CLI with buildx and Compose; 2375, or 2376 with TLS |
+| `fws/ryuk:0.14.0` | Testcontainers' reaper ([USAGE](USAGE.md#testcontainers)) |
 | `fws/toolbox:1` | the test suite's small app and probe |
+| `fws/kube-apiserver:1.37`, `fws/kube-controller-manager:1.37`, `fws/kube-scheduler:1.37`, `fws/kubectl:1.37` | Kubernetes 1.37.2, the release kind's node image ships, laid out as its release images are: the command and its flags, run through `/go-runner` (its `--log-file` and `--also-stdout`), with the binary in `/usr/local/bin`; the API server on 6443, the controller manager on 10257, the scheduler on 10259 |
+| `fws/kubelet:1.37` | Kubernetes 1.37.2's kubelet with its darwin parts (`images/kubernetes/kubelet-darwin.patch`): the node's capacity and use from macOS's kernel, and no cgroups; run privileged, it runs its pods on the engine nested in its container, through the CRI that engine serves at `$FWS_ENGINE` |
+| `fws/kind-node:1.37` | kind's node image from the parts above: `kind create cluster --image fws/kind-node:1.37` runs kubeadm, the kubelet and `fws-kube-proxy` in each node, with the control plane's images loaded into the node's engine under the names kubeadm gives them ([USAGE](USAGE.md#kind)) |
+| `fws/k3s:1.37` | k3s's image, as Testcontainers' k3s module runs it, from `fws/kind-node`'s parts: `k3s server` and the flags it can honour bring up a single-node cluster with kubeadm on the node's address and write `/etc/rancher/k3s/k3s.yaml`; `k3s kubectl`, `ctr` and `crictl` run against it |
+| `fws/pause:3.10.2` | Kubernetes' pause program, the infra container of a CRI pod sandbox |
 
-The Lambda images set `AWS_EXECUTION_ENV` as AWS's do
-(`AWS_Lambda_python3.14`, `AWS_Lambda_nodejs24.x`).
+## What every image shares
 
-Where Linux parts are missing an image differs from upstream's; the
-[image reference](#image-reference) below says how for each image, and
-LIMITATIONS lists the largest differences ([Images](../LIMITATIONS.md#images)).
+Each image's section below lists what its spec
+(`images/<name>/image.json`), entry program (`images/<name>/entry`) and
+build (`scripts/build-images.sh`) give it. What every image shares is said
+once here:
 
-## Image reference
-
-Each image's customizations relative to the official image it mirrors,
-as its spec (`images/<name>/image.json`), its entry program
-(`images/<name>/entry`), `scripts/build-images.sh` and the end-to-end
-tests in `tests/e2e` make them. What every image shares is said once
-here:
-
-- **Common files.** Every image built through the build script's
-  `mkimage` carries `dash` as `/bin/sh`, `/bin/nc` (a port check alone:
-  `nc -z HOST PORT`), `/etc/services`, `/etc/protocols`, and an
-  `/etc/passwd` and `/etc/group` with `root` (uid 0) and `nobody` (65534)
-  besides the users its section names, each with `/bin/sh` as its shell.
-  `fws/ryuk` and `fws/toolbox` are the exceptions.
-- **Users.** An image starts as root unless its section names a `User`;
-  an entry program that drops to the official image's user does it only
-  when it starts as root, giving that user its data directories, so
-  `--user` takes precedence. Users are presented, not enforced: every
+- **Common files.** Every image but `fws/ryuk` and `fws/toolbox` carries
+  `/bin/sh` (`dash`, but `bash` in `fws/kind-node` and `fws/k3s`),
+  `/bin/nc` (a port check alone: `nc -z HOST PORT`), `/etc/services`,
+  `/etc/protocols`, and an `/etc/passwd` and `/etc/group` with `root`
+  (uid 0) and `nobody` (65534) besides the users its section names, each
+  with `/bin/sh` as its shell.
+- **Users.** Each user's home but `/nonexistent` exists in the image,
+  owned by that user. An image starts as root unless its section names a
+  `User`; an entry program that drops to the official image's user does
+  it only when it starts as root, giving that user its data directories,
+  so `--user` takes precedence. Users are presented, not enforced: every
   process runs as the engine's user.
 - **Ports.** A server listens on its container port; the container
   library puts it on a host port, and `-p` publishes it as in Docker.
@@ -151,6 +121,8 @@ here:
 - **Variables a program reads itself**, such as Mailpit's `MP_` or
   Meilisearch's `MEILI_`, work as upstream; a section lists those the
   image's spec sets and its entry program reads.
+
+## Image reference
 
 ### fws/base
 
@@ -299,8 +271,8 @@ Mirrors Microsoft's Playwright image at 1.65.
   `MOZ_DISABLE_RDD_SANDBOX`, `MOZ_DISABLE_SOCKET_PROCESS_SANDBOX`,
   `MOZ_DISABLE_UTILITY_SANDBOX` and `MOZ_DISABLE_GMP_SANDBOX` (all `1`),
   `SSL_CERT_FILE`, `NODE_USE_ENV_PROXY=1`. Working directory `/app`.
-- **Users:** `pwuser` (1000:1000, home `/home/pwuser`, which the image does
-  not create), which no `User` selects.
+- **Users:** `pwuser` (1000:1000, home `/home/pwuser`), which no `User`
+  selects.
 - **Contents:** Node.js 24; `playwright`, `playwright-core` and
   `@playwright/test` 1.65.1 in `/usr/local/lib/node_modules`, with
   `playwright` in `/bin` and `/usr/local/bin`, so `npx playwright test`
@@ -311,12 +283,17 @@ Mirrors Microsoft's Playwright image at 1.65.
 - **Requires:** Firefox MUST run with `--security-opt seatbelt=gui`, as
   the engine's user (`--user "$(id -u):$(id -g)"`; the end-to-end tests
   also set `-e HOME=/tmp`): macOS Firefox starts AppKit even headless,
-  which the container's default profile denies. A launch that passes its own
+  which registers the process with the window server and Launch Services,
+  and the container's default profile denies those. A launch that passes its own
   environment MUST keep the `MOZ_DISABLE_*_SANDBOX` variables. Chromium
   MUST run without its own sandbox, as Playwright launches it by default:
   a launch MUST NOT set `chromiumSandbox: true`.
-- **Differs:** no WebKit and no full Chromium, so headed Chromium and
-  `channel: 'chromium'` are absent ([LIMITATIONS](../LIMITATIONS.md#images)).
+- **Differs:** no full Chromium, which aborts as it starts under the
+  container's profile, so headed Chromium and `channel: 'chromium'` are
+  absent. No WebKit: Playwright's WebKit on macOS starts its web content,
+  network and GPU processes as XPC services, which launchd runs outside the
+  container's sandbox and library, and its builds differ by macOS release,
+  which an image cannot choose for its host.
 
 ### fws/postgres
 
@@ -392,15 +369,20 @@ comment).
   `PASSWORD`.
 - **Ports:** 3306. Volume `/var/lib/mysql`.
 - **Users:** `mysql` (999:999, home `/var/lib/mysql`).
-- **Paths:** socket `/run/mysqld/mysqld.sock`.
+- **Paths:** the official image's `/etc/mysql/my.cnf`, which names the
+  socket `/run/mysqld/mysqld.sock` and includes
+  `/etc/mysql/mariadb.conf.d/` and `/etc/mysql/conf.d/`, for settings
+  mounted or copied in. The entry names the server's base, data, message,
+  plugin and temporary directories, socket and pid file on its command
+  line, which override the configuration; the socket by its container
+  path, which the container library binds.
 - **Initialisation:** the system tables from the server's own scripts
   through `mariadbd --bootstrap`, as `mariadb-install-db` would feed them;
   then anonymous users are dropped, the users and database made, and
   `/docker-entrypoint-initdb.d/*.sql` run after `USE` of the database.
-- **Differs:** the server runs with `--no-defaults` and
-  `--skip-name-resolve`, so it reads no configuration file; options go on
-  the command line. Only `*.sql` init scripts run (no `*.sql.gz` or
-  `*.sh`), and `*_FILE` variables are not read.
+- **Differs:** the server runs with `--skip-name-resolve`. Only `*.sql`
+  init scripts run (no `*.sql.gz` or `*.sh`), and `*_FILE` variables are
+  not read.
 
 ### fws/mongo
 
@@ -460,8 +442,7 @@ Mirrors `memcached:1.6`.
   option as the first argument runs `memcached` with it; any other command
   runs as given. Health: `version` on 11211.
 - **Ports:** 11211.
-- **Users:** `memcache` (11211:11211, home `/home/memcache`, which the
-  image does not create).
+- **Users:** `memcache` (11211:11211, home `/home/memcache`).
 
 ### fws/etcd
 
@@ -680,8 +661,9 @@ Mirrors Confluent's Kafka image layout with Apache Kafka 4.4.0 (Scala
 
 Mirrors `rabbitmq:4` (4.4.1).
 
-- **Entrypoint:** `/entry`; command `rabbitmq-server`, as `rabbitmq`.
-  Health: an AMQP handshake on 5672.
+- **Entrypoint:** `/entry`; command `rabbitmq-server`, as `rabbitmq`, with
+  the arguments that follow it in the command. Health: an AMQP handshake
+  on 5672.
 - **Environment:** `RABBITMQ_DEFAULT_USER` and `RABBITMQ_DEFAULT_PASS` are
   RabbitMQ's own. Where unset, the entry sets `RABBITMQ_NODENAME=rabbit@localhost`,
   `RABBITMQ_MNESIA_BASE` and `RABBITMQ_LOG_BASE` under `/var/lib/rabbitmq`,
@@ -695,8 +677,7 @@ Mirrors `rabbitmq:4` (4.4.1).
   (distribution). Volume `/var/lib/rabbitmq`.
 - **Users:** `rabbitmq` (999:999, home `/var/lib/rabbitmq`).
 - **Differs:** the image runs `rabbitmq-server` alone: another command
-  fails with `unknown command`, and arguments after `rabbitmq-server` are
-  ignored.
+  fails with `unknown command`.
 
 ### fws/nats
 
@@ -785,22 +766,22 @@ Mirrors `nginx:1` (mainline).
 - **Entrypoint:** `/entry`; command `nginx`; stop signal `SIGQUIT`. Health:
   `GET /` on port 80.
 - **Behaviour:** it renders `/etc/nginx/templates/*.template` into
-  `/etc/nginx/conf.d`, substituting `$NAME` and `${NAME}` from the
-  environment, and runs nginx in the foreground with a main configuration
-  of its own: one worker process, 256 worker connections, the error log on
-  standard error, the access log on standard output, temporary paths under
-  `/var/lib/nginx`, `/etc/nginx/conf.d/*.conf` included, and, where
-  `conf.d` holds no `.conf`, a default server on port 80 serving
-  `/usr/share/nginx/html`. A file at `/etc/nginx/nginx.conf` replaces that
-  main configuration, run with `-g 'daemon off;'`.
+  `/etc/nginx/conf.d`, substituting `$NAME` and `${NAME}` where the
+  variable is set, so nginx's own variables (`$host`, `$uri`) reach nginx.
+  It runs nginx with a main configuration of its own: one worker process,
+  256 worker connections, the error log on standard error, the access log
+  on standard output, temporary paths under `/var/lib/nginx`,
+  `/etc/nginx/conf.d/*.conf` included, and, where `conf.d` holds no
+  `.conf`, a default server on port 80 serving `/usr/share/nginx/html`. A
+  file at `/etc/nginx/nginx.conf` replaces that main configuration.
+  Arguments after `nginx` in the command go to nginx (`nginx -T`). nginx
+  runs in the foreground with `-g 'daemon off;'` unless those arguments
+  give `-g` themselves.
 - **Ports:** 80.
 - **Users:** `nginx` (101:101), which nothing selects.
-- **Differs:** every `$` name in a template is substituted, an unset one
-  with nothing, where the official image substitutes defined variables
-  alone, so a template MUST NOT use nginx's own variables (`$host`,
-  `$uri`). `NGINX_ENVSUBST_*` variables and `/docker-entrypoint.d` scripts
-  are not read. A command other than `nginx` fails with `unknown command`,
-  and arguments after `nginx` are ignored.
+- **Differs:** `NGINX_ENVSUBST_*` variables and `/docker-entrypoint.d`
+  scripts are not read. A command other than `nginx` fails with `unknown
+  command`.
 
 ### fws/toxiproxy
 
@@ -915,7 +896,7 @@ Mirrors kind's `kindest/node` at 1.37 (Kubernetes 1.37.2).
   addons), `kubectl`, `kubelet`, `fws-kube-proxy`; stand-ins for `cp`
   (copying standard input itself), `ctr`, `containerd` and `journalctl`;
   upstream's `crictl` against the node engine's CRI; `/kind/version` and
-  `/kind/manifests`; coreutils, GNU tar and bash.
+  `/kind/manifests`; coreutils, GNU tar and bash, which is `/bin/sh`.
 - **Differs:** no containerd or systemd: their commands are the
   stand-ins above.
 
@@ -931,10 +912,14 @@ Mirrors `rancher/k3s` at 1.37, from `fws/kind-node`'s parts.
   hostname), `--tls-san`, `--cluster-cidr` (default `10.42.0.0/16`),
   `--service-cidr` (default `10.43.0.0/16`), `--write-kubeconfig`/`-o`
   (`K3S_KUBECONFIG_OUTPUT`, default `/etc/rancher/k3s/k3s.yaml`),
-  `--write-kubeconfig-mode` (`K3S_KUBECONFIG_MODE`, default `0600`), and
-  `--https-listen-port`, which MUST be 6443.
-- **Flags with no effect:** every other `k3s server` flag, such as
-  `--disable=traefik`, is taken and logged as having no effect.
+  `--write-kubeconfig-mode` (`K3S_KUBECONFIG_MODE`, default `0600`),
+  `--https-listen-port`, which MUST be 6443, and `--cluster-init`, which
+  the single server already is. `--disable` takes the components fws/k3s
+  does not run (`traefik`, `servicelb`, `metrics-server`, `runtimes`,
+  `helm-controller`), as Testcontainers' `--disable=traefik` names one,
+  and `local-storage`, which leaves out the `local-path` StorageClass.
+- **Refused:** any other `k3s server` flag, and `--disable` of any other
+  component (`coredns`), fail the start with an error naming the flag.
 - **Ports:** 6443.
 - **Requires:** the container MUST run `--privileged`, on a network with a
   subnet (the default bridge network has one); `k3s agent` and other
@@ -947,36 +932,3 @@ sandbox, built with clang from Kubernetes' `pause.c` against libSystem.
 
 - **Entrypoint:** `/pause`; `User` `65535:65535`; working directory `/`;
   no environment.
-
-## The container contract
-
-An image's programs find their paths and ports at their container values
-through the container library, and the engine gives every container the
-`SANDBOX_*` variables (`SANDBOX_ROOT`, `SANDBOX_PORT_<n>` and the rest)
-for a program that loads no library.
-[IMAGE-AUTHORING](IMAGE-AUTHORING.md#the-container-contract) lists the
-variables and what an image MUST and MUST NOT do to follow the contract.
-
-## How the engine stores images
-
-The engine keeps an OCI image layout under `~/.fws/images`: pulled,
-loaded and built images keep their manifests, configs and layers byte for
-byte, so digests and image IDs survive a save, load, push or pull, as in
-Docker. Each layer is unpacked once; an image's root is its layers laid
-over one another with APFS clones, and each container's root is a clone of
-that, copy-on-write, made in constant time. [DESIGN §4](DESIGN.md#4-image-and-root-filesystem)
-has the details.
-
-## Add an image or a release
-
-[IMAGE-AUTHORING](IMAGE-AUTHORING.md) has the steps:
-[adding an image](IMAGE-AUTHORING.md#add-an-image), with a worked
-example, [changing one](IMAGE-AUTHORING.md#change-an-image),
-[updating one to a new upstream release](IMAGE-AUTHORING.md#update-an-image-to-a-new-upstream-release),
-[adapting an official image's behaviour](IMAGE-AUTHORING.md#adapt-an-upstream-images-behaviour),
-[writing a Dockerfile `FROM` the catalog](IMAGE-AUTHORING.md#write-a-dockerfile-from-fws-images),
-and building, publishing and testing images. In short: a new image MUST
-add its spec, entry program and build, its entry in `internal/catalog`,
-its row in [the table above](#the-catalog) and its
-[reference section](#image-reference), and an end-to-end test; an update
-MUST take the newest upstream release, built here where nixpkgs lags.

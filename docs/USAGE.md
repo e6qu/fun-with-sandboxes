@@ -1,16 +1,15 @@
 # Using fws
 
-How to install and run the engine, how each client drives it, and worked
-examples of what it is for. What the engine refuses, and why, is in
-[LIMITATIONS](../LIMITATIONS.md); how it works is in [DESIGN](DESIGN.md);
-the images are in [IMAGES](IMAGES.md), and making images of your own in
-[IMAGE-AUTHORING](IMAGE-AUTHORING.md).
+How to install and run the engine, how each client drives it, worked use
+cases, and troubleshooting. The images are in [IMAGES](IMAGES.md), and
+making images of your own in [IMAGE-AUTHORING](IMAGE-AUTHORING.md). The
+engine refuses what it cannot honour rather than accept and ignore it;
+[LIMITATIONS](../LIMITATIONS.md) lists each refusal and why.
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
 
-What this guide describes, the end-to-end suite (`tests/e2e`) runs on
-macOS in CI; its tests are the fullest examples of each client, and some
-are named here.
+The end-to-end suite (`tests/e2e`) runs what this guide describes on
+macOS in CI; its tests are the fullest examples of each client.
 
 - [Install](#install)
 - [Run the engine](#run-the-engine)
@@ -220,6 +219,12 @@ create and start, as dockerd's `--debug` does:
 fwsd -debug 2> ~/fwsd.log
 ```
 
+Without `-debug`, the engine logs where a slow operation spent its time:
+an image that takes a second or more to unpack (`image <id> unpacked:
+blobs …, N of M layers unpacked …, merged …, usage …`), and a BuildKit
+build whose commit of the image's layers is slow, with the number of
+layers and their compressed size.
+
 A container's own output is `docker logs`. What the sandbox refused a
 container, and what the container library did with a path, are in
 [Troubleshooting](#troubleshooting).
@@ -308,7 +313,7 @@ flag, or arguments that match no image.
 
 The Docker CLI drives the engine as it drives dockerd. What follows is
 what differs, or what is worth knowing; anything the engine cannot honour
-fails with an error that says why ([Refusals](#refusals)).
+fails with an error that says why ([LIMITATIONS](../LIMITATIONS.md)).
 
 ### Containers
 
@@ -350,7 +355,7 @@ in Docker, while every process runs as you
 
 A container reads and writes its own root and its mounts, and reads the
 macOS system tree; it cannot read the rest of your files
-([README](../README.md#what-a-container-can-and-cannot-do)).
+([LIMITATIONS](../LIMITATIONS.md#isolation)).
 
 ### Ports
 
@@ -534,7 +539,7 @@ BuildKit: a `docker-container` builder runs BuildKit's Linux image. A
 `--platform` other than `darwin/arm64`, multi-platform builds and
 `# syntax=` frontends other than Docker's own are refused. A `RUN` step
 runs the programs the image holds, so `apt-get`, `apk` and `yum` fail
-([LIMITATIONS](../LIMITATIONS.md#images)).
+([LIMITATIONS](../LIMITATIONS.md#images-and-builds)).
 
 `DOCKER_BUILDKIT=0`, or `fwsd -buildkit=false`, uses the classic builder,
 which refuses `RUN --mount`, `--network` and `--security` as dockerd's does.
@@ -557,7 +562,7 @@ docker tag myapp:1 ghcr.io/you/myapp:1 && docker push ghcr.io/you/myapp:1
 
 A multi-platform index pulls its `darwin/arm64` image alone. Disk figures
 count more than the disk gives up, as a root shares blocks with its image
-([LIMITATIONS](../LIMITATIONS.md#images)).
+([LIMITATIONS](../LIMITATIONS.md#images-and-builds)).
 
 ### Docker in Docker
 
@@ -745,31 +750,52 @@ rest run the catalog's images (`tests/e2e/testcontainers*_test.go`,
 
 ### Go
 
+A test that starts Postgres and Redis for each run; the reaper removes
+them if the test process dies:
+
 ```go
+package store_test
+
 import (
 	"context"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
-func TestWithPostgres(t *testing.T) {
+func TestStore(t *testing.T) {
 	ctx := context.Background()
 	pg, err := postgres.Run(ctx, "fws/postgres:16",
-		postgres.WithDatabase("app"), postgres.WithUsername("app"), postgres.WithPassword("secret"),
-		postgres.BasicWaitStrategies())
+		postgres.WithPassword("secret"), postgres.BasicWaitStrategies())
 	testcontainers.CleanupContainer(t, pg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
+	rd, err := redis.Run(ctx, "fws/redis:8")
+	testcontainers.CleanupContainer(t, rd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = dsn // connect with pgx or database/sql
+	dsn, _ := pg.ConnectionString(ctx, "sslmode=disable")
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	redisURL, _ := rd.ConnectionString(ctx)
+	_ = redisURL // hand both to the code under test
 }
 ```
+
+```bash
+go test ./...
+```
+
+Containers start in well under a second, so each test can start its own
+rather than share one.
 
 ### Java
 
@@ -913,7 +939,7 @@ The image MUST hold the commands the tools run in it (`sh`, `sleep`,
 containers.dev collection (`common-utils`, `node`, `docker-in-docker`…)
 install Linux packages and fail; use an image that already holds the tool,
 or a feature of your own that installs darwin programs
-([LIMITATIONS](../LIMITATIONS.md#images)). Every process runs as you, so
+([LIMITATIONS](../LIMITATIONS.md#images-and-builds)). Every process runs as you, so
 the workspace stays yours on the host whatever `remoteUser` is.
 
 ```json
@@ -1026,25 +1052,41 @@ multi-stage build copies into `fws/base` ([Use cases](#build-and-publish-an-imag
 ## Playwright
 
 `fws/playwright:1.65` holds Node.js 24, `playwright` and `@playwright/test`
-1.65.1, Chromium's headless shell, Firefox and ffmpeg. Chromium runs in a
-container like any other:
+1.65.1, Chromium's headless shell, Firefox and ffmpeg. A project with its
+specs in `tests/` and this `playwright.config.ts`:
+
+```ts
+import { defineConfig, devices } from "@playwright/test";
+
+export default defineConfig({
+  use: { video: "on" },
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
+  ],
+});
+```
+
+Chromium runs in a container like any other:
 
 ```bash
-docker run --rm -v "$PWD:/app" fws/playwright:1.65 npx playwright test --project chromium
+docker run --rm -v "$PWD:/app" fws/playwright:1.65 npx playwright test --project chromium --output test-results/chromium
 ```
 
 Firefox MUST run in a container granted the user's session, as your user,
 because macOS Firefox starts AppKit even headless:
 
 ```bash
-docker run --rm --security-opt seatbelt=gui --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/app" fws/playwright:1.65 npx playwright test --project firefox
+docker run --rm --security-opt seatbelt=gui --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/app" fws/playwright:1.65 npx playwright test --project firefox --output test-results/firefox
 ```
 
 `npx` runs the image's own runner. A project's own `@playwright/test`
 1.65.1 finds the image's browsers (`PLAYWRIGHT_BROWSERS_PATH`). There is
 no WebKit and no headed or full Chromium, so `channel: 'chromium'` is
-absent ([LIMITATIONS](../LIMITATIONS.md#images)). Screenshots and videos
-work.
+absent ([IMAGES](IMAGES.md#fwsplaywright)). Screenshots and videos land
+in `test-results/` in the project. To test a service of a Compose
+project, run the tests on its network (`--network <project>_default`) and
+point them at the service by name.
 
 ## Graphical applications
 
@@ -1055,10 +1097,20 @@ them, MUST run with `--no-sandbox`: macOS refuses a second Seatbelt
 profile to a sandboxed process, so their helpers cannot enter their own,
 and the container's profile confines them instead.
 
-An Electron application, as Electron ships it for macOS:
+An Electron application, as Electron ships it for macOS, gets your
+desktop and pasteboard, and nothing of your files but its mount:
 
 ```bash
 curl -fsSLO https://github.com/electron/electron/releases/download/v38.2.0/electron-v38.2.0-darwin-arm64.zip && mkdir -p ~/electron && ditto -xk electron-v38.2.0-darwin-arm64.zip ~/electron
+```
+
+```js
+// ~/electron/main.js
+const { app, BrowserWindow } = require("electron");
+app.whenReady().then(() => {
+  const win = new BrowserWindow({ width: 400, height: 300 });
+  win.loadURL("data:text/html,<h1>drawn in a container</h1>");
+});
 ```
 
 ```bash
@@ -1074,7 +1126,8 @@ docker run --rm --security-opt seatbelt=gui --user "$(id -u):$(id -g)" -e SHELL=
 
 The keychain stays denied, hence `--use-mock-keychain`. The application
 reads the host's files but your data and other stacks' state, and writes
-only its root and mounts.
+only its root and mounts. Where an application misbehaves,
+[Seatbelt's log](#seatbelt-denials) says what it was refused.
 
 ## Kubernetes
 
@@ -1125,8 +1178,10 @@ err = k.LoadImages(ctx, "fws/nginx:1")
 
 `k3s kubectl`, `ctr` and `crictl` run in it. Its node MUST have an address
 outside loopback: the default bridge, as the module uses, or a network
-with a subnet. `k3s agent`, Traefik, ServiceLB and the Helm controller are
-absent.
+with a subnet. `k3s agent`, Traefik, ServiceLB, the metrics server and the
+Helm controller are absent; `--disable` of them is accepted, and a `k3s
+server` flag fws/k3s cannot honour fails the start
+([IMAGES](IMAGES.md#fwsk3s)).
 
 ### The Container Runtime Interface
 
@@ -1305,59 +1360,6 @@ second copy of the project, under another name (`docker compose -p
 other up -d`), runs beside it once its published port is changed, with
 ports, volumes and names of its own.
 
-### Integration tests with Testcontainers
-
-A Go test that starts Postgres and Redis for each run, and a reaper that
-removes them if the test process dies:
-
-```bash
-docker tag fws/ryuk:0.14.0 testcontainers/ryuk:0.14.0
-```
-
-```go
-package store_test
-
-import (
-	"context"
-	"testing"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/modules/redis"
-)
-
-func TestStore(t *testing.T) {
-	ctx := context.Background()
-	pg, err := postgres.Run(ctx, "fws/postgres:16",
-		postgres.WithPassword("secret"), postgres.BasicWaitStrategies())
-	testcontainers.CleanupContainer(t, pg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rd, err := redis.Run(ctx, "fws/redis:8")
-	testcontainers.CleanupContainer(t, rd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dsn, _ := pg.ConnectionString(ctx, "sslmode=disable")
-	conn, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(ctx)
-	redisURL, _ := rd.ConnectionString(ctx)
-	_ = redisURL // hand both to the code under test
-}
-```
-
-```bash
-DOCKER_HOST=unix://$HOME/.fws/docker.sock go test ./...
-```
-
-Containers start in well under a second, so each test can start its own
-rather than share one.
-
 ### A dev container for a Rust project
 
 `.devcontainer/devcontainer.json`:
@@ -1386,34 +1388,6 @@ The named volume keeps crates across rebuilds
 Node.js project uses `fws/node:24` and `npm install` the same way. In
 VS Code, Reopen in Container does the same, with the extensions
 `customizations.vscode.extensions` names.
-
-### Browser tests with Playwright
-
-A project with `playwright.config.ts` and its specs in `tests/`:
-
-```ts
-import { defineConfig, devices } from "@playwright/test";
-
-export default defineConfig({
-  use: { video: "on" },
-  projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
-  ],
-});
-```
-
-```bash
-docker run --rm -v "$PWD:/app" fws/playwright:1.65 npx playwright test --project chromium --output test-results/chromium
-```
-
-```bash
-docker run --rm --security-opt seatbelt=gui --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/app" fws/playwright:1.65 npx playwright test --project firefox --output test-results/firefox
-```
-
-Screenshots and videos land in `test-results/` in the project. To test a
-service of a Compose project, run the tests on its network
-(`--network <project>_default`) and point them at the service by name.
 
 ### A local Kubernetes cluster with kind
 
@@ -1458,27 +1432,6 @@ kubectl rollout status deployment/web && curl -s http://127.0.0.1:30080/
 kind delete cluster --name dev
 ```
 
-### A graphical application, sandboxed
-
-An Electron application gets your desktop and pasteboard, and nothing of
-your files but its mount:
-
-```js
-// ~/electron/main.js
-const { app, BrowserWindow } = require("electron");
-app.whenReady().then(() => {
-  const win = new BrowserWindow({ width: 400, height: 300 });
-  win.loadURL("data:text/html,<h1>drawn in a container</h1>");
-});
-```
-
-```bash
-docker run --rm --security-opt seatbelt=gui --user "$(id -u):$(id -g)" -v ~/electron:/app fws/base:1 /app/Electron.app/Contents/MacOS/Electron --no-sandbox /app/main.js
-```
-
-Where the application misbehaves, [Seatbelt's log](#seatbelt-denials)
-says what it was refused.
-
 ### Build and publish an image FROM fws/base
 
 A Rust service built in `fws/rust` and shipped in `fws/base`:
@@ -1522,16 +1475,8 @@ Seatbelt logs every denial to the unified log. While a container runs:
 log stream --style compact --predicate 'sender == "Sandbox"'
 ```
 
-Afterwards, the denials of the processes named like `Electron`, each
-operation once, as the end-to-end suite collects them:
-
-```bash
-log show --last 5m --style compact --predicate 'sender == "Sandbox" AND eventMessage CONTAINS "deny" AND eventMessage CONTAINS "Electron"'
-```
-
-A container's profile is in its state directory;
 [SEATBELT](SEATBELT.md#finding-what-a-container-was-denied) shows how to
-read it and the log.
+summarise the log afterwards and how to read a container's profile.
 
 ### Tracing paths
 
@@ -1560,7 +1505,7 @@ The last calls before a failure show where a program lost its way.
 | `requested platform … does not match the engine platform` | `--platform` or `FROM --platform` other than `darwin/arm64` |
 | `apt-get: not found` (or `apk`, `yum`) in a build | Linux package managers do not exist here: `COPY` darwin programs, or start from a catalog image that holds them |
 | `port is already allocated` | the host port is taken, by another container or a host process |
-| `… is not supported: …` | an option the engine cannot honour without root or a VM; the message says why ([Refusals](#refusals)) |
+| `… is not supported: …` | an option the engine cannot honour without root or a VM; the message says why ([LIMITATIONS](../LIMITATIONS.md)) |
 | `raising the memory limit of a running container is not supported` | stop the container, update it and start it again |
 | `ECONNREFUSED` reaching a host service from a container | containers cannot reach the Mac's own servers: run the server in a container |
 | `403 Forbidden` from the proxy, or SOCKS5's "connection not allowed by ruleset" | the destination is off an `fws.egress.allow` list, or is on this Mac |
@@ -1570,16 +1515,3 @@ The last calls before a failure show where a program lost its way.
 | Testcontainers for Java finds no Docker environment, or pulls `alpine` | set `TESTCONTAINERS_CHECKS_DISABLE=true` and `DOCKER_HOST` |
 | Testcontainers cannot pull `testcontainers/ryuk` | tag `fws/ryuk:0.14.0` as the version it runs ([Testcontainers](#testcontainers)) |
 | a service's socket path is too long | Unix socket paths are capped at 104 bytes: keep `-root` short |
-
-### Refusals
-
-The engine refuses what it cannot honour rather than accept and ignore it:
-added capabilities, devices, `--gpus`, `--network host` outside a nested
-engine, network drivers other than `bridge`, IPAM drivers and options,
-`--userns`, sysctls beyond the few that hold already, cgroup options,
-`--oom-score-adj`, memory reservations and swappiness, per-device I/O
-limits, the `nproc` ulimit and most others, log drivers other than
-`json-file` and `local`, volume drivers other than `local`, tmpfs sizes,
-SCTP, checkpoints, and swarm, services, secrets, configs and plugins.
-[LIMITATIONS](../LIMITATIONS.md) lists each, why, and the few settings
-accepted without effect.

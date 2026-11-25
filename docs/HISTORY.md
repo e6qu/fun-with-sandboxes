@@ -166,6 +166,19 @@ and no more than microseconds per call.
     everything or nothing.
   - `fws-mkimage` refuses an image path in a tree the library leaves to
     the host, where no container would see it.
+  - A path the root lacks down to its parent is missing, as under chroot,
+    not the host's path that Seatbelt refused; a privileged container's
+    engine socket and syslog's stay the host's.
+  - Firefox starts AppKit even headless, which aborts without the window
+    server and Launch Services, so it runs under `seatbelt=gui`.
+- **#88**: usage and image-authoring guides, each image's reference, and
+  the docs restructured so each fact lives in one place. Images honour or
+  refuse what they are given: nginx substitutes only variables that are
+  set and passes its arguments on, as rabbitmq-server does; fws/k3s refuses
+  the flags it cannot honour; MariaDB reads its configuration directories.
+  `fws-mkimage` relocates and verifies every Mach-O file it adds and gives
+  accounts their homes. Slow image unpacks and BuildKit commits say where
+  their time goes.
 
 ## Investigations
 

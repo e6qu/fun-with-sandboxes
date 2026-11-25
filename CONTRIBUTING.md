@@ -1,19 +1,17 @@
 # Contributing
 
-fun-with-sandboxes is a Docker-API engine for macOS that runs containers as
-the invoking user, confined by [Seatbelt](docs/SEATBELT.md) and rooted in
-APFS clones. [PLAN](PLAN.md) says what it sets out to do,
-[DESIGN](docs/DESIGN.md) how it works, and [LIMITATIONS](LIMITATIONS.md)
-what it cannot do.
+How to set up, test and change fws. [PLAN](PLAN.md) says what it sets out
+to do, [DESIGN](docs/DESIGN.md) how it works, and
+[LIMITATIONS](LIMITATIONS.md) what it cannot do.
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
 
 ## Ground rules
 
-A change MUST NOT break one of [PLAN](PLAN.md#constraints)'s constraints,
-and one that does is not merged: no virtual machine, no root, isolation the
-kernel enforces and a test proves, and Go built for `darwin/arm64` with C
-only inside a process start. Further rules follow:
+A change MUST NOT break one of [PLAN](PLAN.md#constraints)'s constraints:
+no virtual machine, no root, isolation the kernel enforces and a test
+proves, and Go built for `darwin/arm64` with C only inside a process
+start. Further rules:
 
 - **Refuse what cannot be honoured.** An option the engine cannot enforce
   MUST return a Docker API error; it MUST NOT be accepted and silently
@@ -22,15 +20,15 @@ only inside a process start. Further rules follow:
   [LIMITATIONS](LIMITATIONS.md) lists them.
 - **Tests run everything they name.** A test MUST NOT call `t.Skip` for a
   missing tool: install the tool in CI instead.
+- **Flaky tests are bugs.** A flaky test's cause MUST be found and fixed
+  rather than the test retried. A test MUST wait on the event it needs,
+  such as a Docker event, a health status or a connection, and MUST NOT
+  wait on a fixed sleep.
 - **Requirements use RFC 2119.** Documentation and code comments use the
   RFC 2119 key words, uppercase, for requirements and only for
   requirements. A document that uses them MUST carry the boilerplate
   paragraph that RFC 2119 gives, as this one does above; a code comment
   follows the convention without repeating it.
-
-A flaky test is a bug: its cause MUST be found and fixed rather than the
-test retried. A test MUST wait on the event it needs, such as a Docker
-event, a health status or a connection, and MUST NOT wait on a fixed sleep.
 
 ## Set up
 
@@ -57,7 +55,8 @@ You need:
   npm install -g @devcontainers/cli
   ```
 
-Run the engine from a checkout; `fwsd` looks for `fws-shim` beside it:
+Run the engine from a checkout; `fwsd` looks for `fws-shim` beside it
+([USAGE](docs/USAGE.md#run-the-engine) has its flags):
 
 ```bash
 go build -o bin/ ./cmd/fwsd ./cmd/fws-shim
@@ -203,11 +202,6 @@ on any machine; the unit tests' probes and the end-to-end suite need macOS.
 - `publish`: on `main`, once the suite passes, the archives to
   `ghcr.io/e6qu/fws-*` (`scripts/publish-images.sh`).
 
-An image's entry program that imports the engine's packages is rebuilt,
-with every image, whenever those packages change; keep what entries need
-in small packages of their own, such as `internal/execpath` and
-`internal/sandboxenv`.
-
 ## Change things
 
 - **The Seatbelt profile.** A new rule goes in
@@ -225,24 +219,22 @@ in small packages of their own, such as `internal/execpath` and
   - It MUST NOT keep thread-local state.
   - Each behaviour MUST have a probe under `internal/pathmap/testdata`, run by
     `pathmap_darwin_test.go`.
-  - `FWS_TRACE=1` in a container's environment (`docker run -e`) has it
-    write to standard error each call that asks about a file's place
-    (`stat`, `getattrlist`, `statfs`, `realpath`), what the path mapped to
-    and what came back.
+  - `FWS_TRACE=1` in a container's environment traces its path mapping
+    ([USAGE](docs/USAGE.md#tracing-paths)).
 - **The Docker API.** An endpoint MUST answer as dockerd does, with the
   same status codes and error text, and a change MUST come with an
   end-to-end test that drives the change through
   the Docker CLI or Compose.
 - **An image or a release.** See
-  [IMAGES](docs/IMAGES.md#add-an-image-or-a-release).
+  [IMAGE-AUTHORING](docs/IMAGE-AUTHORING.md#catalog-images).
 - **BuildKit.** Change the packages it copies with
   `scripts/sync-buildkit.sh`, and patches in `third_party/buildkit-patches`.
   `third_party/buildkit` MUST NOT be edited by hand: CI checks it matches
   the script's output.
-
-The [README](README.md), [DESIGN](docs/DESIGN.md),
-[IMAGES](docs/IMAGES.md) and [LIMITATIONS](LIMITATIONS.md) MUST be updated
-in the same change as the code they describe.
+- **The docs.** A change MUST update, in the same pull request, every
+  document that describes what it changes. Each fact lives in one
+  document, which the others link to: the [README](README.md) lists
+  which document holds what.
 
 ## Write
 
@@ -257,4 +249,5 @@ in the same change as the code they describe.
 ## Send a pull request
 
 A pull request MUST describe what changed and how it is tested. Every CI
-job MUST pass before review; a pull request is squash-merged under a one-line title.
+job MUST pass before review. A pull request is squash-merged under a
+one-line title.

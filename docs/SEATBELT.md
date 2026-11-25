@@ -2,13 +2,11 @@
 
 Seatbelt is the macOS sandbox (`Sandbox.kext`, `libsandbox`,
 `sandbox-exec`), which App Sandbox, Safari and most system daemons run
-inside. GhostPack's *Seatbelt* on GitHub is an unrelated Windows tool.
-
-The engine confines containers with Seatbelt because it is the one
-confinement macOS gives an unprivileged process: no root, no kernel
-extension of its own, no virtual machine. This page covers what Seatbelt
-does, how to write and test a profile by hand, and how the engine renders
-and applies one for every container.
+inside. (GhostPack's *Seatbelt* is an unrelated Windows tool.) fws
+confines containers with it because it is the one confinement macOS gives
+an unprivileged process. This page covers what Seatbelt does, how to write
+and test a profile by hand, and how fws renders and applies one for every
+container.
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
 
@@ -213,7 +211,7 @@ environment it sets, takes it out of the sandbox.
 rm -rf /tmp/sb-tutorial
 ```
 
-## How fun-with-sandboxes uses it
+## How fws uses it
 
 Every container process runs under a profile that `internal/seatbelt`
 renders from the container's spec (`seatbelt.Spec`). Each section denies an

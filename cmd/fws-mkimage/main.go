@@ -199,7 +199,21 @@ func build(in inputs) error {
 		}
 		spec.Files[dst] = src
 	}
-	for dst, src := range spec.Files {
+	// Shorter paths first, so that a file added inside a directory that
+	// is added too stands over that directory's, whatever the order given.
+	dsts := make([]string, 0, len(spec.Files))
+	for dst := range spec.Files {
+		dsts = append(dsts, dst)
+	}
+	sort.Slice(dsts, func(i, j int) bool {
+		a, b := filepath.Clean("/"+dsts[i]), filepath.Clean("/"+dsts[j])
+		if len(a) != len(b) {
+			return len(a) < len(b)
+		}
+		return a < b
+	})
+	for _, dst := range dsts {
+		src := spec.Files[dst]
 		if err := outsideHostTrees("file", dst); err != nil {
 			return err
 		}
@@ -436,6 +450,9 @@ func relocate(stage, dir string) error {
 		}
 		for _, rp := range rpaths {
 			if strings.HasPrefix(rp, storeDir+"/") {
+				if err := held(stage, p, rp); err != nil {
+					return err
+				}
 				args = append(args, "-rpath", rp, loaderRel(stage, p, rp))
 			}
 		}
@@ -477,9 +494,9 @@ func describeMachO(p string) string {
 	return b.String()
 }
 
-// held fails where the Mach-O file p loads ref, a store path's file, that
-// the image does not hold: relative or not, the reference would find
-// nothing in a container.
+// held fails where the Mach-O file p loads ref, a store path's file or an
+// rpath's directory, that the image does not hold: relative or not, the
+// reference would find nothing in a container.
 func held(stage, p, ref string) error {
 	if _, err := os.Stat(filepath.Join(stage, ref)); err != nil {
 		return fmt.Errorf("%s loads %s, which the image's closure does not hold", strings.TrimPrefix(p, stage), ref)

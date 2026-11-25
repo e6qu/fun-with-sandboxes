@@ -141,8 +141,10 @@ func parseK3sServer(args []string, getenv func(string) string) (k3sOptions, erro
 				case c == "" || k3sAbsent[c]:
 				case c == "local-storage":
 					o.NoLocalStorage = true
+				case c == "coredns":
+					return o, fmt.Errorf("k3s server: --disable=coredns: fws/k3s's cluster DNS is the engine's, which a cluster cannot turn off")
 				default:
-					return o, fmt.Errorf("k3s server: --disable=%s: fws/k3s cannot run without %s", c, c)
+					return o, fmt.Errorf("k3s server: --disable=%s: fws/k3s has no such component to disable", c)
 				}
 			}
 		case "cluster-init":

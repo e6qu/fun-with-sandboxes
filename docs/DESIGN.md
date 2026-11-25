@@ -1,26 +1,31 @@
-# fun-with-sandboxes — Design
+# Design
 
-A no-root, no-VM container engine for macOS that speaks a subset of the Docker
-Engine API, enough to run `docker compose` stacks of macOS-native images side
-by side without clashing on ports, paths or processes, and without reaching
-the host beyond what macOS requires.
-
-The engine is written in Go for `darwin/arm64`, Apple silicon alone. It runs
-the workloads on the host, with no virtual machine and no privileged helper,
-using the only isolation primitives macOS offers an unprivileged process:
-**Seatbelt** sandbox profiles, **APFS copy-on-write clones**, and **per-stack
-resource assignment**.
+How fws works. It runs containers on the host, with no virtual machine and
+no privileged helper, using the only isolation primitives macOS offers an
+unprivileged process: **Seatbelt** sandbox profiles, **APFS copy-on-write
+clones**, and **per-stack resource assignment**. The engine is written in
+Go for `darwin/arm64`.
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
 
----
+1. [Scope](#1-scope)
+2. [The core problem and the chosen resolution](#2-the-core-problem-and-the-chosen-resolution)
+3. [Isolation model](#3-isolation-model), [without cgroups](#3a-isolation-and-limits-without-cgroups)
+4. [Image and root filesystem](#4-image-and-root-filesystem)
+5. [Per-stack resource assignment](#5-per-stack-resource-assignment)
+6. [Networking without root or a network stack](#6-networking-without-root-or-a-network-stack)
+7. [The image catalog](#7-the-image-catalog)
+8. [Docker Engine API surface](#8-docker-engine-api-surface), [BuildKit](#buildkit), [the classic builder](#the-classic-builder), [Podman's API](#podmans-api), [Kubernetes](#kubernetes)
+9. [Runtime launch sequence](#9-runtime-launch-sequence)
+10. [Go implementation](#10-go-implementation)
+11. [Testing](#11-testing)
 
-## 1. Scope and non-goals
+## 1. Scope
 
 ### What it is
 
-- A daemon that serves the Docker Engine API subset Compose v2 needs, over a
-  unix socket.
+- A daemon that serves the Docker Engine API, Podman's API and Kubernetes'
+  CRI over one Unix socket.
 - A runtime that launches each container as a host process tree confined by a
   generated Seatbelt profile, rooted in an APFS clone of the image's unpacked
   layers.
@@ -36,13 +41,10 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 - **Not a Linux container runtime.** It runs macOS-native (Mach-O,
   `darwin/<arch>`) images only; Linux ELF images need a VM or emulation, both
   excluded. Images come from the Nix-built catalog (§7) or from Dockerfiles
-  built on it; Dockerfiles written for Linux are a non-goal
-  ([`PLAN.md`](../PLAN.md)).
+  built on it ([PLAN](../PLAN.md#non-goals)).
 - **Not root-requiring.** No step uses `sudo`, installs a kext, disables SIP,
   adds `lo0` aliases, or writes `pf` rules. A design choice that needs root is
   replaced with an unprivileged equivalent.
-- **Not a drop-in for Docker Hub images.** Stock `postgres:16` is a Linux
-  image and does not apply (§7).
 
 ### Accepted exceptions
 
@@ -68,10 +70,9 @@ more of the host than under Docker, though it can act on none of it:
   preferences and bundles all over it.
 
 Another stack's files, ports, environment and logs, and the right to signal
-its processes, stay denied. [`LIMITATIONS.md`](../LIMITATIONS.md) lists every
+its processes, stay denied. [LIMITATIONS](../LIMITATIONS.md) lists every
 gap.
 
----
 
 ## 2. The core problem and the chosen resolution
 
@@ -93,9 +94,8 @@ This is **isolation by assignment, enforced by Seatbelt**: the engine hands
 out non-overlapping resources, and Seatbelt stops a container using anything
 it was not handed.
 
----
 
-## 3. Isolation model — what each primitive provides
+## 3. Isolation model
 
 | Dimension | Primitive | Guarantee | Gap (accepted) |
 |---|---|---|---|
@@ -325,7 +325,6 @@ networking is §6's.
   refuses, succeeds and never fires. `sendfile`, which the kernel refuses
   under a profile, becomes a copy.
 
----
 
 ## 4. Image and root filesystem
 
@@ -404,7 +403,10 @@ against its digest. The store sweeps what a crash left as it opens.
 
 Each layer is unpacked once, by its diff ID, into `images/layers/<diffid>`,
 holding its entries alone with its whiteouts as files that name them, and
-checked against the config's `rootfs.diff_ids`. An image's root,
+checked against the config's `rootfs.diff_ids`. An image whose unpacking
+takes a second or more is logged with where the time went: writing its
+blobs, unpacking the layers not yet cached, merging them and measuring the
+root. An image's root,
 `images/roots/<digest>`, is its layers laid over an empty tree in order: a
 directory the tree lacks comes as one `clonefile` of the layer's subtree, so
 images that share layers share their blocks; a layer with a hard link into a
@@ -440,7 +442,6 @@ profile's `process-exec` allowance, and Docker's `ReadonlyPaths` and
 `MaskedPaths` become denials of writes, and of reads and writes, at the end
 of the profile.
 
----
 
 ## 5. Per-stack resource assignment
 
@@ -461,7 +462,6 @@ container without one is a stack of its own (`run-<id>`).
 Assignments persist in `alloc.json`, so a restarted engine hands out the same
 ports.
 
----
 
 ## 6. Networking without root or a network stack
 
@@ -589,21 +589,18 @@ container library's and the routers' work.
   container with internet access, and refuses after 2 s without a reply.
   Any other echo fails with `ENETUNREACH`.
 
----
 
-## 7. Images: a curated, Nix-built catalog
+## 7. The image catalog
 
 The catalog is built from nixpkgs for `aarch64-darwin` by
 `scripts/build-images.sh` and `cmd/fws-mkimage`, which relocates each Nix
 closure so it loads by relative paths and writes an OCI image with a layer
 per store path; `internal/catalog` lists it, for `fws catalog` and CI's
-publish check. [IMAGES](IMAGES.md) describes the catalog, its build and its
-publication. Compose files name these images explicitly; the engine never
-substitutes one image name for another. macOS allows only 87 System V
-semaphores machine-wide by default, so the Postgres entrypoint keeps each
-server's process limits small.
+publish check. The engine never substitutes one image name for another.
+[IMAGES](IMAGES.md) describes the catalog, and
+[IMAGE-AUTHORING](IMAGE-AUTHORING.md#how-a-catalog-image-is-built) its
+build.
 
----
 
 ## 8. Docker Engine API surface
 
@@ -697,7 +694,11 @@ Linux-specific:
 - **Images.** `FROM` resolves the engine's images first. The `moby`
   exporter (`docker build`, `--load`) writes the result as an OCI image
   extending the base's layers, stores it in the engine's image store, and
-  clones the result's snapshot as its root.
+  clones the result's snapshot as its root. A slow commit of the layers is
+  logged with their number and compressed size.
+
+containerd's content store probes fsverity, a Linux feature, and warns
+that it is unsupported; on darwin the engine drops that warning.
 
 The BuildKit packages the engine uses live in `third_party/buildkit`, copied
 by `scripts/sync-buildkit.sh` with their imports rewritten into this module,
@@ -798,7 +799,6 @@ Pods and Deployments.
   when it changes and every 30 s (`-resync`), so a restarted engine gets it
   back.
 
----
 
 ## 9. Runtime launch sequence
 
@@ -828,7 +828,6 @@ library inserted (the loader loses its prebuilt launch), and about 4 ms more
 for the functions `fwsroot.c` interposes, some 25 µs each, whichever they
 are (`BenchmarkStartCost`, on CI's macOS 26 runner).
 
----
 
 ## 10. Go implementation
 
@@ -883,7 +882,6 @@ images/               # entrypoints and Nix specs for the darwin catalog
 tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite (own module)
 ```
 
----
 
 ## 11. Testing
 
@@ -892,6 +890,5 @@ macOS runner; no test skips for a missing tool. The Seatbelt and
 container-library packages run probes under the real sandbox, and the
 end-to-end suite drives the stock Docker CLI, Docker Compose, Podman,
 Testcontainers, kind and `crictl` against an engine of its own.
-[`CONTRIBUTING.md`](../CONTRIBUTING.md) lists every check CI runs and how to
-run each locally; [`LIMITATIONS.md`](../LIMITATIONS.md) lists what the
-engine cannot do; [`HISTORY.md`](HISTORY.md) records how it got here.
+[CONTRIBUTING](../CONTRIBUTING.md#test) lists every check CI runs and how
+to run each locally.

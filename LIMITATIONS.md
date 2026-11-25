@@ -1,96 +1,34 @@
 # Limitations
 
-Where the engine differs from Docker on Linux, and why. Almost every limit
-follows from running with no root and no virtual machine, on what macOS
-offers an unprivileged process. Non-goals are in
-[PLAN.md](PLAN.md#non-goals).
+Where fws differs from Docker on Linux, and why. Almost every limit follows
+from running with no root and no virtual machine, on what macOS offers an
+unprivileged process. Non-goals are in [PLAN](PLAN.md#non-goals).
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
 
-## Images
-
-- **macOS-native images only.** Nothing on macOS runs Linux ELF binaries
-  without a VM, so stock Docker Hub images do not run.
-- **Images MUST follow the container contract.** A service finds its
-  root and ports at their container paths and port numbers through the
-  container library, or reads them from the `SANDBOX_*` variables
-  ([IMAGES](docs/IMAGES.md#the-container-contract)). Software the library
-  cannot load into MUST have an entrypoint that configures it from the
-  variables.
-- **Only the engine's platform.** A `--platform` or `FROM --platform` other
-  than the engine's `darwin/<arch>` is refused. A multi-platform index
-  stores its `darwin/<arch>` image alone; a BuildKit build's attestations
-  stay out of the store, as dockerd's classic store leaves them out.
-- **Disk figures are estimates.** A root is a clone sharing blocks with its
-  cached layers, so `docker system df`, image sizes and prune totals count
-  more than the disk gives up. A layer with a hard link into a lower layer
-  is unpacked for each image that holds it.
-- **`docker diff`, `commit` and `ps -s` compare files by size and
-  whole-second modification time**, reading only those changed since the
-  root was cloned.
-- **Catalog images are built by Nix**, mostly from source; MongoDB,
-  Vault, ClickHouse, Bun, Rust and Playwright's browsers are the vendors'
-  own macOS builds. Where Linux parts are missing they differ from
-  upstream's:
-  - `fws/kafka` is Apache Kafka in Confluent's layout, without Confluent's
-    own components such as the REST Proxy.
-  - `fws/busybox` holds separate GNU and other darwin programs, not
-    BusyBox's applets, so options differ; its `tar` is libarchive's, as
-    macOS's is; its `nc` only checks a port (`nc -z`); it has no `ps`,
-    `top` or `vi`. `fws/base` has no package manager: add programs with
-    `COPY` or by downloading darwin builds.
-  - `fws/playwright` carries Chromium's headless shell and Firefox. It
-    has no full Chromium, which aborts as it starts under the container's
-    profile, so `channel: 'chromium'` and headed Chromium are absent. It
-    has no WebKit: Playwright's WebKit on macOS starts its web content,
-    network and GPU processes as XPC services, which launchd runs outside
-    the container's sandbox and library, and its builds differ by macOS
-    release, which an image cannot choose for its host. Firefox MUST run
-    in a container granted the user's session (`--security-opt
-    seatbelt=gui`, as the engine's user): macOS Firefox starts AppKit even
-    headless, which registers the process with the window server and
-    Launch Services, and AppKit aborts where the container's profile denies
-    those, as it does by default. Firefox's own sandboxes are off
-    (`MOZ_DISABLE_*_SANDBOX`), as Chromium runs with `--no-sandbox`, and
-    stay off only where a launch keeps the container's environment.
-  - `fws/neo4j` is the Community Edition.
-  - `fws/node` and `fws/rust` compile C and C++ with nixpkgs' clang, ld64
-    and macOS SDK, not Xcode's: there is no `xcrun`, `xcodebuild` or
-    Swift, and node-gyp is nixpkgs' build, which takes a fixed Xcode
-    version rather than ask `xcodebuild`.
-  - `fws/rust` has no rustup: its toolchain is the release's build for
-    `aarch64-apple-darwin` alone, with rustfmt and clippy, so `rustup`
-    commands and other targets are not available and a
-    `rust-toolchain.toml` goes unread.
-  - `fws/opensearch` is the minimal distribution with the security plugin,
-    without the k-NN and ML Commons plugins, whose native libraries are
-    built for Linux.
-  - Kubernetes' images carry `/bin/sh` and `/bin/nc`, where upstream's are
-    distroless; there is no kube-proxy or CoreDNS image.
-- **BuildKit builds on one darwin worker.** Multi-platform builds and
-  `# syntax=` frontends other than Docker's own are refused (gateway
-  frontends ship as Linux images); `# syntax=docker/dockerfile:<version>`
-  uses the vendored built-in frontend. An SSH mount's socket belongs to the
-  engine's user whatever `uid` it names.
-- **Build steps run darwin programs.** Every Dockerfile instruction
-  builds; a `RUN` step runs what the darwin image holds, so one that runs
-  a Linux package manager (`apt-get`, `apk`, `yum`) fails. Steps run under
-  Seatbelt, with internet through a build-only egress proxy (none with
-  `--network none`). The classic builder (`DOCKER_BUILDKIT=0`) refuses
-  `RUN --mount`, `--network` and `--security`, and any option it does not
-  implement or that is given twice, as dockerd's does.
-- **Dev container features install darwin programs.** The containers.dev
-  collection's features (`common-utils`, `docker-outside-of-docker`,
-  `docker-in-docker`, `node`, `python` and the rest) install Linux
-  packages or binaries and fail; a feature whose `install.sh` fetches or
-  builds darwin programs works. Docker outside of Docker is the engine's
-  socket in `mounts` with a darwin Docker CLI copied from `fws/dind`.
-  VS Code's server in a dev container is its macOS build, so an extension
-  published for Linux alone does not run there. The Dev Containers CLI
-  applies `updateRemoteUserUID` on Linux hosts alone; here every process
-  runs as the engine's user, who owns the workspace on the host.
+- [Isolation](#isolation)
+- [Networking](#networking)
+- [Resources](#resources)
+- [Images and builds](#images-and-builds)
+- [Kubernetes](#kubernetes)
+- [API surface](#api-surface)
 
 ## Isolation
+
+What a container can reach:
+
+| | Allowed | Denied |
+|---|---|---|
+| Files | read and write its root and read-write volumes; read the macOS system tree, the shells, the time zone and the CA certificates | write anywhere else; read any other host path: `/Users`, `/private/etc`, `/usr/bin`, `/usr/local`, `/opt`, temp dirs, other stacks |
+| Network | listen on its assigned loopback ports; connect to its stack's ports; reach the internet over HTTP(S) or SOCKS5 through its stack's egress proxy | listen on any other port or address; connect to anything else (a loopback port is refused, as in a network namespace); reach the host through the proxy |
+| Processes | exec binaries in its root and the system shell; signal its own processes | exec other host binaries; signal or inspect other sandboxes' processes |
+| Mach services | user lookup, notifications, logging, certificate trust evaluation | keychain, pasteboard, Launch Services, TCC and everything else |
+| IPC | POSIX shared memory, semaphores and the Mach services it registers, under its own prefix; System V IPC, under keys of its own | other containers' names; all IPC with `--ipc none` |
+| Everything else | none | Seatbelt denies by default: IOKit, Mach registration, preferences, kernel control sockets |
+
+[SEATBELT](docs/SEATBELT.md#how-fws-uses-it) shows the profile that
+enforces this. The rest of this section is where a container's view
+differs from Docker's.
 
 - **Not a security boundary against hostile code.** Containers run as the
   engine's user; Seatbelt keeps stacks apart and the host's data out of
@@ -259,40 +197,9 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 - **Unix socket paths are capped at 104 bytes**, macOS's `sun_path`, as
   the container sees them; a longer host path binds through the mount or
   root below it. A program given a socket path SHOULD be given its
-  container path, as `fws/postgres` and `fws/mysql` are
-  (`/var/run/postgresql`, `/var/run/mysqld`): a host path under a stack's
-  root often runs past the limit.
-
-## Kubernetes
-
-- **No kube-proxy or CoreDNS.** `fws-kube-proxy` serves Services and the
-  library resolves cluster names.
-- **A pod's limits hold, its requests set no priority.** The kubelet sends
-  a container's memory and CPU limits, the pod's where it sets none, and
-  the engine holds them as `--memory` and `--cpus`; requests only place
-  pods, as a nice value would weigh a pod against every process on the
-  Mac. `securityContext.runAsUser` takes no effect.
-- **The CRI refuses checkpoints**; `UpdatePodSandboxResources` changes
-  nothing, as containerd's does not. Pod and container metrics count CPU
-  time in hundredths of a second, as `ps` reports it. A pod's DNS servers
-  go unused; its search domains and options apply.
-- **Pod networks hold the node's pod CIDR**, IPv4, IPv6 or both; other
-  nodes' pods reach a pod through the routers. A changed CIDR applies once
-  the node's pods are gone.
-- **Services carry TCP and UDP**: cluster, external and load balancer IPs,
-  node ports, `ExternalName` and `sessionAffinity: ClientIP` (loopback
-  clients count as one). SCTP is not served. Changes arrive within the
-  proxy's poll, a second by default.
-- **kind runs on `fws/kind-node` only**, without systemd or containerd:
-  `ctr` supports `images import`, `tag` and `ls`, and `journalctl` reads
-  the node's logs. Of `containerdConfigPatches`, registry mirrors and a
-  hosts directory apply; a node whose configuration sets anything else is
-  not ready and names what it does not apply.
-- **`fws/k3s` is kubeadm's cluster under k3s's names.** `k3s agent`,
-  joining servers, Traefik, ServiceLB, the Helm controller, the embedded
-  registry and etcd snapshots are absent. Its default storage class, `local-path`, is
-  the controller manager's host-path provisioner. Its node MUST have an
-  address outside loopback: the default bridge or a network with a subnet.
+  container path, as `fws/postgres`, `fws/mysql` and `fws/mariadb` are
+  (`/var/run/postgresql`, `/var/run/mysqld`, `/run/mysqld`): a host path
+  under a stack's root often runs past the limit.
 
 ## Resources
 
@@ -379,12 +286,100 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   options under [Isolation](#isolation). Bind propagation is always
   `rslave`.
 
+## Images and builds
+
+- **macOS-native images only.** Nothing on macOS runs Linux ELF binaries
+  without a VM, so stock Docker Hub images do not run.
+- **Images MUST follow the container contract.** A service finds its
+  root and ports at their container paths and port numbers through the
+  container library, or reads them from the `SANDBOX_*` variables
+  ([IMAGE-AUTHORING](docs/IMAGE-AUTHORING.md#the-container-contract)).
+  Software the library cannot load into MUST have an entrypoint that
+  configures it from the variables.
+- **Only the engine's platform.** A `--platform` or `FROM --platform` other
+  than the engine's `darwin/<arch>` is refused. A multi-platform index
+  stores its `darwin/<arch>` image alone; a BuildKit build's attestations
+  stay out of the store, as dockerd's classic store leaves them out.
+- **Disk figures are estimates.** A root is a clone sharing blocks with its
+  cached layers, so `docker system df`, image sizes and prune totals count
+  more than the disk gives up. A layer with a hard link into a lower layer
+  is unpacked for each image that holds it.
+- **`docker diff`, `commit` and `ps -s` compare files by size and
+  whole-second modification time**, reading only those changed since the
+  root was cloned.
+- **Catalog images are built by Nix**, mostly from source; MongoDB,
+  Vault, ClickHouse, Bun, Rust and Playwright's browsers are the vendors'
+  own macOS builds. Where Linux parts are missing an image differs from
+  upstream's: `fws/base` has no package manager, `fws/busybox` holds
+  separate programs rather than BusyBox's applets, `fws/playwright` has no
+  WebKit, `fws/kafka` has no Confluent components, `fws/neo4j` is the
+  Community Edition, and Kubernetes has no kube-proxy or CoreDNS image.
+  Each image's [IMAGES](docs/IMAGES.md#image-reference) section says how
+  it differs.
+- **BuildKit builds on one darwin worker.** Multi-platform builds and
+  `# syntax=` frontends other than Docker's own are refused (gateway
+  frontends ship as Linux images); `# syntax=docker/dockerfile:<version>`
+  uses the vendored built-in frontend. An SSH mount's socket belongs to the
+  engine's user whatever `uid` it names.
+- **Build steps run darwin programs.** Every Dockerfile instruction
+  builds; a `RUN` step runs what the darwin image holds, so one that runs
+  a Linux package manager (`apt-get`, `apk`, `yum`) fails. Steps run under
+  Seatbelt, with internet through a build-only egress proxy (none with
+  `--network none`). The classic builder (`DOCKER_BUILDKIT=0`) refuses
+  `RUN --mount`, `--network` and `--security`, and any option it does not
+  implement or that is given twice, as dockerd's does.
+- **Dev container features install darwin programs.** The containers.dev
+  collection's features (`common-utils`, `docker-outside-of-docker`,
+  `docker-in-docker`, `node`, `python` and the rest) install Linux
+  packages or binaries and fail; a feature whose `install.sh` fetches or
+  builds darwin programs works. Docker outside of Docker is the engine's
+  socket in `mounts` with a darwin Docker CLI copied from `fws/dind`.
+  VS Code's server in a dev container is its macOS build, so an extension
+  published for Linux alone does not run there. The Dev Containers CLI
+  applies `updateRemoteUserUID` on Linux hosts alone; here every process
+  runs as the engine's user, who owns the workspace on the host.
+
+## Kubernetes
+
+- **No kube-proxy or CoreDNS.** `fws-kube-proxy` serves Services and the
+  library resolves cluster names.
+- **A pod's limits hold, its requests set no priority.** The kubelet sends
+  a container's memory and CPU limits, the pod's where it sets none, and
+  the engine holds them as `--memory` and `--cpus`; requests only place
+  pods, as a nice value would weigh a pod against every process on the
+  Mac. `securityContext.runAsUser` takes no effect.
+- **The CRI refuses checkpoints**; `UpdatePodSandboxResources` changes
+  nothing, as containerd's does not. Pod and container metrics count CPU
+  time in hundredths of a second, as `ps` reports it. A pod's DNS servers
+  go unused; its search domains and options apply.
+- **Pod networks hold the node's pod CIDR**, IPv4, IPv6 or both; other
+  nodes' pods reach a pod through the routers. A changed CIDR applies once
+  the node's pods are gone.
+- **Services carry TCP and UDP**: cluster, external and load balancer IPs,
+  node ports, `ExternalName` and `sessionAffinity: ClientIP` (loopback
+  clients count as one). SCTP is not served. Changes arrive within the
+  proxy's poll, a second by default.
+- **kind runs on `fws/kind-node` only**, without systemd or containerd:
+  `ctr` supports `images import`, `tag` and `ls`, and `journalctl` reads
+  the node's logs. Of `containerdConfigPatches`, registry mirrors and a
+  hosts directory apply; a node whose configuration sets anything else is
+  not ready and names what it does not apply.
+- **`fws/k3s` is kubeadm's cluster under k3s's names.** It runs one
+  server: `k3s agent`, joining servers, Traefik, ServiceLB, the metrics
+  server, the Helm controller, the embedded registry and etcd snapshots
+  are absent. `k3s server` takes the flags whose effect it can give and
+  refuses any other with an error
+  ([IMAGES](docs/IMAGES.md#fwsk3s)). Its default storage class,
+  `local-path`, is the controller manager's host-path provisioner. Its
+  node MUST have an address outside loopback: the default bridge or a
+  network with a subnet.
+
 ## API surface
 
 - **Testcontainers needs a few settings**: the libraries' reapers run as
   the catalog's `fws/ryuk` under the names each pins, Testcontainers for
   Java sees a blank `OSType` in `/info`, and its startup checks, which run
-  `alpine`, are turned off ([README](README.md#testcontainers)).
+  `alpine`, are turned off ([USAGE](docs/USAGE.md#testcontainers)).
 - **A Podman pod shares its network, IPC and PID namespaces** through an
   infra container running `fws/pause`. `kube play` runs Pods, and
   Deployments of one replica, with their ConfigMaps' values, claims'
