@@ -363,11 +363,24 @@ jobs:
         run: |
           df -h / /System/Volumes/Data "${TMPDIR:-/tmp}"
           du -sh ~/fws-images ~/fws-prebuilt /nix/store "${TMPDIR:-/tmp}" 2>/dev/null || true
+      # A store path the collector cannot delete holds files the store
+      # never had: what is left, with its flags and owners, and the
+      # processes that hold the store or run its Python, say what wrote
+      # them.
       - name: free what the build left
         if: steps.images.outputs.cache-hit != 'true'
         run: |
           rm -rf ~/fws-prebuilt
-          nix-store --gc
+          if ! nix-store --gc 2> "$RUNNER_TEMP/gc.err"; then
+            cat "$RUNNER_TEMP/gc.err"
+            sed -n 's/.*cannot unlink "\([^"]*\)": Directory not empty.*/\1/p' "$RUNNER_TEMP/gc.err" | sort -u | while read -r d; do
+              echo "== $d"
+              ls -la@eO "$d" || true
+            done
+            sudo lsof +D /nix/store 2>/dev/null | head -50 || true
+            pgrep -fl python || true
+            exit 1
+          fi
           df -h /
       # crane's registry keeps every blob in memory, so it stops once it
       # has shown the archives publish.
