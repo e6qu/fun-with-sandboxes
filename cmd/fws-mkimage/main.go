@@ -176,17 +176,17 @@ func build(in inputs) error {
 			}
 		}
 		if err := relocate(stage, filepath.Join(stage, storeDir)); err != nil {
-			return err
+			return fmt.Errorf("relocate the closure: %w", err)
 		}
 	}
 	for _, p := range pkgs {
 		if err := linkBin(stage, p); err != nil {
-			return err
+			return fmt.Errorf("link %s's bin: %w", p, err)
 		}
 	}
 	if closure != "" {
 		if err := rewriteShebangs(stage, overlay); err != nil {
-			return err
+			return fmt.Errorf("rewrite scripts' #! lines: %w", err)
 		}
 	}
 	if spec.Files == nil {
@@ -218,18 +218,18 @@ func build(in inputs) error {
 			return err
 		}
 		if err := copyTree(src, filepath.Join(stage, dst)); err != nil {
-			return err
+			return fmt.Errorf("-file %s=%s: %w", dst, src, err)
 		}
 		// A file the image adds loads from the store as the closure's do:
 		// dyld reads its absolute references on the host, before the
 		// container library runs, so they are made relative too, to store
 		// paths the image holds.
 		if err := relocate(stage, filepath.Join(stage, dst)); err != nil {
-			return err
+			return fmt.Errorf("relocate -file %s: %w", dst, err)
 		}
 	}
 	if err := verifyRelocated(stage); err != nil {
-		return err
+		return fmt.Errorf("verify the relocation: %w", err)
 	}
 	for _, d := range spec.Dirs {
 		if err := outsideHostTrees("dir", d); err != nil {
@@ -269,7 +269,10 @@ func build(in inputs) error {
 			return err
 		}
 	}
-	return writeArchive(stage, overlay, spec, paths, out, arch, owners)
+	if err := writeArchive(stage, overlay, spec, paths, out, arch, owners); err != nil {
+		return fmt.Errorf("write %s: %w", out, err)
+	}
+	return nil
 }
 
 // hostTrees are the trees the container library (fwsroot.c's host_trees)
@@ -436,8 +439,11 @@ func relocate(stage, dir string) error {
 			return err
 		}
 		refs, rpaths, weak, ok, err := machoRefs(p)
-		if err != nil || !ok {
-			return err
+		if err != nil {
+			return fmt.Errorf("%s: %w", strings.TrimPrefix(p, stage), err)
+		}
+		if !ok {
+			return nil
 		}
 		var args []string
 		for _, ref := range refs {
@@ -587,8 +593,11 @@ func verifyRelocated(stage string) error {
 			return err
 		}
 		refs, rpaths, _, ok, err := machoRefs(p)
-		if err != nil || !ok {
-			return err
+		if err != nil {
+			return fmt.Errorf("%s: %w", strings.TrimPrefix(p, stage), err)
+		}
+		if !ok {
+			return nil
 		}
 		for _, r := range append(refs, rpaths...) {
 			if strings.HasPrefix(r, storeDir+"/") {
@@ -712,15 +721,15 @@ func writeArchive(stage, overlay string, spec Spec, storePaths []string, out, ar
 	addLayer := func(createdBy string, sources ...layerSource) error {
 		p := filepath.Join(dir, fmt.Sprintf("%d.tar", len(adds)))
 		if err := writeLayer(p, owners, sources...); err != nil {
-			return err
+			return fmt.Errorf("layer %q: %w", createdBy, err)
 		}
 		l, err := tarball.LayerFromFile(p, tarball.WithMediaType(types.OCILayer))
 		if err != nil {
-			return err
+			return fmt.Errorf("layer %q: %w", createdBy, err)
 		}
 		d, err := l.DiffID()
 		if err != nil {
-			return err
+			return fmt.Errorf("layer %q: diff_id: %w", createdBy, err)
 		}
 		adds = append(adds, mutate.Addendum{Layer: l, MediaType: types.OCILayer})
 		diffIDs = append(diffIDs, d)
@@ -806,6 +815,9 @@ func writeArchive(stage, overlay string, spec Spec, storePaths []string, out, ar
 	}
 	defer os.Remove(f.Name())
 	err = image.WriteArchive(f, []image.ArchiveEntry{{Image: img, Tags: []string{spec.Tag}}})
+	if err != nil {
+		err = fmt.Errorf("the archive: %w", err)
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
