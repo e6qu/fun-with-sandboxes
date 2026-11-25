@@ -19,7 +19,7 @@ import (
 )
 
 // ServicesStack is the stack of the members that are a network's Services,
-// which the engine serves on loopback, outside any sandbox: a datagram may
+// which the engine serves on loopback, outside any sandbox: a datagram can
 // reach one from any port.
 const ServicesStack = "services"
 
@@ -39,7 +39,7 @@ type Member struct {
 	// which a container reaches only through its router.
 	Foreign bool
 	// Stack names a foreign member's stack, whose block a datagram to it
-	// is sent from, so that its replies may return; ServicesStack for a
+	// is sent from, so that its replies can return; ServicesStack for a
 	// Service, which the engine serves outside any sandbox.
 	Stack string
 	// Links are the names the member answers to for one member alone, as
@@ -64,7 +64,7 @@ type Member struct {
 	// Block is the host ports of a foreign member's stack where no
 	// allocator of the reader's engine knows that stack, as for a pod of
 	// another node: a datagram to the member is sent from a free port of
-	// it, so that its replies may return.
+	// it, so that its replies can return.
 	Block Block
 	// Alias marks names that stand for another name, as a DNS CNAME
 	// record's do, as an ExternalName Service's: the member has no
@@ -319,9 +319,8 @@ func Parse(b []byte) []Member {
 
 // Find returns the member host names, as DNS compares names: in any case,
 // with or without a final dot; or the member one of whose addresses host
-// is. A
-// name no member answers to may be an alias a link gives one, for
-// whichever member makes the link.
+// is. A name no member answers to can be an alias a link gives one,
+// for whichever member makes the link.
 func Find(ms []Member, host string) (Member, bool) {
 	name := strings.TrimSuffix(host, ".")
 	for _, m := range ms {

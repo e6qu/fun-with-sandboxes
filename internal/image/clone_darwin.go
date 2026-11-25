@@ -11,7 +11,7 @@ import (
 // Clone gives dst an APFS copy-on-write clone of the image root.
 func (s *Store) Clone(id, dst string) error { return CloneDir(s.Root(id), dst) }
 
-// CloneDir clones the tree at src to dst, which must not exist.
+// CloneDir clones the tree at src to dst, which MUST NOT exist.
 func CloneDir(src, dst string) error {
 	err := unix.Clonefile(src, dst, unix.CLONE_NOFOLLOW)
 	if err != unix.EXDEV {
@@ -27,8 +27,8 @@ func CloneDir(src, dst string) error {
 	return nil
 }
 
-// CloneTree clones the file, link or whole tree at src to dst, which must
-// not exist, with its modes, flags and extended attributes.
+// CloneTree clones the file, link or whole tree at src to dst, which MUST
+// NOT exist, with its modes, flags and extended attributes.
 func CloneTree(src, dst string) error { return CloneDir(src, dst) }
 
 // defaultClone is how the store lays a cached layer into a root.

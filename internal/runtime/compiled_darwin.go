@@ -38,7 +38,7 @@ func profileText(s Spec) (seatbelt.Spec, string, error) {
 }
 
 // profileSum names a compiled profile by its text and the macOS build
-// that compiled it, so an update of macOS, whose bytecode may differ,
+// that compiled it, so an update of macOS, whose bytecode can differ,
 // compiles each profile again rather than applying the old bytecode.
 func profileSum(text string) [sha256.Size]byte {
 	build, _ := unix.Sysctl("kern.osversion")

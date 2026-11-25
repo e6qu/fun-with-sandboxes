@@ -11,7 +11,7 @@
 // -t makes standard input the controlling terminal; -m is the fatal
 // memory limit, in MiB of physical footprint, the kernel holds the command
 // and the anchor to (jetsam's, set as the helper executes them, the one
-// time an unprivileged process may set it); -q is the QoS clamp
+// time an unprivileged process can set it); -q is the QoS clamp
 // (POSIX_SPAWN_PROC_CLAMP_*) every thread of the command and of what it
 // starts runs under, which the helper sets by executing the command with
 // posix_spawn's POSIX_SPAWN_SETEXEC, the one exec that takes it; -N is the fork
@@ -323,7 +323,7 @@ int main(int argc, char **argv) {
     snprintf(what, sizeof what, "exec %s", cmd[0]);
     // The command starts with every signal at its default action and none
     // blocked, as runc starts a container's process: an ignored SIGCHLD, as
-    // the helper may inherit, would have the kernel reap the command's
+    // the helper might inherit, would have the kernel reap the command's
     // children before it waits for them.
     sigset_t all, none;
     sigfillset(&all);

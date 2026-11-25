@@ -13,12 +13,12 @@ import (
 )
 
 // AllowKey is the container label, and network driver option, that names
-// the hosts a container may reach through its stack's egress proxy:
+// the hosts a container can reach through its stack's egress proxy:
 // comma-separated host names (example.com), wildcard domains
 // (*.example.com, which match the domain's subdomains), IP addresses and
-// CIDR prefixes, each with an optional :port. A container's label and its
-// networks' options each restrict it: a destination must be on every
-// list that applies.
+// CIDR prefixes, each with or without a :port. A container's label and its
+// networks' options each restrict it: the proxy allows only a destination
+// on every list that applies.
 const AllowKey = "fws.egress.allow"
 
 // rule is one entry of an allow list.
@@ -122,7 +122,7 @@ type allowTable struct {
 }
 
 // lists returns the lists that apply to the member at address, none when
-// it may reach any host.
+// it can reach any host.
 func (t *allowTable) lists(address string) [][]rule {
 	if t == nil || address == "" {
 		return nil

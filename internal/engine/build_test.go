@@ -35,7 +35,7 @@ func TestEntrypointKeepsTheStagesOwnCmd(t *testing.T) {
 	}
 }
 
-// An ARG line may declare several arguments, each taking its build
+// An ARG line can declare several arguments, each taking its build
 // argument, else its default, as Docker reads it.
 func TestArgsOnOneLine(t *testing.T) {
 	over := "from-cli"

@@ -130,7 +130,7 @@ func flatten(path []string, doc map[string]any, leaf func([]string, any)) {
 }
 
 // key is a path as a dotted TOML key, a part with a dot or other
-// character a bare key may not hold quoted.
+// character a bare key cannot hold quoted.
 func key(path []string) string {
 	parts := make([]string, len(path))
 	for i, p := range path {

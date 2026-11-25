@@ -1,6 +1,6 @@
 // uts reports what a container process sees of its identity and namespace
 // beyond its user: its supplementary groups, after initgroups too, its NIS
-// domain name, and how much POSIX shared memory it may size.
+// domain name, and how much POSIX shared memory it can size.
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>

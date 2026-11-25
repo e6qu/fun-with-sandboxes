@@ -89,7 +89,7 @@ func main() {
 
 // bin returns the real path of a PostgreSQL program. PostgreSQL finds its
 // share and lib directories relative to its argv[0], looked up on PATH when
-// bare, so argv[0] must be this path and not the /bin symlink.
+// bare, so argv[0] has to be this path and not the /bin symlink.
 func bin(name string) string {
 	p, err := exec.LookPath(name)
 	if err != nil {

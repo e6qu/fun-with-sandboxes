@@ -314,7 +314,7 @@ int main(int argc, char **argv) {
     if (connect(p, res->ai_addr, res->ai_addrlen)) failed("peer", "connect", errno);
     freeaddrinfo(res);
     memset(buf, 0, sizeof buf);
-    // A stream may deliver the greeting in pieces.
+    // A stream can deliver the greeting in pieces.
     for (int got = 0; got < 5;) {
         ssize_t r = read(p, buf + got, 5 - got);
         if (r <= 0) failed("peer", r == 0 ? "eof" : "read", r == 0 ? got : errno);

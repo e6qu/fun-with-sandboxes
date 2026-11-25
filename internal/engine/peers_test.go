@@ -78,7 +78,7 @@ func TestNodesSeeOneAnothersPods(t *testing.T) {
 	_, subA, ipA := node("node-a-000000000", "kind", "10.244.0.0/24", "10.244.0.5", 31000)
 	nodeB, subB, _ := node("node-b-000000000", "kind", "10.244.1.0/24", "10.244.1.5", 32000)
 	_, subC, _ := node("node-c-000000000", "other", "10.244.2.0/24", "10.244.2.5", 33000)
-	// The refreshes publishing starts rewrite the nodes' files, which must
+	// The refreshes publishing starts rewrite the nodes' files, which have to
 	// end before their directories are removed: cleanups run last first.
 	t.Cleanup(outer.nodes.refreshing.Wait)
 	outer.refreshPeers("")
@@ -188,7 +188,7 @@ func TestNodesSeeOneAnothersPodsOnIPv6OnlyNetworks(t *testing.T) {
 	const ipA = "fd00:244:0:1::5"
 	_, subA := node("node-a-000000000", ipA, 35000)
 	nodeB, subB := node("node-b-000000000", "fd00:244:0:2::5", 36000)
-	// The refreshes publishing starts rewrite the nodes' files, which must
+	// The refreshes publishing starts rewrite the nodes' files, which have to
 	// end before their directories are removed: cleanups run last first.
 	t.Cleanup(outer.nodes.refreshing.Wait)
 	outer.refreshPeers("")

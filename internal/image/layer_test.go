@@ -276,7 +276,7 @@ func TestWriteTarWithEmptiesMountPoints(t *testing.T) {
 
 // A copy of an image the store handed out keeps its tags when the store
 // moves one of them to another image: a load reads its images' tags while
-// another load may take one of them.
+// another load might take one of them.
 func TestHandedOutImagesKeepTheirTags(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {

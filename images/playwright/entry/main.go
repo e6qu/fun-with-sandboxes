@@ -16,7 +16,7 @@
 // The configuration also turns off Firefox's own sandboxes
 // (MOZ_DISABLE_*_SANDBOX): macOS refuses a second Seatbelt profile to a
 // sandboxed process, and a Firefox child that fails to enter its own
-// aborts. A launch that passes its own env must keep them.
+// aborts. A launch that passes its own env MUST keep them.
 package main
 
 import (

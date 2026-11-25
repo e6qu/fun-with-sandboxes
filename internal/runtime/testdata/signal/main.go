@@ -1,5 +1,5 @@
 // Command signal runs on until killed, as a container's main process does,
-// or with "signal PID" reports whether it may signal process PID.
+// or with "signal PID" reports whether it can signal process PID.
 package main
 
 import (

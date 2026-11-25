@@ -120,7 +120,7 @@ func TestNetworkFrameworkExperiment(t *testing.T) {
 		t.Fatal(err)
 	}
 	// write(2) alone, which touches no floating-point register a traced
-	// function's caller may have passed an argument in.
+	// function's caller might have passed an argument in.
 	if err := os.WriteFile(hit, []byte("#include <string.h>\n#include <unistd.h>\nvoid fws_trace_hit(const char *s) { write(2, s, strlen(s)); }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

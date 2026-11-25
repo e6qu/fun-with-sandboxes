@@ -523,7 +523,7 @@ func TestVSCodeDevContainersForwardsCredentials(t *testing.T) {
 	}
 
 	// An SSH agent holding a key of its own. Its socket's path is short,
-	// as a Unix socket's must be.
+	// as a Unix socket's has to be.
 	agentDir, err := os.MkdirTemp("/tmp", "fws-e2e-agent-")
 	if err != nil {
 		t.Fatal(err)

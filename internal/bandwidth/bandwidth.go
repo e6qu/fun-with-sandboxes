@@ -185,7 +185,7 @@ type pair struct {
 	out, in *rate.Limiter
 }
 
-// NewTable reads the rates at path, which may not exist.
+// NewTable reads the rates at path, which might not exist.
 func NewTable(path string) *Table { return &Table{path: path, byAddr: map[string]*pair{}} }
 
 // Limiters returns the member at address's limiters, what it sends and

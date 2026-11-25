@@ -94,7 +94,7 @@ except ConnectionRefusedError:
 }
 
 // A container listens on a port it neither exposes nor publishes, as any
-// container may, and reaches it on localhost; a member of its stack
+// container can, and reaches it on localhost; a member of its stack
 // reaches it by name.
 func TestPortsNobodyExposes(t *testing.T) {
 	const project = "e2eunexposed"

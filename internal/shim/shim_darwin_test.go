@@ -297,7 +297,7 @@ func TestDaemonLauncher(t *testing.T) {
 		t.Fatalf("the container logged no daemon: %q", h.logs())
 	}
 	// The supervisor finds the daemon as it handles the launcher's fork and
-	// exit, which may come after the main process has waited.
+	// exit, which can come after the main process has waited.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		st, err := h.client.State()

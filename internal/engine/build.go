@@ -133,7 +133,7 @@ func (e *Engine) Build(ctx context.Context, opts BuildOptions, buildContext io.R
 		return image.Image{}, err
 	}
 	defer os.RemoveAll(dir)
-	// A prune waits for builds that may still read cached layers.
+	// A prune waits for builds that might still read cached layers.
 	e.buildMu.RLock()
 	defer e.buildMu.RUnlock()
 	b := &builder{e: e, opts: opts, dir: dir, context: filepath.Join(dir, "context"), progress: progress, cache: e.buildCache()}

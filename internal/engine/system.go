@@ -158,7 +158,7 @@ func matching(patterns, refs []string) []string {
 	return out
 }
 
-// matchReference matches a reference filter, which may omit the tag, against
+// matchReference matches a reference filter, which can omit the tag, against
 // a stored reference.
 func matchReference(pattern, ref string) bool {
 	if ok, _ := path.Match(pattern, ref); ok {

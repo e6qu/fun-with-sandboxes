@@ -538,7 +538,7 @@ func linkBin(stage, pkg string) error {
 	return nil
 }
 
-// systemShells are the host shells a container may execute; a script whose
+// systemShells are the host shells a container can execute; a script whose
 // interpreter is one of them runs on the host's.
 var systemShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true}
 

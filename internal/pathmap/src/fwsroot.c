@@ -246,7 +246,7 @@ static void parse_ports(const char *v) {
 }
 
 // num parses the decimal number at p into v and returns the end, or NULL.
-// The library parses numbers itself where libSystem may hold the locale's
+// The library parses numbers itself where libSystem might hold the locale's
 // lock.
 static const char *num(const char *p, unsigned long *v) {
     if (*p < '0' || *p > '9') {
@@ -336,9 +336,9 @@ static void parse_network(const char *path, const char *address) {
     }
 }
 
-// The variables that make a process the container's, which a program that
-// clears or rebuilds its environment must not shed for its children, as
-// it cannot leave a chroot by doing so.
+// The variables that make a process the container's, which its children
+// keep even where a program clears or rebuilds its environment, as it
+// cannot leave a chroot by doing so.
 // LOADED_NAME is the name DYLD_INSERT_LIBRARIES takes in a process's own
 // environment once the library is loaded, as long as that one.
 #define LOADED_NAME "FWS__INSERT_LIBRARIES"
@@ -403,7 +403,7 @@ int posix_spawnattr_setjetsam_ext(posix_spawnattr_t *attr, short flags, int prio
 
 // limit_memory gives a posix_spawn's attributes the container's memory
 // limit, the fatal footprint limit jetsam holds the program to. A parent
-// may set it only as it starts or executes a program, and nothing changes
+// can set it only as it starts or executes a program, and nothing changes
 // it after, so the library sets it on every program the container's
 // processes start, the limit as it stands. *a is the caller's attributes,
 // which keep it, or none, and then own, which the library initializes and
@@ -554,7 +554,7 @@ __attribute__((constructor)) static void fwsroot_init(void) {
     // The variable that loaded the library takes another name in the
     // environment: getenv hides it, and a program that lists its
     // environment and then looks each variable up, as Node.js does to hand
-    // a worker thread a copy, must find every one it listed. The name
+    // a worker thread a copy, has to find every one it listed. The name
     // changes where it stands, a name as long: the list keeps its length,
     // which the Go runtime counts on to find what follows it. A program the
     // process starts gets the variable back from kept_vars (child_env).
@@ -731,7 +731,7 @@ static const char *place(const char *p, char *buf) {
         return buf;
     }
     // Neither the path nor its parent is the root's: the host's file where
-    // the container may read it, such as a shell or the time zone a root
+    // the container can read it, such as a shell or the time zone a root
     // lacks, else the root's, where the call fails as under chroot, with
     // ENOENT, rather than with Seatbelt's EPERM for a host path it denies.
     return lstat(p, &st) == 0 ? p : buf;
@@ -756,7 +756,7 @@ static int linked(const char *p) {
     if (!q) {
         return 0;
     }
-    // The root's own path may pass through links, as /var does; its
+    // The root's own path can pass through links, as /var does; its
     // resolved form names the same files without them.
     if (in_root(q) && join(c, sizeof c, croot, q + rootlen, "")) {
         q = c;
@@ -980,8 +980,8 @@ static void unmap(char *p, size_t size) {
 static void made(const char *path, int fd, int nofollow);
 static int fake_user(void);
 
-// creating reports whether opening p with flags makes a file a user other
-// than root must be recorded as owning.
+// creating reports whether opening p with flags makes a file whose owner,
+// a user other than root, needs recording.
 static int creating(const char *p, int flags) {
     struct stat st;
     return fake_user() && (flags & O_CREAT) && lstat(p, &st) != 0;
@@ -996,7 +996,7 @@ static int follows(int flags) {
 // direct writes to buf container path p's host path in the root, for a
 // call that the kernel then resolves refusing any link on its way: the
 // common case, a file the container holds, costs no lookup of the
-// library's. It reports 0 for a path the mapping must handle: relative,
+// library's. It reports 0 for a path only the mapping handles: relative,
 // on the host's side, on a mount, in a host tree, or through "..".
 static int direct(const char *p, char *buf) {
     if (!rootlen || !p || p[0] != '/' || host_side(p) || in_host_tree(p) || strstr(p, "/..")) {
@@ -1028,8 +1028,8 @@ static const char *rooted(const char *p, char *d) {
 
 // missing settles a direct call that found no file at host path d: the
 // container's answer is ENOENT where the root holds d's parent, as the
-// mapping finds. It reports 0 where the mapping must decide, as the host
-// may hold the path.
+// mapping finds. It reports 0 where the mapping decides, as the host
+// might hold the path.
 static int missing(char *d) {
     char *slash = strrchr(d, '/');
     if (!slash) {
@@ -2892,7 +2892,7 @@ static struct kinfo_proc *proc_table(int op, int arg, size_t *len) {
 // list_pids writes to buf, of size bytes, the container's processes the
 // process table's listing op of arg holds, those whose parent is ppid when
 // ppid is set, and returns how many it wrote; with no buffer, how many
-// there may be. libproc's listings build on it: the sandbox lets a
+// there might be. libproc's listings build on it: the sandbox lets a
 // container read the process table, not list another sandbox's pids.
 static int list_pids(int op, int arg, pid_t ppid, pid_t *buf, int size) {
     int mib[4] = {CTL_KERN, KERN_PROC, op, arg};
@@ -3108,7 +3108,7 @@ static size_t eth_addr6(char *out, unsigned short index, const struct iface *f) 
 
 // route_dump reads routing sysctl mib into a buffer the caller frees, with
 // more bytes of room after the *n it read; NULL with errno set where it
-// fails. The table may grow between the call that sizes it and the one
+// fails. The table can grow between the call that sizes it and the one
 // that reads it, which then fails with ENOMEM and is tried again.
 static char *route_dump(const int mib[6], size_t more, size_t *n) {
     for (int tries = 0; tries < 8; tries++) {
@@ -3962,7 +3962,7 @@ static const struct in6_addr *dns6_of(int fd) {
     return &net_dns6[fd];
 }
 
-// dns_v6 reports whether an IPv6 address may be a DNS server outside the
+// dns_v6 reports whether an IPv6 address can be a DNS server outside the
 // machine, which the router answers in place of.
 static int dns_v6(const struct in6_addr *a) {
     return !IN6_IS_ADDR_LOOPBACK(a) && !IN6_IS_ADDR_UNSPECIFIED(a) && !IN6_IS_ADDR_LINKLOCAL(a) && !IN6_IS_ADDR_V4MAPPED(a) && !IN6_IS_ADDR_MULTICAST(a);
@@ -5345,7 +5345,7 @@ static int connect_dir(int dir, int fd, const struct sockaddr *sa, socklen_t giv
 
 // unbind_if lets go of the interface fd is bound to, as Network.framework
 // binds its sockets to the one its path takes: a connection the library
-// sends to loopback instead must leave it.
+// sends to loopback instead has to leave it.
 static void unbind_if(int fd) {
     unsigned int i = 0;
     socklen_t n = sizeof i;

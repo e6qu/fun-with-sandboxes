@@ -238,7 +238,7 @@ func TestCreateOnDefaultNetwork(t *testing.T) {
 }
 
 // The build context arrives while progress already streams back, so the
-// handler must keep reading the upload after it starts responding.
+// handler MUST keep reading the upload after it starts responding.
 func TestBuildReadsContextWhileStreaming(t *testing.T) {
 	ts, e := newEngineServer(t)
 	loadImage(t, e, "fws/tiny:1")

@@ -30,7 +30,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 # A Nix that finds no network as it starts skips the binary cache and
 # builds from source what Hydra built, down to the bootstrap tools, whose
 # sources' mirrors move: that run is tried again too, once the network is
-# back, so that it substitutes as it should.
+# back, so that it substitutes from the cache again.
 retry_net() {
   local err attempt
   err=$(mktemp)
@@ -113,7 +113,7 @@ out=${1:?usage: build-images.sh OUTPUT_DIR | --prebuilt-derivations GROUP | --pr
 build=$(mktemp -d)
 trap 'rm -rf "$build"' EXIT
 mkdir -p "$out"
-# OUTPUT_DIR may hold an earlier catalog: fws-mkimage -reuse keeps each
+# OUTPUT_DIR MAY hold an earlier catalog: fws-mkimage -reuse keeps each
 # archive made from the same inputs, as the digest beside it records them,
 # and rewrites that digest, so what this build neither made nor kept is
 # older than this marker and goes at the end.

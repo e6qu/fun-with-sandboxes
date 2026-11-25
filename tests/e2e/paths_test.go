@@ -126,7 +126,7 @@ RUN ["/toolbox", "whoami"]
 }
 
 // On the host's UTS namespace the container reads the host's hostname, and
-// may not name one of its own, as in Docker.
+// cannot name one of its own, as in Docker.
 func TestHostUTSNamespace(t *testing.T) {
 	host, err := os.Hostname()
 	if err != nil {

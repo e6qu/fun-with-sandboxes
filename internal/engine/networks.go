@@ -18,7 +18,7 @@ import (
 
 // Network records a Docker network. Containers reach each other through their
 // stack's ports, so a network carries no traffic of its own; it scopes which
-// containers may join it and is reported faithfully to clients.
+// containers can join it and is reported faithfully to clients.
 type Network struct {
 	ID         string            `json:"id"`
 	Name       string            `json:"name"`
@@ -208,7 +208,7 @@ func (e *Engine) checkIPAMLocked(n *Network, ipam *network.IPAM, ipv4, ipv6 *boo
 	return nil
 }
 
-// reservedBlocks hold addresses no network's subnet may take: the host's
+// reservedBlocks hold addresses no network's subnet can take: the host's
 // own, an interface's link-local ones, multicast groups and IPv4-mapped
 // IPv6 addresses.
 var reservedBlocks = []struct {
@@ -644,7 +644,7 @@ func (e *Engine) NetworkRemove(ref string) error {
 	return e.saveNetworksLocked()
 }
 
-// checkNetworkLocked refuses networks a container may not join. A network
+// checkNetworkLocked refuses networks a container cannot join. A network
 // another stack's containers are on joins the stacks: their members reach
 // one another on it through their routers.
 func (e *Engine) checkNetworkLocked(name string) (*Network, error) {

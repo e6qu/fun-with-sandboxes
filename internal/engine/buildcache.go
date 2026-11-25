@@ -28,7 +28,7 @@ func (e *Engine) buildCache() *buildCache {
 // cacheEntry is what the cache keeps of one step: when it first ran, which
 // its image history records, and the file holding the layer it left, if
 // any. A rebuild without the cache writes a new file rather than replace
-// one a build in flight may still read.
+// one a build in flight might still read.
 type cacheEntry struct {
 	Created time.Time `json:"created"`
 	Layer   string    `json:"layer,omitempty"`

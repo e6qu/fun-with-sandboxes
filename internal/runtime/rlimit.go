@@ -14,7 +14,7 @@ const (
 )
 
 // ForkCeiling is the process limit a container's processes get where the
-// user may run max processes: max less a reserve of an eighth of it, and at
+// user can run max processes: max less a reserve of an eighth of it, and at
 // least 64, which the user's own programs keep.
 func ForkCeiling(max uint64) uint64 {
 	reserve := max / 8

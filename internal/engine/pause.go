@@ -97,7 +97,7 @@ func (e *Engine) Update(ref string, req container.UpdateConfig) (container.Updat
 	running := c.task != nil && c.rec.State.Status == container.StateRunning
 	if u.Memory != 0 {
 		// The kernel holds each running process to the limit it started
-		// under, which no process may raise: a running process would be
+		// under, which no process can raise: a running process would be
 		// killed short of the raised limit.
 		if running && r.Memory > 0 && (u.Memory < 0 || u.Memory > r.Memory) {
 			return container.UpdateResponse{}, unsupported("raising the memory limit of a running container is not supported: the kernel holds each of its processes to the limit it started under; stop the container, update it and start it again")

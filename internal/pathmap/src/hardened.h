@@ -11,7 +11,7 @@
 //
 // The file is replaced, not written: the kernel keeps the signature it
 // read with the file's vnode, and a process running the old file keeps it.
-// A file the container may not write, on a read-only mount, stays as it
+// A file the container cannot write, on a read-only mount, stays as it
 // is, and runs as it did.
 //
 // Included by the container library and by the spawn helper; every

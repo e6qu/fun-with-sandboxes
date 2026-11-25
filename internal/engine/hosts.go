@@ -151,7 +151,7 @@ func firstAddresses(address string, nets map[string]*network.EndpointSettings) [
 }
 
 // addHost reads an --add-host entry, host:ip, as the hosts file holds it:
-// host-gateway names the host, on loopback here, and an IPv6 address may
+// host-gateway names the host, on loopback here, and an IPv6 address can
 // stand in brackets. Anything else is refused, as it would otherwise reach
 // /etc/hosts as written, newlines and all.
 func addHost(h string) (name, ip string, err error) {
@@ -218,7 +218,7 @@ func writeHostsFiles(root, hostname, domain string, addresses, extra, links []st
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
-		// The image's file may be a symlink, which must not be followed out
+		// The image's file can be a symlink, which MUST NOT be followed out
 		// of the root.
 		if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
 			return err

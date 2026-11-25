@@ -222,7 +222,7 @@ func TestAsyncLookups(t *testing.T) {
 
 // dnsPy asks the first server of the container's resolv.conf for its
 // argument's A records itself, as dig does: by default one query in a
-// datagram from an unconnected socket, whose answer must come from the
+// datagram from an unconnected socket, whose answer has to come from the
 // server asked; with "tcp", over a TCP connection to the server, as a
 // resolver retries a truncated answer. An IPv6 server is asked over IPv6.
 // It prints the answer's code and its addresses, sorted.

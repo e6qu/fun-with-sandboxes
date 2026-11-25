@@ -142,7 +142,7 @@ func (f Filters) until(created time.Time) (bool, error) {
 
 // parseTimestamp reads a time as Docker's API filters accept it: a Go
 // duration back from now, an RFC 3339 date or date-time, or Unix seconds
-// with an optional fraction.
+// with or without a fraction.
 func parseTimestamp(v string, now time.Time) (time.Time, error) {
 	if d, err := time.ParseDuration(v); err == nil {
 		return now.Add(-d), nil

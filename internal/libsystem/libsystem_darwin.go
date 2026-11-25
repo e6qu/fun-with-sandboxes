@@ -135,7 +135,7 @@ const (
 // ExecLimited replaces the calling process with path, argv and env, as
 // execve does, holding the program to a fatal memory limit of memoryMiB
 // MiB of physical footprint, as jetsam does. An exec takes no limit, and
-// no process may set one on a running program, so it executes through
+// no process can set one on a running program, so it executes through
 // posix_spawn's POSIX_SPAWN_SETEXEC, which does. The program starts with
 // every signal at its default action and none blocked; descriptors are
 // kept as an exec keeps them. It returns only on failure.

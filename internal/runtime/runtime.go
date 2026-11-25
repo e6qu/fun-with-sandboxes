@@ -35,7 +35,7 @@ type Spec struct {
 	// Limits apply to the process and everything it starts.
 	Limits Limits
 	// Library is the container library (package pathmap) every process
-	// of the container loads; the profile must let it read the library.
+	// of the container loads; the profile MUST let it read the library.
 	Library string
 	// AnchorListener, for a container's main process, is the listening
 	// socket of the anchor its sandbox starts, which runs its execs.

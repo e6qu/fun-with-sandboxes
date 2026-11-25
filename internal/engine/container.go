@@ -329,7 +329,7 @@ func (e *Engine) Create(opts CreateOptions, req container.CreateRequest) (contai
 	// A nested engine puts a container on the host's network mode on the
 	// network of node, the privileged container it is nested in; another
 	// refuses the mode. The node is read before this engine's lock, as the
-	// engine that runs it may hold its lock while it waits on this one's;
+	// engine that runs it might hold its lock while it waits on this one's;
 	// the container stays in a stack of its own here.
 	var node *Container
 	if req.HostConfig.NetworkMode == "host" {
@@ -723,7 +723,7 @@ func checkContainerNetwork(req container.CreateRequest) error {
 	return nil
 }
 
-// heldSysctls are the kernel settings a container may ask for that hold
+// heldSysctls are the kernel settings a container can ask for that hold
 // already, which the engine accepts and sets nothing for, as kind asks
 // for them for an IPv6 or dual-stack cluster's nodes: IPv6 not disabled,
 // as a container on a network with IPv6 has it, and, for a privileged
@@ -1299,7 +1299,7 @@ func placeInit(root string) error {
 }
 
 // subpath is the file or directory sub names inside dir, resolved as inside a
-// root, so a symlink cannot lead out of it; it must exist, as Docker
+// root, so a symlink cannot lead out of it; it MUST exist, as Docker
 // requires.
 func subpath(dir, sub string) (string, error) {
 	if sub == "" {
@@ -1488,7 +1488,7 @@ func (e *Engine) environment(c *Container, ne *Engine, net *Container, extra []s
 	set("SANDBOX_ROOT=" + root)
 	set("SANDBOX_STACK=" + c.rec.Stack)
 	set("SANDBOX_HOST=127.0.0.1")
-	// POSIX shared memory and semaphore names must start with the prefix
+	// POSIX shared memory and semaphore names MUST start with the prefix
 	// under private IPC, so programs that name them need it.
 	if _, prefix, err := e.ipcMode(c); err == nil && prefix != "" {
 		set("SANDBOX_IPC_PREFIX=" + prefix)

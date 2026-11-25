@@ -446,7 +446,7 @@ type nodeID struct {
 // process holds, say, leaves the network's services as they were. A node
 // port one of the network's ports gives up and another takes in the same
 // update is the exception, which can only move once its holder lets it go:
-// should it fail to, the ports it moved from have theirs back.
+// if it fails to, the ports it moved from have theirs back.
 func (e *Engine) setServicesLocked(network string, svcs []Service, taken map[string]bool) error {
 	sv := &e.svcs
 	if sv.byNetwork == nil {

@@ -232,7 +232,7 @@ func (a *Allocator) takenLocked(s *Stack) map[int]bool {
 // that no key holds, reading the block from the state file under root, so
 // a process other than the engine, such as a container's supervisor, can
 // open one: the source of a UDP flow a published port forwards, which the
-// stack's containers must be able to reach. The kernel arbitrates between
+// stack's containers need to reach. The kernel arbitrates between
 // processes: a port another socket holds fails to bind and the next is
 // tried.
 func DialFlow(root, stack string, raddr *net.UDPAddr) (*net.UDPConn, error) {

@@ -26,7 +26,7 @@ var SystemReadPaths = []string{
 }
 
 // HostReadPaths are the host's files outside the system tree a container
-// reads, as a root of its own would hold them: the shells it may run, the
+// reads, as a root of its own would hold them: the shells it can run, the
 // link that names /bin/sh's shell, the time zone, the CA certificates and
 // the services and protocols databases, which programs without the
 // container library read at their host paths.
@@ -56,7 +56,7 @@ var DeniedReadRoots = []string{
 	"/private/etc/ssh",
 }
 
-// SystemShells are the only host executables a container may run: the C
+// SystemShells are the only host executables a container can run: the C
 // library's popen() and system() hard-code /bin/sh, which on macOS hands off
 // to the shell /private/var/select/sh names, and a script names its
 // interpreter as /usr/bin/env finds it on the container's PATH, since the
@@ -64,7 +64,7 @@ var DeniedReadRoots = []string{
 // profile would not let the container run itself.
 var SystemShells = []string{"/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash", "/usr/bin/env"}
 
-// MachServices are the only global Mach services a container may look up:
+// MachServices are the only global Mach services a container can look up:
 // user/group lookup, notifications, logging, and certificate trust
 // evaluation, which TLS needs and which hands out no secrets. Everything
 // else — the keychain, pasteboard, Launch Services, TCC — stays out of reach.
@@ -81,12 +81,12 @@ var MachServices = []string{
 	// Changes to the files a program watches, as a dev server or an
 	// editor's server watches its workspace; without it libuv's watcher
 	// fails as if out of files. fseventsd sends a sandboxed client only
-	// the events of paths it may read.
+	// the events of paths it can read.
 	"com.apple.FSEvents",
 }
 
 // GUIMachServices are the services of the user's login session a container
-// granted the session (Spec.GUI) may look up besides: what AppKit and a
+// granted the session (Spec.GUI) can look up besides: what AppKit and a
 // browser engine ask of the window server, Launch Services, the
 // pasteboard, fonts, input methods, preferences, audio and the GPU. The
 // keychain's stay out of reach.
@@ -213,12 +213,12 @@ type Spec struct {
 	// Root and the volumes.
 	StateRoot string
 	Volumes   []Volume
-	// BindPorts are the loopback ports the container may listen on.
+	// BindPorts are the loopback ports the container can listen on.
 	BindPorts []int
-	// ConnectPorts are the loopback ports the container may connect to
+	// ConnectPorts are the loopback ports the container can connect to
 	// over TCP and UDP: its own, its router's and its stack's egress proxy.
 	ConnectPorts []int
-	// DatagramPorts are the loopback ports the container may send UDP
+	// DatagramPorts are the loopback ports the container can send UDP
 	// datagrams to besides: its stack's block, where its routers' relays
 	// and its members' flow ports lie.
 	DatagramPorts []int
@@ -227,7 +227,7 @@ type Spec struct {
 	ReadOnlyRoot bool
 	// IPC confines POSIX shared memory and semaphores, and System V IPC.
 	IPC IPCMode
-	// IPCPrefix is the name prefix POSIX IPC objects must carry under
+	// IPCPrefix is the name prefix POSIX IPC objects MUST carry under
 	// IPCPrivate.
 	IPCPrefix string
 	// Libraries are files outside the root every process of the container
@@ -246,10 +246,10 @@ type Spec struct {
 	// ports that have no host port.
 	PortDir string
 	// HostPIDs lets the container signal and inspect every process the
-	// engine's user may, as on the host's PID namespace.
+	// engine's user can, as on the host's PID namespace.
 	HostPIDs bool
 	// ReadOnlyPaths are host paths, inside the root or a volume, the
-	// container may read and not write; MaskedPaths ones it may do
+	// container can read and not write; MaskedPaths ones it can do
 	// neither with, as Docker's ReadonlyPaths and MaskedPaths are.
 	ReadOnlyPaths, MaskedPaths []string
 	// ProcsSocket is where the container's shim answers it about its PID
@@ -266,8 +266,8 @@ type Spec struct {
 }
 
 // ProcListings are the process table's sysctl listings that name processes
-// across the Mac, which a container without the host's PID namespace may
-// not read.
+// across the Mac, which a container without the host's PID namespace
+// cannot read.
 var ProcListings = []string{"kern.proc.all", "kern.proc.uid", "kern.proc.ruid", "kern.proc.tty"}
 
 // IPCMode is a container's IPC confinement.
@@ -457,7 +457,7 @@ func Render(s Spec) (string, error) {
 		}
 		w(")")
 	}
-	// stat and realpath walk each ancestor of the root and volumes; they may
+	// stat and realpath walk each ancestor of the root and volumes; they can
 	// learn the ancestors exist, but not list them.
 	w("(allow file-read-metadata")
 	w("  (literal \"/\")")
@@ -649,7 +649,7 @@ func ipcPrefixOK(p string) bool {
 }
 
 // IPCPrefixFor is the prefix of the POSIX shared memory and semaphore names
-// the sandbox keyed by key may use: short, as macOS caps those names at 31
+// the sandbox keyed by key can use: short, as macOS caps those names at 31
 // bytes.
 func IPCPrefixFor(key string) string {
 	sum := sha256.Sum256([]byte(key))

@@ -13,7 +13,7 @@ import (
 const minQuota = 64 << 20
 
 // storageQuota reads a container's storage options: size, the most its
-// root's files may grow by beyond its image's, as overlay2's size quota
+// root's files can grow by beyond its image's, as overlay2's size quota
 // bounds the writable layer. It is 0 without one.
 func storageQuota(opts map[string]string) (int64, error) {
 	var size int64

@@ -51,7 +51,7 @@ type Config struct {
 	// lies inside the engine's state root, on the same volume as the image
 	// roots so results clone into the image store.
 	Root string
-	// StateRoot is the engine's state directory, which build steps may not
+	// StateRoot is the engine's state directory, which build steps cannot
 	// read.
 	StateRoot string
 	Images    *image.Store
@@ -134,7 +134,7 @@ func newWorker(ctx context.Context, cfg Config) (*darwinWorker, error) {
 	}
 	// Build steps own their files as root (uid and gid 0), and BuildKit
 	// chowns accordingly. Mapping 0 to the engine's user, as rootless
-	// BuildKit maps it, makes those chowns ones an unprivileged process may
+	// BuildKit maps it, makes those chowns ones an unprivileged process can
 	// make.
 	idmap := &user.IdentityMapping{
 		UIDMaps: []user.IDMap{{ID: 0, ParentID: int64(os.Getuid()), Count: 1}},

@@ -236,7 +236,7 @@ func (s *Server) kubePlay(w http.ResponseWriter, r *http.Request) {
 }
 
 // playPod creates pod kp, its containers after its init containers, and
-// starts it: each init container runs to its end, and must succeed,
+// starts it: each init container runs to its end, and has to succeed,
 // before the next and before the containers start.
 func (s *Server) playPod(r *http.Request, kp kubePod, configMaps map[string]map[string]string, networks []string, start bool) (pod, []string, []string, error) {
 	if kp.Spec.HostNetwork {

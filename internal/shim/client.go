@@ -275,7 +275,7 @@ func (c *Client) Logs(stop <-chan struct{}, notify func()) error {
 	if err != nil {
 		return err
 	}
-	// The container may have written before the subscription began.
+	// The container might have written before the subscription began.
 	notify()
 	done := make(chan struct{})
 	defer close(done)

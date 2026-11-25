@@ -70,7 +70,7 @@ type k3sOptions struct {
 	KubeconfigMode os.FileMode
 }
 
-// k3sValueFlags are the k3s server flags that take a value, which may
+// k3sValueFlags are the k3s server flags that take a value, which can
 // follow as the next argument; any other is a boolean.
 var k3sValueFlags = map[string]bool{
 	"node-name": true, "tls-san": true, "cluster-cidr": true, "service-cidr": true, "write-kubeconfig": true, "o": true,

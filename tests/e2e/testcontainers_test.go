@@ -24,7 +24,7 @@ import (
 // Each of Testcontainers' wait strategies that its users and modules
 // lean on holds a container back until what it waits for is so: a command
 // in the container answers, the image's health check passes, an HTTP
-// endpoint answers with the body it should, a file appears, a database
+// endpoint answers with the body expected, a file appears, a database
 // takes a query, and all of several strategies at once.
 func TestTestcontainersWaitStrategies(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

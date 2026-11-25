@@ -59,8 +59,8 @@ cp "$src/LICENSE" "$dest/LICENSE"
 chmod -R u+w "$dest"
 
 # Rewrite import declarations only. Generated protobuf code embeds its
-# upstream Go package path inside serialized descriptors, which must stay as
-# they are.
+# upstream Go package path inside serialized descriptors, which have to stay
+# as they are.
 rewrite_imports() {
   awk -v from="\"$upstream" -v to="\"$module/third_party/buildkit" '
     function fix(line) {

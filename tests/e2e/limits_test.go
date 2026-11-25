@@ -41,7 +41,7 @@ func TestMemoryLimit(t *testing.T) {
 	}
 	defer docker(t, "rm", "-f", id)
 	// The kernel holds each running process to the limit it started
-	// under, so a running container's limit may be lowered, not raised.
+	// under, so a running container's limit can be lowered, not raised.
 	if _, err := docker(t, "update", "--memory", "512m", id); err == nil || !strings.Contains(err.Error(), "raising the memory limit of a running container is not supported") {
 		t.Fatalf("raising a running container's memory limit: %v", err)
 	}

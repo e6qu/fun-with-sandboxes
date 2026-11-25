@@ -188,7 +188,7 @@ static const char *fault(const char *p, int follow, const char *q) {
     char dir[PATH_MAX], land[PATH_MAX];
     strlcpy(dir, q, sizeof dir);
     // Without follow a link the final component names stays, so its
-    // directory is what must stay in: the root's or the mount source's
+    // directory is what has to stay in: the root's or the mount source's
     // own, where the path is one of them.
     if (!follow) {
         char *s = strrchr(dir, '/');

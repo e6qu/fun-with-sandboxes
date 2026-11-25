@@ -115,7 +115,7 @@ func (s *Store) writeLayerMeta(d v1.Hash, m layerMeta) error {
 }
 
 // cacheLayer unpacks l into the cache under its diff_id d, checking the
-// stream against d as it reads it. ok is false where the layer may not be
+// stream against d as it reads it. ok is false where the layer cannot be
 // cached: its content is not d.
 func (s *Store) cacheLayer(l v1.Layer, d v1.Hash) (m layerMeta, ok bool, err error) {
 	if d.Algorithm != "sha256" {
@@ -255,7 +255,7 @@ func (s *Store) layerOfBlob(blob string) (v1.Hash, layerMeta, bool) {
 }
 
 // CloneCachedLayer clones the cached layer the store read from the
-// compressed blob of digest blob to dst, which must not exist: the layer's
+// compressed blob of digest blob to dst, which MUST NOT exist: the layer's
 // entries alone, its whiteouts as the files that name them, as
 // ExtractLayer leaves them. It returns the layer's diff_id and the length
 // of its uncompressed stream; ok is false where the store holds no such

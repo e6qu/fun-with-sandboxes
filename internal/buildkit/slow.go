@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// slowStep is how long a step of a build may take before the engine's log
+// slowStep is how long a step of a build can take before the engine's log
 // names it: a build that stalls shows there which step it waited on.
 const slowStep = 200 * time.Millisecond
 

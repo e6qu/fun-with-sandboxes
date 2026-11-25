@@ -420,7 +420,7 @@ static DNSServiceErrorType fws_DNSServiceSetDispatchQueue(DNSServiceRef service,
 INTERPOSE(fws_DNSServiceSetDispatchQueue, DNSServiceSetDispatchQueue);
 
 // fws_DNSServiceRefDeallocate ends the caller's hold: no callback follows,
-// though the lookup's thread and a queued delivery may hold the job a
+// though the lookup's thread and a queued delivery might hold the job a
 // while longer.
 static void fws_DNSServiceRefDeallocate(DNSServiceRef sdRef) {
     pthread_mutex_lock(&dns_lock);
@@ -651,8 +651,8 @@ static void fws_dnssd_set_protocols(fws_dnssd_gai_t gai, uint32_t protocols) {
 }
 INTERPOSE(fws_dnssd_set_protocols, dnssd_getaddrinfo_set_protocols);
 
-// The threads resolving for the stand-in, whose own lookups, should the
-// host's resolver ask the client, are the client's. A table, not a
+// The threads resolving for the stand-in, whose own lookups, if the
+// host's resolver asks the client, are the client's. A table, not a
 // thread-local: an inserted library's thread-locals are not set up before
 // its first calls.
 #define NW_RESOLVERS 64

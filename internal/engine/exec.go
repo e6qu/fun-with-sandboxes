@@ -119,7 +119,7 @@ func (e *Engine) ExecStartDetached(id string, tty bool, size *[2]uint) error {
 }
 
 // execBegin starts the exec and returns what waits for it to exit or
-// detach. An exec that fails before its process starts may be started
+// detach. An exec that fails before its process starts can be started
 // again; one whose process fails to start has exited.
 func (e *Engine) execBegin(id string, tty bool, size *[2]uint, stdio ExecIO) (wait func(), err error) {
 	x, c, err := e.exec(id)

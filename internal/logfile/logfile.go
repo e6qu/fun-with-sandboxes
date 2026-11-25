@@ -17,7 +17,7 @@ type Entry struct {
 	Time   time.Time `json:"time"`
 }
 
-// Appender appends entries to a log file. Several processes may append to
+// Appender appends entries to a log file. Several processes can append to
 // one file: each entry is one write to a file opened for appending.
 type Appender struct {
 	mu sync.Mutex

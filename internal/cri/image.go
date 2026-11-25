@@ -229,7 +229,7 @@ func (s *Service) ImageFsInfo(ctx context.Context, req *runtimeapi.ImageFsInfoRe
 	}, nil
 }
 
-// stacksUsageAge is how old a measure of the containers' files may grow
+// stacksUsageAge is how old a measure of the containers' files can grow
 // before a request starts the next.
 const stacksUsageAge = 30 * time.Second
 

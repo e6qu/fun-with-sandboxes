@@ -62,7 +62,7 @@ func TestKillEntriesEndsADaemonizedDescendant(t *testing.T) {
 	}
 	defer other.Process.Kill()
 
-	// While the main process lives, the daemon answers to it, as may the
+	// While the main process lives, the daemon answers to it, as can the
 	// launcher, if it has yet to end.
 	pids, err := Responsible(main)
 	if err != nil || !slices.Contains(pids, daemon) || slices.Contains(pids, other.Process.Pid) {
