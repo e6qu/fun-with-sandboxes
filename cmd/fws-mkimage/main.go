@@ -14,6 +14,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"debug/macho"
 	"encoding/json"
 	"errors"
@@ -723,7 +724,16 @@ func writeArchive(stage, overlay string, spec Spec, storePaths []string, out, ar
 		if err := writeLayer(p, owners, sources...); err != nil {
 			return fmt.Errorf("layer %q: %w", createdBy, err)
 		}
-		l, err := tarball.LayerFromFile(p, tarball.WithMediaType(types.OCILayer))
+		// The layer is compressed once, to a file the image then reads:
+		// a layer go-containerregistry compresses itself is compressed
+		// again each time it is read, for its digest, its size and the
+		// archive, and the archive takes the size from one compression
+		// and the bytes from another.
+		gz, err := compressLayer(p)
+		if err != nil {
+			return fmt.Errorf("layer %q: %w", createdBy, err)
+		}
+		l, err := tarball.LayerFromFile(gz, tarball.WithMediaType(types.OCILayer))
 		if err != nil {
 			return fmt.Errorf("layer %q: %w", createdBy, err)
 		}
@@ -840,6 +850,39 @@ type layerSource struct {
 // writeLayer writes the entries of sources as a deterministic layer tar,
 // in lexical order of their paths; of entries at the same path, the
 // later source's.
+// compressLayer gzips the layer tar at path to path.gz, at the level
+// go-containerregistry compresses layers at, removes the tar and returns
+// the compressed file's path. A gzip stream written with no name or time
+// in its header is the same for the same layer.
+func compressLayer(path string) (_ string, err error) {
+	in, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	gzPath := path + ".gz"
+	out, err := os.Create(gzPath)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if cerr := out.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	zw, err := gzip.NewWriterLevel(out, gzip.BestSpeed)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(zw, in); err != nil {
+		return "", err
+	}
+	if err := zw.Close(); err != nil {
+		return "", err
+	}
+	return gzPath, os.Remove(path)
+}
+
 func writeLayer(path string, owners map[string]owner, sources ...layerSource) (err error) {
 	f, err := os.Create(path)
 	if err != nil {

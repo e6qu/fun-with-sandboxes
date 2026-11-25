@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -36,8 +38,13 @@ func WriteArchive(w io.Writer, entries []ArchiveEntry) error {
 		if err := tw.WriteHeader(&tar.Header{Name: blobName(h), Mode: 0o444, Size: size, Typeflag: tar.TypeReg, Format: tar.FormatPAX}); err != nil {
 			return err
 		}
-		_, err = io.CopyN(tw, rc, size)
-		return err
+		if _, err := io.CopyN(tw, rc, size); err != nil {
+			if errors.Is(err, io.EOF) {
+				return fmt.Errorf("blob %s: shorter than the %d bytes its descriptor gives", h, size)
+			}
+			return fmt.Errorf("blob %s: %w", h, err)
+		}
+		return nil
 	}
 	bytesBlob := func(b []byte) func() (io.ReadCloser, error) {
 		return func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }
