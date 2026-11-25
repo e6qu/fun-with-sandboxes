@@ -2,7 +2,6 @@ package engine
 
 import (
 	"fmt"
-	goruntime "runtime"
 	"testing"
 
 	"github.com/moby/moby/api/types/blkiodev"
@@ -51,9 +50,6 @@ func TestCpusetBecomesACPURateAndPlacement(t *testing.T) {
 	saved := cpuTopology
 	defer func() { cpuTopology = saved }()
 	cpuTopology = func() (int, int) { return 4, 6 }
-	if goruntime.NumCPU() < 4 {
-		t.Skip("needs four CPUs, as a set of two must be fewer than the machine's")
-	}
 	for _, c := range []struct {
 		set   string
 		cpus  int64
@@ -98,6 +94,7 @@ func TestNiceForShares(t *testing.T) {
 }
 
 func TestContainerLimitsRefuse(t *testing.T) {
+	perf, eff := cpuTopology()
 	yes, swappy := true, int64(60)
 	for name, c := range map[string]struct {
 		r           container.Resources
@@ -111,7 +108,7 @@ func TestContainerLimitsRefuse(t *testing.T) {
 		"swappiness":             {container.Resources{MemorySwappiness: &swappy}, true},
 		"oom killer off":         {container.Resources{OomKillDisable: &yes}, true},
 		"nano CPUs and quota":    {container.Resources{NanoCPUs: 1e9, CPUQuota: 50000}, false},
-		"more CPUs than present": {container.Resources{NanoCPUs: int64(goruntime.NumCPU()+1) * 1e9}, false},
+		"more CPUs than present": {container.Resources{NanoCPUs: int64(perf+eff+1) * 1e9}, false},
 		"cpuset past the CPUs":   {container.Resources{CpusetCpus: "0-4096"}, false},
 		"cpuset malformed":       {container.Resources{CpusetCpus: "3-1"}, false},
 		"memory node past 0":     {container.Resources{CpusetMems: "1"}, false},

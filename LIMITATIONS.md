@@ -26,9 +26,10 @@ offers an unprivileged process. Non-goals are in
 - **`docker diff`, `commit` and `ps -s` compare files by size and
   whole-second modification time**, reading only those changed since the
   root was cloned.
-- **Catalog images are built by Nix**, mostly from source; MongoDB and
-  Vault are the vendors' own macOS builds. Where Linux parts are missing
-  they differ from upstream's:
+- **Catalog images are built by Nix**, mostly from source; MongoDB,
+  Vault, ClickHouse, Bun, Rust and Playwright's browsers are the vendors'
+  own macOS builds. Where Linux parts are missing they differ from
+  upstream's:
   - `fws/kafka` is Apache Kafka in Confluent's layout, without Confluent's
     own components such as the REST Proxy.
   - `fws/busybox` holds separate GNU and other darwin programs, not
@@ -36,26 +37,24 @@ offers an unprivileged process. Non-goals are in
     macOS's is; its `nc` only checks a port (`nc -z`); it has no `ps`,
     `top` or `vi`. `fws/base` has no package manager: add programs with
     `COPY` or by downloading darwin builds.
-  - `fws/playwright` carries Chromium's headless shell and Firefox, not
-    Chromium itself, which aborts as it starts under the container's
-    profile (so `channel: 'chromium'` and headed Chromium are absent), nor
-    WebKit. Playwright's
-    WebKit on macOS starts its web content, network and GPU processes as
-    XPC services, which launchd runs: the container's profile denies the
-    lookup, and a process launchd started would run outside the
-    container's sandbox and library. Its macOS builds also differ by macOS
-    release (14, 15, 26), which an image cannot choose for its host.
-    Firefox's own sandboxes are off (`MOZ_DISABLE_*_SANDBOX`), as Chromium
-    runs with `--no-sandbox`, and stay off only where a launch keeps the
-    container's environment.
+  - `fws/playwright` carries Chromium's headless shell and Firefox. It
+    has no full Chromium, which aborts as it starts under the container's
+    profile, so `channel: 'chromium'` and headed Chromium are absent. It
+    has no WebKit: Playwright's WebKit on macOS starts its web content,
+    network and GPU processes as XPC services, which launchd runs outside
+    the container's sandbox and library, and its builds differ by macOS
+    release, which an image cannot choose for its host. Firefox's own
+    sandboxes are off (`MOZ_DISABLE_*_SANDBOX`), as Chromium runs with
+    `--no-sandbox`, and stay off only where a launch keeps the container's
+    environment.
   - `fws/neo4j` is the Community Edition.
   - `fws/node` and `fws/rust` compile C and C++ with nixpkgs' clang, ld64
-    and macOS 14.4 SDK, not Xcode's: there is no `xcrun`, `xcodebuild` or
-    Swift, and node-gyp is nixpkgs' build, which takes the Xcode version
-    as 11.0 rather than ask `xcodebuild`.
+    and macOS SDK, not Xcode's: there is no `xcrun`, `xcodebuild` or
+    Swift, and node-gyp is nixpkgs' build, which takes a fixed Xcode
+    version rather than ask `xcodebuild`.
   - `fws/rust` has no rustup: its toolchain is the release's build for
-    `aarch64-apple-darwin` alone, with rustfmt and clippy: `rustup`
-    commands and other targets are not available, and a
+    `aarch64-apple-darwin` alone, with rustfmt and clippy, so `rustup`
+    commands and other targets are not available and a
     `rust-toolchain.toml` goes unread.
   - `fws/opensearch` is the minimal distribution with the security plugin,
     without the k-NN and ML Commons plugins, whose native libraries are
@@ -97,8 +96,12 @@ offers an unprivileged process. Non-goals are in
   `exec -u`, `--group-add`, `--hostname`, `--domainname` and `-w` behave as
   in Docker. Its limits:
   - A path names the root's file when the root holds it, or its parent;
-    any other path, such as `/dev` or the system frameworks, names the
-    host's. `/proc` is an empty directory. Symbolic links resolve inside
+    any other path names the host's. `/System`, `/usr/lib`, `/dev`,
+    `/private/var/db`, `/var/db` and `/Library/Apple` are always the
+    host's, as the loader and libSystem read them there, so an image
+    cannot put files in them: `fws-mkimage` refuses such a path, and
+    `npm install -g` in the catalog's Node.js images goes to `/usr/local`.
+    `/proc` is an empty directory. Symbolic links resolve inside
     the container, as under chroot; a link loop fails with `ENOENT`, not
     `ELOOP`.
   - Programs Apple signs, static binaries and programs making system calls
@@ -201,7 +204,9 @@ offers an unprivileged process. Non-goals are in
 - **Network membership is enforced for TCP, presented for UDP.** A
   container connects over TCP to its own ports, its router and the egress
   proxy alone; its router carries a connection on only to a member it
-  shares a network with. Datagrams may go to any port of the stack's
+  shares a network with. A connection to any other loopback port is
+  refused (`ECONNREFUSED`), as in a network namespace where nothing
+  listens there. Datagrams may go to any port of the stack's
   block, where routers' relays lie, so a program without the library
   reaches a member's UDP host port, and a host process that later binds a
   UDP port in the block is reachable from that stack.
@@ -242,8 +247,12 @@ offers an unprivileged process. Non-goals are in
   is pinged by the router given internet access. Raw sockets need root.
 - **Published UDP clients are bounded by the stack's block**, one flow
   port each, idle-closed after 90 seconds. SCTP cannot be published.
-- **Unix socket paths are capped at 104 bytes**, as the container sees
-  them; a longer host path binds through the mount or root below it.
+- **Unix socket paths are capped at 104 bytes**, macOS's `sun_path`, as
+  the container sees them; a longer host path binds through the mount or
+  root below it. A program given a socket path should be given its
+  container path, as `fws/postgres` and `fws/mysql` are
+  (`/var/run/postgresql`, `/var/run/mysqld`): a host path under a stack's
+  root often runs past the limit.
 
 ## Kubernetes
 
@@ -348,12 +357,6 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 - **Local volumes bind host directories only** (`type=none,o=bind`) or are
   tmpfs; other filesystem types need root. A read-only bind source the
   host cannot create, such as `/lib/modules`, mounts empty.
-- **A Podman pod shares its network, IPC and PID namespaces** through an
-  infra container running `fws/pause`. `kube play` runs Pods, and
-  Deployments of one replica, with their ConfigMaps' values, claims'
-  volumes and init containers; `kube generate` writes a pod or container
-  back and `kube down` removes what a file made. Checkpoints and quadlets
-  are not served.
 - **Refused, having no macOS counterpart**: `--sysctl` beyond those below,
   runtimes other than runc, log drivers other than `json-file` and
   `local`, devices, `--gpus`, device cgroup rules, `--cgroup-parent`,
@@ -369,10 +372,16 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
 
 ## API surface
 
-- **Testcontainers for Java's startup checks run `alpine`**, a Linux
-  image, so they are turned off (`TESTCONTAINERS_CHECKS_DISABLE=true` or
-  `checks.disable=true`); the libraries' reapers run as the catalog's
-  `fws/ryuk` under the names each pins (README).
+- **Testcontainers needs a few settings**: the libraries' reapers run as
+  the catalog's `fws/ryuk` under the names each pins, Testcontainers for
+  Java sees a blank `OSType` in `/info`, and its startup checks, which run
+  `alpine`, are turned off ([README](README.md#testcontainers)).
+- **A Podman pod shares its network, IPC and PID namespaces** through an
+  infra container running `fws/pause`. `kube play` runs Pods, and
+  Deployments of one replica, with their ConfigMaps' values, claims'
+  volumes and init containers; `kube generate` writes a pod or container
+  back and `kube down` removes what a file made. Checkpoints and quadlets
+  are not served.
 - **Not served:** swarm, services, nodes, secrets, configs and plugins.
   The engine serves what Docker Compose, the Docker CLI and Testcontainers
   use ([DESIGN](docs/DESIGN.md#8-docker-engine-api-surface)).

@@ -21,15 +21,15 @@ import (
 // run from testcontainers/ryuk at the version each pins, which the
 // catalog's fws/ryuk:0.14.0 is tagged as (README, Testcontainers).
 
-// langTools looks up the programs a test runs, and skips the test when
-// the runner lacks one.
+// langTools looks up the programs a test runs, and fails the test when
+// the machine lacks one: no test skips a missing tool (CONTRIBUTING).
 func langTools(t *testing.T, names ...string) map[string]string {
 	t.Helper()
 	paths := map[string]string{}
 	for _, n := range names {
 		p, err := exec.LookPath(n)
 		if err != nil {
-			t.Skipf("%s is not installed on this machine: %v", n, err)
+			t.Fatalf("%s is not installed on this machine: %v", n, err)
 		}
 		paths[n] = p
 	}

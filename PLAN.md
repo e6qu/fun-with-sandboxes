@@ -42,13 +42,13 @@ Consuming Dockerfiles written for Linux is not a goal.
 
 ## Where it stands
 
-Docker's CLI, Compose, buildx and BuildKit, Testcontainers, Podman's
-remote client, `podman-compose`, pods and `kube play`, the Dev Containers
-CLI and VS Code's extension, graphical applications
-(`--security-opt seatbelt=gui`), `crictl`, the kubelet, kind and k3s run
-against the engine in CI on macOS 15 and 26. A catalog of 45 darwin images
-at 56 tags is published to `ghcr.io/e6qu/fws-*` at the newest upstream
-releases ([IMAGES](docs/IMAGES.md)); Kubernetes is at 1.37.2.
+Docker's CLI, Compose, buildx and BuildKit, Testcontainers for Go, Java,
+Python, Node.js, Bun and Rust, Podman's remote client, `podman-compose`,
+pods and `kube play`, the Dev Containers CLI and VS Code's extension,
+graphical applications (`--security-opt seatbelt=gui`), `crictl`, the
+kubelet, kind and k3s run against the engine in CI on macOS 15 and 26. A
+catalog of 46 darwin images at 57 tags is published to
+`ghcr.io/e6qu/fws-*` ([IMAGES](docs/IMAGES.md)); Kubernetes is at 1.37.2.
 
 Seatbelt enforces a container's file reads and writes, its TCP
 connections, its process listing and its IPC; its supervisor enforces its
@@ -60,40 +60,18 @@ what is presented without being enforced.
 
 ## Roadmap
 
-Four pull requests, in this order, each with the end-to-end tests that
-proved its claims on macOS:
-
-1. **Enforced isolation** (done,
-   [#84](https://github.com/e6qu/fun-with-sandboxes/pull/84)): reads
-   allow-listed as chroot would, TCP held to the container's own ports and
-   its networks' members, and the process table its own.
-2. **Limits macOS can enforce** (done,
-   [#85](https://github.com/e6qu/fun-with-sandboxes/pull/85)): cpusets, a
-   root size quota on an APFS disk image, and bandwidth.
-3. **Networks: ingress, egress and routes** (done,
-   [#86](https://github.com/e6qu/fun-with-sandboxes/pull/86)): egress allow
-   lists per network and per container in the egress proxy, a source
-   allow list on published ports, a routing table presented through the
-   routing sysctl, and the bridge driver's options that translate
-   (`enable_icc`, `enable_ip_masquerade`, `host_binding_ipv4`), with the
-   rest refused.
-4. **Images and the CLI** (done,
-   [#86](https://github.com/e6qu/fun-with-sandboxes/pull/86)): Python
-   3.11–3.15, Node.js 22, 24 and 26, and the Lambda runtimes AWS offers for
-   them; `fws catalog`; and [IMAGES](docs/IMAGES.md), how images work.
-
-The roadmap is finished. From here the work is upkeep (below) and
-correctness: the static checks CI runs (`scripts/lint.sh`, the C
-library's warnings and analyzer) stay clean, every bug found is fixed
-where it is found, and compatibility with Compose, Testcontainers,
-Podman, Kubernetes, kind and k3s is kept by the tests that run them.
+The roadmap is finished: enforced isolation
+([#84](https://github.com/e6qu/fun-with-sandboxes/pull/84)), the limits
+macOS can enforce ([#85](https://github.com/e6qu/fun-with-sandboxes/pull/85)),
+and networks, images and the CLI
+([#86](https://github.com/e6qu/fun-with-sandboxes/pull/86)). From here the
+work is correctness and upkeep: the static checks CI runs stay clean, every
+bug found is fixed where it is found, and compatibility with Compose,
+Testcontainers, Podman, Kubernetes, kind and k3s is kept by the tests that
+run them.
 
 ## Upkeep
 
 Done at any time, never ahead of the roadmap: the catalog, Kubernetes,
-etcd and kind at their newest upstream releases. The images take
-`nixpkgs-26.05-darwin`'s packages. Where it lags, they take
-`images/catalog`'s instead: nixpkgs-unstable's packages, its recipes at
-the newest release, or the release's own macOS build. `images/servers.nix`
-builds MySQL and MariaDB, `images/etcd` builds etcd, and
-`images/kubernetes` builds Kubernetes.
+etcd and kind at their newest upstream releases. How a release reaches an
+image is in [IMAGES](docs/IMAGES.md#add-an-image-or-a-release).

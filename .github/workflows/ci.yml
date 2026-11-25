@@ -50,8 +50,8 @@ jobs:
           mapfile -t pkgs < <(go list ./... | grep -v /third_party/)
           GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/staticcheck" "${pkgs[@]}"
           (cd tests/e2e && GOOS=darwin GOARCH=arm64 "$RUNNER_TEMP/bin/staticcheck" -tags e2e ./...)
-      # ineffassign, nilness, exhaustive, ShellCheck and actionlint
-      # (scripts/lint.sh); ShellCheck comes with the runner's image.
+      # The linters scripts/lint.sh names; ShellCheck comes with the
+      # runner's image.
       - name: lint (darwin)
         run: GOOS=darwin GOARCH=arm64 GOBIN="$RUNNER_TEMP/bin" scripts/lint.sh
       # Known vulnerabilities in the code the engine and the suite call,
@@ -489,7 +489,7 @@ jobs:
           bun-version: 1.4.5
       # The runner ships Python, Java with Maven, Node.js and rustup, which
       # Testcontainers for Python, Java, Node.js and Rust run on; a test
-      # whose toolchain is missing skips, so each is named here.
+      # whose toolchain is missing fails, and each is checked here first.
       - name: check the Testcontainers languages' toolchains
         run: |
           rustup default stable

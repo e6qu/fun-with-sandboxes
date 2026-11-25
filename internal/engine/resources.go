@@ -2,7 +2,6 @@ package engine
 
 import (
 	"math"
-	goruntime "runtime"
 	"strings"
 
 	"github.com/moby/moby/api/types/container"
@@ -65,7 +64,9 @@ func containerLimits(r container.Resources) (runtime.Limits, shim.Resources, err
 		return l, s, unsupported("disabling the OOM killer is not supported: the memory limit is enforced only by ending processes")
 	}
 
-	ncpu := int64(goruntime.NumCPU())
+	// The machine's CPUs, as the cpuset's numbering counts them.
+	perf, eff := cpuTopology()
+	ncpu := int64(perf + eff)
 	switch {
 	case r.NanoCPUs != 0 && (r.CPUQuota != 0 || r.CPUPeriod != 0):
 		return l, s, invalid("Conflicting options: Nano CPUs and CPU Period/Quota cannot both be set")
@@ -90,7 +91,6 @@ func containerLimits(r container.Resources) (runtime.Limits, shim.Resources, err
 		return l, s, invalid("Requested memory nodes are not available - requested %s, available: 0", r.CpusetMems)
 	}
 	if r.CpusetCpus != "" {
-		perf, eff := cpuTopology()
 		cpus, err := parseCpuset(r.CpusetCpus, perf+eff)
 		if err != nil {
 			return l, s, err

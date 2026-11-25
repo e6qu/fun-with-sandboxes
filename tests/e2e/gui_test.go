@@ -440,12 +440,18 @@ func TestVSCodeDevContainersCustomizations(t *testing.T) {
 `,
 		// A server on the port, run by the node VS Code's server brings,
 		// as fws/base has none of its own.
-		// Each step is traced, for a failure to show how far it came.
+		// The Dev Containers CLI runs a lifecycle command in a terminal and
+		// waits for its shell alone; the shell's exit hangs the terminal
+		// up, and SIGHUP reaches the server's shell before it executes
+		// nohup, even before it opens its log. Ignoring SIGHUP first, as
+		// the server inherits it, holds wherever the race lands. Each step
+		// is traced, for a failure to show how far it came.
 		".devcontainer/attached.sh": `exec 2> /tmp/attached.trace
 set -x
 echo attached > /tmp/attached
 node=$(ls /root/.vscode-server/bin/*/node | head -1)
-nohup "$node" .devcontainer/serve.js "$1" > /tmp/serve.log 2>&1 &
+trap '' HUP
+"$node" .devcontainer/serve.js "$1" > /tmp/serve.log 2>&1 < /dev/null &
 echo "started $!" >&2
 `,
 		".devcontainer/serve.js": `require("http").createServer((req, res) => res.end("forwarded\n")).listen(Number(process.argv[2]));
