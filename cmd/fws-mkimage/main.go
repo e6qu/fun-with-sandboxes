@@ -435,24 +435,25 @@ func relocate(stage, dir string) error {
 		if err != nil || !d.Type().IsRegular() {
 			return err
 		}
-		refs, rpaths, ok, err := machoRefs(p)
+		refs, rpaths, weak, ok, err := machoRefs(p)
 		if err != nil || !ok {
 			return err
 		}
 		var args []string
 		for _, ref := range refs {
 			if strings.HasPrefix(ref, storeDir+"/") {
-				if err := held(stage, p, ref); err != nil {
+				// A weak load that finds nothing leaves its symbols unset,
+				// as its program expects; any other fails to start.
+				if err := held(stage, p, ref); err != nil && !weak[ref] {
 					return err
 				}
 				args = append(args, "-change", ref, loaderRel(stage, p, ref))
 			}
 		}
 		for _, rp := range rpaths {
+			// An rpath is a directory dyld searches, and one that does not
+			// exist is passed over, as bootstrap tools' placeholder ones are.
 			if strings.HasPrefix(rp, storeDir+"/") {
-				if err := held(stage, p, rp); err != nil {
-					return err
-				}
 				args = append(args, "-rpath", rp, loaderRel(stage, p, rp))
 			}
 		}
@@ -494,9 +495,9 @@ func describeMachO(p string) string {
 	return b.String()
 }
 
-// held fails where the Mach-O file p loads ref, a store path's file or an
-// rpath's directory, that the image does not hold: relative or not, the
-// reference would find nothing in a container.
+// held fails where the Mach-O file p loads ref, a store path's file, that
+// the image does not hold: relative or not, the reference would find
+// nothing in a container.
 func held(stage, p, ref string) error {
 	if _, err := os.Stat(filepath.Join(stage, ref)); err != nil {
 		return fmt.Errorf("%s loads %s, which the image's closure does not hold", strings.TrimPrefix(p, stage), ref)
@@ -524,7 +525,8 @@ const (
 
 // machoRefs lists the dylibs and rpaths a Mach-O file names; ok is false
 // for anything that is not Mach-O.
-func machoRefs(p string) (refs, rpaths []string, ok bool, err error) {
+func machoRefs(p string) (refs, rpaths []string, weak map[string]bool, ok bool, err error) {
+	weak = map[string]bool{}
 	files := []*macho.File{}
 	if fat, ferr := macho.OpenFat(p); ferr == nil {
 		defer fat.Close()
@@ -535,7 +537,7 @@ func machoRefs(p string) (refs, rpaths []string, ok bool, err error) {
 		defer f.Close()
 		files = append(files, f)
 	} else {
-		return nil, nil, false, nil
+		return nil, nil, nil, false, nil
 	}
 	seen := map[string]bool{}
 	for _, f := range files {
@@ -558,11 +560,14 @@ func machoRefs(p string) (refs, rpaths []string, ok bool, err error) {
 			// name string right after cmd and cmdsize.
 			off := f.ByteOrder.Uint32(raw[8:12])
 			if int(off) >= len(raw) {
-				return nil, nil, false, fmt.Errorf("%s: malformed load command 0x%x", p, cmd)
+				return nil, nil, nil, false, fmt.Errorf("%s: malformed load command 0x%x", p, cmd)
 			}
 			name := string(raw[off:])
 			if i := strings.IndexByte(name, 0); i >= 0 {
 				name = name[:i]
+			}
+			if cmd == lcLoadWeakDylib {
+				weak[name] = true
 			}
 			key := fmt.Sprintf("%t:%s", cmd == lcRpath, name)
 			if !seen[key] {
@@ -571,7 +576,7 @@ func machoRefs(p string) (refs, rpaths []string, ok bool, err error) {
 			}
 		}
 	}
-	return refs, rpaths, true, nil
+	return refs, rpaths, weak, true, nil
 }
 
 // verifyRelocated fails if any Mach-O file in the stage still loads through
@@ -581,7 +586,7 @@ func verifyRelocated(stage string) error {
 		if err != nil || !d.Type().IsRegular() {
 			return err
 		}
-		refs, rpaths, ok, err := machoRefs(p)
+		refs, rpaths, _, ok, err := machoRefs(p)
 		if err != nil || !ok {
 			return err
 		}

@@ -49,7 +49,7 @@ func TestMachoRefsSeesEveryDylibCommand(t *testing.T) {
 	if err := os.WriteFile(p, f.Bytes(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	refs, rpaths, ok, err := machoRefs(p)
+	refs, rpaths, _, ok, err := machoRefs(p)
 	if err != nil || !ok {
 		t.Fatalf("machoRefs: ok=%v err=%v", ok, err)
 	}
@@ -69,7 +69,7 @@ func TestMachoRefsSeesEveryDylibCommand(t *testing.T) {
 func TestMachoRefsIgnoresOtherFiles(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "script")
 	os.WriteFile(p, []byte("#!/bin/sh\necho hi\n"), 0o755)
-	if _, _, ok, err := machoRefs(p); ok || err != nil {
+	if _, _, _, ok, err := machoRefs(p); ok || err != nil {
 		t.Fatalf("script read as Mach-O: ok=%v err=%v", ok, err)
 	}
 }

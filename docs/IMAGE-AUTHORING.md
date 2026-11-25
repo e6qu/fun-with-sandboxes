@@ -817,7 +817,9 @@ It works in this order:
    `LC_RPATH`) is rewritten with `install_name_tool` to an
    `@loader_path`-relative one, and the file is re-signed ad hoc
    (`codesign --force --sign -`), as arm64 macOS refuses modified code
-   otherwise. A load of a store path the closure lacks fails the build.
+   otherwise. A required load of a store path the closure lacks fails the
+   build; a weak load and an rpath may name a path that is not there, as
+   dyld passes over both.
 3. **Links each `-pkg`'s `bin/`** into `/bin`.
 4. **Rewrites the closure's scripts' `#!` lines**, which the kernel
    resolves outside the container's root: an interpreter that is a shell
