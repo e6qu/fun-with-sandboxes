@@ -6,24 +6,31 @@ APFS clones. [PLAN](PLAN.md) says what it sets out to do,
 [DESIGN](docs/DESIGN.md) how it works, and [LIMITATIONS](LIMITATIONS.md)
 what it cannot do.
 
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
+
 ## Ground rules
 
-A change that breaks one of [PLAN](PLAN.md#constraints)'s constraints is not
-merged: no virtual machine, no root, isolation the kernel enforces and a
-test proves, and Go built for `darwin/arm64` with C only inside a process
-start. Two more rules follow:
+A change MUST NOT break one of [PLAN](PLAN.md#constraints)'s constraints,
+and one that does is not merged: no virtual machine, no root, isolation the
+kernel enforces and a test proves, and Go built for `darwin/arm64` with C
+only inside a process start. Further rules follow:
 
 - **Refuse what cannot be honoured.** An option the engine cannot enforce
-  returns a Docker API error; it is never accepted and silently ignored.
-  Only an option that asks for no more confinement than a container already
-  has is accepted and changes nothing; [LIMITATIONS](LIMITATIONS.md) lists
-  them.
-- **Tests run everything they name.** No `t.Skip` for a missing tool:
-  install the tool in CI instead.
+  MUST return a Docker API error; it MUST NOT be accepted and silently
+  ignored. Only an option that asks for no more confinement than a
+  container already has MAY be accepted and change nothing;
+  [LIMITATIONS](LIMITATIONS.md) lists them.
+- **Tests run everything they name.** A test MUST NOT call `t.Skip` for a
+  missing tool: install the tool in CI instead.
+- **Requirements use RFC 2119.** Documentation and code comments use the
+  RFC 2119 key words, uppercase, for requirements and only for
+  requirements. A document that uses them MUST carry the boilerplate
+  paragraph that RFC 2119 gives, as this one does above; a code comment
+  follows the convention without repeating it.
 
-A flaky test is a bug: find the cause rather than retrying it. A test waits
-on the event it needs, such as a Docker event, a health status or a
-connection, never on a fixed sleep.
+A flaky test is a bug: its cause MUST be found and fixed rather than the
+test retried. A test MUST wait on the event it needs, such as a Docker
+event, a health status or a connection, and MUST NOT wait on a fixed sleep.
 
 ## Set up
 
@@ -96,7 +103,7 @@ on any machine; the unit tests' probes and the end-to-end suite need macOS.
    checks it runs at pinned versions (ineffassign, nilness, exhaustive,
    unparam, unconvert, deadcode, a subset of gosec, ShellCheck and
    actionlint). A `switch` over one of the module's enum types names every
-   value or has a `default`; mark one partial by design with a comment
+   value or has a `default`; one partial by design MUST carry a comment
    saying why and `//exhaustive:ignore` alone on the line above it.
 
    ```bash
@@ -203,48 +210,51 @@ in small packages of their own, such as `internal/execpath` and
 
 ## Change things
 
-- **The Seatbelt profile.** Add the rule to `internal/seatbelt/profile.go`,
-  a check of its text to `profile_test.go`, and a probe that tries to break
-  it to `sandbox_darwin_test.go`.
+- **The Seatbelt profile.** A new rule goes in
+  `internal/seatbelt/profile.go` and MUST come with a check of its text in
+  `profile_test.go` and a probe that tries to break it in
+  `sandbox_darwin_test.go`.
 - **The container library.** `internal/pathmap/src/fwsroot.c` runs inside
   every container process, so:
-  - It builds with `-Wall -Werror`; CI also compiles it, and the spawn
+  - It MUST build with `-Wall -Werror`; CI also compiles it, and the spawn
     helper, with `-Wextra -Wshadow -Wsign-compare`, and runs clang's
     static analyzer over the helper.
-  - Its path and socket mapping takes no lock libSystem may hold, so it
-    calls no `snprintf`, `strtoul` or other locale-aware function there.
-  - It keeps no thread-local state.
-  - Each behaviour has a probe under `internal/pathmap/testdata`, run by
+  - Its path and socket mapping MUST NOT take a lock libSystem might hold,
+    so it MUST NOT call `snprintf`, `strtoul` or any other locale-aware
+    function there.
+  - It MUST NOT keep thread-local state.
+  - Each behaviour MUST have a probe under `internal/pathmap/testdata`, run by
     `pathmap_darwin_test.go`.
   - `FWS_TRACE=1` in a container's environment (`docker run -e`) has it
     write to standard error each call that asks about a file's place
     (`stat`, `getattrlist`, `statfs`, `realpath`), what the path mapped to
     and what came back.
-- **The Docker API.** Answer as dockerd does, with the same status codes
-  and error text, and add an end-to-end test that drives the change through
+- **The Docker API.** An endpoint MUST answer as dockerd does, with the
+  same status codes and error text, and a change MUST come with an
+  end-to-end test that drives the change through
   the Docker CLI or Compose.
 - **An image or a release.** See
   [IMAGES](docs/IMAGES.md#add-an-image-or-a-release).
 - **BuildKit.** Change the packages it copies with
   `scripts/sync-buildkit.sh`, and patches in `third_party/buildkit-patches`.
-  Never edit `third_party/buildkit` by hand: CI checks it matches the
-  script's output.
+  `third_party/buildkit` MUST NOT be edited by hand: CI checks it matches
+  the script's output.
 
-Update the [README](README.md), [DESIGN](docs/DESIGN.md),
-[IMAGES](docs/IMAGES.md) and [LIMITATIONS](LIMITATIONS.md) in the same
-change as the code they describe.
+The [README](README.md), [DESIGN](docs/DESIGN.md),
+[IMAGES](docs/IMAGES.md) and [LIMITATIONS](LIMITATIONS.md) MUST be updated
+in the same change as the code they describe.
 
 ## Write
 
-- **Commit messages** state the behaviour the change gives, in a sentence:
+- **Commit messages** SHOULD state the behaviour the change gives, in a sentence:
   "Stack members reach one another by name", not "Add member support".
-- **Comments** say what the code cannot: a constraint, a quirk of macOS or
-  of Docker, a choice whose obvious alternative is wrong. Leave out what
-  the next line already says.
-- **Docs** use the active voice and name things by their real names:
+- **Comments** SHOULD say what the code cannot: a constraint, a quirk of
+  macOS or of Docker, a choice whose obvious alternative is wrong. They
+  SHOULD NOT repeat what the next line already says.
+- **Docs** SHOULD use the active voice and name things by their real names:
   Seatbelt, APFS, Docker Compose.
 
 ## Send a pull request
 
-Describe what changed and how it is tested. Every CI job must pass before
-review; a pull request is squash-merged under a one-line title.
+A pull request MUST describe what changed and how it is tested. Every CI
+job MUST pass before review; a pull request is squash-merged under a one-line title.

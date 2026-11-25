@@ -10,6 +10,8 @@ extension of its own, no virtual machine. This page covers what Seatbelt
 does, how to write and test a profile by hand, and how the engine renders
 and applies one for every container.
 
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
+
 ## How it works
 
 A kernel extension checks each operation a sandboxed process makes against
@@ -99,7 +101,7 @@ Two rules of precedence matter:
    (subpath "/"))`.
 
 Matching uses resolved paths. `/var` is a symbolic link to `/private/var`
-and `/tmp` to `/private/tmp`, so a rule must name `/private/tmp/work` to
+and `/tmp` to `/private/tmp`, so a rule MUST name `/private/tmp/work` to
 cover a file a program opens as `/tmp/work/file`.
 
 ## Tutorial
@@ -221,7 +223,7 @@ operation family and then allows what the container owns:
 |---|---|
 | Baseline | `(deny default)` with Apple's `system.sb`, then forks, sysctl reads but the process table's listings (`ProcListings`, unless on the host's PID namespace), pseudo-terminals, `file-ioctl`, IPC, inbound network and socket creation, except kernel control and link-layer sockets (domains 32 and 27) |
 | File writes | the container's root (unless read-only), its writable volumes, its port directory, files the engine names (such as the shared-memory ledger) and a few devices |
-| File reads | nothing, then, as under chroot: the container's root and volumes, its port directory, the container library and helper, its stack's network file and limit files, the system trees every process needs (`SystemReadPaths`), and the host files a root would hold (`HostReadPaths`: the shells, `/private/var/select`, the time zone, `/private/etc/ssl`, `services`, `protocols`). A container granted the user's session reads everything under `/` but the engine's state and the trees that hold user data or other software (`DeniedReadRoots`). Of the files outside the root and the system tree, only the container library may be mapped executable |
+| File reads | nothing, then, as under chroot: the container's root and volumes, its port directory, the container library and helper, its stack's network file and limit files, the system trees every process needs (`SystemReadPaths`), and the host files a root would hold (`HostReadPaths`: the shells, `/private/var/select`, the time zone, `/private/etc/ssl`, `services`, `protocols`). A container granted the user's session reads everything under `/` but the engine's state and the trees that hold user data or other software (`DeniedReadRoots`). Of the files outside the root and the system tree, only the container library can be mapped executable |
 | Execution | programs in the root and in volumes not mounted `noexec`, the system shells `popen()` and `system()` hard-code and `/usr/bin/env` for scripts' interpreters (`SystemShells`), and the engine's helper binary `fws-shim`, which starts the exec anchor and runs `fws-memexec` |
 | Network | Unix sockets in the root, volumes and port directory, the shim's sockets, a privileged container's nested engine API, and syslog's; binds on the loopback host ports behind the container's ports; connections to those ports, its router's and, with internet access, the egress proxy's; UDP datagrams to its stack's block, where the routers' relays and flow ports lie. Another member is reached only through the container's router, which checks they share a network |
 | Mach services | lookups of a fixed list of Apple services (`MachServices`), and registering and looking up the container's own under its IPC prefix |
@@ -257,14 +259,14 @@ details):
 - No program in a container can sandbox itself further, since macOS
   refuses a second profile; Chromium-based applications therefore run with
   `--no-sandbox`.
-- A process may signal only processes of its own sandbox, and a process
+- A process can signal only processes of its own sandbox, and a process
   that enters a profile by itself is a sandbox of its own (step 4 of the
   tutorial shows the inheritance). So the main process's helper starts an
   exec anchor inside the sandbox before it executes the program, and
   `docker exec` and health checks start through the anchor, in the same
   sandbox as the main process.
 
-Seatbelt decides what a container may do; the library decides only what it
+Seatbelt decides what a container can do; the library decides only what it
 sees.
 
 ### Reading a container's profile
@@ -311,8 +313,8 @@ Each rule has a test in `internal/seatbelt`:
 - `profile_test.go` checks the rendered text: each rule is present, and in
   the order precedence needs.
 - `sandbox_darwin_test.go` runs a probe under the real sandbox on macOS. It
-  tries each operation a container should be denied, and each one it should
-  be allowed.
+  tries each operation the profile is meant to deny a container, and each
+  one it is meant to allow.
 - `nested_darwin_test.go` (`TestSecondSandboxRefused`) checks that macOS
   still refuses a second profile, and `bench_darwin_test.go` times compiling
   and applying one.

@@ -5,15 +5,17 @@ follows from running with no root and no virtual machine, on what macOS
 offers an unprivileged process. Non-goals are in
 [PLAN.md](PLAN.md#non-goals).
 
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
+
 ## Images
 
 - **macOS-native images only.** Nothing on macOS runs Linux ELF binaries
   without a VM, so stock Docker Hub images do not run.
-- **Images follow the container contract.** A service finds its root and
-  ports at their container paths and port numbers through the container
-  library, or reads them from the `SANDBOX_*` variables
+- **Images MUST follow the container contract.** A service finds its
+  root and ports at their container paths and port numbers through the
+  container library, or reads them from the `SANDBOX_*` variables
   ([IMAGES](docs/IMAGES.md#the-container-contract)). Software the library
-  cannot load into needs an entrypoint that configures it from the
+  cannot load into MUST have an entrypoint that configures it from the
   variables.
 - **Only the engine's platform.** A `--platform` or `FROM --platform` other
   than the engine's `darwin/<arch>` is refused. A multi-platform index
@@ -119,7 +121,7 @@ offers an unprivileged process. Non-goals are in
     `UF_NODUMP` file flag to mark such files.
   - A script's `#!` interpreter runs from the root when the root holds it,
     else from the host.
-- **Chromium-based applications take `--no-sandbox`.** macOS refuses a
+- **Chromium-based applications MUST run with `--no-sandbox`.** macOS refuses a
   second Seatbelt profile to a sandboxed process, so Chromium's helpers
   cannot enter their own (`TestSecondSandboxRefused`); the container's
   profile confines them.
@@ -177,7 +179,7 @@ offers an unprivileged process. Non-goals are in
 - **Container addresses are presented, not routed.** Members have
   addresses in `127.88.0.0/16`, or in their network's subnets (the default
   bridge holds `172.17.0.0/16`, where `--ip` is refused, as in Docker);
-  networks may be IPv4, IPv6-only or dual-stack. The kernel never sees
+  networks can be IPv4, IPv6-only or dual-stack. The kernel never sees
   these addresses:
   - Servers see clients connect from `127.0.0.1`; a UDP server sees an
     IPv6 client at its IPv4-mapped address.
@@ -206,7 +208,7 @@ offers an unprivileged process. Non-goals are in
   proxy alone; its router carries a connection on only to a member it
   shares a network with. A connection to any other loopback port is
   refused (`ECONNREFUSED`), as in a network namespace where nothing
-  listens there. Datagrams may go to any port of the stack's
+  listens there. Datagrams can go to any port of the stack's
   block, where routers' relays lie, so a program without the library
   reaches a member's UDP host port, and a host process that later binds a
   UDP port in the block is reachable from that stack.
@@ -227,9 +229,9 @@ offers an unprivileged process. Non-goals are in
 - **Egress allow lists hold what goes through the egress proxy.** A
   container's `fws.egress.allow` label and its networks' option of that
   name (`docker network create --opt fws.egress.allow=...`) name the
-  hosts, `*.domains`, addresses and prefixes, each with an optional
-  `:port`, it may reach outside the machine; a destination must be on
-  every list that applies. Docker has no such setting. A name is matched
+  hosts, `*.domains`, addresses and prefixes, each with or without a
+  `:port`, it can reach outside the machine; a destination is reached only
+  when it is on every list that applies. Docker has no such setting. A name is matched
   as the client asks for it, an address or prefix against every address
   it resolves to; UDP, which does not leave the machine, is not on them.
 - **DNS is answered in the container and by its router.** The library
@@ -249,7 +251,7 @@ offers an unprivileged process. Non-goals are in
   port each, idle-closed after 90 seconds. SCTP cannot be published.
 - **Unix socket paths are capped at 104 bytes**, macOS's `sun_path`, as
   the container sees them; a longer host path binds through the mount or
-  root below it. A program given a socket path should be given its
+  root below it. A program given a socket path SHOULD be given its
   container path, as `fws/postgres` and `fws/mysql` are
   (`/var/run/postgresql`, `/var/run/mysqld`): a host path under a stack's
   root often runs past the limit.
@@ -282,8 +284,8 @@ offers an unprivileged process. Non-goals are in
 - **`fws/k3s` is kubeadm's cluster under k3s's names.** `k3s agent`,
   joining servers, Traefik, ServiceLB, the Helm controller, the embedded
   registry and etcd snapshots are absent. Its default storage class, `local-path`, is
-  the controller manager's host-path provisioner. Its node needs an address
-  outside loopback: the default bridge or a network with a subnet.
+  the controller manager's host-path provisioner. Its node MUST have an
+  address outside loopback: the default bridge or a network with a subnet.
 
 ## Resources
 
@@ -295,7 +297,7 @@ a cgroup ([DESIGN](docs/DESIGN.md#3a-isolation-and-limits-without-cgroups)).
   (jetsam's fatal limit) and their sum in the shim; past either, the
   process, or the largest, is killed and the container reports
   `OOMKilled`. An allocation never fails first. A process forked without
-  an exec is held by the sum alone. `--memory-swap` may only equal the
+  an exec is held by the sum alone. `--memory-swap` MUST equal the
   limit (or be -1); `--memory-reservation`, swappiness and
   `--oom-kill-disable` are refused. A running container's limit can be
   lowered, not raised: the kernel lets no process raise its own.

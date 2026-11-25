@@ -11,6 +11,8 @@ using the only isolation primitives macOS offers an unprivileged process:
 **Seatbelt** sandbox profiles, **APFS copy-on-write clones**, and **per-stack
 resource assignment**.
 
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
+
 ---
 
 ## 1. Scope and non-goals
@@ -181,7 +183,7 @@ knobs, each enforced by a real mechanism or refused.
   starts. With a limit set it samples the members every 100 ms, the
   kernel's default CFS period, and enforces:
   - `--memory`: the sum of the processes' physical footprints, which counts
-    compressed and swapped-out memory, so `--memory-swap` may only equal it;
+    compressed and swapped-out memory, so `--memory-swap` is accepted only equal to it;
     past the limit the largest process is killed and the container reports
     `OOMKilled`. The kernel also holds each program to the whole limit
     through jetsam's fatal footprint limit (`posix_spawnattr_setjetsam_ext`),
@@ -194,7 +196,7 @@ knobs, each enforced by a real mechanism or refused.
     programs through `fws-shim`'s `fws-memexec` role. A process forked
     without an exec is held by the shim's sum alone. `NOTE_EXIT_MEMORY`
     marks a kill at the limit, which the shim counts as an OOM kill. No
-    process may change a running process's limit, so `docker update`
+    process can change a running process's limit, so `docker update`
     cannot raise a running container's memory limit.
   - `--cpus` / `--cpu-quota`: the processes' CPU time against the quota; a
     run over it stops them with `SIGSTOP` until the quota has paid it back,
@@ -262,7 +264,7 @@ knobs, each enforced by a real mechanism or refused.
 - **Capabilities.** A container runs as the engine's unprivileged user, so
   Docker's default capabilities grant it nothing to give up: `--cap-drop` is
   accepted, and `--cap-add` beyond the default set is refused but for
-  `IPC_LOCK`: macOS does not enforce `RLIMIT_MEMLOCK`, so any process may
+  `IPC_LOCK`: macOS does not enforce `RLIMIT_MEMLOCK`, so any process can
   lock memory within the system's wired-memory limits. For the same reason
   `--ulimit memlock` is accepted only as unlimited. `no-new-privileges`
   holds for every container.
@@ -294,7 +296,7 @@ networking is §6's.
   holds (`host_trees`: `/System`, `/usr/lib`, `/dev`, `/private/var/db`,
   `/var/db`, `/Library/Apple`); `fws-mkimage` refuses an image path in one,
   which no container would see. A path the root lacks, down to its
-  parent, is the host's only where the container may read that, as a
+  parent, is the host's only where the container can read that, as a
   shell or the time zone a root lacks; else it stays the root's and fails
   with `ENOENT`, as under chroot, not with Seatbelt's `EPERM` (`place`).
   A Unix socket's address maps as a file
@@ -424,7 +426,7 @@ A container's paths live under a root the engine names in `SANDBOX_ROOT`.
 The engine maps `PATH` and `HOME` (the user's home in the container's
 `/etc/passwd` where nothing names one) into the root for programs without
 the library; the library presents the container's own. An image's
-entrypoint may map other paths with `internal/sandboxenv.Path`. `argv[0]` is
+entrypoint MAY map other paths with `internal/sandboxenv.Path`. `argv[0]` is
 resolved inside the root.
 
 A mount — a named volume, an anonymous volume from the image's `VOLUME`, a
@@ -530,7 +532,7 @@ container library's and the routers' work.
   stacks' members on a network one of its members is on, reached through
   the router's relay. For UDP the router hands out a relay port of the
   stack's block and sends each socket's datagrams on from a port leased
-  from the member's block, so the member may answer.
+  from the member's block, so the member can answer.
 - **Name resolution.** `getaddrinfo` and `gethostbyname` read the
   container's `/etc/hosts` first, then the stack's names, then resolve as
   the host does. Network.framework resolves through `dnssd_getaddrinfo`,
@@ -567,7 +569,7 @@ container library's and the routers' work.
   `internal: true` networks, get no proxy.
 - **Egress allow lists.** A container's `fws.egress.allow` label and its
   networks' driver option of that name list hosts, wildcard domains,
-  addresses and prefixes, each with an optional port
+  addresses and prefixes, each with or without a port
   (`internal/egress/allow.go`); the engine writes them beside the network
   file (`network.allow`), and the proxy refuses a destination off any list
   that applies: `403 Forbidden` over HTTP, "connection not allowed by
@@ -628,7 +630,7 @@ with or without the `/v1.xx` prefix:
 - Images: `json`, `create` (registry pull for `darwin/<arch>`, or `docker
   import`), `load`, `{ref}/json`, `{ref}/tag`, `{ref}/history`, `get` and
   `{ref}/get` (`docker save`), `{ref}/push`, `search`, `prune`, `DELETE`;
-  references may be repository@digest
+  references can be repository@digest
 - Registries: `POST /auth` (`docker login`), `GET /distribution/{name}/json`
 - `POST /commit` (with `changes`, pausing by default)
 - Networks: `json`, `create`, `{id}`, `connect`, `disconnect`, `prune`, `DELETE`

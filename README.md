@@ -5,6 +5,8 @@ one Mac, without root and without a virtual machine. It serves the Docker
 Engine API, so the stock `docker` CLI, `docker compose` and the Docker Go
 client drive it unchanged.
 
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
+
 It is for running a project's tests and services locally: a container
 starts in milliseconds and costs only its processes, where Docker on a Mac
 runs everything in a Linux VM. It is not a boundary for untrusted or
@@ -43,7 +45,7 @@ docker compose up -d --wait
 ```
 
 `fwsd` runs each container's supervisor, and the processes it starts, from
-`fws-shim`, which must sit beside it. As it starts it builds the container
+`fws-shim`, which MUST sit beside it. As it starts it builds the container
 library and spawn helper with clang from the Xcode Command Line Tools
 (`xcode-select --install`). It refuses to run as root.
 
@@ -121,9 +123,9 @@ extensions and settings of `customizations.vscode`, forwards
 `forwardPorts`, lends the container the host's Git credentials and SSH
 agent, and stops the container when VS Code quits. Docker outside of
 Docker is the engine's socket in `mounts` and a darwin Docker CLI in the
-image, from `fws/dind`. The image needs the commands the tools run in it
-(`sh`, `sleep`, `cat`, `mkdir`, `tar`, as `fws/base` has), and features
-install darwin programs, not `apt-get` packages
+image, from `fws/dind`. The image MUST hold the commands the tools run in
+it (`sh`, `sleep`, `cat`, `mkdir`, `tar`, as `fws/base` has), and features
+MUST install darwin programs, not `apt-get` packages
 ([LIMITATIONS](LIMITATIONS.md#images)).
 
 ### Graphical applications
@@ -136,10 +138,10 @@ one, with its extension host and integrated terminal. Its windows open on
 the user's desktop and it reads what the user copies; the keychain stays
 denied. A devcontainer asks for it with
 `"runArgs": ["--security-opt", "seatbelt=gui"]`, a Compose service with
-`security_opt`. Such a container runs as the engine's user
+`security_opt`. Such a container MUST run as the engine's user
 (`--user "$(id -u):$(id -g)"`): the session's services learn the caller
 from the kernel and refuse a process that calls itself root.
-Chromium-based applications take `--no-sandbox`
+Chromium-based applications MUST run with `--no-sandbox`
 ([LIMITATIONS](LIMITATIONS.md#isolation)).
 
 ## Testcontainers
@@ -184,8 +186,8 @@ var pg = new PostgreSQLContainer(
 
 Testcontainers for Java refuses an engine whose `OSType` is not `linux`,
 so the engine answers its `/info` with a blank one, which it accepts. Its
-file-mounting startup check runs `alpine`, a Linux image: turn the checks
-off with `TESTCONTAINERS_CHECKS_DISABLE=true`, or `checks.disable=true` in
+file-mounting startup check runs `alpine`, a Linux image, so the checks
+MUST be turned off with `TESTCONTAINERS_CHECKS_DISABLE=true`, or `checks.disable=true` in
 `~/.testcontainers.properties`. It runs Ryuk privileged, which here gives
 the reaper an engine of its own that it does not use;
 `TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED=false` saves starting it.

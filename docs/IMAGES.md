@@ -3,11 +3,13 @@
 What fws images are, where they come from, how to run, build and publish
 them, and how the catalog is made.
 
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
+
 ## What an fws image is
 
 An fws image is an ordinary OCI image whose platform is `darwin/arm64`. A
-container runs its programs as processes on the Mac, so they must be
-macOS binaries: nothing on macOS runs a Linux ELF binary without a
+container runs its programs as processes on the Mac, so an image's
+programs MUST be macOS binaries: nothing on macOS runs a Linux ELF binary without a
 virtual machine, so images from Docker Hub do not run, and a `--platform`
 other than `darwin/arm64` is refused.
 
@@ -18,15 +20,15 @@ things differ from a Linux image:
 
 - **Everything it runs is in the image.** The Seatbelt profile lets a
   container read the macOS system tree (`/usr/lib`, `/System`) and run the
-  system shells, nothing else of the host's, so an image carries every
-  program and library its programs load, and loads them by relative
-  paths. Each catalog image carries its own `/bin/sh` (`dash`): macOS's
+  system shells, nothing else of the host's, so an image MUST carry every
+  program and library its programs load, and they MUST load them by
+  relative paths. Each catalog image carries its own `/bin/sh` (`dash`): macOS's
   loader drops the container library from Apple's own shells, and with it
   from `system()` and `popen()`. The system trees are the host's in every
-  container, so an image puts nothing under `/System`, `/usr/lib`, `/dev`,
-  `/private/var/db`, `/var/db` or `/Library/Apple`: use `/usr/local`
-  instead ([LIMITATIONS](../LIMITATIONS.md#isolation)).
-- **It follows the container contract** below: its programs find their
+  container, so an image MUST NOT put anything under `/System`,
+  `/usr/lib`, `/dev`, `/private/var/db`, `/var/db` or `/Library/Apple`; it
+  SHOULD use `/usr/local` instead ([LIMITATIONS](../LIMITATIONS.md#isolation)).
+- **It MUST follow the container contract** below: its programs find their
   paths and ports at their container values through the container
   library, which the engine loads into every process.
 
@@ -148,8 +150,8 @@ library resolves the names it lists before any other.
 
 `docker build`, `docker buildx build` and `docker compose build` run on an
 embedded BuildKit with a darwin worker; `DOCKER_BUILDKIT=0` picks the
-classic builder. Base the Dockerfile on a darwin image: `fws/base:1` in
-place of Alpine or Debian, or a language image for an app in that
+classic builder. A Dockerfile MUST be based on a darwin image: `fws/base:1`
+in place of Alpine or Debian, or a language image for an app in that
 language:
 
 ```dockerfile
@@ -164,11 +166,12 @@ Every instruction builds. A `RUN` step runs what its image holds, under
 the same Seatbelt confinement as a container, with the internet through a
 build-only egress proxy (none with `--network none`), so pip, npm, bun,
 `curl` and `git` download as they do on Linux. There is no system package
-manager: `apt-get`, `apk` and `yum` install Linux binaries and fail. Add a
-program by downloading its macOS arm64 build, or by copying it in, outside
-the host's system trees; it must load its libraries from the image or
-macOS, by relative path (`@loader_path`, `@executable_path`) rather than
-from `/opt/homebrew` or `/nix/store`, which a container cannot read.
+manager: `apt-get`, `apk` and `yum` install Linux binaries and fail. A
+program is added by downloading its macOS arm64 build, or by copying it
+in, and MUST land outside the host's system trees; it MUST load its
+libraries from the image or macOS, by relative path (`@loader_path`,
+`@executable_path`), and MUST NOT load them from `/opt/homebrew` or
+`/nix/store`, which a container cannot read.
 
 `fws/node` and `fws/rust` carry a C and C++ toolchain, as the official
 images' build-essential does: nixpkgs' clang, ld64 and the macOS SDK
@@ -188,8 +191,8 @@ CMD ["app"]
 
 There is no Xcode: what runs `xcodebuild` or `xcrun` fails. A Python wheel
 built from source needs a compiler `fws/python` does not put on `PATH`;
-take packages that ship macOS arm64 builds there, or build the extension
-on the host and copy it in.
+a Dockerfile there SHOULD take packages that ship macOS arm64 builds, or
+copy in an extension built on the host.
 
 What BuildKit refuses is in [LIMITATIONS](../LIMITATIONS.md#images).
 
@@ -199,12 +202,14 @@ A program built for macOS runs unchanged when it reads its paths and ports
 from its configuration: the container library presents `/` as the
 container's root and container ports as its own. Where a program cannot
 load the library (a static Go binary, one whose code signature forbids
-injected libraries), its entrypoint reads the `SANDBOX_*` variables instead.
+injected libraries), its entrypoint MUST read the `SANDBOX_*` variables
+instead.
 The catalog's entrypoints are small Go programs (`images/*/entry`) that do
 what the official image's script does, through `internal/sandboxenv`:
 `sandboxenv.Path` maps a container path into `SANDBOX_ROOT`, and
-`sandboxenv.Port` gives the host port of a container port. Give a program
-a Unix socket's container path, not its host path: macOS caps a socket
+`sandboxenv.Port` gives the host port of a container port. A program
+SHOULD be given a Unix socket's container path, not its host path: macOS
+caps a socket
 path at 104 bytes, which a host path under a stack's root often passes,
 and the library binds the container path through its directory.
 
@@ -304,16 +309,16 @@ has the details.
 
 ## Add an image or a release
 
-- **An image.** Add its spec and entry program under `images/<name>`, its
-  build to `scripts/build-images.sh`, its row to the table above and its
-  entry to `internal/catalog` (a unit test checks the two agree), and an
-  end-to-end test in `tests/e2e/catalog_test.go` that drives it through
-  the client its users would use.
-- **A release.** Take the newest. An image takes the pinned
-  `nixpkgs-26.05-darwin`'s package; where that lags, add it to
-  `images/catalog`: nixpkgs-unstable's package when it has the release,
+- **An image.** A new image MUST add its spec and entry program under
+  `images/<name>`, its build to `scripts/build-images.sh`, its row to the
+  table above and its entry to `internal/catalog` (a unit test checks the
+  two agree), and an end-to-end test in `tests/e2e/catalog_test.go` that
+  drives it through the client its users would use.
+- **A release.** An update MUST take the newest release. An image takes
+  the pinned `nixpkgs-26.05-darwin`'s package; where that lags, the
+  release MUST be added to `images/catalog`: nixpkgs-unstable's package when it has the release,
   else its recipe copied there at the release, or the release's own macOS
-  build. Build it here rather than wait for nixpkgs. Kubernetes, etcd and
+  build. It MUST be built here rather than wait for nixpkgs. Kubernetes, etcd and
   Rust are pinned in `images/kubernetes`, `images/etcd` and `images/rust`.
   GitHub's source archives hash as `git archive` of the tag lays the tree
   out.
