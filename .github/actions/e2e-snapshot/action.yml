@@ -16,7 +16,17 @@ runs:
           [ -e "$RUNNER_TEMP/e2e/exit" ] && break
           sleep 1
         done
-        tail -n 3 "$RUNNER_TEMP/e2e/test.log" || true
+        # The job's log keeps each test's result and what a failing test
+        # reported, as far as the suite has come, for a job cancelled or
+        # timed out before its last step prints the whole output.
+        log="$RUNNER_TEMP/e2e/test.log" seen="$RUNNER_TEMP/e2e/printed"
+        from=$(( $(cat "$seen" 2>/dev/null || echo 0) + 1 ))
+        to=$(wc -l < "$log" 2>/dev/null || echo 0)
+        if [ "$to" -ge "$from" ]; then
+          sed -n "${from},${to}p" "$log" | grep -E '^(--- |    --- |ok |FAIL|panic:)|^        |^    [A-Za-z0-9_]+\.go:[0-9]+:' || true
+          echo "$to" > "$seen"
+        fi
+        tail -n 3 "$log" || true
     # A snapshot is for reading after a runner dies: one that cannot be
     # kept, as when the artifact service does not resolve for a moment,
     # leaves the suite running and the next snapshot to keep its output.
