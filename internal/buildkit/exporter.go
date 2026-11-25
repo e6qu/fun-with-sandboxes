@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -101,7 +102,7 @@ func (m *mobyInstance) Export(ctx context.Context, src *exporter.Source, info ex
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	slow(began, "committing the image's layers")
+	committed := time.Since(began)
 	var layers content.Provider = m.e.content
 	if remotes != nil && remotes.Ref != nil {
 		layers = remotes.Ref.Provider
@@ -109,6 +110,20 @@ func (m *mobyInstance) Export(ctx context.Context, src *exporter.Source, info ex
 	img, err := contentImage(ctx, m.e.content, layers, *desc)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	// A commit compresses the layers the build made and reuses the base
+	// image's blobs: its time follows the size of what the build added,
+	// which the log gives beside it.
+	if committed >= slowStep {
+		var n int
+		var size int64
+		if mf, err := img.Manifest(); err == nil {
+			for _, l := range mf.Layers {
+				n++
+				size += l.Size
+			}
+		}
+		log.Printf("buildkit: committing the image's layers took %s: %d layers, %d MiB compressed in all", committed.Round(time.Millisecond), n, size>>20)
 	}
 	began = time.Now()
 	root, err := m.cloneRoot(ctx, src, info)

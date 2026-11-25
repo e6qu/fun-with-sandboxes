@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -990,8 +991,13 @@ func (s *Store) add(img v1.Image, refs []string, root string) (Image, error) {
 		os.RemoveAll(rec.stage)
 		return out, err
 	}
+	began := time.Now()
 	usage := DiskUsage(rec.stage)
 	rec.RootUsage = &usage
+	rec.times.usage = time.Since(began)
+	if t := rec.times; t.blobs+t.cache+t.merge+t.usage >= time.Second {
+		log.Printf("image %s unpacked: %s", id, t)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.Rename(rec.stage, s.Root(id)); err != nil {
@@ -1019,6 +1025,22 @@ func (s *Store) retag(id string, refs []string) (Image, bool, error) {
 type unpacked struct {
 	Image
 	stage string
+	times loadTimes
+}
+
+// loadTimes is where an image's unpacking spent its time, for a slow one
+// to say: an image of a few hundred megabytes unpacks in seconds when
+// its layers are on the disk, and a load that takes minutes shows here
+// which part does.
+type loadTimes struct {
+	blobs, cache, merge, usage time.Duration
+	cached, layers             int
+}
+
+func (t loadTimes) String() string {
+	return fmt.Sprintf("blobs %s, %d of %d layers unpacked %s, merged %s, usage %s",
+		t.blobs.Round(time.Millisecond), t.cached, t.layers, t.cache.Round(time.Millisecond),
+		t.merge.Round(time.Millisecond), t.usage.Round(time.Millisecond))
 }
 
 // unpack writes img's blobs into the layout and measures its layers,
@@ -1031,9 +1053,11 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 			os.RemoveAll(stage)
 		}
 	}()
+	began := time.Now()
 	if err := s.layout().WriteImage(img); err != nil {
 		return unpacked{}, err
 	}
+	blobs := time.Since(began)
 	dg, err := img.Digest()
 	if err != nil {
 		return unpacked{}, err
@@ -1056,7 +1080,7 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 			return unpacked{}, err
 		}
 	}
-	out := unpacked{Image: Image{Manifest: desc, LayerSizes: []int64{}}, stage: stage}
+	out := unpacked{Image: Image{Manifest: desc, LayerSizes: []int64{}}, stage: stage, times: loadTimes{blobs: blobs}}
 	layers, err := local.Layers()
 	if err != nil {
 		return unpacked{}, err
@@ -1074,7 +1098,7 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 		var n int64
 		switch {
 		case root == "" && diffIDs != nil:
-			n, err = s.layLayer(l, diffIDs[i], stage)
+			n, err = s.layLayer(l, diffIDs[i], stage, &out.times)
 		case root == "":
 			n, err = measure(l, stage, true)
 		default:
