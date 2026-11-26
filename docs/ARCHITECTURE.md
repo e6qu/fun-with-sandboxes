@@ -735,6 +735,7 @@ sequenceDiagram
   participant O as outer engine
   participant N as nested engine in fwsd
   participant D as dockerd in the dind container
+  participant IC as docker CLI in the dind container
   participant S as fws-shim of an inner container
   participant P as inner container's processes
   C->>O: docker run --privileged fws/dind
@@ -743,7 +744,7 @@ sequenceDiagram
   O->>O: serve its API, and a BuildKit, on run/ID12.engine
   O->>O: start the container with FWS_ENGINE set
   D->>D: relay the listeners its flags name to FWS_ENGINE
-  C->>D: docker run inside, on DOCKER_HOST
+  IC->>D: docker run, on a socket dockerd listens on
   D->>N: the request, through FWS_ENGINE
   N->>N: bind sources through the container's mounts, ports on its ports
   N->>S: launch, as any engine launches a supervisor
@@ -844,8 +845,9 @@ lists what is presented without being enforced.
   its containers as it stops, and kills any a crashed engine left running
   as it starts.
 - **Lost supervisors.** A container recorded as running whose supervisor
-  is gone gets its exit from `exit.json`, which the supervisor writes
-  before it reports, or a lost exit.
+  is gone takes its exit from `exit.json`; without one, the engine kills
+  every process carrying the container's `SANDBOX_ROOT` tag and records
+  exit code 255 (`lostExit`).
 - **Restart policies.** `always` and `unless-stopped` containers start
   again when the engine opens; a container that exits follows Docker's
   back-off.
