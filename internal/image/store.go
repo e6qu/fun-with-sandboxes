@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	goruntime "runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -1186,7 +1185,7 @@ func (s *Store) cacheLayers(layers []v1.Layer, diffIDs []v1.Hash, t *loadTimes) 
 		wg     sync.WaitGroup
 	)
 	work := make(chan int)
-	for range min(len(layers), max(2, goruntime.NumCPU()/2)) {
+	for range min(len(layers), max(2, runtime.NumCPU()/2)) {
 		wg.Go(func() {
 			for i := range work {
 				if _, ok, _ := s.cacheLayer(layers[i], diffIDs[i]); ok {
