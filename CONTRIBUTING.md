@@ -1,7 +1,8 @@
 # Contributing
 
 How to set up, test and change fws. [PLAN](PLAN.md) says what it sets out
-to do, [DESIGN](docs/DESIGN.md) how it works, and
+to do, [ARCHITECTURE](docs/ARCHITECTURE.md) how its parts fit together,
+[DESIGN](docs/DESIGN.md) how each mechanism works, and
 [LIMITATIONS](LIMITATIONS.md) what it cannot do.
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
@@ -72,7 +73,8 @@ export DOCKER_HOST=unix://$HOME/.fws/docker.sock
 
 ## Layout
 
-[DESIGN §10](docs/DESIGN.md#10-go-implementation) lists every package.
+[ARCHITECTURE](docs/ARCHITECTURE.md#packages) lists every package and
+what each component owns.
 Beyond them, `images/` holds the catalog's specs, Nix expressions and entry
 programs; `scripts/` builds, packs and publishes the catalog, vets, lints
 and fuzzes the Go code, shards the end-to-end suite and syncs BuildKit;

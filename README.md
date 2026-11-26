@@ -16,6 +16,31 @@ each other.
 fws is for running a project's tests and services locally. It is not a
 boundary against untrusted or multi-tenant code.
 
+## How it fits together
+
+One daemon, `fwsd`, serves the APIs and keeps images; each running
+container is a supervisor process and the container's own processes,
+which load a library that presents the container's root, users and
+network. [ARCHITECTURE](docs/ARCHITECTURE.md) describes each part.
+
+```mermaid
+flowchart LR
+  CLI["docker, compose, podman, Testcontainers"] -->|"docker.sock"| API
+  KUBE["kubelet, crictl"] -->|"CRI on docker.sock"| API
+  subgraph FWSD["fwsd"]
+    API["Docker, libpod and CRI APIs"] --> ENG["engine"]
+    API --> BK["BuildKit"]
+    ENG --> IMG["image store: OCI blobs, layer cache, APFS roots"]
+    BK --> IMG
+  end
+  ENG -->|"one per container"| SHIM["fws-shim: limits, logs, router, port proxies"]
+  SHIM -->|"spawn helper"| PROC["container processes: Seatbelt profile, fwsroot library"]
+  ENG -->|"one per stack"| EGR["egress proxy"]
+  PROC -->|"other members, through the router"| SHIM
+  PROC -->|"HTTP or SOCKS5"| EGR
+  EGR --> NET(("internet"))
+```
+
 ## Quick start
 
 On a Mac with Apple silicon, Go and the Xcode Command Line Tools
@@ -69,7 +94,8 @@ CI runs each of these against the engine on macOS:
 | [IMAGES](docs/IMAGES.md) | the image catalog and each image's reference |
 | [IMAGE-AUTHORING](docs/IMAGE-AUTHORING.md) | writing Dockerfiles `FROM` the catalog; adding, changing and updating catalog images |
 | [LIMITATIONS](LIMITATIONS.md) | where fws differs from Docker, and why |
-| [DESIGN](docs/DESIGN.md) | how the engine works |
+| [ARCHITECTURE](docs/ARCHITECTURE.md) | the map: processes, components, flows, boundaries |
+| [DESIGN](docs/DESIGN.md) | how each mechanism works |
 | [SEATBELT](docs/SEATBELT.md) | the macOS sandbox and each container's profile |
 | [CONTRIBUTING](CONTRIBUTING.md) | developing fws: setup, tests, CI, rules |
 | [PLAN](PLAN.md) | purpose, constraints, non-goals, status |

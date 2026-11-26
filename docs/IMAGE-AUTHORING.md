@@ -673,7 +673,7 @@ what each hands the next, from Nix to the engine and the registry:
 ```mermaid
 flowchart LR
   NIX["Nix: pinned nixpkgs, images/catalog"] -->|"package store paths"| CL["closure file: the store paths, dash's included"]
-  GO["go build: entry programs, fws-mkimage"] -->|"via -file"| MK
+  GO["go build: entry programs and the tools images carry"] -->|"via -file"| MK
   SPEC["images/NAME/image.json"] -->|"via -spec"| MK
   CL -->|"via -closure and -pkg"| MK
   subgraph MK["fws-mkimage"]

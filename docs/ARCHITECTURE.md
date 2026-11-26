@@ -227,7 +227,7 @@ Two builders write into the image store:
   ([DESIGN, the classic builder](DESIGN.md#the-classic-builder)).
 
 Both run steps with internet access through an egress proxy of a stack the
-build owns: `buildkit` for BuildKit, a stack per classic build.
+build owns: `buildkit` for BuildKit, `build-<dir>` for each classic build.
 
 ### The CRI
 
@@ -473,13 +473,14 @@ reads each part:
 | `run/` | the engine, supervisors, anchors, egress proxies | the engine, the container library (its own sockets only) |
 | `images/` | the image store | the image store, BuildKit's applier |
 | `stacks/<stack>/network` and `.allow`, `.rates` | the engine | the container library, routers, egress proxies |
-| `stacks/<stack>/c/<id12>/` | the engine, the container's supervisor | the engine, the container (its `r/` root only) |
+| `stacks/<stack>/c/<id12>/` | the engine, the container's supervisor | the engine; the container reads its root and limit files |
 | `volumes/` | the engine, containers | containers that mount them |
 | `staging/`, `trash/` | the engine | — (cleared at start-up) |
 | `buildcache/`, `buildkit/` | the two builders | the two builders |
 
-A container's profile lets it read its own root, volumes, port directory
-and network file, and nothing else of the state.
+A container's profile lets it reach its own root, volumes, port
+directory, limit files, network file and its supervisor's sockets, and
+nothing else of the state.
 
 ## Flows
 

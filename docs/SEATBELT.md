@@ -214,7 +214,10 @@ rm -rf /tmp/sb-tutorial
 ## How fws uses it
 
 Every container process runs under a profile that `internal/seatbelt`
-renders from the container's spec (`seatbelt.Spec`). Each section denies an
+renders from the container's spec (`seatbelt.Spec`).
+[ARCHITECTURE](ARCHITECTURE.md#security-boundaries) sets out what the
+profile enforces beside what the engine's other processes enforce and
+what the container library only presents. Each section denies an
 operation family and then allows what the container owns:
 
 | Section | Allows |
@@ -242,7 +245,9 @@ flowchart TD
   MASK -->|"no"| OWN{"the root, a volume, the port directory, the system tree, the library, a file the engine names?"}
   OWN -->|"yes"| ALLOW["allowed"]
   OWN -->|"no"| GUI{"created with seatbelt=gui?"}
-  GUI -->|"yes"| DR{"under DeniedReadRoots or the engine's state?"}
+  GUI -->|"yes"| GRP{"under GUIReadPaths: fonts, colour profiles, keyboard layouts?"}
+  GRP -->|"yes"| ALLOW
+  GRP -->|"no"| DR{"under DeniedReadRoots or the engine's state?"}
   DR -->|"yes"| DENY
   DR -->|"no"| ALLOW
   GUI -->|"no"| HRP{"under HostReadPaths?"}
@@ -276,10 +281,10 @@ The engine applies the profile without `sandbox-exec`
 ([DESIGN §3a](DESIGN.md#3a-isolation-and-limits-without-cgroups) has the
 details):
 
-- `fws-shim`, the container's supervisor, spawns each process through the
-  C spawn helper (`internal/pathmap/src/spawn.c`), which applies the
+- `fws-shim`, the container's supervisor, starts the main process through
+  the C spawn helper (`internal/pathmap/src/spawn.c`), which applies the
   profile's compiled bytecode with `sandbox_apply` and executes the
-  container's program. The engine compiles each profile text once, with
+  container's program; both builders start each build step the same way. The engine compiles each profile text once, with
   `sandbox_compile_string`, and keeps the bytecode as `profile.bin`; where
   macOS refuses it, the helper compiles the text with `sandbox_init`.
 - No Apple-signed binary sits between the helper and the program, so the

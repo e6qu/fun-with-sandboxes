@@ -304,8 +304,11 @@ networking is §6's.
   `/var/db`, `/Library/Apple`); `fws-mkimage` refuses an image path in one,
   which no container would see. A path the root lacks, down to its
   parent, is the host's only where the container can read that, as a
-  shell or the time zone a root lacks; else it stays the root's and fails
-  with `ENOENT`, as under chroot, not with Seatbelt's `EPERM` (`place`).
+  shell a root lacks; else it stays the root's and fails with `ENOENT`, as
+  under chroot, not with Seatbelt's `EPERM` (`place`). Every container's
+  root holds `/etc`, so one whose image has no `/etc/localtime` and is
+  given no `TZ` keeps UTC, as a Linux container does, rather than the
+  Mac's zone.
   The steps the library takes for each path a call names (`fws_map`,
   `place`):
 
@@ -326,7 +329,7 @@ networking is §6's.
     HT -->|"no"| RT{"does the root hold the path or its parent?"}
     RT -->|"yes"| INROOT["the path in the root"]
     RT -->|"no"| HOST{"can the container see the host's?"}
-    HOST -->|"yes: a shell, the time zone"| ASIS
+    HOST -->|"yes: a shell a root lacks"| ASIS
     HOST -->|"no"| MISS["the path in the root: fails with ENOENT"]
   ```
 
@@ -432,47 +435,76 @@ Besides tags, an image carries repository@digest references
 (`RepoDigests`): the digest a pull resolved and the manifest digest a push
 wrote. A pull of a reference the store already holds reports `Image is up to
 date`; otherwise it downloads only the layers the store lacks, three at a
-time. A push checks each blob once, mounts those another repository of the
-registry holds, and puts the manifest last. `docker load` verifies each blob
-against its digest. The store sweeps what a crash left as it opens.
+time, each checked against its digest before it takes its name. A push
+checks each blob once, mounts those another repository of the registry
+holds, and puts the manifest last.
+
+`docker load`, and an archive of `-image-archives` on first use, extracts
+the archive into a working directory `images/load-*`, refuses an OCI
+layout whose `index.json`, `oci-layout` or blobs are anything but files,
+and verifies every blob against the digest it is named by. The verified
+blobs are then hard-linked into `images/oci/blobs`, on the same file
+system, rather than copied, so writing the images finds them in place; a
+collection of unreferenced blobs waits until the images are recorded. An
+archive with only Docker's `manifest.json` loads through it instead. A
+load whose extraction and verification take a second or more is logged:
+`image archive X: extracted …, blobs verified …`. The store sweeps what a
+crash left as it opens.
 
 ### Layers and roots
 
 Each layer is unpacked once, by its diff ID, into `images/layers/<diffid>`,
 holding its entries alone with its whiteouts as files that name them, and
-checked against the config's `rootfs.diff_ids`. An image whose unpacking
-takes a second or more is logged with where the time went: writing its
-blobs, unpacking the layers not yet cached, merging them and measuring the
-root. An image's root,
-`images/roots/<digest>`, is its layers laid over an empty tree in order: a
-directory the tree lacks comes as one `clonefile` of the layer's subtree, so
-images that share layers share their blocks; a layer with a hard link into a
-lower layer is applied in place instead. On create, the container gets an
-**APFS clone** of the image's root (`clonefile(2)`): copy-on-write, constant
-time, and near zero bytes until the container writes, with no union mount
-and no root.
+checked against the config's `rootfs.diff_ids`; `<diffid>.json` records
+its length and the compressed blobs it was read from, each checked once.
+An image's root, `images/roots/<digest>`, is made in two passes
+(`Store.unpack`):
+
+1. **Caching.** The layers the cache lacks unpack at once
+   (`cacheLayers`), on as many workers as `max(4, 2 × CPUs)`, at most one
+   per layer: each unpacks into a directory of its own under
+   `images/layers/.tmp-*` and takes its name by `rename`, so their order
+   does not matter. Unpacking waits on the file system more than on the
+   processor. A layer that fails here is unpacked again in the next pass,
+   which reports why.
+2. **Laying.** The layers are laid over an empty tree in order
+   (`layLayer`, `MergeLayer`): a directory the tree lacks comes as one
+   `clonefile` of the layer's subtree, so images that share layers share
+   their blocks; a layer with a hard link into a lower layer is applied in
+   place instead.
+
+An image whose unpacking takes a second or more is logged with where the
+time went: `image <id> unpacked: blobs …, N of M layers unpacked …, merged
+…, usage …`, that is writing its blobs, unpacking the layers not yet
+cached, merging them and measuring the root. On create, the container gets
+an **APFS clone** of the image's root (`clonefile(2)`): copy-on-write,
+constant time, and near zero bytes until the container writes, with no
+union mount and no root.
 
 The path from an image's blobs to a container's root
 (`internal/image/store.go`, `layers.go`, `merge.go`):
 
 ```mermaid
 flowchart LR
-  SRC["pull, load or an archive of -image-archives"] -->|"manifest, config, layer blobs"| OCI["images/oci/blobs/sha256"]
-  OCI -->|"each layer, by diff ID"| Q{"unpacked in images/layers?"}
-  Q -->|"no"| UNP["unpack once, checked against rootfs.diff_ids"]
-  UNP --> LAY["images/layers/DIFFID"]
-  Q -->|"yes"| LAY
-  LAY -->|"clonefile of each subtree the tree lacks"| STG["images/roots/.stage-*"]
-  OCI -->|"a layer with a hard link below: applied in place"| STG
+  PULL["pull: blobs the store lacks, three at a time"] -->|"checked, then renamed"| OCI["images/oci/blobs/sha256"]
+  LOAD["load or an archive of -image-archives"] -->|"extracted to images/load-*"| VER["every blob verified"]
+  VER -->|"hard-linked"| OCI
+  OCI -->|"layers the cache lacks"| PAR["unpacked in parallel, checked against rootfs.diff_ids"]
+  PAR -->|"rename"| LAY["images/layers/DIFFID"]
+  LAY -->|"in order: clonefile of each subtree the tree lacks"| STG["images/roots/.stage-*"]
+  OCI -->|"in order: a layer with a hard link below, applied in place"| STG
   STG -->|"rename"| ROOT["images/roots/CONFIG-DIGEST"]
   ROOT -->|"clonefile into staging/, then rename"| CR["stacks/STACK/c/ID12/r"]
   ROOT -->|"clonefile"| INIT["stacks/STACK/c/ID12/init"]
 ```
 
 Extraction keeps each entry's modification time and records what an
-unprivileged process cannot set (owner and mode, §3a). It skips device
-nodes (the host's `/dev` serves containers) and refuses entries that would
-land outside the root. The layers the engine writes — `docker commit`,
+unprivileged process cannot set (owner and mode, §3a), setting a file's
+mode and records through its open descriptor rather than its path. It
+skips device nodes (the host's `/dev` serves containers) and refuses
+entries that would land outside the root: it refuses a symbolic link among
+an entry's parents, and remembers the parents it has found to be
+directories, forgetting them when an entry or whiteout removes one. The layers the engine writes — `docker commit`,
 BuildKit's, `export` and `cp` — carry the recorded mode and owner, root
 where none is recorded, never the host's user.
 
@@ -902,34 +934,8 @@ mounts, and record the container. On start:
    drains the output for up to 2 s, records the exit, and tells the engine,
    which applies the restart policy.
 
-The same start as the processes see it (`Container.start` in
-`internal/engine/container.go`, `internal/shim/server_darwin.go`,
-`internal/runtime/start_darwin.go`, `internal/pathmap/src/spawn.c`):
-
-```mermaid
-sequenceDiagram
-  participant C as client
-  participant E as engine
-  participant S as fws-shim
-  participant H as spawn helper
-  participant A as exec anchor
-  participant M as main process
-  C->>E: POST /containers/ID/start
-  E->>E: profile spec, /etc/hosts, egress proxy, environment
-  E-)E: compile profile.bin in the background
-  E->>S: start in a session of its own, with config.json
-  S->>S: listen on its sockets, bind published ports, start the router
-  S->>H: posix_spawn, once profile.sb is written and profile.bin compiled
-  H->>H: nice, I/O tier, rlimits, fork ceiling, sandbox_apply
-  H->>A: start through a child that exits at once
-  H->>M: become it: posix_spawn SETEXEC, QoS clamp, DYLD_INSERT_LIBRARIES
-  S-->>E: ready: pid and published ports, on a pipe
-  E-->>C: 204 No Content, start event
-  M-->>S: exits
-  S->>S: kill the rest, drain output up to 2 s, write exit.json
-  S-->>E: exit status, over its socket
-  E->>E: restart policy
-```
+[ARCHITECTURE](ARCHITECTURE.md#container-create-and-start) shows the same
+create and start as a sequence of the processes involved.
 
 A process start costs about 3.4 ms natively to reach `main`, 7 ms with any
 library inserted (the loader loses its prebuilt launch), and about 4 ms more
@@ -948,47 +954,8 @@ Mac before its first container starts, into `lib/`: the container library
 API types from `github.com/moby/moby/api`, so the JSON matches what Docker
 clients decode.
 
-```
-cmd/fws/              # the command line: fws catalog lists the image catalog
-cmd/fwsd/             # the daemon: Docker Engine, libpod and CRI APIs over a unix socket
-cmd/fws-shim/         # the helper binary: supervisors, exec anchors, egress proxies,
-                      #   docker-init, fws-memexec
-cmd/fws-mkimage/      # Nix closure -> darwin image archive
-cmd/fws-kube-proxy/   # kube-proxy for a node whose runtime is the engine
-internal/alloc/       # per-stack port blocks and directories
-internal/api/         # the Docker Engine API and Podman's libpod
-internal/bandwidth/   # token buckets for the bandwidth labels, in routers and egress proxies
-internal/buildkit/    # embedded BuildKit with a darwin worker
-internal/catalog/     # the image catalog: names, tags, kinds, where each is published
-internal/containerd/  # a kind node's containerd configuration: registry mirrors and hosts
-internal/cri/         # the Kubernetes Container Runtime Interface
-internal/dockerfile/  # Dockerfile parsing and variable expansion
-internal/egress/      # the per-stack HTTP and SOCKS5 proxy to the internet
-internal/engine/      # containers, volumes, networks, services, exec, health, events, guards
-internal/execpath/    # finding a container's executables, as execve and a shell do
-internal/identity/    # users and groups from the container's /etc/passwd
-internal/image/       # image store, layer extraction, clonefile roots
-internal/libsystem/   # libSystem calls syscall does not offer (posix_spawn, I/O policy,
-                      #   sandbox_compile_string)
-internal/logfile/     # json-file logs
-internal/members/     # a stack's network file: member addresses and names
-internal/netstat/     # per-socket network counters for docker stats
-internal/pathmap/     # fwsroot, the container library, the spawn helper, and their build
-internal/pidns/       # PID namespaces containers share, through their shims
-internal/portproxy/   # published host ports, TCP and UDP
-internal/procs/       # the host process table: the shim's member tracking, top and stats
-internal/roles/       # the helper processes the engine's binary runs
-internal/rootfs/      # chroot-style path resolution inside a root
-internal/router/      # traffic to container ports without host ports, relays, DNS, ICMP echo
-internal/runtime/     # starting container processes through the spawn helper; the
-                      #   compiled-profile cache; docker-init
-internal/sandboxenv/  # the container side of the SANDBOX_* contract
-internal/seatbelt/    # Seatbelt profile rendering
-internal/shim/        # a container's supervisor: limits, output, live restore
-third_party/buildkit/ # the BuildKit packages it uses, patched (sync-buildkit.sh)
-images/               # entrypoints and Nix specs for the darwin catalog
-tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite (own module)
-```
+[ARCHITECTURE](ARCHITECTURE.md#packages) lists every package and
+[ARCHITECTURE](ARCHITECTURE.md#components) what each component owns.
 
 
 ## 11. Testing
