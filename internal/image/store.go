@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	goruntime "runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -1142,6 +1143,9 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 		diffIDs = nil
 	}
 	out.LayeredRoot = root == "" && diffIDs != nil
+	if out.LayeredRoot {
+		s.cacheLayers(layers, diffIDs, &out.times)
+	}
 	for i, l := range layers {
 		var n int64
 		switch {
@@ -1168,6 +1172,40 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 		out.Size += n
 	}
 	return out, nil
+}
+
+// cacheLayers unpacks into the layer cache, a few at a time, the layers
+// it does not hold: each unpacks into a directory of its own, and only
+// laying them onto the root, which follows, has their order. A layer that
+// fails here is unpacked again as the root is laid, which reports why.
+func (s *Store) cacheLayers(layers []v1.Layer, diffIDs []v1.Hash, t *loadTimes) {
+	began := time.Now()
+	var (
+		mu     sync.Mutex
+		cached int
+		wg     sync.WaitGroup
+	)
+	work := make(chan int)
+	for range min(len(layers), max(2, goruntime.NumCPU()/2)) {
+		wg.Go(func() {
+			for i := range work {
+				if _, ok, _ := s.cacheLayer(layers[i], diffIDs[i]); ok {
+					mu.Lock()
+					cached++
+					mu.Unlock()
+				}
+			}
+		})
+	}
+	for i := range layers {
+		if _, ok := s.cachedLayer(diffIDs[i]); !ok {
+			work <- i
+		}
+	}
+	close(work)
+	wg.Wait()
+	t.cache += time.Since(began)
+	t.cached += cached
 }
 
 // measure reads a layer's uncompressed stream, applying it onto dir when
