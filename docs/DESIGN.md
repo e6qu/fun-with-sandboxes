@@ -4,7 +4,9 @@ How fws works. It runs containers on the host, with no virtual machine and
 no privileged helper, using the only isolation primitives macOS offers an
 unprivileged process: **Seatbelt** sandbox profiles, **APFS copy-on-write
 clones**, and **per-stack resource assignment**. The engine is written in
-Go for `darwin/arm64`.
+Go for `darwin/arm64`. [ARCHITECTURE](ARCHITECTURE.md) is the map of its
+processes and packages and of how a request travels through them; this
+document is the reference for each mechanism.
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
 
@@ -33,32 +35,8 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
   private directory, so unrelated stacks never collide or observe each
   other.
 
-The parts and what passes between them, all on the Mac, as the sections
-below describe each:
-
-```mermaid
-flowchart LR
-  subgraph Clients
-    CLI["docker, compose, buildx"]
-    PM["podman"]
-    CRICTL["crictl, kubelet"]
-  end
-  CLI -->|"HTTP on docker.sock"| API
-  PM -->|"HTTP on docker.sock"| API
-  CRICTL -->|"gRPC on docker.sock"| API
-  API["fwsd: Docker, libpod and CRI APIs"] -->|"requests"| ENG["engine"]
-  API -->|"/grpc and /session"| BK["BuildKit"]
-  BK -->|"FROM, results"| IMG["image store"]
-  ENG -->|"pull, load, clone a root"| IMG
-  ENG -->|"config.json, then its socket"| SHIM["fws-shim supervisor, router, port proxies"]
-  ENG -->|"one per stack"| EGR["egress proxy"]
-  ENG -->|"docker exec, health checks"| ANCH["exec anchor"]
-  SHIM -->|"spawn helper: limits, sandbox_apply"| MAIN["container processes under Seatbelt, with fwsroot"]
-  ANCH -->|"starts in the same sandbox"| MAIN
-  MAIN -->|"connections to members, via its router"| SHIM
-  MAIN -->|"HTTP or SOCKS5"| EGR
-  MAIN -->|"FWS_ENGINE, when privileged"| NEST["nested engine"]
-```
+[ARCHITECTURE](ARCHITECTURE.md#overview) shows the parts and what passes
+between them, all on the Mac.
 
 ### What it is not
 
@@ -394,19 +372,24 @@ through symlinks at start-up because Seatbelt matches resolved paths.
   lib/                             # fwsroot and the spawn helper, built by clang
   run/                             # per container <id12>: .sock (shim),
                                    #   .anchor, .pids, .procs, .engine,
-                                   #   .p/ (port directory); egress-<stack>
-                                   #   .json/.key/.log
+                                   #   .p/ (port directory), <id12>/ (a
+                                   #   nested engine's run directory);
+                                   #   egress-<stack>.json/.key/.log
   images/images.json               # image records: tags, config, manifest
   images/oci/                      # an OCI image layout: oci-layout,
                                    #   index.json, blobs/sha256/
-  images/layers/<diffid>/          # each layer, unpacked once
+  images/layers/<diffid>/          # each layer, unpacked once, and
+  images/layers/<diffid>.json      #   its record: size, blobs read
   images/roots/<config-digest>/    # each image's root, its layers laid over
+  images/builds/  images/load-*/   # builds' and loads' working directories
+  images/trash/                    # what the store is deleting
   stacks/<stack>/network           # the stack's network file (FWS_NETWORK),
                                    #   with .allow and .rates beside it
   stacks/<stack>/c/<id12>/
     r/                             # the container root: an APFS clone
     init/                          # the root as create left it, for diff
-    config.json  exit.json  log.jsonl
+    config.json  exit.json  log.jsonl  # the record, the exit, the output
+    shim.json  shim.log            # the supervisor's configuration and log
     profile.sb  profile.bin        # the profile's text and its bytecode
     pids.max  memory.max  iopolicy # limits the container's processes read
     pidns  shm                     # a shared PID namespace's file, the
