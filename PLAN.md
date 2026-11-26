@@ -6,7 +6,8 @@ Testcontainers and kind drive it unchanged. Its containers run macOS
 binaries, each confined by Seatbelt. It gives the Docker primitives that
 translate to macOS and refuses those that do not.
 
-How it works is in [DESIGN](docs/DESIGN.md), what differs from Docker in
+How its parts fit together is in [ARCHITECTURE](docs/ARCHITECTURE.md),
+how each works in [DESIGN](docs/DESIGN.md), what differs from Docker in
 [LIMITATIONS](LIMITATIONS.md), and how it got here in
 [HISTORY](docs/HISTORY.md).
 

@@ -29,3 +29,7 @@ and test is in `CONTRIBUTING.md`.
   roadmap's gaps. An update takes the newest release available; where
   nixpkgs lags, build the release here rather than wait. (Asked on
   2026-11-20.)
+- **Never contact outside projects.** No issues, pull requests, comments
+  or messages to third-party projects, and nothing in the roadmap or docs
+  that plans or suggests doing so: it would be seen as spamming them.
+  What fws needs from a dependency is done here. (Asked on 2026-11-26.)

@@ -55,6 +55,20 @@ for p in ("/nowhere/at/all", "/root/.config/git/config", "/Users/nobody/file"):
 	}
 }
 
+// Without TZ, a container whose image holds no /etc/localtime keeps time
+// in UTC, as a Linux container without one does: the host's
+// /etc/localtime, which names the Mac's zone, is not the container's.
+func TestNoTimeZoneIsUTC(t *testing.T) {
+	out, err := docker(t, "run", "--rm", "fws/python:3.14", "python3", "-c", `import os, time
+os.environ.pop("TZ", None)
+time.tzset()
+print(os.path.exists("/etc/localtime"), time.timezone, time.altzone, time.daylight)
+`)
+	if want := "False 0 0 0\n"; err != nil || out != want {
+		t.Errorf("a container without TZ or /etc/localtime: %q, %v; want %q", out, err, want)
+	}
+}
+
 func TestEntrypointAndCmdWithAbsolutePaths(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(`FROM fws/toolbox:1

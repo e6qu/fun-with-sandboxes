@@ -833,7 +833,9 @@ The test suite's own image, mirroring none.
 
 - **Entrypoint:** `/toolbox`; command `serve`, an HTTP counter backed by
   its stack's Redis on port 8080; other subcommands are probes that exit 0
-  where the system allowed an operation and 1 where it refused. Health:
+  where the system allowed an operation and 1 where it refused. `registry
+  ADDR` serves an image registry that keeps what is pushed to it in memory,
+  listening at `ADDR`, as a kind cluster's local registry. Health:
   `/toolbox health`.
 - **Differs:** `/toolbox` alone: no shell, `nc` or `/etc/passwd`.
 

@@ -8,13 +8,13 @@
 // the connection to the socket, first writing the client's address there,
 // so that the listener's side reports its peer as a TCP server's does.
 //
-// A client of a member of another stack, on a network the two stacks
-// share, reaches it through its own container's router, which relays the
-// connection to the member's host port or router when the member shares a
-// network with its container. The member's ports lie in its own stack's
-// block, which the client's sandbox does not reach. A relay request carries
-// the router's relay key, which it keeps in the port directory, so another
-// member of the stack cannot ask for one.
+// A client reaches every other member, of its own stack or of another on
+// a network the two share, through its own container's router, which
+// relays the connection to the member's host port or router when the
+// member shares a network with its container: the client's sandbox reaches
+// no other member's port directly. A relay request carries the router's
+// relay key, which it keeps in the port directory, so another container
+// cannot ask it for one.
 //
 // For UDP, the router gives each such port a flow port, a loopback UDP port
 // of the stack's block, and relays datagrams between it and the port's Unix

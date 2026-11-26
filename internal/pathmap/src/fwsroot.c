@@ -711,7 +711,7 @@ static int host_socket(const char *p) {
 // place returns the path container path p names, its symbolic links
 // resolved: a mount's source under a mount's destination, the root's when
 // the root holds it or its parent, else p where the host's is there for
-// the container to read, else the root's.
+// the container to read or connect to, else the root's.
 static const char *place(const char *p, char *buf) {
     const char *m = mount_source(p, buf);
     if (m) {
@@ -746,8 +746,8 @@ static const char *place(const char *p, char *buf) {
         return buf;
     }
     // Neither the path nor its parent is the root's: the host's where the
-    // container reaches it, a file it reads, such as a shell or the time
-    // zone a root lacks, or a socket it connects to but cannot stat, else
+    // container reaches it, a file it reads, such as a shell under a /bin
+    // a root lacks, or a socket it connects to but cannot stat, else
     // the root's, where the call fails as under chroot, with ENOENT, rather
     // than with Seatbelt's EPERM for a host path it denies.
     return lstat(p, &st) == 0 || host_socket(p) ? p : buf;
