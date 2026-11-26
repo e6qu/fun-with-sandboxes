@@ -1173,10 +1173,12 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 	return out, nil
 }
 
-// cacheLayers unpacks into the layer cache, a few at a time, the layers
-// it does not hold: each unpacks into a directory of its own, and only
-// laying them onto the root, which follows, has their order. A layer that
-// fails here is unpacked again as the root is laid, which reports why.
+// cacheLayers unpacks into the layer cache the layers it does not hold,
+// several at once: each unpacks into a directory of its own, and only
+// laying them onto the root, which follows, has their order. Unpacking
+// waits on the file system more than on the processor, so twice as many
+// run as there are CPUs. A layer that fails here is unpacked again as the
+// root is laid, which reports why.
 func (s *Store) cacheLayers(layers []v1.Layer, diffIDs []v1.Hash, t *loadTimes) {
 	began := time.Now()
 	var (
@@ -1185,7 +1187,7 @@ func (s *Store) cacheLayers(layers []v1.Layer, diffIDs []v1.Hash, t *loadTimes) 
 		wg     sync.WaitGroup
 	)
 	work := make(chan int)
-	for range min(len(layers), max(2, runtime.NumCPU()/2)) {
+	for range min(len(layers), max(4, 2*runtime.NumCPU())) {
 		wg.Go(func() {
 			for i := range work {
 				if _, ok, _ := s.cacheLayer(layers[i], diffIDs[i]); ok {
