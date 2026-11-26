@@ -70,7 +70,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] != "rabbitmq-server" {
 		log.Fatalf("unknown command %q: the image runs rabbitmq-server", os.Args[1])
 	}
-	log.Fatal(syscall.Exec(server, []string{"rabbitmq-server"}, env))
+	// What follows rabbitmq-server in the command goes on to it, as the
+	// official image's entrypoint passes its arguments on.
+	args := []string{"rabbitmq-server"}
+	if len(os.Args) > 2 {
+		args = append(args, os.Args[2:]...)
+	}
+	log.Fatal(syscall.Exec(server, args, env))
 }
 
 // handshake opens an AMQP 0-9-1 connection far enough for the broker to

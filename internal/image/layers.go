@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
@@ -65,11 +66,16 @@ func (s *Store) cachedLayer(d v1.Hash) (layerMeta, bool) {
 // cache, unpacking it into the cache first if need be, and returns the
 // length of its uncompressed stream. A layer the cache cannot hold applies
 // onto dst directly.
-func (s *Store) layLayer(l v1.Layer, d v1.Hash, dst string) (int64, error) {
+func (s *Store) layLayer(l v1.Layer, d v1.Hash, dst string, t *loadTimes) (int64, error) {
+	t.layers++
 	m, ok := s.cachedLayer(d)
 	if !ok {
 		var err error
-		if m, ok, err = s.cacheLayer(l, d); err != nil || !ok {
+		began := time.Now()
+		m, ok, err = s.cacheLayer(l, d)
+		t.cache += time.Since(began)
+		t.cached++
+		if err != nil || !ok {
 			// Applying the layer reports what made it unfit for the cache,
 			// if anything does.
 			return measure(l, dst, true)
@@ -90,7 +96,10 @@ func (s *Store) layLayer(l v1.Layer, d v1.Hash, dst string) (int64, error) {
 		// A record that fails to take the blob costs a check next time.
 		s.writeLayerMeta(d, m)
 	}
-	return m.Size, MergeLayer(s.layerDir(d), dst, s.clone)
+	began := time.Now()
+	err = MergeLayer(s.layerDir(d), dst, s.clone)
+	t.merge += time.Since(began)
+	return m.Size, err
 }
 
 // writeLayerMeta records m for the layer d, through a temporary file.

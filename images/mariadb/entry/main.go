@@ -69,16 +69,22 @@ func main() {
 	if err := sandboxenv.Become("mysql", datadir, run); err != nil {
 		log.Fatal(err)
 	}
-	// The server's own paths are Nix store paths a container cannot read;
-	// every one it needs is named from the image.
+	// The server's compiled-in paths are Nix store paths a container cannot
+	// read; every one it needs is named from the image. /etc/mysql/my.cnf
+	// and the directories it includes hold the rest, as the official
+	// image's do, so a user's own settings there are read.
 	common := []string{
-		"--no-defaults",
 		"--basedir=" + base,
 		"--datadir=" + datadir,
 		"--lc-messages-dir=" + filepath.Join(base, "share", "mysql"),
 		"--plugin-dir=" + filepath.Join(base, "lib", "mysql", "plugin"),
 		"--tmpdir=" + tmp,
-		"--socket=" + filepath.Join(run, "mysqld.sock"),
+		// The socket as the container names it: the server checks a
+		// socket's path against macOS's 103-byte limit before it binds,
+		// which a container root deep in the engine's data directory takes
+		// a host path past; the container library binds a long one through
+		// its directory.
+		"--socket=/run/mysqld/mysqld.sock",
 		"--pid-file=" + filepath.Join(run, "mysqld.pid"),
 	}
 	if err := initialise(server, base, datadir, common); err != nil {

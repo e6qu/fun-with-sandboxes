@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -102,6 +103,30 @@ func TestApplyLayerRefusesEscapes(t *testing.T) {
 			dir := t.TempDir()
 			if err := ApplyLayer(dir, l); err == nil {
 				t.Fatal("layer applied")
+			}
+			if _, err := os.Stat(filepath.Join(outside, "evil")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("layer wrote outside its root")
+			}
+		})
+	}
+}
+
+// A directory the extraction has seen, then replaced by a symbolic link
+// out of the root, is no longer taken for a directory: a file under it is
+// refused, by ApplyLayer and by the layer cache's extraction alike.
+func TestExtractionForgetsAReplacedDirectory(t *testing.T) {
+	outside := t.TempDir()
+	mk := func() *bytes.Buffer {
+		return layer(t,
+			entry{name: "d", typ: tar.TypeDir, mode: 0o755},
+			entry{name: "d/ok", body: "x"},
+			entry{name: "d", typ: tar.TypeSymlink, link: outside},
+			entry{name: "d/evil", body: "x"})
+	}
+	for name, apply := range map[string]func(string, io.Reader) error{"ApplyLayer": ApplyLayer, "ExtractLayer": ExtractLayer} {
+		t.Run(name, func(t *testing.T) {
+			if err := apply(t.TempDir(), mk()); err == nil {
+				t.Fatal("layer extracted")
 			}
 			if _, err := os.Stat(filepath.Join(outside, "evil")); !errors.Is(err, os.ErrNotExist) {
 				t.Fatal("layer wrote outside its root")

@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -284,11 +285,54 @@ func dockerAt(t *testing.T, host string, args ...string) (string, error) {
 	}
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	// docker run passes SIGQUIT on to its container rather than print its
+	// own stacks: where a command times out, the processes of every running
+	// container are sampled first, for where they are blocked.
+	quit := cmd.Cancel
+	var hung string
+	cmd.Cancel = func() error {
+		hung = containerStacks(host)
+		return quit()
+	}
 	err := cmd.Run()
 	if err != nil {
-		return out.String(), fmt.Errorf("docker %s: %v: %s", strings.Join(args, " "), err, errb.String())
+		return out.String(), fmt.Errorf("docker %s: %v: %s%s", strings.Join(args, " "), err, errb.String(), hung)
 	}
 	return out.String(), nil
+}
+
+// containerStacks samples, for a second each, the processes of the running
+// containers of the engine at host (the suite's where empty), as macOS's
+// sample(1) prints their native stacks.
+func containerStacks(host string) string {
+	run := func(name string, args ...string) string {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		c := exec.CommandContext(ctx, name, args...)
+		if host != "" {
+			c.Env = append(os.Environ(), "DOCKER_HOST="+host)
+		}
+		b, _ := c.CombinedOutput()
+		return string(b)
+	}
+	var b strings.Builder
+	b.WriteString("\nthe running containers' processes when the command timed out:\n")
+	for _, id := range strings.Fields(run("docker", "ps", "-q")) {
+		top := run("docker", "top", id, "-o", "pid,command")
+		fmt.Fprintf(&b, "== %s\n%s", id, top)
+		for _, line := range strings.Split(top, "\n")[1:] {
+			pid, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+			if _, err := strconv.Atoi(pid); err != nil {
+				continue
+			}
+			s := run("/usr/bin/sample", pid, "1")
+			if len(s) > 6000 {
+				s = s[:6000]
+			}
+			fmt.Fprintf(&b, "-- sample %s\n%s\n", pid, s)
+		}
+	}
+	return b.String()
 }
 
 // stacksOnTimeout makes a command that outlives its context, and its

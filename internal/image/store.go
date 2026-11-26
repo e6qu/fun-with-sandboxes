@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -756,18 +757,24 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 	if err != nil {
 		return nil, err
 	}
+	began := time.Now()
 	err = Extract(dir, f, false)
 	f.Close()
 	if err != nil {
 		return nil, err
 	}
+	extracted := time.Since(began)
 	if err := noLinks(dir); err != nil {
 		return nil, err
 	}
 	// The layout stores blobs under the names they come with, which go on
 	// to name them in the store and share them between images.
+	began = time.Now()
 	if err := verifyBlobs(dir); err != nil {
 		return nil, err
+	}
+	if verified := time.Since(began); extracted+verified >= time.Second {
+		log.Printf("image archive %s: extracted %s, blobs verified %s", filepath.Base(archivePath), extracted.Round(time.Millisecond), verified.Round(time.Millisecond))
 	}
 	idx, err := layout.ImageIndexFromPath(dir)
 	if err != nil {
@@ -806,15 +813,57 @@ func (s *Store) loadLayout(archivePath string) ([]Image, error) {
 			e.tags = append(e.tags, n)
 		}
 	}
+	// The verified blobs are linked into the store's layout, on the same
+	// file system, rather than copied there: writing the images then finds
+	// them in place, and the images read them from either name. A collection waits for the images to be recorded, as
+	// it does for any add, so no moved blob is taken for an orphan.
+	s.blobs.RLock()
+	defer s.blobs.RUnlock()
+	if err := s.adoptBlobs(filepath.Join(dir, "blobs")); err != nil {
+		return nil, err
+	}
 	var out []Image
 	for _, e := range order {
-		added, err := s.Add(e.img, e.tags, "")
+		added, err := s.add(e.img, e.tags, "")
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, added)
 	}
 	return out, nil
+}
+
+// adoptBlobs hard-links the blobs under dir, an extracted layout's blobs
+// directory whose blobs are verified, into the store's layout, where it
+// does not hold them already.
+func (s *Store) adoptBlobs(dir string) error {
+	algs, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, alg := range algs {
+		if !alg.IsDir() {
+			continue
+		}
+		dst := filepath.Join(string(s.layout()), "blobs", alg.Name())
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return err
+		}
+		blobs, err := os.ReadDir(filepath.Join(dir, alg.Name()))
+		if err != nil {
+			return err
+		}
+		for _, b := range blobs {
+			to := filepath.Join(dst, b.Name())
+			if _, err := os.Lstat(to); err == nil {
+				continue
+			}
+			if err := os.Link(filepath.Join(dir, alg.Name(), b.Name()), to); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // annotatedName is the image name an index descriptor carries:
@@ -990,8 +1039,13 @@ func (s *Store) add(img v1.Image, refs []string, root string) (Image, error) {
 		os.RemoveAll(rec.stage)
 		return out, err
 	}
+	began := time.Now()
 	usage := DiskUsage(rec.stage)
 	rec.RootUsage = &usage
+	rec.times.usage = time.Since(began)
+	if t := rec.times; t.blobs+t.cache+t.merge+t.usage >= time.Second {
+		log.Printf("image %s unpacked: %s", id, t)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.Rename(rec.stage, s.Root(id)); err != nil {
@@ -1019,6 +1073,22 @@ func (s *Store) retag(id string, refs []string) (Image, bool, error) {
 type unpacked struct {
 	Image
 	stage string
+	times loadTimes
+}
+
+// loadTimes is where an image's unpacking spent its time, for a slow one
+// to say: an image of a few hundred megabytes unpacks in seconds when
+// its layers are on the disk, and a load that takes minutes shows here
+// which part does.
+type loadTimes struct {
+	blobs, cache, merge, usage time.Duration
+	cached, layers             int
+}
+
+func (t loadTimes) String() string {
+	return fmt.Sprintf("blobs %s, %d of %d layers unpacked %s, merged %s, usage %s",
+		t.blobs.Round(time.Millisecond), t.cached, t.layers, t.cache.Round(time.Millisecond),
+		t.merge.Round(time.Millisecond), t.usage.Round(time.Millisecond))
 }
 
 // unpack writes img's blobs into the layout and measures its layers,
@@ -1031,9 +1101,11 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 			os.RemoveAll(stage)
 		}
 	}()
+	began := time.Now()
 	if err := s.layout().WriteImage(img); err != nil {
 		return unpacked{}, err
 	}
+	blobs := time.Since(began)
 	dg, err := img.Digest()
 	if err != nil {
 		return unpacked{}, err
@@ -1056,7 +1128,7 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 			return unpacked{}, err
 		}
 	}
-	out := unpacked{Image: Image{Manifest: desc, LayerSizes: []int64{}}, stage: stage}
+	out := unpacked{Image: Image{Manifest: desc, LayerSizes: []int64{}}, stage: stage, times: loadTimes{blobs: blobs}}
 	layers, err := local.Layers()
 	if err != nil {
 		return unpacked{}, err
@@ -1070,11 +1142,14 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 		diffIDs = nil
 	}
 	out.LayeredRoot = root == "" && diffIDs != nil
+	if out.LayeredRoot {
+		s.cacheLayers(layers, diffIDs, &out.times)
+	}
 	for i, l := range layers {
 		var n int64
 		switch {
 		case root == "" && diffIDs != nil:
-			n, err = s.layLayer(l, diffIDs[i], stage)
+			n, err = s.layLayer(l, diffIDs[i], stage, &out.times)
 		case root == "":
 			n, err = measure(l, stage, true)
 		default:
@@ -1096,6 +1171,40 @@ func (s *Store) unpack(img v1.Image, root string) (_ unpacked, err error) {
 		out.Size += n
 	}
 	return out, nil
+}
+
+// cacheLayers unpacks into the layer cache, a few at a time, the layers
+// it does not hold: each unpacks into a directory of its own, and only
+// laying them onto the root, which follows, has their order. A layer that
+// fails here is unpacked again as the root is laid, which reports why.
+func (s *Store) cacheLayers(layers []v1.Layer, diffIDs []v1.Hash, t *loadTimes) {
+	began := time.Now()
+	var (
+		mu     sync.Mutex
+		cached int
+		wg     sync.WaitGroup
+	)
+	work := make(chan int)
+	for range min(len(layers), max(2, runtime.NumCPU()/2)) {
+		wg.Go(func() {
+			for i := range work {
+				if _, ok, _ := s.cacheLayer(layers[i], diffIDs[i]); ok {
+					mu.Lock()
+					cached++
+					mu.Unlock()
+				}
+			}
+		})
+	}
+	for i := range layers {
+		if _, ok := s.cachedLayer(diffIDs[i]); !ok {
+			work <- i
+		}
+	}
+	close(work)
+	wg.Wait()
+	t.cache += time.Since(began)
+	t.cached += cached
 }
 
 // measure reads a layer's uncompressed stream, applying it onto dir when

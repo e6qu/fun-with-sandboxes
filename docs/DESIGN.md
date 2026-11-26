@@ -1,32 +1,64 @@
-# fun-with-sandboxes — Design
+# Design
 
-A no-root, no-VM container engine for macOS that speaks a subset of the Docker
-Engine API, enough to run `docker compose` stacks of macOS-native images side
-by side without clashing on ports, paths or processes, and without reaching
-the host beyond what macOS requires.
-
-The engine is written in Go for `darwin/arm64`, Apple silicon alone. It runs
-the workloads on the host, with no virtual machine and no privileged helper,
-using the only isolation primitives macOS offers an unprivileged process:
-**Seatbelt** sandbox profiles, **APFS copy-on-write clones**, and **per-stack
-resource assignment**.
+How fws works. It runs containers on the host, with no virtual machine and
+no privileged helper, using the only isolation primitives macOS offers an
+unprivileged process: **Seatbelt** sandbox profiles, **APFS copy-on-write
+clones**, and **per-stack resource assignment**. The engine is written in
+Go for `darwin/arm64`.
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
 
----
+1. [Scope](#1-scope)
+2. [The core problem and the chosen resolution](#2-the-core-problem-and-the-chosen-resolution)
+3. [Isolation model](#3-isolation-model), [without cgroups](#3a-isolation-and-limits-without-cgroups)
+4. [Image and root filesystem](#4-image-and-root-filesystem)
+5. [Per-stack resource assignment](#5-per-stack-resource-assignment)
+6. [Networking without root or a network stack](#6-networking-without-root-or-a-network-stack)
+7. [The image catalog](#7-the-image-catalog)
+8. [Docker Engine API surface](#8-docker-engine-api-surface), [BuildKit](#buildkit), [the classic builder](#the-classic-builder), [Podman's API](#podmans-api), [Kubernetes](#kubernetes)
+9. [Runtime launch sequence](#9-runtime-launch-sequence)
+10. [Go implementation](#10-go-implementation)
+11. [Testing](#11-testing)
 
-## 1. Scope and non-goals
+## 1. Scope
 
 ### What it is
 
-- A daemon that serves the Docker Engine API subset Compose v2 needs, over a
-  unix socket.
+- A daemon that serves the Docker Engine API, Podman's API and Kubernetes'
+  CRI over one Unix socket.
 - A runtime that launches each container as a host process tree confined by a
   generated Seatbelt profile, rooted in an APFS clone of the image's unpacked
   layers.
 - A per-stack allocator that hands every stack a private port range and a
   private directory, so unrelated stacks never collide or observe each
   other.
+
+The parts and what passes between them, all on the Mac, as the sections
+below describe each:
+
+```mermaid
+flowchart LR
+  subgraph Clients
+    CLI["docker, compose, buildx"]
+    PM["podman"]
+    CRICTL["crictl, kubelet"]
+  end
+  CLI -->|"HTTP on docker.sock"| API
+  PM -->|"HTTP on docker.sock"| API
+  CRICTL -->|"gRPC on docker.sock"| API
+  API["fwsd: Docker, libpod and CRI APIs"] -->|"requests"| ENG["engine"]
+  API -->|"/grpc and /session"| BK["BuildKit"]
+  BK -->|"FROM, results"| IMG["image store"]
+  ENG -->|"pull, load, clone a root"| IMG
+  ENG -->|"config.json, then its socket"| SHIM["fws-shim supervisor, router, port proxies"]
+  ENG -->|"one per stack"| EGR["egress proxy"]
+  ENG -->|"docker exec, health checks"| ANCH["exec anchor"]
+  SHIM -->|"spawn helper: limits, sandbox_apply"| MAIN["container processes under Seatbelt, with fwsroot"]
+  ANCH -->|"starts in the same sandbox"| MAIN
+  MAIN -->|"connections to members, via its router"| SHIM
+  MAIN -->|"HTTP or SOCKS5"| EGR
+  MAIN -->|"FWS_ENGINE, when privileged"| NEST["nested engine"]
+```
 
 ### What it is not
 
@@ -36,13 +68,10 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 - **Not a Linux container runtime.** It runs macOS-native (Mach-O,
   `darwin/<arch>`) images only; Linux ELF images need a VM or emulation, both
   excluded. Images come from the Nix-built catalog (§7) or from Dockerfiles
-  built on it; Dockerfiles written for Linux are a non-goal
-  ([`PLAN.md`](../PLAN.md)).
+  built on it ([PLAN](../PLAN.md#non-goals)).
 - **Not root-requiring.** No step uses `sudo`, installs a kext, disables SIP,
   adds `lo0` aliases, or writes `pf` rules. A design choice that needs root is
   replaced with an unprivileged equivalent.
-- **Not a drop-in for Docker Hub images.** Stock `postgres:16` is a Linux
-  image and does not apply (§7).
 
 ### Accepted exceptions
 
@@ -68,10 +97,9 @@ more of the host than under Docker, though it can act on none of it:
   preferences and bundles all over it.
 
 Another stack's files, ports, environment and logs, and the right to signal
-its processes, stay denied. [`LIMITATIONS.md`](../LIMITATIONS.md) lists every
+its processes, stay denied. [LIMITATIONS](../LIMITATIONS.md) lists every
 gap.
 
----
 
 ## 2. The core problem and the chosen resolution
 
@@ -93,9 +121,8 @@ This is **isolation by assignment, enforced by Seatbelt**: the engine hands
 out non-overlapping resources, and Seatbelt stops a container using anything
 it was not handed.
 
----
 
-## 3. Isolation model — what each primitive provides
+## 3. Isolation model
 
 | Dimension | Primitive | Guarantee | Gap (accepted) |
 |---|---|---|---|
@@ -136,11 +163,13 @@ knobs, each enforced by a real mechanism or refused.
   reported on a close-on-exec status pipe.
 - **Compiled profiles.** Compiling a profile's text takes libsandbox about
   15 ms; applying bytecode takes the kernel about 35 µs. While the shim
-  starts, the engine renders `profile.sb` (`internal/seatbelt`) and compiles
-  it with `sandbox_compile_string` (`libsystem.SandboxCompile`) to
+  starts, the engine renders the profile's text (`internal/seatbelt`) and
+  compiles it with `sandbox_compile_string` (`libsystem.SandboxCompile`) to
   `profile.bin`, keyed by the SHA-256 of the text and `kern.osversion`, so
-  an unchanged text compiles nothing. Where macOS refuses the bytecode, the
-  helper compiles the text through the deprecated `sandbox_init` instead.
+  an unchanged text compiles nothing; the shim writes the text to
+  `profile.sb` as it starts the process. Where macOS refuses the bytecode,
+  the helper compiles the text through the deprecated `sandbox_init`
+  instead.
 - **Fork ceiling.** The helper lowers the soft `RLIMIT_NPROC` of every
   container process to `kern.maxprocperuid` less a reserve of an eighth of
   it, at least 64 (`runtime.ForkCeiling`), so a fork bomb fails in the
@@ -299,6 +328,30 @@ networking is §6's.
   parent, is the host's only where the container can read that, as a
   shell or the time zone a root lacks; else it stays the root's and fails
   with `ENOENT`, as under chroot, not with Seatbelt's `EPERM` (`place`).
+  The steps the library takes for each path a call names (`fws_map`,
+  `place`):
+
+  ```mermaid
+  flowchart TD
+    P["path the call names"] --> REL{"relative?"}
+    REL -->|"yes"| CWD["joined to the working directory, as the container names it"]
+    CWD --> HS
+    REL -->|"no"| HS{"already a host path to the root or a mount's source?"}
+    HS -->|"yes"| ASIS["used as given"]
+    HS -->|"no"| LNK{"a symbolic link or .. on the way?"}
+    LNK -->|"yes"| RES["resolved in the container: an absolute target starts at its /, .. stops there"]
+    RES --> MNT
+    LNK -->|"no"| MNT{"under a mount's destination?"}
+    MNT -->|"yes"| SRC["the mount's source"]
+    MNT -->|"no"| HT{"in a host tree: /System, /usr/lib, /dev, ..."}
+    HT -->|"yes"| ASIS
+    HT -->|"no"| RT{"does the root hold the path or its parent?"}
+    RT -->|"yes"| INROOT["the path in the root"]
+    RT -->|"no"| HOST{"can the container see the host's?"}
+    HOST -->|"yes: a shell, the time zone"| ASIS
+    HOST -->|"no"| MISS["the path in the root: fails with ENOENT"]
+  ```
+
   A Unix socket's address maps as a file
   path does; a host path past the address's 104 bytes is used relative to
   the root, or the mount holding it, as the thread's working directory
@@ -325,7 +378,6 @@ networking is §6's.
   refuses, succeeds and never fires. `sendfile`, which the kernel refuses
   under a profile, becomes a copy.
 
----
 
 ## 4. Image and root filesystem
 
@@ -362,14 +414,15 @@ through symlinks at start-up because Seatbelt matches resolved paths.
     root.sparseimage               # the root's disk image (--storage-opt size)
     engine/                        # a privileged container's nested engine
   volumes/<name>/_data/            # named and anonymous volumes
-  staging/  trash/                 # roots being cloned or deleted
+  staging/  trash/                 # container roots being cloned or deleted
   buildcache/                      # the classic builder's step cache
   buildkit/                        # BuildKit's content store, snapshots, metadata
 ```
 
 Cloning and deleting a root takes as long as the image has files, so the
-engine clones into `staging/` and deletes from `trash/` without holding its
-lock, and moves a root in or out of place under the lock with a `rename`. At
+engine clones a container's root into `staging/` (an image's root is
+staged in `images/roots/.stage-*`) and deletes from `trash/` without
+holding its lock, and moves a root in or out of place under the lock with a `rename`. At
 start-up it deletes, in the background, whatever an earlier engine left in
 either.
 
@@ -404,7 +457,10 @@ against its digest. The store sweeps what a crash left as it opens.
 
 Each layer is unpacked once, by its diff ID, into `images/layers/<diffid>`,
 holding its entries alone with its whiteouts as files that name them, and
-checked against the config's `rootfs.diff_ids`. An image's root,
+checked against the config's `rootfs.diff_ids`. An image whose unpacking
+takes a second or more is logged with where the time went: writing its
+blobs, unpacking the layers not yet cached, merging them and measuring the
+root. An image's root,
 `images/roots/<digest>`, is its layers laid over an empty tree in order: a
 directory the tree lacks comes as one `clonefile` of the layer's subtree, so
 images that share layers share their blocks; a layer with a hard link into a
@@ -412,6 +468,23 @@ lower layer is applied in place instead. On create, the container gets an
 **APFS clone** of the image's root (`clonefile(2)`): copy-on-write, constant
 time, and near zero bytes until the container writes, with no union mount
 and no root.
+
+The path from an image's blobs to a container's root
+(`internal/image/store.go`, `layers.go`, `merge.go`):
+
+```mermaid
+flowchart LR
+  SRC["pull, load or an archive of -image-archives"] -->|"manifest, config, layer blobs"| OCI["images/oci/blobs/sha256"]
+  OCI -->|"each layer, by diff ID"| Q{"unpacked in images/layers?"}
+  Q -->|"no"| UNP["unpack once, checked against rootfs.diff_ids"]
+  UNP --> LAY["images/layers/DIFFID"]
+  Q -->|"yes"| LAY
+  LAY -->|"clonefile of each subtree the tree lacks"| STG["images/roots/.stage-*"]
+  OCI -->|"a layer with a hard link below: applied in place"| STG
+  STG -->|"rename"| ROOT["images/roots/CONFIG-DIGEST"]
+  ROOT -->|"clonefile into staging/, then rename"| CR["stacks/STACK/c/ID12/r"]
+  ROOT -->|"clonefile"| INIT["stacks/STACK/c/ID12/init"]
+```
 
 Extraction keeps each entry's modification time and records what an
 unprivileged process cannot set (owner and mode, §3a). It skips device
@@ -440,7 +513,6 @@ profile's `process-exec` allowance, and Docker's `ReadonlyPaths` and
 `MaskedPaths` become denials of writes, and of reads and writes, at the end
 of the profile.
 
----
 
 ## 5. Per-stack resource assignment
 
@@ -461,7 +533,6 @@ container without one is a stack of its own (`run-<id>`).
 Assignments persist in `alloc.json`, so a restarted engine hands out the same
 ports.
 
----
 
 ## 6. Networking without root or a network stack
 
@@ -519,6 +590,27 @@ container library's and the routers' work.
   on a port without a host port is a Unix datagram socket; the router
   binds a flow port of the stack's block for it and relays datagrams with
   a six-byte address header, which the library adds and strips.
+  Where the library sends a program's TCP `connect`
+  (`fwsroot.c`'s `routed`, `route` and `refused`; `router.go`'s `join`):
+
+  ```mermaid
+  flowchart TD
+    C["connect to address and port"] --> K{"what it names"}
+    K -->|"a member, by address or by host port"| RELAY["own router: StreamRelay with the relay key"]
+    K -->|"own port without a host port"| STREAM["own router: Stream"]
+    K -->|"own port with a host port"| HP["that host port on 127.0.0.1"]
+    K -->|"port 53 outside the machine"| DNS["own router: DNSStream"]
+    K -->|"any other loopback port"| SB["Seatbelt refuses: EPERM"]
+    K -->|"an address no member holds"| UNR["EHOSTUNREACH"]
+    SB -->|"the library reports"| REF["ECONNREFUSED"]
+    RELAY --> SEES{"network file: do the two share a network or a link?"}
+    SEES -->|"no"| REF
+    SEES -->|"yes, the port has a host port"| MHP["the member's host port"]
+    SEES -->|"yes, no host port"| MR["the member's router: Stream"]
+    MR --> SOCK["the listener's Unix socket in its port directory, client address first"]
+    STREAM --> SOCK
+  ```
+
 - **Networks.** User-defined networks decide which members a container
   resolves and reaches. Network mode `container:<id>` takes that
   container's network wholesale: ports, member address, network file, port
@@ -589,21 +681,18 @@ container library's and the routers' work.
   container with internet access, and refuses after 2 s without a reply.
   Any other echo fails with `ENETUNREACH`.
 
----
 
-## 7. Images: a curated, Nix-built catalog
+## 7. The image catalog
 
 The catalog is built from nixpkgs for `aarch64-darwin` by
 `scripts/build-images.sh` and `cmd/fws-mkimage`, which relocates each Nix
 closure so it loads by relative paths and writes an OCI image with a layer
 per store path; `internal/catalog` lists it, for `fws catalog` and CI's
-publish check. [IMAGES](IMAGES.md) describes the catalog, its build and its
-publication. Compose files name these images explicitly; the engine never
-substitutes one image name for another. macOS allows only 87 System V
-semaphores machine-wide by default, so the Postgres entrypoint keeps each
-server's process limits small.
+publish check. The engine never substitutes one image name for another.
+[IMAGES](IMAGES.md) describes the catalog, and
+[IMAGE-AUTHORING](IMAGE-AUTHORING.md#how-a-catalog-image-is-built) its
+build.
 
----
 
 ## 8. Docker Engine API surface
 
@@ -697,7 +786,11 @@ Linux-specific:
 - **Images.** `FROM` resolves the engine's images first. The `moby`
   exporter (`docker build`, `--load`) writes the result as an OCI image
   extending the base's layers, stores it in the engine's image store, and
-  clones the result's snapshot as its root.
+  clones the result's snapshot as its root. A slow commit of the layers is
+  logged with their number and compressed size.
+
+containerd's content store probes fsverity, a Linux feature, and warns
+that it is unsupported; on darwin the engine drops that warning.
 
 The BuildKit packages the engine uses live in `third_party/buildkit`, copied
 by `scripts/sync-buildkit.sh` with their imports rewritten into this module,
@@ -798,37 +891,68 @@ Pods and Deployments.
   when it changes and every 30 s (`-resync`), so a restarted engine gets it
   back.
 
----
 
 ## 9. Runtime launch sequence
 
 On create: clone the image root, assign the stack's ports, realise the
 mounts, and record the container. On start:
 
-1. Render the Seatbelt profile from the container's grants to
-   `profile.sb`, outside the root, and compile it to `profile.bin` unless
-   the bytecode of the same text is kept (§3a), alongside step 3.
-2. Build the environment: image and container variables, `PATH` and `HOME`
+1. Render the Seatbelt profile's text from the container's grants and
+   compile it to `profile.bin` unless the bytecode of the same text is kept
+   (§3a), alongside step 4; the shim writes the text to `profile.sb`,
+   outside the root.
+2. Start the stack's egress proxy if it has internet access and none runs,
+   and, for a privileged container, open its nested engine and serve that
+   engine's API on the socket `FWS_ENGINE` names.
+3. Build the environment: image and container variables, `PATH` and `HOME`
    mapped into the root, and the `SANDBOX_*` and `FWS_*` variables. With
    `--init`, link `fws-shim` at `/sbin/docker-init` in the root and put it
    before the command; run by that name it acts as tini.
-3. Start the container's shim (§3a), which binds the published host ports.
-4. The shim spawns the helper, which applies the limits and the profile,
+4. Start the container's shim (§3a), which binds the published host ports.
+5. The shim spawns the helper, which applies the limits and the profile,
    starts the exec anchor, and executes `<root>/<argv0> …` with the
    container library loaded, the main process leading its own process
    group (or session, with a TTY). Output reaches the json-file log through
    pipes, so the shim sees the exit at once even if a descendant still
    holds stdout.
-5. When the main process exits, the shim kills the rest of the container,
+6. When the main process exits, the shim kills the rest of the container,
    drains the output for up to 2 s, records the exit, and tells the engine,
    which applies the restart policy.
+
+The same start as the processes see it (`Container.start` in
+`internal/engine/container.go`, `internal/shim/server_darwin.go`,
+`internal/runtime/start_darwin.go`, `internal/pathmap/src/spawn.c`):
+
+```mermaid
+sequenceDiagram
+  participant C as client
+  participant E as engine
+  participant S as fws-shim
+  participant H as spawn helper
+  participant A as exec anchor
+  participant M as main process
+  C->>E: POST /containers/ID/start
+  E->>E: profile spec, /etc/hosts, egress proxy, environment
+  E-)E: compile profile.bin in the background
+  E->>S: start in a session of its own, with config.json
+  S->>S: listen on its sockets, bind published ports, start the router
+  S->>H: posix_spawn, once profile.sb is written and profile.bin compiled
+  H->>H: nice, I/O tier, rlimits, fork ceiling, sandbox_apply
+  H->>A: start through a child that exits at once
+  H->>M: become it: posix_spawn SETEXEC, QoS clamp, DYLD_INSERT_LIBRARIES
+  S-->>E: ready: pid and published ports, on a pipe
+  E-->>C: 204 No Content, start event
+  M-->>S: exits
+  S->>S: kill the rest, drain output up to 2 s, write exit.json
+  S-->>E: exit status, over its socket
+  E->>E: restart policy
+```
 
 A process start costs about 3.4 ms natively to reach `main`, 7 ms with any
 library inserted (the loader loses its prebuilt launch), and about 4 ms more
 for the functions `fwsroot.c` interposes, some 25 µs each, whichever they
 are (`BenchmarkStartCost`, on CI's macOS 26 runner).
 
----
 
 ## 10. Go implementation
 
@@ -883,7 +1007,6 @@ images/               # entrypoints and Nix specs for the darwin catalog
 tests/e2e/            # Docker CLI, Compose and Testcontainers end-to-end suite (own module)
 ```
 
----
 
 ## 11. Testing
 
@@ -892,6 +1015,5 @@ macOS runner; no test skips for a missing tool. The Seatbelt and
 container-library packages run probes under the real sandbox, and the
 end-to-end suite drives the stock Docker CLI, Docker Compose, Podman,
 Testcontainers, kind and `crictl` against an engine of its own.
-[`CONTRIBUTING.md`](../CONTRIBUTING.md) lists every check CI runs and how to
-run each locally; [`LIMITATIONS.md`](../LIMITATIONS.md) lists what the
-engine cannot do; [`HISTORY.md`](HISTORY.md) records how it got here.
+[CONTRIBUTING](../CONTRIBUTING.md#test) lists every check CI runs and how
+to run each locally.

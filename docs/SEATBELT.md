@@ -2,13 +2,11 @@
 
 Seatbelt is the macOS sandbox (`Sandbox.kext`, `libsandbox`,
 `sandbox-exec`), which App Sandbox, Safari and most system daemons run
-inside. GhostPack's *Seatbelt* on GitHub is an unrelated Windows tool.
-
-The engine confines containers with Seatbelt because it is the one
-confinement macOS gives an unprivileged process: no root, no kernel
-extension of its own, no virtual machine. This page covers what Seatbelt
-does, how to write and test a profile by hand, and how the engine renders
-and applies one for every container.
+inside. (GhostPack's *Seatbelt* is an unrelated Windows tool.) fws
+confines containers with it because it is the one confinement macOS gives
+an unprivileged process. This page covers what Seatbelt does, how to write
+and test a profile by hand, and how fws renders and applies one for every
+container.
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/info/rfc2119).
 
@@ -213,7 +211,7 @@ environment it sets, takes it out of the sandbox.
 rm -rf /tmp/sb-tutorial
 ```
 
-## How fun-with-sandboxes uses it
+## How fws uses it
 
 Every container process runs under a profile that `internal/seatbelt`
 renders from the container's spec (`seatbelt.Spec`). Each section denies an
@@ -232,6 +230,42 @@ operation family and then allows what the container owns:
 | The user's session | nothing, unless the container was created with `--security-opt seatbelt=gui`: then lookups of the window server, pasteboard, Launch Services, fonts, input methods, preferences, audio and GPU services (`GUIMachServices`), the IOKit user clients of surfaces, the GPU, displays and audio (`GUIIOKitClasses`), IOKit properties, preference reads, and the fonts, colour profiles and keyboard layouts under `/Library` (`GUIReadPaths`). The keychain's services stay denied |
 | Read-only and masked paths | last, so no allowance above reaches them: writes denied under read-only paths, reads and writes under masked ones |
 | IOKit and the rest | nothing: `(deny default)` keeps them denied |
+
+Since the last matching rule wins, a container's read of a file, by its
+resolved host path, comes out of the profile's rules
+(`internal/seatbelt/profile.go`) as this shows:
+
+```mermaid
+flowchart TD
+  R["file read, by resolved host path"] --> MASK{"under a masked path?"}
+  MASK -->|"yes"| DENY["denied: EPERM"]
+  MASK -->|"no"| OWN{"the root, a volume, the port directory, the system tree, the library, a file the engine names?"}
+  OWN -->|"yes"| ALLOW["allowed"]
+  OWN -->|"no"| GUI{"created with seatbelt=gui?"}
+  GUI -->|"yes"| DR{"under DeniedReadRoots or the engine's state?"}
+  DR -->|"yes"| DENY
+  DR -->|"no"| ALLOW
+  GUI -->|"no"| HRP{"under HostReadPaths?"}
+  HRP -->|"yes"| ALLOW
+  HRP -->|"no"| DENY
+```
+
+A connection or datagram the container sends comes out of the network
+rules so:
+
+```mermaid
+flowchart TD
+  S["connect or send"] --> UX{"a Unix socket?"}
+  UX -->|"yes"| UOK{"in the root, a volume or the port directory, or the shim's, syslog's or a nested engine's socket?"}
+  UOK -->|"yes"| ALLOW["allowed"]
+  UOK -->|"no"| DENY["denied: EPERM"]
+  UX -->|"no"| TCP{"TCP to localhost: a port it binds, its router or its egress proxy?"}
+  TCP -->|"yes"| ALLOW
+  TCP -->|"no"| UDP{"UDP to localhost, on a port of its stack's block?"}
+  UDP -->|"yes"| ALLOW
+  UDP -->|"no"| DENY
+  DENY -->|"TCP to loopback: the library reports"| REF["ECONNREFUSED"]
+```
 
 A denied operation fails with `EPERM`, with one exception the container
 library makes: a TCP connection to a loopback port outside the container's

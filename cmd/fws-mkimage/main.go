@@ -14,6 +14,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"debug/macho"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -70,6 +72,8 @@ func main() {
 	flag.Var(&links, "link", "image-path=target of a symbolic link to add, such as /bin/sh=dash (repeatable)")
 	var removes multi
 	flag.Var(&removes, "remove", "image path to leave out of the image, such as a store path's file (repeatable)")
+	var owns multi
+	flag.Var(&owns, "own", "image-path=uid:gid of a directory the image holds, made if missing, that the user owns, such as an account's home (repeatable)")
 	arch := flag.String("arch", runtime.GOARCH, "image architecture")
 	reuse := flag.Bool("reuse", false, "keep the archive at -out where it was made from the same inputs, as <out>.inputs records them")
 	flag.Parse()
@@ -77,10 +81,11 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+	in := inputs{spec: *specPath, closure: *closure, pkgs: pkgs, files: files, out: *out, arch: *arch, tag: *tag, env: env, links: links, removes: removes, owns: owns}
 	// The digest of the archive's inputs is recorded beside it once it is
 	// made, and rewritten when it is kept, so a build can tell the
 	// archives it made or kept from those an earlier catalog left.
-	digest, err := inputsDigest(*specPath, *closure, pkgs, files, *arch, *tag, env, links, removes)
+	digest, err := inputsDigest(in)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -88,7 +93,7 @@ func main() {
 		log.Printf("%s: kept, made from the same inputs", *out)
 	} else {
 		os.Remove(inputsPath(*out))
-		if err := build(*specPath, *closure, pkgs, files, *out, *arch, *tag, env, links, removes); err != nil {
+		if err := build(in); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -102,7 +107,40 @@ type multi []string
 func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
-func build(specPath, closure string, pkgs, files []string, out, arch, tag string, env, links, removes []string) error {
+// inputs are what an image is made from: the flags, as main reads them.
+type inputs struct {
+	spec, closure             string
+	pkgs, files               []string
+	out, arch, tag            string
+	env, links, removes, owns []string
+}
+
+// owner is a user and group that own a path of the image.
+type owner struct{ uid, gid int }
+
+// parseOwns reads -own's image-path=uid:gid entries, by the path as a
+// layer names it, relative to the image's root.
+func parseOwns(owns []string) (map[string]owner, error) {
+	out := map[string]owner{}
+	for _, o := range owns {
+		at, ids, ok := strings.Cut(o, "=")
+		u, g, ok2 := strings.Cut(ids, ":")
+		uid, err1 := strconv.Atoi(u)
+		gid, err2 := strconv.Atoi(g)
+		if !ok || !ok2 || err1 != nil || err2 != nil || uid < 0 || gid < 0 || !strings.HasPrefix(at, "/") {
+			return nil, fmt.Errorf("-own %q: want /image-path=uid:gid", o)
+		}
+		out[strings.TrimPrefix(filepath.Clean(at), "/")] = owner{uid, gid}
+	}
+	return out, nil
+}
+
+func build(in inputs) error {
+	specPath, closure, pkgs, files, out, arch, tag, env, links, removes := in.spec, in.closure, in.pkgs, in.files, in.out, in.arch, in.tag, in.env, in.links, in.removes
+	owners, err := parseOwns(in.owns)
+	if err != nil {
+		return err
+	}
 	var spec Spec
 	b, err := os.ReadFile(specPath)
 	if err != nil {
@@ -138,21 +176,18 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 				return fmt.Errorf("copy %s: %w", p, err)
 			}
 		}
-		if err := relocate(stage); err != nil {
-			return err
-		}
-		if err := verifyRelocated(stage); err != nil {
-			return err
+		if err := relocate(stage, filepath.Join(stage, storeDir)); err != nil {
+			return fmt.Errorf("relocate the closure: %w", err)
 		}
 	}
 	for _, p := range pkgs {
 		if err := linkBin(stage, p); err != nil {
-			return err
+			return fmt.Errorf("link %s's bin: %w", p, err)
 		}
 	}
 	if closure != "" {
 		if err := rewriteShebangs(stage, overlay); err != nil {
-			return err
+			return fmt.Errorf("rewrite scripts' #! lines: %w", err)
 		}
 	}
 	if spec.Files == nil {
@@ -165,19 +200,51 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 		}
 		spec.Files[dst] = src
 	}
-	for dst, src := range spec.Files {
+	// Shorter paths first, so that a file added inside a directory that
+	// is added too stands over that directory's, whatever the order given.
+	dsts := make([]string, 0, len(spec.Files))
+	for dst := range spec.Files {
+		dsts = append(dsts, dst)
+	}
+	sort.Slice(dsts, func(i, j int) bool {
+		a, b := filepath.Clean("/"+dsts[i]), filepath.Clean("/"+dsts[j])
+		if len(a) != len(b) {
+			return len(a) < len(b)
+		}
+		return a < b
+	})
+	for _, dst := range dsts {
+		src := spec.Files[dst]
 		if err := outsideHostTrees("file", dst); err != nil {
 			return err
 		}
 		if err := copyTree(src, filepath.Join(stage, dst)); err != nil {
-			return err
+			return fmt.Errorf("-file %s=%s: %w", dst, src, err)
 		}
+		// A file the image adds loads from the store as the closure's do:
+		// dyld reads its absolute references on the host, before the
+		// container library runs, so they are made relative too, to store
+		// paths the image holds.
+		if err := relocate(stage, filepath.Join(stage, dst)); err != nil {
+			return fmt.Errorf("relocate -file %s: %w", dst, err)
+		}
+	}
+	if err := verifyRelocated(stage); err != nil {
+		return fmt.Errorf("verify the relocation: %w", err)
 	}
 	for _, d := range spec.Dirs {
 		if err := outsideHostTrees("dir", d); err != nil {
 			return err
 		}
 		if err := os.MkdirAll(filepath.Join(stage, d), 0o755); err != nil {
+			return err
+		}
+	}
+	for rel := range owners {
+		if err := outsideHostTrees("own", rel); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Join(stage, rel), 0o755); err != nil {
 			return err
 		}
 	}
@@ -203,7 +270,10 @@ func build(specPath, closure string, pkgs, files []string, out, arch, tag string
 			return err
 		}
 	}
-	return writeArchive(stage, overlay, spec, paths, out, arch)
+	if err := writeArchive(stage, overlay, spec, paths, out, arch, owners); err != nil {
+		return fmt.Errorf("write %s: %w", out, err)
+	}
+	return nil
 }
 
 // hostTrees are the trees the container library (fwsroot.c's host_trees)
@@ -364,22 +434,32 @@ func freeSpace(dir string) string {
 // relocate rewrites every Mach-O file's absolute store references, then
 // re-signs it ad hoc: arm64 macOS refuses to run code whose signature no
 // longer matches.
-func relocate(stage string) error {
-	return filepath.WalkDir(filepath.Join(stage, storeDir), func(p string, d fs.DirEntry, err error) error {
+func relocate(stage, dir string) error {
+	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || !d.Type().IsRegular() {
 			return err
 		}
-		refs, rpaths, ok, err := machoRefs(p)
-		if err != nil || !ok {
-			return err
+		refs, rpaths, weak, ok, err := machoRefs(p)
+		if err != nil {
+			return fmt.Errorf("%s: %w", strings.TrimPrefix(p, stage), err)
+		}
+		if !ok {
+			return nil
 		}
 		var args []string
 		for _, ref := range refs {
 			if strings.HasPrefix(ref, storeDir+"/") {
+				// A weak load that finds nothing leaves its symbols unset,
+				// as its program expects; any other fails to start.
+				if err := held(stage, p, ref); err != nil && !weak[ref] {
+					return err
+				}
 				args = append(args, "-change", ref, loaderRel(stage, p, ref))
 			}
 		}
 		for _, rp := range rpaths {
+			// An rpath is a directory dyld searches, and one that does not
+			// exist is passed over, as bootstrap tools' placeholder ones are.
 			if strings.HasPrefix(rp, storeDir+"/") {
 				args = append(args, "-rpath", rp, loaderRel(stage, p, rp))
 			}
@@ -422,6 +502,16 @@ func describeMachO(p string) string {
 	return b.String()
 }
 
+// held fails where the Mach-O file p loads ref, a store path's file, that
+// the image does not hold: relative or not, the reference would find
+// nothing in a container.
+func held(stage, p, ref string) error {
+	if _, err := os.Stat(filepath.Join(stage, ref)); err != nil {
+		return fmt.Errorf("%s loads %s, which the image's closure does not hold", strings.TrimPrefix(p, stage), ref)
+	}
+	return nil
+}
+
 func loaderRel(stage, file, ref string) string {
 	rel, err := filepath.Rel(filepath.Dir(file), filepath.Join(stage, ref))
 	if err != nil {
@@ -442,7 +532,8 @@ const (
 
 // machoRefs lists the dylibs and rpaths a Mach-O file names; ok is false
 // for anything that is not Mach-O.
-func machoRefs(p string) (refs, rpaths []string, ok bool, err error) {
+func machoRefs(p string) (refs, rpaths []string, weak map[string]bool, ok bool, err error) {
+	weak = map[string]bool{}
 	files := []*macho.File{}
 	if fat, ferr := macho.OpenFat(p); ferr == nil {
 		defer fat.Close()
@@ -453,7 +544,7 @@ func machoRefs(p string) (refs, rpaths []string, ok bool, err error) {
 		defer f.Close()
 		files = append(files, f)
 	} else {
-		return nil, nil, false, nil
+		return nil, nil, nil, false, nil
 	}
 	seen := map[string]bool{}
 	for _, f := range files {
@@ -476,11 +567,14 @@ func machoRefs(p string) (refs, rpaths []string, ok bool, err error) {
 			// name string right after cmd and cmdsize.
 			off := f.ByteOrder.Uint32(raw[8:12])
 			if int(off) >= len(raw) {
-				return nil, nil, false, fmt.Errorf("%s: malformed load command 0x%x", p, cmd)
+				return nil, nil, nil, false, fmt.Errorf("%s: malformed load command 0x%x", p, cmd)
 			}
 			name := string(raw[off:])
 			if i := strings.IndexByte(name, 0); i >= 0 {
 				name = name[:i]
+			}
+			if cmd == lcLoadWeakDylib {
+				weak[name] = true
 			}
 			key := fmt.Sprintf("%t:%s", cmd == lcRpath, name)
 			if !seen[key] {
@@ -489,7 +583,7 @@ func machoRefs(p string) (refs, rpaths []string, ok bool, err error) {
 			}
 		}
 	}
-	return refs, rpaths, true, nil
+	return refs, rpaths, weak, true, nil
 }
 
 // verifyRelocated fails if any Mach-O file in the stage still loads through
@@ -499,9 +593,12 @@ func verifyRelocated(stage string) error {
 		if err != nil || !d.Type().IsRegular() {
 			return err
 		}
-		refs, rpaths, ok, err := machoRefs(p)
-		if err != nil || !ok {
-			return err
+		refs, rpaths, _, ok, err := machoRefs(p)
+		if err != nil {
+			return fmt.Errorf("%s: %w", strings.TrimPrefix(p, stage), err)
+		}
+		if !ok {
+			return nil
 		}
 		for _, r := range append(refs, rpaths...) {
 			if strings.HasPrefix(r, storeDir+"/") {
@@ -612,7 +709,7 @@ const sourceURL = "https://github.com/e6qu/fun-with-sandboxes"
 // with the rest of the stage and what overlay holds over the store paths.
 // It writes the epoch as every time, the image's creation included, so
 // the same inputs give the same image.
-func writeArchive(stage, overlay string, spec Spec, storePaths []string, out, arch string) error {
+func writeArchive(stage, overlay string, spec Spec, storePaths []string, out, arch string, owners map[string]owner) error {
 	dir, err := os.MkdirTemp("", "fws-mkimage-layers-")
 	if err != nil {
 		return err
@@ -624,16 +721,25 @@ func writeArchive(stage, overlay string, spec Spec, storePaths []string, out, ar
 	var diffIDs []v1.Hash
 	addLayer := func(createdBy string, sources ...layerSource) error {
 		p := filepath.Join(dir, fmt.Sprintf("%d.tar", len(adds)))
-		if err := writeLayer(p, sources...); err != nil {
-			return err
+		if err := writeLayer(p, owners, sources...); err != nil {
+			return fmt.Errorf("layer %q: %w", createdBy, err)
 		}
-		l, err := tarball.LayerFromFile(p, tarball.WithMediaType(types.OCILayer))
+		// The layer is compressed once, to a file the image then reads:
+		// a layer go-containerregistry compresses itself is compressed
+		// again each time it is read, for its digest, its size and the
+		// archive, and the archive takes the size from one compression
+		// and the bytes from another.
+		gz, err := compressLayer(p)
 		if err != nil {
-			return err
+			return fmt.Errorf("layer %q: %w", createdBy, err)
+		}
+		l, err := tarball.LayerFromFile(gz, tarball.WithMediaType(types.OCILayer))
+		if err != nil {
+			return fmt.Errorf("layer %q: %w", createdBy, err)
 		}
 		d, err := l.DiffID()
 		if err != nil {
-			return err
+			return fmt.Errorf("layer %q: diff_id: %w", createdBy, err)
 		}
 		adds = append(adds, mutate.Addendum{Layer: l, MediaType: types.OCILayer})
 		diffIDs = append(diffIDs, d)
@@ -719,6 +825,9 @@ func writeArchive(stage, overlay string, spec Spec, storePaths []string, out, ar
 	}
 	defer os.Remove(f.Name())
 	err = image.WriteArchive(f, []image.ArchiveEntry{{Image: img, Tags: []string{spec.Tag}}})
+	if err != nil {
+		err = fmt.Errorf("the archive: %w", err)
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -741,7 +850,40 @@ type layerSource struct {
 // writeLayer writes the entries of sources as a deterministic layer tar,
 // in lexical order of their paths; of entries at the same path, the
 // later source's.
-func writeLayer(path string, sources ...layerSource) (err error) {
+// compressLayer gzips the layer tar at path to path.gz, at the level
+// go-containerregistry compresses layers at, removes the tar and returns
+// the compressed file's path. A gzip stream written with no name or time
+// in its header is the same for the same layer.
+func compressLayer(path string) (_ string, err error) {
+	in, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	gzPath := path + ".gz"
+	out, err := os.Create(gzPath)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if cerr := out.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	zw, err := gzip.NewWriterLevel(out, gzip.BestSpeed)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(zw, in); err != nil {
+		return "", err
+	}
+	if err := zw.Close(); err != nil {
+		return "", err
+	}
+	return gzPath, os.Remove(path)
+}
+
+func writeLayer(path string, owners map[string]owner, sources ...layerSource) (err error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -792,7 +934,11 @@ func writeLayer(path string, sources ...layerSource) (err error) {
 		if fi.IsDir() {
 			h.Name += "/"
 		}
+		// Root owns what the image holds, but what -own gives a user.
 		h.Uid, h.Gid, h.Uname, h.Gname = 0, 0, "", ""
+		if o, ok := owners[rel]; ok {
+			h.Uid, h.Gid = o.uid, o.gid
+		}
 		h.ModTime = time.Unix(0, 0)
 		h.AccessTime, h.ChangeTime = time.Time{}, time.Time{}
 		h.Format = tar.FormatPAX

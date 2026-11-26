@@ -42,6 +42,34 @@ func recordMeta(path string, mode, onDisk os.FileMode, uid, gid int, fresh bool)
 	return Mark(path)
 }
 
+// recordMetaFile is recordMeta for a regular file extraction has just
+// created and still holds open, through its descriptor: no lookup of its
+// path, which in a store path's tree is long, for each record.
+func recordMetaFile(f *os.File, mode, onDisk os.FileMode, uid, gid int) error {
+	fd := int(f.Fd())
+	marked := false
+	if mode != onDisk {
+		if err := unix.Fsetxattr(fd, ModeXattr, []byte(formatMode(mode)), 0); err != nil {
+			return err
+		}
+		marked = true
+	}
+	if uid != 0 || gid != 0 {
+		if err := unix.Fsetxattr(fd, ownerXattr, []byte(formatOwner(uid, gid)), 0); err != nil {
+			return err
+		}
+		marked = true
+	}
+	if !marked {
+		return nil
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return err
+	}
+	return unix.Fchflags(fd, int(st.Flags|MetaFlag))
+}
+
 // RecordOwner records uid:gid as path's owner as its container sees it,
 // as the container library records a chown; root needs no record.
 func RecordOwner(path string, uid, gid int) error {

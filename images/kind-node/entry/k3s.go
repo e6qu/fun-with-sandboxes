@@ -68,10 +68,19 @@ type k3sOptions struct {
 	ServiceCIDR    string
 	Kubeconfig     string
 	KubeconfigMode os.FileMode
+	// NoLocalStorage is --disable=local-storage: no local-path
+	// StorageClass is applied.
+	NoLocalStorage bool
 }
 
+// k3sAbsent are the packaged components k3s's --disable names that
+// fws/k3s does not run, so that disabling one is already so.
+var k3sAbsent = map[string]bool{"traefik": true, "servicelb": true, "metrics-server": true, "runtimes": true, "helm-controller": true}
+
 // k3sValueFlags are the k3s server flags that take a value, which can
-// follow as the next argument; any other is a boolean.
+// follow as the next argument; any other is a boolean. Those fws/k3s
+// does not take are listed too, so that a refusal names the flag rather
+// than the value after it.
 var k3sValueFlags = map[string]bool{
 	"node-name": true, "tls-san": true, "cluster-cidr": true, "service-cidr": true, "write-kubeconfig": true, "o": true,
 	"write-kubeconfig-mode": true, "https-listen-port": true, "disable": true, "token": true, "t": true, "data-dir": true, "d": true,
@@ -82,8 +91,10 @@ var k3sValueFlags = map[string]bool{
 
 // parseK3sServer reads k3s server's flags, and the environment variables
 // k3s reads for them, as k3s takes them: --flag=value or --flag value.
-// Flags that shape what fws/k3s does not run, as --disable=traefik,
-// are taken and have no effect.
+// It honours a flag or refuses it: --disable of a component fws/k3s does
+// not run, as Testcontainers' --disable=traefik, is already so, and
+// --cluster-init, an embedded etcd, is what the server runs; any flag
+// whose effect fws/k3s cannot give is an error, not taken and dropped.
 func parseK3sServer(args []string, getenv func(string) string) (k3sOptions, error) {
 	o := k3sOptions{
 		NodeName: getenv("K3S_NODE_NAME"), ClusterCIDR: "10.42.0.0/16", ServiceCIDR: "10.43.0.0/16",
@@ -124,8 +135,21 @@ func parseK3sServer(args []string, getenv func(string) string) (k3sOptions, erro
 			if value != "6443" {
 				return o, fmt.Errorf("k3s server: the API server listens on 6443 alone, not %s", value)
 			}
+		case "disable":
+			for _, c := range strings.Split(value, ",") {
+				switch {
+				case c == "" || k3sAbsent[c]:
+				case c == "local-storage":
+					o.NoLocalStorage = true
+				case c == "coredns":
+					return o, fmt.Errorf("k3s server: --disable=coredns: fws/k3s's cluster DNS is the engine's, which a cluster cannot turn off")
+				default:
+					return o, fmt.Errorf("k3s server: --disable=%s: fws/k3s has no such component to disable", c)
+				}
+			}
+		case "cluster-init":
 		default:
-			log.Printf("k3s server: --%s has no effect on fws/k3s", name)
+			return o, fmt.Errorf("k3s server: --%s is not supported by fws/k3s, whose node, network and control plane the engine sets up", name)
 		}
 	}
 	if mode != "" {
@@ -290,7 +314,11 @@ func k3sServer(args []string) {
 			log.Fatalf("kubeadm init: %v", err)
 		}
 	}
-	for _, m := range []string{"/kind/manifests/default-cni.yaml", "/kind/manifests/k3s-storage.yaml"} {
+	manifests := []string{"/kind/manifests/default-cni.yaml"}
+	if !o.NoLocalStorage {
+		manifests = append(manifests, "/kind/manifests/k3s-storage.yaml")
+	}
+	for _, m := range manifests {
 		if err := retry(n, time.Minute, "kubectl", "--kubeconfig="+adminKubeconfig, "apply", "-f", m); err != nil {
 			log.Fatalf("applying %s: %v", m, err)
 		}

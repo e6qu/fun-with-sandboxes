@@ -19,7 +19,8 @@ import (
 // store, and the store paths by name, which Nix derives from all that
 // makes them. Build directories differ between runs; what they hold does
 // not, so a file is hashed by its content, never by its path.
-func inputsDigest(specPath, closure string, pkgs, files []string, arch, tag string, env, links, removes []string) (string, error) {
+func inputsDigest(in inputs) (string, error) {
+	specPath, closure, pkgs, files, arch, tag, env, links, removes := in.spec, in.closure, in.pkgs, in.files, in.arch, in.tag, in.env, in.links, in.removes
 	h := sha256.New()
 	self, err := os.Executable()
 	if err != nil {
@@ -34,7 +35,7 @@ func inputsDigest(specPath, closure string, pkgs, files []string, arch, tag stri
 	for _, group := range []struct {
 		kind string
 		vs   []string
-	}{{"pkg", pkgs}, {"env", env}, {"link", links}, {"remove", removes}} {
+	}{{"pkg", pkgs}, {"env", env}, {"link", links}, {"remove", removes}, {"own", in.owns}} {
 		for _, v := range group.vs {
 			field(group.kind, v)
 		}

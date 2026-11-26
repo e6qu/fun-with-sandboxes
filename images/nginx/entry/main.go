@@ -1,6 +1,6 @@
 // Command entry runs nginx inside a fwsd container. It renders the
 // /etc/nginx/templates/*.template files into /etc/nginx/conf.d, substituting
-// environment variables as the official image's entrypoint does, and a main
+// the environment variables that are set as the official image's entrypoint does, and a main
 // configuration that keeps every path nginx writes inside the container and,
 // unless a conf.d file defines servers, serves /usr/share/nginx/html on the
 // container's port 80, which the container library puts on its host port.
@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -45,18 +47,50 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	args := []string{"nginx", "-p", sandboxenv.Path("/var/lib/nginx"), "-c", conf, "-e", "stderr"}
 	// A main configuration of the user's own, mounted or copied to
-	// /etc/nginx/nginx.conf, stands instead of the generated one, run in
-	// the foreground as the official image's command runs it.
+	// /etc/nginx/nginx.conf, stands instead of the generated one.
 	if own := sandboxenv.Path("/etc/nginx/nginx.conf"); fileExists(own) {
-		args = []string{"nginx", "-p", sandboxenv.Path("/var/lib/nginx"), "-c", own, "-e", "stderr", "-g", "daemon off;"}
+		conf = own
 	}
 	if len(os.Args) > 1 && os.Args[1] != "nginx" {
 		log.Fatalf("unknown command %q: the image runs nginx", os.Args[1])
 	}
-	log.Fatal(syscall.Exec(bin, args, os.Environ()))
+	var extra []string
+	if len(os.Args) > 2 {
+		extra = os.Args[2:]
+	}
+	log.Fatal(syscall.Exec(bin, nginxArgs(conf, extra), os.Environ()))
 }
+
+// nginxArgs is nginx's command line: its prefix, main configuration and
+// error log in the container, then the arguments the container's command
+// gave nginx, as the official image passes them on (-t, -T, -V, -g ...).
+// nginx runs in the foreground, as the official image's command,
+// nginx -g 'daemon off;', runs it, unless those arguments set -g
+// themselves, which then say what nginx does.
+func nginxArgs(conf string, extra []string) []string {
+	args := []string{"nginx", "-p", sandboxenv.Path("/var/lib/nginx"), "-c", conf, "-e", "stderr"}
+	if !slices.Contains(extra, "-g") {
+		args = append(args, "-g", "daemon off;")
+	}
+	return append(args, extra...)
+}
+
+// substitute replaces the $NAME and ${NAME} references in a template whose
+// variable is set, as the official image's envsubst of the variables it
+// defines does, and leaves every other $ as written: nginx's own variables,
+// $host and $uri, stay for nginx.
+func substitute(t string, lookup func(string) (string, bool)) string {
+	return envRef.ReplaceAllStringFunc(t, func(ref string) string {
+		name := strings.Trim(ref, "${}")
+		if v, ok := lookup(name); ok {
+			return v
+		}
+		return ref
+	})
+}
+
+var envRef = regexp.MustCompile(`\$(\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)`)
 
 // render writes conf.d from the templates and the main configuration, and
 // returns the main configuration's path.
@@ -76,7 +110,7 @@ func render(pkg string) (string, error) {
 			return "", err
 		}
 		out := filepath.Join(confd, strings.TrimSuffix(filepath.Base(t), ".template"))
-		if err := os.WriteFile(out, []byte(os.Expand(string(b), os.Getenv)), 0o644); err != nil {
+		if err := os.WriteFile(out, []byte(substitute(string(b), os.LookupEnv)), 0o644); err != nil {
 			return "", err
 		}
 		log.Printf("rendered %s", out)
@@ -96,8 +130,7 @@ func render(pkg string) (string, error) {
 	for _, t := range []string{"client_body", "proxy", "fastcgi", "uwsgi", "scgi"} {
 		fmt.Fprintf(&temps, "    %s_temp_path %s;\n", t, filepath.Join(state, t))
 	}
-	main := fmt.Sprintf(`daemon off;
-worker_processes 1;
+	main := fmt.Sprintf(`worker_processes 1;
 pid %s;
 error_log stderr;
 events {

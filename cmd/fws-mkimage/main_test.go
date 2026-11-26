@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"encoding/binary"
 	"os"
@@ -48,7 +49,7 @@ func TestMachoRefsSeesEveryDylibCommand(t *testing.T) {
 	if err := os.WriteFile(p, f.Bytes(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	refs, rpaths, ok, err := machoRefs(p)
+	refs, rpaths, _, ok, err := machoRefs(p)
 	if err != nil || !ok {
 		t.Fatalf("machoRefs: ok=%v err=%v", ok, err)
 	}
@@ -68,7 +69,7 @@ func TestMachoRefsSeesEveryDylibCommand(t *testing.T) {
 func TestMachoRefsIgnoresOtherFiles(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "script")
 	os.WriteFile(p, []byte("#!/bin/sh\necho hi\n"), 0o755)
-	if _, _, ok, err := machoRefs(p); ok || err != nil {
+	if _, _, _, ok, err := machoRefs(p); ok || err != nil {
 		t.Fatalf("script read as Mach-O: ok=%v err=%v", ok, err)
 	}
 }
@@ -89,7 +90,7 @@ func TestWriteArchiveLayersPerStorePath(t *testing.T) {
 	os.Symlink("../nix/store/aaa-tool/bin/tool", filepath.Join(stage, "bin", "tool"))
 	spec := Spec{Tag: "fws/test:1", Config: []byte(`{"Entrypoint":["/entry"],"Healthcheck":{"Test":["CMD","/entry"],"Interval":15000000000,"StartInterval":1000000000}}`)}
 	out := filepath.Join(t.TempDir(), "img.tar")
-	if err := writeArchive(stage, t.TempDir(), spec, []string{"/nix/store/bbb-lib", "/nix/store/aaa-tool"}, out, runtime.GOARCH); err != nil {
+	if err := writeArchive(stage, t.TempDir(), spec, []string{"/nix/store/bbb-lib", "/nix/store/aaa-tool"}, out, runtime.GOARCH, nil); err != nil {
 		t.Fatal(err)
 	}
 	s, err := image.Open(t.TempDir())
@@ -189,7 +190,7 @@ func TestStorePathLayersIgnoreBin(t *testing.T) {
 		}
 		out := filepath.Join(t.TempDir(), "img.tar")
 		spec := Spec{Tag: "fws/py:1", Config: []byte(`{}`)}
-		if err := writeArchive(stage, overlay, spec, []string{"/nix/store/aaa-python"}, out, runtime.GOARCH); err != nil {
+		if err := writeArchive(stage, overlay, spec, []string{"/nix/store/aaa-python"}, out, runtime.GOARCH, nil); err != nil {
 			t.Fatal(err)
 		}
 		s, err := image.Open(t.TempDir())
@@ -232,5 +233,43 @@ func TestOutsideHostTrees(t *testing.T) {
 		if err := outsideHostTrees("file", p); err != nil {
 			t.Errorf("%s: %v", p, err)
 		}
+	}
+}
+
+// -own gives a user a directory of the image: its layer names the owner,
+// as the store records and the container presents it.
+func TestOwnedDirectory(t *testing.T) {
+	owners, err := parseOwns([]string{"/home/app=1000:1001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"home/app=1:1", "/home/app=x:1", "/home/app", "/home/app=1"} {
+		if _, err := parseOwns([]string{bad}); err == nil {
+			t.Errorf("-own %q accepted", bad)
+		}
+	}
+	stage := t.TempDir()
+	os.MkdirAll(filepath.Join(stage, "home", "app"), 0o755)
+	os.MkdirAll(filepath.Join(stage, "etc"), 0o755)
+	layer := filepath.Join(t.TempDir(), "layer.tar")
+	if err := writeLayer(layer, owners, layerSource{stage, func(string) bool { return true }}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(layer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	got := map[string][2]int{}
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		got[h.Name] = [2]int{h.Uid, h.Gid}
+	}
+	if got["home/app/"] != [2]int{1000, 1001} || got["home/"] != [2]int{0, 0} || got["etc/"] != [2]int{0, 0} {
+		t.Errorf("owners in the layer: %v", got)
 	}
 }

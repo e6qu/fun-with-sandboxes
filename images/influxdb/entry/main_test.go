@@ -49,6 +49,8 @@ func TestConfigGet(t *testing.T) {
 		{"engine-path", nil, ""},
 		{"http-bind-address", nil, ":8086"},
 		{"log-level", nil, "debug"},
+		// A longer flag that starts with the key's name is another flag.
+		{"bolt-path", []string{"--bolt-path-other", "/z"}, "/data/a.bolt"},
 	} {
 		if got := ConfigGet(c.key, c.args); got != c.want {
 			t.Errorf("ConfigGet(%q, %q) = %q, want %q", c.key, c.args, got, c.want)

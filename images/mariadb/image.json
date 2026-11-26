@@ -5,7 +5,9 @@
     "/var/lib/mysql",
     "/run/mysqld",
     "/tmp",
-    "/docker-entrypoint-initdb.d"
+    "/docker-entrypoint-initdb.d",
+    "/etc/mysql/conf.d",
+    "/etc/mysql/mariadb.conf.d"
   ],
   "config": {
     "Env": [
