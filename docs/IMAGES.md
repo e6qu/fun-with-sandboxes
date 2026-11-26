@@ -105,10 +105,12 @@ once here:
   `/bin/sh` (`dash`, but `bash` in `fws/kind-node` and `fws/k3s`),
   `/bin/nc` (a port check alone: `nc -z HOST PORT`), `/etc/services`,
   `/etc/protocols`, and an `/etc/passwd` and `/etc/group` with `root`
-  (uid 0) and `nobody` (65534) besides the users its section names, each
-  with `/bin/sh` as its shell.
-- **Users.** Each user's home but `/nonexistent` exists in the image,
-  owned by that user. An image starts as root unless its section names a
+  (uid 0, shell `/bin/sh`) and `nobody` (65534, shell `/bin/false`)
+  besides the users its section names, each with `/bin/sh` as its shell.
+- **Users.** The home of each user a section names exists in the image,
+  owned by that user, but `/nonexistent`; root's `/root` exists only in
+  `fws/base`, `fws/busybox`, `fws/node`, `fws/bun` and `fws/rust`, whose
+  specs make it. An image starts as root unless its section names a
   `User`; an entry program that drops to the official image's user does
   it only when it starts as root, giving that user its data directories,
   so `--user` takes precedence. Users are presented, not enforced: every

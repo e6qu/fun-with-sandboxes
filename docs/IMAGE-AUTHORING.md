@@ -69,8 +69,9 @@ What an image MUST and MUST NOT do follows from the contract:
   `npm install -g`.
 - **A shell of its own.** macOS's loader drops the container library from
   Apple's own shells, and with it from `system()` and `popen()`, so an
-  image SHOULD carry its own `/bin/sh`. Every catalog image carries one
-  (`dash`, unless it links its own), and `/bin/nc`, which answers the
+  image SHOULD carry its own `/bin/sh`. Every catalog image but
+  `fws/ryuk` and `fws/toolbox` carries one (`dash`, unless it links its
+  own), and every one but `fws/toolbox` carries `/bin/nc`, which answers the
   in-container port check Testcontainers runs where a Linux image would
   read `/proc/net/tcp`.
 - **Container paths for sockets.** macOS caps a Unix socket's path at 104
@@ -153,7 +154,7 @@ Besides [the container contract](#the-container-contract)'s rules:
   the engine's user.
 - Multi-platform builds and `# syntax=` frontends other than Docker's own
   are refused; the classic builder refuses `RUN --mount`, `--network` and
-  `--security`. [LIMITATIONS](../LIMITATIONS.md#images-and-builds) lists the rest.
+  `--security`, and heredocs (`RUN <<EOF`). [LIMITATIONS](../LIMITATIONS.md#images-and-builds) lists the rest.
 - A script's `#!/usr/bin/env` line runs the program the container's
   `PATH` names.
 
@@ -494,7 +495,8 @@ differs. The conventions:
   runs the image's interpreter where the root holds it and the host's
   otherwise: an image whose scripts run `#!/bin/bash` MUST carry bash, and
   one whose scripts run `#!/usr/bin/env` SHOULD link
-  `/usr/bin/env=../../bin/env` to coreutils' `env`, as most do.
+  `/usr/bin/env=../../bin/env` to coreutils' `env`, as `fws/base`,
+  `fws/node`, `fws/clickhouse` and the others whose scripts need it do.
 - **Sockets.** Give the server a socket's container path
   (`--socket=/var/run/mysqld/mysqld.sock`, PostgreSQL's
   `unix_socket_directories`), not its host path
@@ -578,7 +580,7 @@ own ([CONTRIBUTING](../CONTRIBUTING.md#test)). Each file starts with
 | `fws/mariadb`, `fws/postgres`, `fws/rabbitmq`, `fws/gitea`, `fws/dynamodb-local` | `TestMariaDB`, `TestPostgres18`, `TestRabbitMQ`, `TestGitea`, `TestDynamoDBLocal`, `TestDynamoDBModule`, `TestCatalogClientsOnDefaultPorts` (`catalog_test.go`) |
 | `fws/python`, `fws/node`, `fws/bun`, `fws/rust`, `fws/busybox`, `fws/base` | `TestLanguageImages`, `TestShellImages`, `TestNodeToolchain`, `TestBunToolchain`, `TestRustToolchain` (`catalog_test.go`) |
 | `fws/playwright` | `TestPlaywright`, `TestPlaywrightTest` (`catalog_test.go`), `TestDevcontainerPlaywright` |
-| `fws/mysql`, `fws/valkey`, `fws/memcached`, `fws/nats`, `fws/seaweedfs`, and Testcontainers' modules | `TestMySQL`, `TestValkey`, `TestMemcached`, `TestNATS`, `TestSeaweedFS`, `TestTestcontainersModules` (`services_test.go`) |
+| `fws/mysql`, `fws/valkey`, `fws/memcached`, `fws/nats`, `fws/seaweedfs`, and Testcontainers' modules (`fws/redis` among them) | `TestMySQL`, `TestValkey`, `TestMemcached`, `TestNATS`, `TestSeaweedFS`, `TestTestcontainersModules` (`services_test.go`) |
 | `fws/etcd`, `fws/consul`, `fws/vault`, `fws/mongo` | `stores_test.go` |
 | `fws/clickhouse`, `fws/influxdb`, `fws/opensearch`, `fws/toxiproxy` | `analytics_test.go` |
 | `fws/meilisearch`, `fws/qdrant`, `fws/neo4j` | `search_test.go` |
@@ -697,7 +699,9 @@ order:
 1. **Builds the Go programs** the images carry: `fws-mkimage`,
    `fws-kube-proxy`, each `images/<name>/entry`, `images/toolbox`,
    `images/nc`, `images/busybox`, `images/tar`, `images/kafka/ub` and
-   `images/dind/dockerd`, with `go build -o "$build/<name>-entry"`.
+   `images/dind/dockerd`, each with `go build -o "$build/<name>"`: an
+   entry program as `<name>-entry` (Lambda's as `lambda-entrypoint`), and
+   `images/kind-node/entry` later, just before `fws/kind-node`.
 2. **Builds every `images/catalog` package at once**, with
    `--keep-going`, so a failure names each package that fails.
 3. **Builds the shared parts**: `dash` (every image's `/bin/sh`),
@@ -730,7 +734,7 @@ order:
    - `accounts NAME [USER UID GID HOME]...` writes the image's
      `/etc/passwd` and `/etc/group`: `root` (0), `nobody` (65534) and the
      users the official image has, at the official image's ids, each with
-     `/bin/sh` as its shell. It sets `acct` to the `-file` arguments that
+     `/bin/sh` as its shell (`nobody`'s is `/bin/false`). It sets `acct` to the `-file` arguments that
      add them and an `-own HOME=UID:GID` for each user's home, but
      `/nonexistent`.
    - `mkimage ARGS...` runs `fws-mkimage -reuse` with what every image
@@ -849,7 +853,7 @@ It works in this order:
    `org.opencontainers.image.source` and the epoch as its creation time.
 
 `-reuse` keeps an archive whose inputs digest matches: the digest covers
-`fws-mkimage`'s own binary, every flag, the spec's and the closure file's
+`fws-mkimage`'s own binary, every flag but `-out` and `-reuse`, the spec's and the closure file's
 content, and each added file's content (a store path by its name). A
 rebuild of the catalog therefore rebuilds only the archives whose inputs
 changed.
@@ -900,7 +904,9 @@ built by `scripts/build-images.sh` and added with
 `-file "/entry=$build/<name>-entry"` or at the official script's path.
 Go programs on macOS load libSystem, so an entry program loads the
 container library like any other process. They use two small packages,
-which depend on nothing else of the engine's. An entry program is
+which depend on nothing else of the engine's but `internal/identity`,
+which `sandboxenv` resolves users with (`fws/kind-node`'s entry, which
+stands in for containerd's tools, also uses `internal/containerd`). An entry program is
 rebuilt, with every image, whenever a package it imports changes, so what
 entries need SHOULD stay in such small packages:
 
