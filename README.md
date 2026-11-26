@@ -43,8 +43,22 @@ flowchart LR
 
 ## Quick start
 
-On a Mac with Apple silicon, Go and the Xcode Command Line Tools
-(`xcode-select --install`):
+On a Mac with Apple silicon, install the Xcode Command Line Tools, whose
+clang builds the container library as `fwsd` starts:
+
+```bash
+xcode-select --install
+```
+
+Then install Go and the Docker CLI, here with
+[Homebrew](https://brew.sh). Homebrew's
+`docker` is the command-line client alone, not Docker Desktop; fws serves
+the API it talks to. A Go older than the release `go.mod` names fetches
+that release itself.
+
+```bash
+brew install go docker
+```
 
 ```bash
 go install github.com/e6qu/fun-with-sandboxes/cmd/...@latest
@@ -62,7 +76,8 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.zshrc
 ```
 
-Start the engine; it runs in the foreground:
+Start the engine; it runs in the foreground, keeps its state in `~/.fws`
+and serves `~/.fws/docker.sock`:
 
 ```bash
 fwsd
@@ -73,6 +88,9 @@ In another terminal:
 ```bash
 export DOCKER_HOST=unix://$HOME/.fws/docker.sock
 ```
+
+The catalog's images are public on `ghcr.io` and pull without a login.
+Pull one and give it its catalog name:
 
 ```bash
 docker pull ghcr.io/e6qu/fws-python:3.14 && docker tag ghcr.io/e6qu/fws-python:3.14 fws/python:3.14

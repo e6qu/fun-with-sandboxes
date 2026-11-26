@@ -17,7 +17,8 @@
 // posix_spawn's POSIX_SPAWN_SETEXEC, the one exec that takes it; -N is the fork
 // ceiling, the soft process limit the container's processes get at most
 // (runtime.ForkCeiling); -c names the compiled profile, the bytecode of
-// the container's Seatbelt profile after its text's SHA-256, and -p the
+// the container's Seatbelt profile, named after the SHA-256 of its text
+// and the macOS build (kern.osversion) that compiled it, and -p the
 // text, which the helper compiles itself where macOS refuses the bytecode;
 // -a starts the
 // anchor, that binary run with this process's pid, on the listener at

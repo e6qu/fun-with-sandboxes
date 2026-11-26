@@ -181,8 +181,7 @@ and no more than microseconds per call.
   their time goes.
 - **#89**: faster loads, with uncached layers unpacking on twice as many
   workers as there are CPUs; a test that a container without `TZ` or an
-  `/etc/localtime` of its own keeps UTC (`TestNoTimeZoneIsUTC`); every
-  member connection routed through the client's own router; this
+  `/etc/localtime` of its own keeps UTC (`TestNoTimeZoneIsUTC`); the
   architecture map ([ARCHITECTURE](ARCHITECTURE.md)) and USAGE's use cases.
 
 ## Investigations

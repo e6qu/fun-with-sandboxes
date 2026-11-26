@@ -62,8 +62,9 @@ lists against the engine on macOS 15; the engine's own tests run on macOS
 `ghcr.io/e6qu/fws-*` ([IMAGES](docs/IMAGES.md)); Kubernetes is at 1.37.2.
 
 Seatbelt enforces a container's file reads and writes, its TCP
-connections, its process listing and its IPC. Its supervisor enforces its
-memory, CPU, pids and disk limits, and its router and egress proxy its
+connections, its process listing and its POSIX IPC. Its supervisor and
+the kernel's per-process limits enforce its memory, CPU and pids limits, a
+disk image of its own its disk quota, and its router and egress proxy its
 network membership, bandwidth and allow lists. The container library
 presents the rest: paths, ports, interfaces, routes, users and the process
 tree. [LIMITATIONS](LIMITATIONS.md) lists what is presented without being
