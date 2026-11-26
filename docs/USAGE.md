@@ -118,6 +118,9 @@ The other clients this guide uses:
 brew install podman podman-compose cri-tools kind kubectl
 ```
 
+The Dev Containers CLI is an npm package, so it needs Node.js on the Mac
+(`brew install node`):
+
 ```bash
 npm install -g @devcontainers/cli
 ```
@@ -130,10 +133,11 @@ fwsd
 
 `fwsd` runs in the foreground and logs to standard error. It refuses to
 run as root, and refuses to start while another engine serves its socket.
-It prints the socket once it serves:
+It prints the socket once it serves, after the date and time Go's log
+puts first:
 
 ```
-serving the Docker API on unix:///Users/you/.fws/docker.sock (state in /Users/you/.fws)
+2026/11/26 09:41:07 serving the Docker API on unix:///Users/you/.fws/docker.sock (state in /Users/you/.fws)
 ```
 
 To keep it running in the background, with its log in a file:
@@ -282,9 +286,11 @@ container, and what the container library did with a path, are in
 ## Get images
 
 Containers run macOS programs, so images are `darwin/arm64`. Linux images,
-Docker Hub's among them, do not run: pulling one fails with
-`image platform (linux/amd64) does not match the engine platform
-(darwin/arm64)`. fws comes with a catalog of darwin images, named
+Docker Hub's among them, do not run: pulling a multi-platform image such
+as `alpine` fails with `image platforms (linux/amd64, linux/arm64/v8, …)
+do not include the engine platform (darwin/arm64)`, and pulling a
+single-platform one with `image platform (linux/amd64) does not match the
+engine platform (darwin/arm64)`. fws comes with a catalog of darwin images, named
 `fws/<name>:<tag>`, which CI publishes as `ghcr.io/e6qu/fws-<name>:<tag>`.
 [IMAGES](IMAGES.md) describes each one and how it is configured.
 
@@ -367,8 +373,9 @@ fws catalog language
 fws catalog -published postgres redis
 ```
 
-`fws` exits with status 2 and its usage on any other command, an unknown
-flag, or arguments that match no image.
+`fws` exits with status 2 and its usage on any other command or an unknown
+flag, and with status 2 and `no image of kind or name …` when no image
+matches the arguments.
 
 ## The Docker CLI
 
@@ -407,7 +414,8 @@ docker cp ./site/. web:/srv/
 Each container is a process tree on the Mac, confined by a Seatbelt
 profile and rooted in an APFS clone of its image, so it starts in
 milliseconds. It lists only its own processes, with its main process as
-pid 1; `docker exec web kill -HUP 1` reaches it. `--init` runs the
+pid 1; `docker exec web sh -c 'kill -TERM 1'` reaches it (`fws/python`
+has no `kill` program, so the shell's own does it). `--init` runs the
 engine's init as pid 1. A container's user, groups, hostname, domain name
 and working directory are presented by the container library, so `--user`,
 `exec -u`, `--group-add`, `--hostname`, `--domainname` and `-w` behave as
@@ -633,6 +641,12 @@ devices, capabilities or host mounts. `fws/dind:29` runs it as Docker's
 
 ```bash
 docker run -d --privileged --name dind -e DOCKER_TLS_CERTDIR= fws/dind:29
+```
+
+Wait for its `dockerd` to listen, then give it an image and run it:
+
+```bash
+until docker logs dind 2>&1 | grep -q 'API listen on'; do sleep 1; done
 ```
 
 ```bash
@@ -1035,8 +1049,9 @@ app.whenReady().then(() => {
 docker run --rm --security-opt seatbelt=gui --user "$(id -u):$(id -g)" -v ~/electron:/app fws/base:1 /app/Electron.app/Contents/MacOS/Electron --no-sandbox /app/main.js
 ```
 
-VS Code itself, with a workspace mounted and a user data directory inside
-the container:
+VS Code itself, its macOS build for Apple silicon unzipped into
+`~/vscode`, with a workspace mounted and a user data directory inside the
+container:
 
 ```bash
 docker run --rm --security-opt seatbelt=gui --user "$(id -u):$(id -g)" -e SHELL=/bin/bash -e HOME=/tmp/home -v ~/vscode:/vscode -v "$PWD:/work" fws/base:1 "/vscode/Visual Studio Code.app/Contents/MacOS/Code" --no-sandbox --use-mock-keychain --user-data-dir=/tmp/vscode-data --extensions-dir=/tmp/vscode-extensions /work
@@ -1104,8 +1119,8 @@ so `docker exec <node> crictl images` lists what a node holds.
 
 ### k3s
 
-`fws/k3s:1.37` is k3s's image built from kubeadm's cluster, as
-Testcontainers' k3s module runs it:
+`fws/k3s:1.37` stands in for k3s's image, a single-node kubeadm cluster
+from `fws/kind-node`'s parts, as Testcontainers' k3s module runs it:
 
 ```go
 k, err := k3s.Run(ctx, "fws/k3s:1.37")
@@ -1113,7 +1128,7 @@ kubeconfig, err := k.GetKubeConfig(ctx)
 err = k.LoadImages(ctx, "fws/nginx:1")
 ```
 
-`k3s kubectl`, `ctr` and `crictl` run in it. Its node MUST have an address
+`k3s kubectl`, `k3s ctr` and `k3s crictl` run in it. Its node MUST have an address
 outside loopback: the default bridge, as the module uses, or a network
 with a subnet. `k3s agent`, Traefik, ServiceLB, the metrics server and the
 Helm controller are absent; `--disable` of them is accepted, and a `k3s
@@ -1129,16 +1144,42 @@ use the engine as they use containerd:
 alias crictl='crictl --runtime-endpoint unix://$HOME/.fws/docker.sock --image-endpoint unix://$HOME/.fws/docker.sock'
 ```
 
-```bash
-crictl runp pod.json
+A pod needs `fws/pause:3.10.2` (`fws_get pause:3.10.2 python:3.14`, from
+[Get images](#get-images)). `pod.json`, whose `log_directory` is where the
+engine writes its containers' logs:
+
+```json
+{
+  "metadata": {"name": "web", "namespace": "default", "uid": "web-1"},
+  "log_directory": "/tmp/crictl-web"
+}
+```
+
+`container.json`:
+
+```json
+{
+  "metadata": {"name": "server"},
+  "image": {"image": "fws/python:3.14"},
+  "command": ["python3", "-m", "http.server", "8000"],
+  "log_path": "server.log"
+}
 ```
 
 ```bash
-crictl create "$POD_ID" container.json pod.json && crictl start "$CONTAINER_ID"
+POD_ID=$(crictl runp pod.json)
+```
+
+```bash
+CONTAINER_ID=$(crictl create "$POD_ID" container.json pod.json) && crictl start "$CONTAINER_ID"
 ```
 
 ```bash
 crictl pods && crictl ps && crictl logs "$CONTAINER_ID"
+```
+
+```bash
+crictl stopp "$POD_ID" && crictl rmp "$POD_ID"
 ```
 
 A pod sandbox is an `fws/pause:3.10.2` container holding the pod's network
@@ -1186,7 +1227,8 @@ Each use case is a complete walk-through: what it is for, what it needs,
 every file in full, and every command in order, ending with how to clean
 up. Each starts in a new, empty directory and assumes:
 
-- the engine is running and `DOCKER_HOST` names its socket
+- Go's install directory is on `PATH` ([Install](#install)), the engine
+  is running and `DOCKER_HOST` names its socket
   ([Run the engine](#run-the-engine));
 - the Docker CLI and the plugins it uses are installed ([Clients](#clients));
 - `fws_get`, from [Get images](#get-images), is defined in the shell. Each
@@ -1223,10 +1265,16 @@ it, get an image and run it the ways Docker runs one.
 **Needs:** a Mac with Apple silicon, Go, the Xcode Command Line Tools and
 the Docker CLI ([Install](#install)).
 
-Install the commands and start the engine in the background:
+Install the commands, put Go's install directory on `PATH` (add the same
+line to `~/.zshrc` to keep it, [Install](#install)), and start the engine
+in the background:
 
 ```bash
 go install github.com/e6qu/fun-with-sandboxes/cmd/...@latest
+```
+
+```bash
+export PATH="$(go env GOPATH)/bin:$PATH"
 ```
 
 ```bash
@@ -1235,6 +1283,12 @@ nohup fwsd > ~/fwsd.log 2>&1 &
 
 ```bash
 export DOCKER_HOST=unix://$HOME/.fws/docker.sock
+```
+
+Wait until it answers; `~/fwsd.log` says why if it never does:
+
+```bash
+until docker version > /dev/null 2>&1; do sleep 1; done
 ```
 
 The server reports macOS:
@@ -1247,7 +1301,8 @@ docker version --format '{{.Server.Os}}'
 darwin
 ```
 
-List what the catalog holds, then get Python under its `fws/` name:
+List what the catalog holds, then get Python under its `fws/` name, and
+define `fws_get` ([Get images](#get-images)) for the images that follow:
 
 ```bash
 fws catalog language
@@ -1255,6 +1310,10 @@ fws catalog language
 
 ```bash
 docker pull ghcr.io/e6qu/fws-python:3.14 && docker tag ghcr.io/e6qu/fws-python:3.14 fws/python:3.14
+```
+
+```bash
+fws_get() { for i in "$@"; do docker pull "ghcr.io/e6qu/fws-$i" && docker tag "ghcr.io/e6qu/fws-$i" "fws/$i" || return; done; }
 ```
 
 Run a command and exit:
@@ -1527,10 +1586,17 @@ internet through a build-only proxy. `TestShellImages`, `TestBuildKit`,
 
 **Needs:** `fws_get base:1 python:3.14 rust:1.100 toolbox:1`; buildx.
 
+Each of the three images is a project of its own, in a directory of its
+own.
+
 #### A shell tool FROM fws/base
 
 `fws/base` has `bash`, `curl`, `git`, `jq` and the everyday commands, and
 no package manager ([IMAGES](IMAGES.md#fwsbase)).
+
+```bash
+mkdir stars && cd stars
+```
 
 `stars.sh`:
 
@@ -1562,6 +1628,10 @@ docker run --rm stars:1 golang/go
 pip is installed with `python3 -m ensurepip`; packages come from PyPI
 through the build's egress proxy. There is no compiler in `fws/python`, so
 packages need macOS wheels or to be pure Python.
+
+```bash
+mkdir ../flask && cd ../flask
+```
 
 `requirements.txt`:
 
@@ -1623,6 +1693,10 @@ docker rm -f flask
 The binary is built in `fws/rust`, with the crate registry in a cache
 mount that later builds reuse, and copied into `fws/base`. A third stage
 holds the binary alone, for `--output` to write it to the host.
+
+```bash
+mkdir -p ../hello/src && cd ../hello
+```
 
 `Cargo.toml`:
 
@@ -1750,7 +1824,8 @@ needs.
 
 **Needs:** `fws_get postgres:16 redis:8 ryuk:0.14.0`, the language's
 toolchain on the Mac, and `DOCKER_HOST` exported in the shell that runs the
-tests. Tag the reaper as the version your library runs:
+tests. Each language's project is a directory of its own. Tag the reaper
+as the version your library runs:
 
 ```bash
 docker tag fws/ryuk:0.14.0 testcontainers/ryuk:0.14.0
@@ -1974,6 +2049,10 @@ compatible, so a test names what `fws/postgres` stands for with
     </plugins>
   </build>
 </project>
+```
+
+```bash
+mkdir -p src/test/java/example
 ```
 
 `src/test/java/example/StoreTest.java`:
@@ -2468,8 +2547,10 @@ both.
 docker run -d --privileged --name dind -e DOCKER_TLS_CERTDIR= fws/dind:29
 ```
 
+Its `dockerd` logs `API listen on` once it serves; wait for it:
+
 ```bash
-docker logs dind 2>&1 | grep 'API listen on'
+until docker logs dind 2>&1 | grep 'API listen on'; do sleep 1; done
 ```
 
 ```bash
@@ -2531,6 +2612,10 @@ certificates in `/certs`; publish 2376 and use the client certificate:
 
 ```bash
 docker run -d --privileged --name dind-tls -p 127.0.0.1::2376 fws/dind:29
+```
+
+```bash
+until docker logs dind-tls 2>&1 | grep -q 'API listen on .*:2376'; do sleep 1; done
 ```
 
 ```bash
@@ -2909,8 +2994,10 @@ spec:
 podman --remote kube play pod.yaml
 ```
 
+The init container runs first; the server answers once it has:
+
 ```bash
-curl -s http://127.0.0.1:8000/
+until curl -fs http://127.0.0.1:8000/; do sleep 1; done
 ```
 
 ```
@@ -3609,6 +3696,8 @@ jobs:
           "$(go env GOPATH)/bin/fws" catalog -published postgres redis ryuk |
             while read -r name ref; do docker pull "$ref" && docker tag "$ref" "$name"; done
           docker tag fws/ryuk:0.14.0 testcontainers/ryuk:0.14.0
+          # The web app's Dockerfile builds FROM fws/node:24.
+          docker pull ghcr.io/e6qu/fws-node:24 && docker tag ghcr.io/e6qu/fws-node:24 fws/node:24
       - name: test
         run: go test ./...
       # A project with a compose.yaml, such as the web app above.
@@ -3654,14 +3743,20 @@ docker: Error response from daemon: OOM score adjustments are not supported …
 ```
 
 [LIMITATIONS](../LIMITATIONS.md) lists every refusal and why. A Linux image
-fails at pull with `image platform (linux/amd64) does not match the engine
-platform (darwin/arm64)`: use the catalog's, or build `FROM` it.
+fails at pull, a multi-platform one with `image platforms (linux/amd64, …)
+do not include the engine platform (darwin/arm64)` and a single-platform one with `image platform
+(linux/amd64) does not match the engine platform (darwin/arm64)`: use the
+catalog's, or build `FROM` it.
 
 **The engine's view.** Restart the engine with `-debug` to log every API
 request and the steps of each container's create and start:
 
 ```bash
 pkill -x fwsd; while pgrep -x fwsd > /dev/null; do sleep 1; done; nohup fwsd -debug > ~/fwsd.log 2>&1 &
+```
+
+```bash
+until docker version > /dev/null 2>&1; do sleep 1; done
 ```
 
 ```bash
@@ -3764,9 +3859,9 @@ The last calls before a failure show where a program lost its way.
 | `fwsd must not run as root` | run it as yourself; containers run with your rights |
 | `another engine is already serving …` | an engine serves the socket already: stop it, or give this one `-root` and `-socket` of its own |
 | `Cannot connect to the Docker daemon at unix:///var/run/docker.sock` | the client does not know the engine: set `DOCKER_HOST` or use the `fws` context |
-| `docker: 'compose' is not a docker command` | the CLI cannot find the plugins: set `cliPluginsExtraDirs` ([Clients](#clients)) |
-| `image platform (linux/amd64) does not match the engine platform (darwin/arm64)` | a Linux image: use the catalog's, or build `FROM` it |
-| `pull access denied for fws/…` | the image is not present under its `fws/` name: pull and tag it ([Get images](#get-images)) |
+| `docker: unknown command: docker compose`, or from older CLIs `docker: 'compose' is not a docker command` | the CLI cannot find the plugins: set `cliPluginsExtraDirs` ([Clients](#clients)) |
+| `image platforms (linux/amd64, …) do not include the engine platform (darwin/arm64)`, or `image platform (linux/amd64) does not match the engine platform (darwin/arm64)` | a Linux image: use the catalog's, or build `FROM` it |
+| `Unable to find image 'fws/…' locally`, then a failed pull from Docker Hub (`UNAUTHORIZED`, `pull access denied`) | the image is not present under its `fws/` name: pull and tag it ([Get images](#get-images)) |
 | `requested platform … does not match the engine platform` | `--platform` or `FROM --platform` other than `darwin/arm64` |
 | `apt-get: not found` (or `apk`, `yum`) in a build | Linux package managers do not exist here: `COPY` darwin programs, or start from a catalog image that holds them |
 | `port is already allocated` | the host port is taken, by another container or a host process |

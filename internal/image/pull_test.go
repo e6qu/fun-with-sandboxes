@@ -260,3 +260,23 @@ func TestPullViaAMirror(t *testing.T) {
 		t.Errorf("by digest: %+v, %v", again, err)
 	}
 }
+
+// TestPlatformIn checks the refusal of an index with no image for the
+// engine's platform, which names the platforms it holds and leaves out
+// attestations, and that an index holding one is accepted.
+func TestPlatformIn(t *testing.T) {
+	linux := []v1.Descriptor{
+		{Platform: &v1.Platform{OS: "linux", Architecture: "amd64"}},
+		{Platform: &v1.Platform{OS: "linux", Architecture: "arm64", Variant: "v8"}},
+		{Platform: &v1.Platform{OS: "unknown", Architecture: "unknown"}},
+		{Platform: &v1.Platform{OS: "linux", Architecture: "amd64"}},
+	}
+	err := platformIn(linux)
+	want := fmt.Sprintf("image platforms (linux/amd64, linux/arm64/v8) do not include the engine platform (%s/%s)", Platform.OS, Platform.Architecture)
+	if err == nil || err.Error() != want {
+		t.Fatalf("platformIn = %v, want %q", err, want)
+	}
+	if err := platformIn(append(linux, v1.Descriptor{Platform: &Platform})); err != nil {
+		t.Fatalf("an index with the engine's platform is refused: %v", err)
+	}
+}

@@ -536,6 +536,11 @@ func (s *Store) PullVia(ctx context.Context, ref string, auth authn.Authenticato
 	if err != nil {
 		return Pulled{}, err
 	}
+	if desc.MediaType.IsIndex() {
+		if err := indexHasPlatform(desc); err != nil {
+			return Pulled{}, err
+		}
+	}
 	img, err := desc.Image()
 	if err != nil {
 		return Pulled{}, err
@@ -1323,4 +1328,41 @@ func isHex(s string) bool {
 		}
 	}
 	return true
+}
+
+// indexHasPlatform refuses an index with no image for the engine's
+// platform in the words add uses for a single image of another platform,
+// naming the platforms the index does hold.
+func indexHasPlatform(desc *remote.Descriptor) error {
+	idx, err := desc.ImageIndex()
+	if err != nil {
+		return err
+	}
+	m, err := idx.IndexManifest()
+	if err != nil {
+		return err
+	}
+	return platformIn(m.Manifests)
+}
+
+// platformIn reports whether manifests hold an image for the engine's
+// platform, and otherwise which platforms they hold.
+func platformIn(manifests []v1.Descriptor) error {
+	var held []string
+	for _, d := range manifests {
+		if d.Platform == nil || d.Platform.OS == "unknown" {
+			continue // attestations, not images
+		}
+		if d.Platform.Satisfies(Platform) {
+			return nil
+		}
+		p := d.Platform.OS + "/" + d.Platform.Architecture
+		if d.Platform.Variant != "" {
+			p += "/" + d.Platform.Variant
+		}
+		if !slices.Contains(held, p) {
+			held = append(held, p)
+		}
+	}
+	return fmt.Errorf("image platforms (%s) do not include the engine platform (%s/%s)", strings.Join(held, ", "), Platform.OS, Platform.Architecture)
 }
