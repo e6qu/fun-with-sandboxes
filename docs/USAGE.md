@@ -62,7 +62,19 @@ go install github.com/e6qu/fun-with-sandboxes/cmd/...@latest
 ```
 
 This installs every command into `$(go env GOPATH)/bin` (`~/go/bin` unless
-`GOBIN` says otherwise); put that directory on `PATH`:
+`GOBIN` says otherwise). Neither Go's installer nor Homebrew puts that
+directory on `PATH`, so a shell answers `command not found: fwsd` until it
+is added, in the current shell and in the shell's profile:
+
+```bash
+export PATH="$(go env GOPATH)/bin:$PATH"
+```
+
+```bash
+echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.zshrc
+```
+
+The commands it installs:
 
 | Command | What it is |
 |---|---|
@@ -3747,6 +3759,7 @@ The last calls before a failure show where a program lost its way.
 
 | Error | Meaning |
 |---|---|
+| `command not found: fwsd` | `go install`'s directory, `$(go env GOPATH)/bin`, is not on `PATH`: `export PATH="$(go env GOPATH)/bin:$PATH"` ([Install](#install)) |
 | `fws-shim must be installed beside fwsd, at …` | `fws-shim` is missing from `fwsd`'s directory: install both with `go install` into one directory |
 | `fwsd must not run as root` | run it as yourself; containers run with your rights |
 | `another engine is already serving …` | an engine serves the socket already: stop it, or give this one `-root` and `-socket` of its own |

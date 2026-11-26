@@ -50,6 +50,20 @@ On a Mac with Apple silicon, Go and the Xcode Command Line Tools
 go install github.com/e6qu/fun-with-sandboxes/cmd/...@latest
 ```
 
+`go install` puts the commands in `$(go env GOPATH)/bin` (`~/go/bin`
+unless `GOBIN` names another directory), which is not on `PATH` by
+default. Add it, here and in your shell's profile:
+
+```bash
+export PATH="$(go env GOPATH)/bin:$PATH"
+```
+
+```bash
+echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.zshrc
+```
+
+Start the engine; it runs in the foreground:
+
 ```bash
 fwsd
 ```
