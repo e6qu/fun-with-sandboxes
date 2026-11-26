@@ -94,7 +94,7 @@ The processes, which binary runs each, and how many there are:
 | Supervisor, with the container's router and port proxies | `fws-shim` (role `shim`) | one per running container | the engine | yes |
 | Exec anchor | `fws-shim` (runtime's anchor role) | one per running container | the spawn helper, inside the sandbox | yes |
 | Spawn helper | `lib/` helper built from `spawn.c` | one per process start, then it becomes the process | the supervisor | — |
-| Egress proxy | `fws-shim` (role `egress`) | one per stack with internet access, one for builds | the engine | yes |
+| Egress proxy | `fws-shim` (role `egress`) | one per stack with internet access, one for BuildKit and one per classic build | the engine | yes |
 | Container processes | the image's programs, with `fwsroot` loaded | any | the spawn helper, the anchor, or each other | yes |
 | `docker-init`, `fws-memexec` | `fws-shim` under those names | as needed | the container | — |
 
@@ -324,7 +324,8 @@ starts a Go program's children under the memory limit.
 ### Seatbelt profiles
 
 `internal/seatbelt/profile.go` renders a container's profile text from a
-`seatbelt.Spec` the engine builds (`internal/engine/security.go`): its
+`seatbelt.Spec` the engine builds (`Engine.profile` in
+`internal/engine/container.go`, with the grants `security.go` decides): its
 root, volumes and their modes, port directory, ports, router and egress
 ports, the stack's block, IPC prefix, the shim's sockets, and the flags a
 container was created with. `internal/libsystem` compiles it

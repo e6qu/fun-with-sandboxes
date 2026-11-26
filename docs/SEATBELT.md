@@ -92,11 +92,12 @@ Two rules of precedence matter:
    (allow file-write* (subpath "/tmp/work"))
    ```
 
-2. **A rule with no filter outranks every filtered rule for its operation,
-   wherever it stands.** `(allow file-read*)` would undo any later
-   `(deny file-read* (subpath ...))`. To allow broadly and still deny
+2. **An `allow` with no filter outranks every filtered rule for its
+   operation, wherever it stands.** `(allow file-read*)` would undo any
+   later `(deny file-read* (subpath ...))`. To allow broadly and still deny
    within, give the broad rule a filter of its own: `(allow file-read*
-   (subpath "/"))`.
+   (subpath "/"))`. A `deny` with no filter has no such rank: the filtered
+   `allow` after it in rule 1's example still wins.
 
 Matching uses resolved paths. `/var` is a symbolic link to `/private/var`
 and `/tmp` to `/private/tmp`, so a rule MUST name `/private/tmp/work` to
@@ -168,7 +169,7 @@ sandbox-exec -f reads.sb -D SECRET=/private/tmp/sb-tutorial/secret cat writes.sb
 ```
 
 The first `cat` is denied, and the second reads `writes.sb`. Replace the
-second line of `reads.sb` with a bare `(allow file-read*)` and both reads
+third line of `reads.sb` with a bare `(allow file-read*)` and both reads
 succeed: the unfiltered rule outranks the deny below it.
 
 ### 3. Network confined to one port

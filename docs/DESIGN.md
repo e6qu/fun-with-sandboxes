@@ -105,7 +105,7 @@ it was not handed.
 | Dimension | Primitive | Guarantee | Gap (accepted) |
 |---|---|---|---|
 | Filesystem write | Seatbelt `(deny file-write*)`, then allow the container root and its volumes | A container writes only inside its own clone and mounts | — |
-| Filesystem read of host | Seatbelt `(deny file-read*)`, then allow the root, its volumes, the container library, its network file, the system tree and the host files a root would hold; a container granted the user's session reads the host but its data roots and the engine's state | No read of the host outside the root, volumes and system tree: not `$HOME`, other stacks' roots, `/private/etc`, `/usr/bin` or shared temporary directories | The system tree is readable |
+| Filesystem read of host | Seatbelt `(deny file-read*)`, then allow the root, its volumes, the container library, its network file, the system tree and the host files a root would hold; a container granted the user's session reads the host but its data roots and the engine's state | No read of the host outside the root, volumes and system tree: not `$HOME`, other stacks' roots, `/private/etc` but its time zone, certificates and services and protocols databases, `/usr/bin` but `env`, or shared temporary directories | The system tree is readable |
 | Cross-stack visibility | Per-stack directory tree and per-stack Seatbelt path allowances | Stack A's profile names only A's paths; A cannot read or write B | — |
 | Ports | Engine allocates a disjoint range per stack; Seatbelt `(deny network-bind)` and `(deny network-outbound)` except the container's own ports, its router and its egress proxy | Two stacks never clash; a container binds only its grants and reaches other members only through its router | Host sees all listening sockets globally |
 | Process signalling | Seatbelt `(deny signal)` and `(deny process-info*)` except same-sandbox, and `(deny sysctl-read)` of the process table's listings; the library lists the sandbox's processes from its shim (`pidns.OpTable`). `--pid host` allows both (`FWS_PIDNS=host`); `--pid container:` shares a namespace through the shims (§3a) | A cannot `kill`, inspect or list B's processes | pids are the host's |
@@ -397,6 +397,8 @@ through symlinks at start-up because Seatbelt matches resolved paths.
     pids.max  memory.max  iopolicy # limits the container's processes read
     pidns  shm                     # a shared PID namespace's file, the
                                    #   shm ledger
+    born                           # when create finished cloning, by its
+                                   #   modification time, for diff and size
     root.sparseimage               # the root's disk image (--storage-opt size)
     engine/                        # a privileged container's nested engine
   volumes/<name>/_data/            # named and anonymous volumes
@@ -532,7 +534,7 @@ of the profile.
 ## 5. Per-stack resource assignment
 
 A **stack** is one Compose project: the `com.docker.compose.project` label. A
-container without one is a stack of its own (`run-<id>`).
+container without one is a stack of its own (`run-<id12>`).
 
 1. **Ports.** Each stack holds a contiguous block of host ports
    (`-port-base`, `-port-limit`, `-block-size`; 20000–29999 in blocks of 100

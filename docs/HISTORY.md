@@ -55,7 +55,7 @@ in effect `rshared`; `getfsstat` for the mount table; a memory-backed
 `emptyDir` is a directory on disk); `/etc/resolv.conf` written as Docker
 writes it; and a CRI stream listener that opens on first use.
 
-## Light, steady, general (#65 on)
+## Light, steady, general (#58–#66)
 
 The aim: containers lighter than a VM's, whose limits keep the machine
 standing, with more of what Docker users write working, at no root, no VM
@@ -130,7 +130,7 @@ and no more than microseconds per call.
   hung kind's clusters on `main`; a test now holds every function to the
   engine's lock first.
 
-## Networks, images and two reviews (#86–#87)
+## Networks, images, two reviews and the docs (#86–#89)
 
 - **#86**: egress and ingress allow lists; bridge options that hold, and
   refusal of those that do not; the container's own routes in the routing
@@ -179,6 +179,11 @@ and no more than microseconds per call.
   `fws-mkimage` relocates and verifies every Mach-O file it adds and gives
   accounts their homes. Slow image unpacks and BuildKit commits say where
   their time goes.
+- **#89**: faster loads, with uncached layers unpacking on twice as many
+  workers as there are CPUs; a test that a container without `TZ` or an
+  `/etc/localtime` of its own keeps UTC (`TestNoTimeZoneIsUTC`); every
+  member connection routed through the client's own router; this
+  architecture map ([ARCHITECTURE](ARCHITECTURE.md)) and USAGE's use cases.
 
 ## Investigations
 
