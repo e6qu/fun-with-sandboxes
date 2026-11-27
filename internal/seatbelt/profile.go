@@ -408,9 +408,10 @@ func Render(s Spec) (string, error) {
 	// of the host, whether a program presents its paths through the
 	// container library or not. A container granted the user's session
 	// reads the host but user data and other stacks' state, as graphical
-	// applications read fonts, preferences and bundles all over it. A rule
-	// without a filter outranks every filtered rule of its operation,
-	// wherever it stands, so the broad allowance names a subpath.
+	// applications read fonts, preferences and bundles all over it. An
+	// allow without a filter outranks every filtered rule of its operation,
+	// wherever it stands (a deny without one does not), so the broad
+	// allowance names a subpath.
 	if s.GUI {
 		w("(allow file-read* (subpath \"/\"))")
 		w("(deny file-read*")

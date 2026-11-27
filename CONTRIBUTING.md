@@ -43,6 +43,8 @@ You need:
 - **[Nix](https://nixos.org/download)**, to build the image catalog;
 - **[ShellCheck](https://www.shellcheck.net)** (`brew install shellcheck`),
   for `scripts/lint.sh`;
+- on Linux, libarchive's `bsdtar` (`apt-get install libarchive-tools`),
+  which `images/tar`'s unit tests run; macOS ships it;
 - for the end-to-end suite, the Docker CLI, Docker Compose, buildx,
   Podman, `podman-compose`, `crictl` and the Dev Containers CLI, and the
   toolchains the Testcontainers tests drive: Python 3, Java with Maven,
@@ -50,6 +52,14 @@ You need:
 
   ```bash
   brew install docker docker-compose docker-buildx podman podman-compose cri-tools
+  ```
+
+  The Docker CLI finds Homebrew's Compose and buildx plugins only when
+  told where they are, as CI does
+  ([USAGE](docs/USAGE.md#clients)):
+
+  ```bash
+  mkdir -p ~/.docker && echo "{\"cliPluginsExtraDirs\": [\"$(brew --prefix)/lib/docker/cli-plugins\"]}" > ~/.docker/config.json
   ```
 
   ```bash
@@ -97,10 +107,10 @@ on any machine; the unit tests' probes and the end-to-end suite need macOS.
    ```
 
 2. **Static checks** for the macOS build: vet, staticcheck
-   (`honnef.co/go/tools/cmd/staticcheck@v0.8.2`; `staticcheck.conf` names
-   the checks left out) and govulncheck
-   (`golang.org/x/vuln/cmd/govulncheck@v1.9.0`), each on `tests/e2e` too,
-   with `-tags e2e`; and `scripts/lint.sh`, whose header lists the further
+   (`go install honnef.co/go/tools/cmd/staticcheck@v0.8.2`;
+   `staticcheck.conf` names the checks left out) and govulncheck
+   (`go install golang.org/x/vuln/cmd/govulncheck@v1.9.0`), each on
+   `tests/e2e` too, with `-tags e2e`; and `scripts/lint.sh`, whose header lists the further
    checks it runs at pinned versions (ineffassign, nilness, exhaustive,
    unparam, unconvert, deadcode, a subset of gosec, ShellCheck and
    actionlint). A `switch` over one of the module's enum types names every

@@ -770,7 +770,7 @@ func checkHostConfig(hc *container.HostConfig) error {
 	for _, k := range []knob{
 		{hc.UsernsMode != "", "user namespaces"},
 		{hc.Runtime != "" && hc.Runtime != "runc", "alternative runtimes"},
-		{hc.LogConfig.Type != "" && hc.LogConfig.Type != "json-file" && hc.LogConfig.Type != "local", "log drivers other than json-file"},
+		{hc.LogConfig.Type != "" && hc.LogConfig.Type != "json-file" && hc.LogConfig.Type != "local", "log drivers other than json-file and local"},
 	} {
 		if k.set {
 			return unsupported("%s are not supported: this engine runs without root or a VM and cannot enforce them", k.name)

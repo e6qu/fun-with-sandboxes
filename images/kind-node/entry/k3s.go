@@ -337,6 +337,14 @@ func k3sServer(args []string) {
 	if err := retry(n, 5*time.Minute, "kubectl", "--kubeconfig="+adminKubeconfig, "wait", "--for=condition=Ready", "--timeout=30s", "node/"+name); err != nil {
 		log.Fatalf("the node never became ready: %v", err)
 	}
+	// The controller manager makes each namespace's default ServiceAccount
+	// some time after the node is Ready, and the API server refuses a pod
+	// until it is there ("serviceaccount \"default\" not found"). k3s logs
+	// the line below once its controllers are running, and what waits for
+	// it creates pods at once, so the line waits for the account too.
+	if err := retry(n, 5*time.Minute, "kubectl", "--kubeconfig="+adminKubeconfig, "wait", "--for=create", "--timeout=30s", "--namespace=default", "serviceaccount/default"); err != nil {
+		log.Fatalf("the default ServiceAccount was never made: %v", err)
+	}
 	// What Testcontainers' k3s module waits for.
 	fmt.Fprintln(n.stdout, k3sReadyMessage)
 	wg.Wait()

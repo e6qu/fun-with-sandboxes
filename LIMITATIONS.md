@@ -45,9 +45,10 @@ differs from Docker's.
     host's, as the loader and libSystem read them there, so an image
     cannot put files in them: `fws-mkimage` refuses such a path, and
     `npm install -g` in the catalog's Node.js images goes to `/usr/local`.
-    `/proc` is an empty directory. Symbolic links resolve inside
-    the container, as under chroot; a link loop fails with `ENOENT`, not
-    `ELOOP`.
+    `/proc` is an empty directory, but `readlink` of
+    `/proc/self/ns/mnt` names the container's one mount namespace.
+    Symbolic links resolve inside the container, as under chroot; a link
+    loop fails with `ENOENT`, not `ELOOP`.
   - Programs Apple signs, static binaries and programs making system calls
     without libSystem load no library and see host paths, pids, ports and
     network; they get `PATH` and `HOME` in the root, where they find the
